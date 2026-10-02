@@ -52,7 +52,9 @@ export class WorldReader {
     const L = this.layout
     const [cx, cy, cz] = L.chunkCoords(ci)
     const involved: number[] = []
+    let centre = 0
     for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0 && dz === 0) centre = involved.length
       if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) involved.push(L.chunkIndex(cx + dx, cy + dy, cz + dz))
     }
     const before = new Array<number>(involved.length)
@@ -68,7 +70,7 @@ export class WorldReader {
       for (let i = 0; i < involved.length; i++) {
         if (Atomics.load(this.versions, involved[i]!) !== before[i]) { stable = false; break }
       }
-      if (stable) return Atomics.load(this.versions, ci)
+      if (stable) return before[centre]!  // the validated version, not a fresh load
     }
     return null
   }

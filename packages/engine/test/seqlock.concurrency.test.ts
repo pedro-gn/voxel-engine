@@ -26,14 +26,17 @@ describe('seqlock across threads', () => {
     let torn = 0
     while (!done) {
       for (let i = 0; i < 50; i++) {
-        if (reader.snapshot(0, snap) === null) continue
+        const version = reader.snapshot(0, snap)
+        if (version === null) continue
         const first = snap.voxels[padIndex(2, 1, 1)]! // voxel (1,0,0)
         let same = true
         for (let y = 0; y < 32 && same; y++) for (let z = 0; z < 32 && same; z++) for (let x = 0; x < 32; x++) {
           if (!(x || y || z)) continue
           if (snap.voxels[padIndex(x + 1, y + 1, z + 1)] !== first) { same = false; break }
         }
-        if (same) { good++; seen.add(first) }
+        // Writer versions: marker commit -> 2 (only voxel 0 set, rest air); iteration k commits version 4 + 2k with value 1 + (k % 2).
+        const expected = version >= 4 ? 1 + (((version - 4) / 2) % 2) : 0
+        if (same && version % 2 === 0 && first === expected) { good++; seen.add(first) }
         else torn++
       }
       await new Promise((r) => setImmediate(r))
