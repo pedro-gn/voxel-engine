@@ -1,0 +1,210 @@
+import { hashId, tileFbm, tileNoise, worley } from './noise.ts'
+import { SIZE, createLayer, disc, hex, mixRgb, paint, scaleRgb, vary, wrap, type Layer, type RGB, type Rand } from './raster.ts'
+import type { ShadeOptions } from './shade.ts'
+
+interface Courses { rows: readonly number[]; minW: number; maxW: number; gap: number; round: number; mortar: RGB; mortarH: number }
+
+/** Rows of bricks/plates (row heights sum to SIZE) with random widths and a random shift per row; everything wraps. */
+function courses(l: Layer, r: Rand, c: Courses, colour: (r: Rand) => RGB): void {
+  let y0 = 0
+  for (const rh of c.rows) {
+    const widths: number[] = []
+    let sum = 0
+    while (sum < SIZE) {
+      let w = Math.round(c.minW + r() * (c.maxW - c.minW))
+      if (SIZE - sum - w < c.minW) w = SIZE - sum
+      widths.push(w)
+      sum += w
+    }
+    let x0 = Math.floor(r() * SIZE)
+    for (const w of widths) {
+      const col = colour(r), tilt = (r() - 0.5) * 0.3
+      for (let yy = 0; yy < rh; yy++) for (let xx = 0; xx < w; xx++) {
+        const i = wrap(x0 + xx, y0 + yy)
+        const e = Math.min(xx + 0.5, w - xx - 0.5, yy + 0.5, rh - yy - 0.5)
+        if (e < c.gap) { paint(l, i, c.mortar, c.mortarH); continue }
+        const s = Math.min(1, (e - c.gap) / c.round)
+        paint(l, i, col, 0.45 + 0.4 * s * s * (3 - 2 * s) + tilt * (xx / w - 0.5))
+      }
+      x0 += w
+    }
+    y0 += rh
+  }
+}
+
+/** Fine surface grain on height and colour. */
+function roughen(l: Layer, seed: number, amount: number): void {
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), n = tileNoise(seed, x, y, 16) - 0.5
+    l.height[i]! += n * amount
+    for (let c = 0; c < 3; c++) l.color[i * 3 + c]! *= 1 + n * amount * 0.8
+  }
+}
+
+export function stone(r: Rand): Layer {
+  const base = hex('#7f8a9c')
+  const l = createLayer(base)
+  courses(l, r, { rows: [14, 18, 15, 17], minW: 14, maxW: 28, gap: 1.4, round: 4, mortar: hex('#4b5260'), mortarH: 0.1 }, (r) => vary(base, r, 0.1))
+  roughen(l, 11, 0.08)
+  return l
+}
+
+export function dirt(r: Rand): Layer {
+  const l = createLayer(hex('#6b3f2a'), 0.4)
+  const pebbles = [hex('#8a5a3c'), hex('#5a3424'), hex('#7a6250')]
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), n = tileFbm(21, x, y, 8, 3)
+    paint(l, i, scaleRgb(hex('#6b3f2a'), 0.85 + n * 0.3), 0.3 + n * 0.3)
+    const c = worley(22, x, y, 8)
+    if (c.d < 0.32 && hashId(c.id) < 0.35) paint(l, i, vary(pebbles[c.id % 3]!, r, 0.03), 0.55 + 0.4 * (1 - c.d / 0.32))
+  }
+  return l
+}
+
+export function grassTop(r: Rand): Layer {
+  const base = hex('#5fa03a')
+  const l = createLayer(base, 0.45)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const n = tileFbm(31, x, y, 8, 3)
+    paint(l, wrap(x, y), scaleRgb(base, 0.85 + n * 0.3), 0.4 + n * 0.15)
+  }
+  const greens = ['#7cc04a', '#4f8a2e', '#8fd157', '#6aae3f'].map(hex)
+  for (let s = 0; s < 260; s++) {
+    const x0 = r() * SIZE, y0 = r() * SIZE, ang = r() * Math.PI * 2, len = 4 + r() * 5, w = 1.2 + r() * 0.6
+    const col = vary(greens[Math.floor(r() * greens.length)]!, r, 0.06)
+    for (let t = 0; t <= 1; t += 0.12) {
+      disc(x0 + Math.cos(ang) * len * t, y0 + Math.sin(ang) * len * t, w * (1 - t * 0.7), (i, d) => paint(l, i, col, 0.55 + 0.35 * (1 - t) - 0.1 * d))
+    }
+  }
+  return l
+}
+
+export function grassSide(r: Rand): Layer {
+  const l = dirt(r)
+  const green = hex('#5fa03a'), dark = hex('#3f7a2a')
+  const drips = Array.from({ length: 9 }, () => ({ x: r() * SIZE, w: 2 + r() * 3, len: 4 + r() * 9 }))
+  for (let x = 0; x < SIZE; x++) {
+    const base = 9 + tileNoise(41, x, 0, 8, 1) * 6
+    let depth = base
+    for (const d of drips) {
+      const dx = Math.min(Math.abs(x + 0.5 - d.x), SIZE - Math.abs(x + 0.5 - d.x))
+      if (dx < d.w) depth = Math.max(depth, base + d.len * Math.sqrt(1 - (dx / d.w) ** 2))
+    }
+    for (let y = 0; y < depth; y++) {
+      const t = y / depth
+      paint(l, wrap(x, y), mixRgb(green, dark, t * 0.5), 0.7 - 0.2 * t)
+    }
+  }
+  return l
+}
+
+export function sand(r: Rand): Layer {
+  const base = hex('#d8b77a')
+  const l = createLayer(base)
+  courses(l, r, { rows: [11, 10, 12, 9, 12, 10], minW: 14, maxW: 24, gap: 1, round: 3.5, mortar: hex('#a8854f'), mortarH: 0.15 }, (r) => vary(base, r, 0.08))
+  roughen(l, 51, 0.06)
+  return l
+}
+
+export function logSide(_r: Rand): Layer {
+  const l = createLayer(hex('#6e4b2a'))
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const n = tileNoise(61, x, y, 16, 2), n2 = tileNoise(62, x, y, 32, 4)
+    const groove = n < 0.32
+    paint(l, wrap(x, y), groove ? hex('#4a3019') : scaleRgb(hex('#6e4b2a'), 0.85 + 0.3 * n2), groove ? 0.1 : 0.35 + 0.5 * n + 0.15 * n2)
+  }
+  return l
+}
+
+export function logTop(_r: Rand): Layer {
+  const l = createLayer(hex('#c49a63'))
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y)
+    const d = Math.hypot(x + 0.5 - 32, y + 0.5 - 32)
+    const wob = tileNoise(71, x, y, 8) * 1.5
+    if (d > 28) { paint(l, i, scaleRgb(hex('#5a3c21'), 0.9 + 0.2 * wob), 0.5 + 0.15 * wob); continue }
+    const ring = ((d + wob) / 4.5) % 1
+    paint(l, i, ring < 0.22 ? hex('#9a6f40') : scaleRgb(hex('#c49a63'), 0.95 + 0.1 * wob), ring < 0.22 ? 0.35 : 0.6)
+  }
+  return l
+}
+
+export function planks(r: Rand): Layer {
+  const base = hex('#b48a55')
+  const l = createLayer(base)
+  courses(l, r, { rows: [16, 16, 16, 16], minW: 30, maxW: 34, gap: 0.8, round: 1.5, mortar: hex('#5e4026'), mortarH: 0.05 }, (r) => vary(base, r, 0.08))
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), g = tileNoise(111, x, y, 2, 32)
+    l.height[i]! += (g - 0.5) * 0.2
+    for (let c = 0; c < 3; c++) l.color[i * 3 + c]! *= 0.9 + g * 0.2
+  }
+  return l
+}
+
+export function leaves(_r: Rand): Layer {
+  const l = createLayer(hex('#4f8f35'), 0.3)
+  const greens = ['#5fa040', '#3f7a2a', '#6bb04a', '#4f8f35'].map(hex)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), c = worley(81, x, y, 8)
+    if (c.d < 0.42) {
+      const k = 1 - c.d / 0.42
+      paint(l, i, scaleRgb(greens[c.id % greens.length]!, 0.85 + 0.25 * k), 0.4 + 0.5 * k, 1)
+    } else if (tileNoise(82, x, y, 8) < 0.5) {
+      paint(l, i, hex('#2f5a20'), 0.05, 0)
+    } else {
+      paint(l, i, hex('#2f5a20'), 0.15, 1)
+    }
+  }
+  return l
+}
+
+export function rock(_r: Rand): Layer {
+  const l = createLayer(hex('#8e939c'))
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const n = tileFbm(91, x, y, 4, 4), c = worley(92, x, y, 4)
+    const crack = c.d2 - c.d < 0.06
+    paint(l, wrap(x, y), mixRgb(hex('#7f8796'), hex('#a3a8b0'), n), 0.35 + 0.45 * n - (crack ? 0.3 : 0))
+  }
+  return l
+}
+
+export function glass(_r: Rand): Layer {
+  const l = createLayer(hex('#d7ecff'), 0.5, 0.22)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y)
+    if (x < 3 || x > 60 || y < 3 || y > 60) paint(l, i, hex('#ffffff'), 0.7, 0.85)
+    else if (Math.abs(x - y - 10) < 2) paint(l, i, hex('#ffffff'), 0.5, 0.4)
+  }
+  return l
+}
+
+export function torch(_r: Rand): Layer {
+  const l = createLayer(hex('#000000'), 0, 0)
+  for (let y = 26; y < SIZE; y++) for (let x = 29; x <= 34; x++) paint(l, wrap(x, y), hex('#6e4b2a'), 0.6, 1)
+  disc(32, 18, 7, (i, d) => paint(l, i, mixRgb(hex('#fff3a0'), hex('#ffb02e'), d), 0.8 - 0.3 * d, 1))
+  return l
+}
+
+export function water(_r: Rand): Layer {
+  const l = createLayer(hex('#3f9fd0'), 0.5, 0.8)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    if (tileNoise(101, x, y, 4, 16) > 0.62) paint(l, wrap(x, y), hex('#8fd3f0'), 0.6, 0.8)
+  }
+  return l
+}
+
+export const TILES: readonly (readonly [string, (r: Rand) => Layer, ShadeOptions])[] = [
+  ['stone', stone, {}],
+  ['dirt', dirt, {}],
+  ['grass_top', grassTop, { highlight: 0.35 }],
+  ['grass_side', grassSide, {}],
+  ['sand', sand, {}],
+  ['log_side', logSide, {}],
+  ['log_top', logTop, {}],
+  ['planks', planks, {}],
+  ['leaves', leaves, {}],
+  ['rock', rock, { highlight: 0.4 }],
+  ['glass', glass, { cavity: 0, highlight: 0, baked: 0 }],
+  ['torch', torch, { cavity: 0, baked: 0.1 }],
+  ['water', water, { cavity: 0, highlight: 0.15 }],
+]
