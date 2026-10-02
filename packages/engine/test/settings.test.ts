@@ -62,5 +62,16 @@ describe('water params', () => {
     expect(() => mergeWater(DEFAULT_WATER, { foamWidth: -1 })).toThrow(/water\.foamWidth/)
     expect(() => mergeWater(DEFAULT_WATER, { waveSpeed: Number.NaN })).toThrow(/water\.waveSpeed/)
     expect(() => mergeWater(DEFAULT_WATER, { colour: '#fff' } as never)).toThrow(/unknown water field "colour"/)
+    expect(() => mergeWater(DEFAULT_WATER, { waveScale: 0 })).toThrow(/water\.waveScale/)
+    expect(() => mergeWater(DEFAULT_WATER, { waveScale: -1 })).toThrow(/water\.waveScale/)
+  })
+  it('accepts foamWidth 0 as "foam off"', () => {
+    expect(mergeWater(DEFAULT_WATER, { foamWidth: 0 }).foamWidth).toBe(0)
+  })
+  it('leaves its cur argument unchanged', () => {
+    const cur = { ...DEFAULT_WATER } // an unfrozen copy, so a mutation would not throw
+    const before = structuredClone(cur)
+    mergeWater(cur, { shallow: '#ffffff', foamWidth: 1, waveScale: 2 })
+    expect(cur).toEqual(before)
   })
 })

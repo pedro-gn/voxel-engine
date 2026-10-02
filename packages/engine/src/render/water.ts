@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu'
 import {
   cameraFar, cameraNear, cameraPosition, dot, float, fract, max, mix, mx_noise_float, normalize, perspectiveDepthToViewZ,
-  positionView, positionWorld, select, smoothstep, time, uniform, vec2, vec3, vec4, viewportDepthTexture,
+  positionView, positionWorld, select, smoothstep, step, time, uniform, vec2, vec3, vec4, viewportDepthTexture,
 } from 'three/tsl'
 import { sunDirection, type Atmosphere } from './atmosphere.ts'
 import { chunkVertex } from './chunkVertex.ts'
@@ -54,11 +54,13 @@ export class WaterMaterial {
     const foamNoise = mx_noise_float(vec3(wp.xz.mul(1.6).add(vec2(drift, drift.mul(0.5))), time.mul(0.3)))
       .add(mx_noise_float(vec3(wp.xz.mul(3.1).sub(vec2(drift.mul(0.6), drift.mul(1.2))), time.mul(0.45))))
       .mul(0.25).add(0.5)
-    const band = float(1).sub(smoothstep(0, u.foamWidth.mul(foamNoise.mul(0.8).add(0.6)), thickness))
+    // foamWidth 0 means "foam off": the widths are floored to stay finite, and step() zeroes the result.
+    const fw = max(u.foamWidth, 1e-3)
+    const band = float(1).sub(smoothstep(0, max(u.foamWidth.mul(foamNoise.mul(0.8).add(0.6)), 1e-3), thickness))
     // Lapping lines: phase = thickness/w + t*0.35 is constant where thickness falls over time, so they travel shoreward.
-    const lap = smoothstep(0.75, 1.0, fract(thickness.div(u.foamWidth.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
-      .mul(float(1).sub(smoothstep(0, u.foamWidth.mul(3), thickness)))
-    const foam = depthEffects ? max(band, lap.mul(0.7)) : float(0)
+    const lap = smoothstep(0.75, 1.0, fract(thickness.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
+      .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
+    const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)) : float(0)
     const streak = select(isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3)), 0)).mul(0.12))
     const albedo = mix(mix(u.shallow, u.deep, depthT).add(streak), vec3(1), foam)
     m.colorNode = vec4(albedo, mix(mix(float(0.66), float(0.94), depthT), float(1), foam))
