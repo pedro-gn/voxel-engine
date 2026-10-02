@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu'
-import { TILE, packTiles } from './tiles.ts'
+import { TILE, packTiles, dilateAlpha } from './tiles.ts'
 
 export async function loadTilePixels(url: string, size = TILE): Promise<Uint8Array | null> {
   try {
@@ -18,7 +18,10 @@ export async function loadTilePixels(url: string, size = TILE): Promise<Uint8Arr
 
 export async function buildTextureArray(textures: Record<string, string>, names: string[]) {
   const loaded = new Map<string, Uint8Array | null>(
-    await Promise.all(names.map(async (n) => [n, textures[n] ? await loadTilePixels(textures[n]!) : null] as const)),
+    await Promise.all(names.map(async (n) => {
+      const px = textures[n] ? await loadTilePixels(textures[n]!) : null
+      return [n, px ? dilateAlpha(px) : null] as const
+    })),
   )
   const packed = packTiles(names, (n) => loaded.get(n) ?? null)
   for (const n of packed.missing) console.warn(`[elovox] missing texture "${n}" — using the checker layer`)

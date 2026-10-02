@@ -10,6 +10,39 @@ export function checkerTile(size = TILE): Uint8Array {
   return px
 }
 
+/**
+ * Bleeds the colour of opaque texels into neighbouring transparent ones, `passes` texels deep, so GPU-averaged
+ * mip levels of cutout tiles don't pull in the black of transparent texels (dark fringes). Alpha is untouched.
+ */
+export function dilateAlpha(px: Uint8Array, size = TILE, passes = 4): Uint8Array {
+  const out = px.slice()
+  let filled = new Uint8Array(size * size)
+  for (let i = 0; i < size * size; i++) filled[i] = out[i * 4 + 3]! >= 128 ? 1 : 0
+  for (let p = 0; p < passes; p++) {
+    const src = out.slice()
+    const next = filled.slice()
+    let changed = false
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const i = y * size + x
+      if (filled[i]) continue
+      let r = 0, g = 0, b = 0, n = 0
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue
+        const j = ((y + dy + size) % size) * size + ((x + dx + size) % size)
+        if (!filled[j]) continue
+        r += src[j * 4]!; g += src[j * 4 + 1]!; b += src[j * 4 + 2]!; n++
+      }
+      if (n === 0) continue
+      out[i * 4] = Math.round(r / n); out[i * 4 + 1] = Math.round(g / n); out[i * 4 + 2] = Math.round(b / n)
+      next[i] = 1
+      changed = true
+    }
+    filled = next
+    if (!changed) break
+  }
+  return out
+}
+
 export interface PackedTiles { data: Uint8Array; layers: number; layerOf: Map<string, number>; missing: string[] }
 
 export function packTiles(names: readonly string[], pixels: (name: string) => Uint8Array | null, size = TILE): PackedTiles {
