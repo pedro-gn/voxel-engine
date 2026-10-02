@@ -5,6 +5,7 @@ import { AtmosphereController, type Atmosphere } from './atmosphere.ts'
 import { ChunkMeshes } from './chunkMeshes.ts'
 import { SunLights } from './lighting.ts'
 import { createChunkMaterials } from './materials.ts'
+import { PostPipeline, TONE_MAPPING } from './post.ts'
 import {
   DEFAULT_EFFECTS, DEFAULT_QUALITY, SUPPORT, mergeEffects, mergeQuality, resolveEffects,
   type Backend, type Effects, type Quality,
@@ -24,7 +25,7 @@ export interface VisualsOptions {
   viewDistance: () => number
 }
 
-/** Everything about how the world looks: lights, shadows, materials, and (in later tasks) sky, post, water, decorations. */
+/** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Water and decorations come in later tasks. */
 export class Visuals {
   readonly atmosphere = new AtmosphereController()
   readonly chunks: ChunkMeshes
@@ -32,6 +33,7 @@ export class Visuals {
   private readonly lights: LightUniforms
   private readonly sun: SunLights
   private readonly sky = new Sky()
+  private readonly post: PostPipeline
   private quality: Quality = DEFAULT_QUALITY
   private requested: Effects = DEFAULT_EFFECTS
   private effects: Effects
@@ -46,6 +48,8 @@ export class Visuals {
     o.scene.add(this.chunks.group)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
+    o.renderer.toneMapping = TONE_MAPPING
+    this.post = new PostPipeline(o.renderer, o.scene, o.camera, this.quality.msaa)
     this.sky.attach(o.scene, this.effects.fog)
   }
 
@@ -53,6 +57,7 @@ export class Visuals {
   setQuality(input: Partial<Quality>): void {
     this.quality = mergeQuality(this.quality, input)
     this.sun.setMapSize(this.quality.shadowMapSize)
+    this.post.setSamples(this.quality.msaa)
   }
 
   getEffects(): Effects { return this.effects }
@@ -71,7 +76,8 @@ export class Visuals {
     const far = shadowDistance(this.o.viewDistance())
     this.lights.shadowFar.value = far
     if (this.effects.shadows) this.sun.fit(this.o.camera, far, 0, this.o.layout.size[1], this.quality.shadowMapSize)
-    this.o.renderer.render(this.o.scene, this.o.camera)
+    if (this.effects.post) this.post.render()
+    else this.o.renderer.render(this.o.scene, this.o.camera)
   }
 
   stats(): { shadowCasters: number } {
@@ -83,11 +89,13 @@ export class Visuals {
     this.chunks.dispose()
     this.sun.dispose()
     this.sky.detach(this.o.scene)
+    this.post.dispose()
   }
 
   private applyAtmosphere(a: Atmosphere): void {
     this.sun.apply(a)
     this.sky.apply(a)
+    this.post.apply(a)
     const t = a.shadow.tint, k = a.shadow.strength
     this.lights.shadowColor.value.setRGB(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k, THREE.LinearSRGBColorSpace)
   }
