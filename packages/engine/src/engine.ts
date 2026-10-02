@@ -402,9 +402,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     stats: () => {
       const vs = visuals.stats()
       return {
-      fps, frameMs, tick: lastTick, tickMs: lastTickMs,
-      meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
-      slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
+        fps, frameMs, tick: lastTick, tickMs: lastTickMs,
+        meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
+        slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
       }
     },

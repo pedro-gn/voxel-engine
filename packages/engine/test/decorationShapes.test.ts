@@ -26,7 +26,7 @@ describe('tuftArrays', () => {
 })
 
 describe('flowerArrays', () => {
-  it('builds a stem and two crossed petal quads', () => {
+  it('builds a stem and two horizontal petal quads', () => {
     const f = flowerArrays()
     expect(f.position.length).toBe(12 * 3)
     expect(f.index.length).toBe(18)

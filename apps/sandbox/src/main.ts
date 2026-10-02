@@ -28,7 +28,7 @@ const engine = await createEngine({
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
     : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   forceWebGL: params.has('webgl'),
-    gpuTiming: params.has('gpu'),
+  gpuTiming: params.has('gpu'),
 })
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
