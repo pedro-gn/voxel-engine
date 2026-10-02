@@ -22,6 +22,8 @@ export class WorldReader {
   readonly versions: Uint32Array
   private readonly views = new SlotViews()
   private readonly opaque: Uint8Array
+  /** Reader-private word; only ever touched by `fence()`. */
+  private readonly fenceWord = new Int32Array(new SharedArrayBuffer(4))
 
   constructor(buffers: WorldBuffers, opaque: Uint8Array) {
     this.layout = new Layout(buffers.size)
@@ -31,6 +33,15 @@ export class WorldReader {
   }
 
   addPage(index: number, page: SharedArrayBuffer): void { this.views.addPage(index, page) }
+
+  /**
+   * Orders every earlier load before every later one. Call it between a seqlock's plain data
+   * reads and the `Atomics.load` of the version that validates them. On ARM64 that load is
+   * acquire-only, so earlier plain loads could still complete after it and a torn read would
+   * pass validation. The JS memory model has no standalone fence; a no-op seq-cst RMW is the
+   * closest thing (acq_rel on ARM64, a locked instruction on x86, so free of semantic change there).
+   */
+  fence(): void { Atomics.add(this.fenceWord, 0, 0) }
 
   get(x: number, y: number, z: number): number {
     if (!this.layout.inBounds(x, y, z)) return AIR
@@ -66,6 +77,7 @@ export class WorldReader {
       }
       if (busy) continue
       if (!this.copy(cx, cy, cz, out)) return null
+      this.fence()
       let stable = true
       for (let i = 0; i < involved.length; i++) {
         if (Atomics.load(this.versions, involved[i]!) !== before[i]) { stable = false; break }
