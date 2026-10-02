@@ -12,6 +12,9 @@ function geometryOf(m: LayerMesh): THREE.BufferGeometry {
   const packed = new THREE.BufferAttribute(m.vertices, 2)
   packed.gpuType = THREE.IntType // integer attribute: read as uvec2 in the shader, never converted to float
   g.setAttribute('packed', packed)
+  // three 0.186.1: node materials expect a `position` attribute and warn when it is missing.
+  // Alias the same attribute object (no extra memory); the shader still reads `packed`.
+  g.setAttribute('position', packed)
   g.setIndex(new THREE.BufferAttribute(m.indices, 1))
   g.boundingSphere = SPHERE.clone()
   g.boundingBox = new THREE.Box3(new THREE.Vector3(-16, -16, -16), new THREE.Vector3(16, 16, 16))
