@@ -17,8 +17,13 @@ export function raycast(
 ): RayHit | null {
   const o = arr(origin)
   const d = arr(direction)
+
+  // Defensive checks for non-finite inputs
+  if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2])) return null
+  if (!(maxDist >= 0) || !Number.isFinite(maxDist)) return null
+
   const len = Math.hypot(d[0], d[1], d[2])
-  if (len === 0) return null
+  if (!(len > 0) || !Number.isFinite(len)) return null
   d[0] /= len; d[1] /= len; d[2] /= len
 
   // Clip to the world box [0, size).

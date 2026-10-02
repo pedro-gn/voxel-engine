@@ -48,4 +48,17 @@ describe('raycast', () => {
     const hit = raycast(world([[5, 10, 0, 1]]), solid, SIZE, { x: 0.5, y: 10.5, z: 0.5 }, { x: 2, y: 0, z: 0 }, 64)
     expect(hit?.distance).toBe(4.5)
   })
+  it('returns null for NaN direction component', () => {
+    const hit = raycast(world([[5, 10, 0, 1]]), solid, SIZE, [0.5, 10.5, 0.5], [NaN, 0, 0], 64)
+    expect(hit).toBeNull()
+  }, 1000)
+  it('returns null for NaN origin component', () => {
+    const hit = raycast(world([[5, 10, 0, 1]]), solid, SIZE, [NaN, 10.5, 0.5], [1, 0, 0], 64)
+    expect(hit).toBeNull()
+  })
+  it('returns null for NaN or negative maxDist', () => {
+    const w = world([[5, 10, 0, 1]])
+    expect(raycast(w, solid, SIZE, [0.5, 10.5, 0.5], [1, 0, 0], NaN)).toBeNull()
+    expect(raycast(w, solid, SIZE, [0.5, 10.5, 0.5], [1, 0, 0], -10)).toBeNull()
+  })
 })
