@@ -12,6 +12,7 @@ let runner: MeshJobRunner | null = null
 function transferables(d: ChunkMeshData): Transferable[] {
   const out: Transferable[] = []
   for (const m of [d.opaque, d.cutout, d.translucent, d.liquid]) if (m) out.push(m.vertices.buffer, m.indices.buffer)
+  for (const a of [d.grass, d.flowers]) if (a) out.push(a.buffer)
   return out
 }
 

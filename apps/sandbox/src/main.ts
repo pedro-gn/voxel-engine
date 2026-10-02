@@ -1,5 +1,5 @@
 import { AIR, createEngine } from '@elovox/engine'
-import { BLOCKS } from './blocks.ts'
+import { BLOCKS, DECORATIONS } from './blocks.ts'
 import { createControls } from './controls.ts'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
@@ -22,6 +22,7 @@ const engine = await createEngine({
   size: sceneName === 'diorama' ? [...DIORAMA_SIZE] : [n, 128, n],
   seed: Number(params.get('seed') ?? 1234),
   blocks: BLOCKS,
+  decorations: DECORATIONS,
   textures: paintTextures(),
   simWorker: sceneName === 'diorama'
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })

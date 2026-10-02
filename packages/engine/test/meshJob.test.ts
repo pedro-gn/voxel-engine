@@ -18,7 +18,7 @@ describe('MeshJobRunner', () => {
   it('returns an empty result for trivial chunks without snapshotting', () => {
     const { runner } = setup()
     const r = runner.run({ id: 1, chunk: 0 })
-    expect(r).toEqual({ type: 'result', id: 1, chunk: 0, version: 0, data: { opaque: null, cutout: null, translucent: null, liquid: null } })
+    expect(r).toEqual({ type: 'result', id: 1, chunk: 0, version: 0, data: { opaque: null, cutout: null, translucent: null, liquid: null, grass: null, flowers: null } })
   })
   it('meshes a chunk and reports its version', () => {
     const { store, runner } = setup()

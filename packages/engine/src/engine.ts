@@ -5,6 +5,7 @@ import { EngineError, showErrorScreen } from './errors.ts'
 import { GhostEdits } from './interact/ghostEdits.ts'
 import { OrbitCamera } from './interact/orbitCamera.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
+import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, SimInitOptions, ToMesh, ToSim } from './protocol.ts'
 import type { AtmosphereController } from './render/atmosphere.ts'
@@ -24,6 +25,7 @@ export interface EngineOptions {
   size?: WorldSize
   seed: number
   blocks: BlockDef[]
+  decorations?: DecorationDef[]
   textures: Record<string, string>
   simWorker: () => Worker
   sim?: SimInitOptions
@@ -112,6 +114,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const size: WorldSize = o.size ?? [1024, 128, 1024]
   const layout = new Layout(size)
   const registry = new BlockRegistry(o.blocks)
+const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const buffers = createWorldBuffers(size)
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
@@ -142,7 +145,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   const tex = await buildTextureArray(o.textures, registry.textureNames())
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
-  const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf))
+  const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf), decorations.tables)
   const highlight = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
     new THREE.LineBasicNodeMaterial({ color: 0x1b1f24 }),

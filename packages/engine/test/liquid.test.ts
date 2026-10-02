@@ -100,7 +100,7 @@ describe('Mesher', () => {
     expect(a.translucent).not.toBeNull()
     expect(a.liquid).not.toBeNull()
     const b = mesher.mesh(emptySnap(), tables)
-    expect(b).toEqual({ opaque: null, cutout: null, translucent: null, liquid: null })
+    expect(b).toEqual({ opaque: null, cutout: null, translucent: null, liquid: null, grass: null, flowers: null })
   })
   it('meshChunk matches Mesher output', () => {
     const s = emptySnap()

@@ -5,7 +5,7 @@ import { voxelId } from '../world/voxel.ts'
 import { Mesher, type ChunkMeshData } from './mesher.ts'
 import type { MeshTables } from './tables.ts'
 
-const EMPTY: ChunkMeshData = { opaque: null, cutout: null, translucent: null, liquid: null }
+const EMPTY: ChunkMeshData = { opaque: null, cutout: null, translucent: null, liquid: null, grass: null, flowers: null }
 const OFFS = [1, -1, PAD * PAD, -PAD * PAD, PAD, -PAD] // +x -x +y -y +z -z in padded index space
 const UP = 2
 
@@ -41,7 +41,8 @@ export class MeshJobRunner {
     const version = this.reader.snapshot(chunk, this.snap)
     if (version === null) return { type: 'retry', id, chunk }
     if (hasOverrides) this.applyOverrides(chunk, job.overrides!)
-    return { type: 'result', id, chunk, version, data: this.mesher.mesh(this.snap, this.tables) }
+    const [cx, cy, cz] = this.reader.layout.chunkCoords(chunk)
+    return { type: 'result', id, chunk, version, data: this.mesher.mesh(this.snap, this.tables, cx * 32, cy * 32, cz * 32) }
   }
 
   private applyOverrides(chunk: number, overrides: readonly Override[]): void {

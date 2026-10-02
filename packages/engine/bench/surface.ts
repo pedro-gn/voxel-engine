@@ -5,7 +5,7 @@ import { packLight } from '../src/world/voxel.ts'
 import { emptySnap } from '../test/meshFixtures.ts'
 import { ID } from '../test/helpers.ts'
 
-export { meshTables } from '../test/meshFixtures.ts'
+export { decoratedMeshTables as meshTables } from '../test/meshFixtures.ts'
 
 /** A rolling grass surface crossing the chunk, typical of the diorama terrain. */
 export function surfaceSnap(): ChunkSnapshot {

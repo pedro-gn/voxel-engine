@@ -1,3 +1,4 @@
+import { InstanceBuilder, extractDecorations } from '../render/decorations/extract.ts'
 import type { ChunkSnapshot } from '../world/reader.ts'
 import { meshOpaqueAndCutout } from './greedy.ts'
 import { meshTranslucent } from './liquid.ts'
@@ -9,6 +10,8 @@ export interface ChunkMeshData {
   cutout: LayerMesh | null
   translucent: LayerMesh | null
   liquid: LayerMesh | null
+  grass: Uint32Array | null
+  flowers: Uint32Array | null
 }
 
 export class Mesher {
@@ -16,22 +19,30 @@ export class Mesher {
   private readonly cutout = new QuadBuilder(256)
   private readonly translucent = new QuadBuilder(512)
   private readonly liquid = new QuadBuilder(512)
+  private readonly grass = new InstanceBuilder(1024)
+  private readonly flowers = new InstanceBuilder(64)
   private readonly mask = new Int32Array(1024)
 
-  mesh(snap: ChunkSnapshot, tables: MeshTables): ChunkMeshData {
+  mesh(snap: ChunkSnapshot, tables: MeshTables, ox = 0, oy = 0, oz = 0): ChunkMeshData {
     this.opaque.reset()
     this.cutout.reset()
     this.translucent.reset()
     this.liquid.reset()
+    this.grass.reset()
+    this.flowers.reset()
     meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
-    return { opaque: this.opaque.build(), cutout: this.cutout.build(), translucent: this.translucent.build(), liquid: this.liquid.build() }
+    extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers)
+    return {
+      opaque: this.opaque.build(), cutout: this.cutout.build(), translucent: this.translucent.build(), liquid: this.liquid.build(),
+      grass: this.grass.build(), flowers: this.flowers.build(),
+    }
   }
 }
 
 const shared = new Mesher()
 
 /** Meshes all four layers of a snapshot using a shared, buffer-reusing Mesher. */
-export function meshChunk(snap: ChunkSnapshot, tables: MeshTables): ChunkMeshData {
-  return shared.mesh(snap, tables)
+export function meshChunk(snap: ChunkSnapshot, tables: MeshTables, ox = 0, oy = 0, oz = 0): ChunkMeshData {
+  return shared.mesh(snap, tables, ox, oy, oz)
 }
