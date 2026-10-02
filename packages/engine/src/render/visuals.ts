@@ -2,6 +2,9 @@ import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { Layout } from '../world/layout.ts'
 import { AtmosphereController, type Atmosphere } from './atmosphere.ts'
+import { DecorationMeshes } from './decorations/decorationMeshes.ts'
+import type { DecorationRegistry } from './decorations/defs.ts'
+import { createDecorationMaterials } from './decorations/material.ts'
 import { ChunkMeshes } from './chunkMeshes.ts'
 import { SunLights } from './lighting.ts'
 import { createChunkMaterials } from './materials.ts'
@@ -24,6 +27,7 @@ export interface VisualsOptions {
   layout: Layout
   /** The orbit camera's distance to its target; sets how far shadows reach. */
   viewDistance: () => number
+  decorations: DecorationRegistry
 }
 
 /** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Water and decorations come in later tasks. */
@@ -40,6 +44,9 @@ export class Visuals {
   private effects: Effects
   private readonly water: WaterMaterial
   private waterParams: WaterParams = DEFAULT_WATER
+  private readonly deco: DecorationMeshes
+  private readonly decoRadius: { value: number }
+  private decoStats = { instances: 0, draws: 0 }
   private readonly warned = new Set<string>()
 
   constructor(o: VisualsOptions) {
@@ -49,6 +56,10 @@ export class Visuals {
     this.lights = createLightUniforms()
     this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights))
     o.scene.add(this.chunks.group)
+    const dm = createDecorationMaterials(o.decorations, this.lights)
+    this.decoRadius = dm.radius
+    this.deco = new DecorationMeshes(o.layout, dm)
+    o.scene.add(this.deco.group)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
     this.water = new WaterMaterial(this.lights, resolveEffects(this.requested, SUPPORT[o.backend]).waterDepth)
@@ -82,6 +93,7 @@ export class Visuals {
 
   applyMesh(ci: number, data: ChunkMeshData): void {
     this.chunks.apply(ci, data)
+    this.deco.apply(ci, data.grass, data.flowers)
   }
 
   frame(dt: number): void {
@@ -89,17 +101,28 @@ export class Visuals {
     const far = shadowDistance(this.o.viewDistance())
     this.lights.shadowFar.value = far
     if (this.effects.shadows) this.sun.fit(this.o.camera, far, 0, this.o.layout.size[1], this.quality.shadowMapSize)
+    this.deco.group.visible = this.effects.decorations
+    this.decoRadius.value = this.quality.decorationRadius
+    this.decoStats = this.effects.decorations
+      ? this.deco.cull(this.o.camera.position, this.quality.decorationRadius, this.quality.decorationMaxInstances)
+      : { instances: 0, draws: 0 }
     if (this.effects.post) this.post.render()
     else this.o.renderer.render(this.o.scene, this.o.camera)
   }
 
-  stats(): { shadowCasters: number } {
-    return { shadowCasters: this.effects.shadows ? this.chunks.shadowCasterCount : 0 }
+  stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number } {
+    return {
+      shadowCasters: this.effects.shadows ? this.chunks.shadowCasterCount : 0,
+      decorationInstances: this.decoStats.instances,
+      decorationDraws: this.decoStats.draws,
+    }
   }
 
   dispose(): void {
     this.o.scene.remove(this.chunks.group)
     this.chunks.dispose()
+    this.o.scene.remove(this.deco.group)
+    this.deco.dispose()
     this.water.dispose()
     this.sun.dispose()
     this.sky.detach(this.o.scene)

@@ -48,6 +48,7 @@ export interface EngineStats {
   meshQueue: number; meshInFlight: number; failedChunks: number
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
   shadowCasters: number
+  decorationInstances: number; decorationDraws: number
 }
 
 export interface Engine {
@@ -114,7 +115,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const size: WorldSize = o.size ?? [1024, 128, 1024]
   const layout = new Layout(size)
   const registry = new BlockRegistry(o.blocks)
-const decorations = new DecorationRegistry(o.decorations ?? [], registry)
+  const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const buffers = createWorldBuffers(size)
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
@@ -162,6 +163,7 @@ const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const visuals = new Visuals({
     renderer, scene, camera, backend, texture: tex.texture, layout,
     viewDistance: () => controls.current.distance,
+    decorations,
   })
 
   // ---- lifecycle ----
@@ -393,7 +395,7 @@ const decorations = new DecorationRegistry(o.decorations ?? [], registry)
       fps, frameMs, tick: lastTick, tickMs: lastTickMs,
       meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
       slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
-      shadowCasters: visuals.stats().shadowCasters,
+      ...(({ shadowCasters, decorationInstances, decorationDraws }) => ({ shadowCasters, decorationInstances, decorationDraws }))(visuals.stats()),
     }),
     dispose,
   }

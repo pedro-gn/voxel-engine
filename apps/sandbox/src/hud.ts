@@ -16,6 +16,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
       `tick ${s.tick}   ${s.tickMs.toFixed(2)} ms`,
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
+      `decorations ${s.decorationInstances} instances   ${s.decorationDraws} draws   shadow casters ${s.shadowCasters}`,
       `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom`,
     ].join('\n')
   }
