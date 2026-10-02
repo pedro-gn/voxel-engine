@@ -72,7 +72,7 @@ export interface WaterParams { shallow: Rgb; deep: Rgb; depthScale: number; foam
 export interface WaterInput { shallow?: string; deep?: string; depthScale?: number; foamWidth?: number; waveScale?: number; waveSpeed?: number }
 
 export const DEFAULT_WATER: WaterParams = Object.freeze({
-  shallow: hexToLinear('#5fd0d6'), deep: hexToLinear('#1f6fae'), depthScale: 3, foamWidth: 0.35, waveScale: 0.35, waveSpeed: 0.6,
+  shallow: hexToLinear('#5fd0d6'), deep: hexToLinear('#1f6fae'), depthScale: 3, foamWidth: 0.5, waveScale: 0.35, waveSpeed: 0.6,
 })
 
 export function mergeWater(cur: WaterParams, input: WaterInput): WaterParams {

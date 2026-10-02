@@ -51,7 +51,10 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const rx: N = select(mirX, float(1).sub(sx), sx), rz: N = select(mirZ, float(1).sub(sz), sz)
   const t: N = pos.y
   const fade = fadeAt(gi.world)
-  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85))
+  // Per-tile density: a low-frequency patch value (vertex stage, from the instance's world cell) blended with a per-instance random.
+  const clump = smoothstep(0.25, 0.75, mx_noise_float(vec3(gi.world.xz.mul(0.09), 0)).mul(0.5).add(0.5))
+  const density = clump.mul(0.65).add(gi.rnd.mul(0.35))
+  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85)).mul(mix(float(0.75), float(1.1), density))
   const bit = (m: number) => select(gi.edge.bitAnd(uint(m)).notEqual(uint(0)), float(1), float(0))
   const leanX = bit(1).mul(smoothstep(0.55, 1, rx)).sub(bit(2).mul(smoothstep(0.55, 1, float(1).sub(rx))))
   const leanZ = bit(4).mul(smoothstep(0.55, 1, rz)).sub(bit(8).mul(smoothstep(0.55, 1, float(1).sub(rz))))
@@ -64,7 +67,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
     rz.add(pos.z.sub(info.w)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
   )
   const grass = new VoxelNodeMaterial(gi.sky)
-  grass.positionNode = select(info.x.lessThan(P.x), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
+  grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(0.3), float(1), density))), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
   const vt: N = varying(t), vr: N = varying(gi.rnd)
   const gAlbedo: N = mix(vBase, vTip, vt.pow(1.2)).mul(vr.mul(0.3).add(0.85))
   grass.colorNode = vec4(gAlbedo, 1)
