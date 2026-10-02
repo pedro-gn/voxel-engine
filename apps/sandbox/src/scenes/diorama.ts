@@ -14,7 +14,8 @@ const MOUNDS = [{ x: 100, z: 16, r: 9, h: 6 }, { x: 98, z: 46, r: 7, h: 8 }]
 
 /** < 1 inside a noisy-edged ellipse. */
 function ellipse(x: number, z: number, cx: number, cz: number, rx: number, rz: number, noise: Noise): number {
-  return Math.hypot((x - cx) / rx, (z - cz) / rz) * (0.92 + noise(x / 8 + 11, z / 8) * 0.16)
+  const ex = (x - cx) / rx, ez = (z - cz) / rz
+  return Math.sqrt(ex * ex + ez * ez) * (0.92 + noise(x / 8 + 11, z / 8) * 0.16)
 }
 
 /** The diorama's blocks for one column, bottom to top (index = y). Pure: the same (x, z, noise) gives the same column. */
@@ -32,7 +33,7 @@ export function dioramaColumn(x: number, z: number, noise: Noise): (DioramaBlock
   if (upper) {
     const lake = ellipse(x, z, 64, 92, 38, 21, noise)
     if (lake < 1) { water = 5; top = HIGH - 6; surface = 'sand' } else if (lake < 1.15) { top = HIGH - 1; surface = 'sand' }
-    if (Math.hypot(x - 90, z - 98) < 4.5) { water = 0; top = HIGH - 1; surface = 'grass' }
+    if ((x - 90) * (x - 90) + (z - 98) * (z - 98) < 4.5 * 4.5) { water = 0; top = HIGH - 1; surface = 'grass' }
   } else {
     const pond = ellipse(x, z, 70, 28, 15, 9, noise)
     if (pond < 1) { water = 3; top = LOW - 4; surface = 'sand' } else if (pond < 1.18 && surface === 'grass') surface = 'sand'
@@ -56,7 +57,8 @@ export function dioramaColumn(x: number, z: number, noise: Noise): (DioramaBlock
   }
   if (!upper) {
     for (const m of MOUNDS) {
-      const d = Math.hypot(x - m.x, z - m.z) / m.r
+      const dx = x - m.x, dz = z - m.z
+      const d = Math.sqrt(dx * dx + dz * dz) / m.r
       if (d >= 1) continue
       const h = Math.floor(m.h * (1 - d * d))
       for (let y = top + 1; y <= top + h; y++) col[y] = 'sand'
@@ -64,14 +66,16 @@ export function dioramaColumn(x: number, z: number, noise: Noise): (DioramaBlock
   }
   for (const r of ROCKS) {
     for (let y = 0; y < col.length; y++) {
-      if ((x - r.x) ** 2 + ((y - r.y) * 1.3) ** 2 + (z - r.z) ** 2 < r.r * r.r) col[y] = 'rock'
+      const dx = x - r.x, dy = (y - r.y) * 1.3, dz = z - r.z
+      if (dx * dx + dy * dy + dz * dz < r.r * r.r) col[y] = 'rock'
     }
   }
   for (const t of TREES) {
     if (x === t.x && z === t.z) for (let y = top + 1; y <= t.base + 4; y++) col[y] = 'log'
     const cy = t.base + 5
     for (let y = cy - 3; y <= cy + 3; y++) {
-      if (col[y] === null && Math.hypot(x - t.x, (y - cy) * 1.2, z - t.z) < 3.2) col[y] = 'leaves'
+      const dx = x - t.x, dy = (y - cy) * 1.2, dz = z - t.z
+      if (col[y] === null && dx * dx + dy * dy + dz * dz < 3.2 * 3.2) col[y] = 'leaves'
     }
   }
   return col
