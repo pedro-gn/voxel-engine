@@ -1,0 +1,13 @@
+{
+  "name": "elovox",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "test": "npm run test -w @elovox/engine",
+    "bench": "npm run bench -w @elovox/engine",
+    "dev": "npm run dev -w @elovox/sandbox",
+    "e2e": "npm run e2e -w @elovox/sandbox",
+    "typecheck": "npm run typecheck --workspaces"
+  }
+}

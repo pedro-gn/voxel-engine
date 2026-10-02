@@ -1,0 +1,27 @@
+{
+  "name": "@elovox/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sim-worker": "./src/sim/runSimWorker.ts",
+    "./src/*": "./src/*"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "bench": "vitest bench --run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vitest": "4.1.11"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  }
+}
