@@ -16,24 +16,18 @@ export const REVERSE: readonly boolean[] = [true, false, true, false, false, tru
 const SU = [-1, 1, 1, -1]
 const SV = [-1, -1, 1, 1]
 
-const PADDED_VOLUME = 34 * 34 * 34
-
-/** Per-snapshot opacity (1 = opaque), indexed like the padded voxels; filled once per mesh call. */
-export function fillOpacity(s: ChunkSnapshot, t: MeshTables, cache: Uint8Array): void {
-  const { voxels } = s
-  const opaque = t.opaque
-  for (let i = 0; i < PADDED_VOLUME; i++) cache[i] = opaque[voxelId(voxels[i]!)]!
+function isOpaque(s: ChunkSnapshot, t: MeshTables, pi: number): boolean {
+  return t.opaque[voxelId(s.voxels[pi]!)] === 1
 }
-const scratchOpacity = new Uint8Array(PADDED_VOLUME)
 
 /** AO of the 4 corners of face f, for the face whose front cell is at padded index nIndex. */
-export function faceAO(opacity: Uint8Array, nIndex: number, f: number): number {
+export function faceAO(s: ChunkSnapshot, t: MeshTables, nIndex: number, f: number): number {
   const [, u, v] = AXES[f]!
   const su = STRIDE[u as 0 | 1 | 2], sv = STRIDE[v as 0 | 1 | 2]
   let packed = 0
   for (let c = 0; c < 4; c++) {
     const du = SU[c]! * su, dv = SV[c]! * sv
-    const o = vertexAO(opacity[nIndex + du] === 1, opacity[nIndex + dv] === 1, opacity[nIndex + du + dv] === 1)
+    const o = vertexAO(isOpaque(s, t, nIndex + du), isOpaque(s, t, nIndex + dv), isOpaque(s, t, nIndex + du + dv))
     packed |= o << (c * 2)
   }
   return packed
@@ -61,8 +55,7 @@ function emitQuad(
   out.push(qa, qb, flip, REVERSE[f]!)
 }
 
-export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: QuadBuilder, cutout: QuadBuilder, mask: Int32Array, opacity?: Uint8Array): void {
-  if (!opacity) { opacity = scratchOpacity; fillOpacity(s, t, opacity) }
+export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: QuadBuilder, cutout: QuadBuilder, mask: Int32Array): void {
   const q = [0, 0, 0]
   for (let f = 0; f < 6; f++) {
     const [d, u, v] = AXES[f]!
@@ -78,10 +71,10 @@ export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: Qua
         if (layer !== LAYER.OPAQUE && layer !== LAYER.CUTOUT) continue
         const ni = pi + nOff
         const nid = voxelId(s.voxels[ni]!)
-        if (opacity[ni]) continue
+        if (t.opaque[nid]) continue
         if (layer === LAYER.CUTOUT && nid === id) continue
         const l = s.light[ni]!
-        const ao4 = faceAO(opacity, ni, f)
+        const ao4 = faceAO(s, t, ni, f)
         const tex = t.faceLayers[id * 6 + f]!
         if (layer === LAYER.CUTOUT) {
           emitQuad(cutout, f, sl, uu, vv, 1, 1, tex, ao4, l & 15, l >> 4)
