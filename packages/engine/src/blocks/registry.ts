@@ -57,7 +57,7 @@ export class BlockRegistry {
       const layer: RenderLayer = d.layer ?? (liquid ? 'translucent' : 'opaque')
       this.layer[id] = LAYER_CODE[layer]
       this.opaque[id] = (d.opaque ?? layer === 'opaque') ? 1 : 0
-      this.solid[id] = (d.solid ?? true) ? 1 : 0
+      this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid
       this.liquid[id] = liquid ? 1 : 0
       this.emits[id] = emits
       const t = d.textures ?? d.name

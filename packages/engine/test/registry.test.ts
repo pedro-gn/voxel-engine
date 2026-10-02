@@ -26,6 +26,11 @@ describe('BlockRegistry', () => {
     expect(r.liquid[ID.water]).toBe(1)
     expect(r.emits[ID.torch]).toBe(14)
   })
+  it('defaults liquids to non-solid unless solid is given', () => {
+    const lr = new BlockRegistry([defineBlock({ name: 'lava', liquid: true }), defineBlock({ name: 'slime', liquid: true, solid: true })])
+    expect(lr.solid[lr.id('lava')]).toBe(0)
+    expect(lr.solid[lr.id('slime')]).toBe(1)
+  })
   it('lists unique texture names in first-appearance order', () => {
     // faces are visited side, side, top, bottom, side, side → grass_side comes before grass_top
     expect(r.textureNames()).toEqual(['stone', 'dirt', 'grass_side', 'grass_top', 'glass', 'water', 'torch', 'leaves'])
