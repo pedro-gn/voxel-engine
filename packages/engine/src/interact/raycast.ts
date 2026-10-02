@@ -20,7 +20,8 @@ export function raycast(
 
   // Defensive checks for non-finite inputs
   if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2])) return null
-  if (!(maxDist >= 0) || !Number.isFinite(maxDist)) return null
+  // Rejects NaN and negatives. Infinity is fine: the walk always stops at the world box.
+  if (!(maxDist >= 0)) return null
 
   const len = Math.hypot(d[0], d[1], d[2])
   if (!(len > 0) || !Number.isFinite(len)) return null

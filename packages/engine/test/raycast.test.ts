@@ -61,4 +61,9 @@ describe('raycast', () => {
     expect(raycast(w, solid, SIZE, [0.5, 10.5, 0.5], [1, 0, 0], NaN)).toBeNull()
     expect(raycast(w, solid, SIZE, [0.5, 10.5, 0.5], [1, 0, 0], -10)).toBeNull()
   })
+  it('accepts an infinite maxDist: hits a block and still stops at the world edge on a miss', () => {
+    const w = world([[40, 10, 0, 1]])
+    expect(raycast(w, solid, SIZE, [0.5, 10.5, 0.5], [1, 0, 0], Infinity)?.pos).toEqual([40, 10, 0])
+    expect(raycast(w, solid, SIZE, [0.5, 20.5, 0.5], [1, 0, 0], Infinity)).toBeNull()
+  })
 })
