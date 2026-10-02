@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@elovox/engine": "0.1.0"
+    "@elovox/engine": "0.1.0",
+    "three": "0.186.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
