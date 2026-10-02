@@ -7,9 +7,9 @@ import { OrbitCamera } from './interact/orbitCamera.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, SimInitOptions, ToMesh, ToSim } from './protocol.ts'
-import { ChunkMeshes } from './render/chunkMeshes.ts'
-import { createChunkMaterials } from './render/materials.ts'
-import { createLightUniforms } from './render/voxelLighting.ts'
+import type { AtmosphereController } from './render/atmosphere.ts'
+import type { Effects, Quality } from './render/settings.ts'
+import { Visuals } from './render/visuals.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { validateCommand, type Ack, type Command, type SetBlockCommand } from './sim/commands.ts'
@@ -45,6 +45,7 @@ export interface EngineStats {
   fps: number; frameMs: number; tick: number; tickMs: number
   meshQueue: number; meshInFlight: number; failedChunks: number
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
+  shadowCasters: number
 }
 
 export interface Engine {
@@ -54,6 +55,11 @@ export interface Engine {
   readonly blocks: BlockRegistry
   readonly layout: Layout
   readonly controls: OrbitCamera
+  readonly atmosphere: AtmosphereController
+  get quality(): Quality
+  set quality(value: Partial<Quality>)
+  get effects(): Effects
+  set effects(value: Partial<Effects>)
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
   submit(cmd: Command): number
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
@@ -136,13 +142,6 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const tex = await buildTextureArray(o.textures, registry.textureNames())
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
   const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf))
-  const lightUniforms = createLightUniforms()
-  const chunkMeshes = new ChunkMeshes(layout, createChunkMaterials(tex.texture, lightUniforms))
-  scene.add(chunkMeshes.group)
-  // Temporary until Task 5's Visuals: plain lights so the lit chunk materials aren't black.
-  const tmpSun = new THREE.DirectionalLight(0xfff1d6, Math.PI * 1.6)
-  tmpSun.position.set(0.45, 0.8, 0.35)
-  scene.add(tmpSun, new THREE.HemisphereLight(0xa8c8ff, 0x6b5a45, Math.PI * 0.7))
   const highlight = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
     new THREE.LineBasicNodeMaterial({ color: 0x1b1f24 }),
@@ -156,6 +155,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   }
   const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(world.get, registry.solid, size, x, z) })
   const detachControls = controls.attach(canvas)
+  const visuals = new Visuals({
+    renderer, scene, camera, backend, texture: tex.texture, layout,
+    viewDistance: () => controls.current.distance,
+  })
 
   // ---- lifecycle ----
   // No await between here and `await ready`, so an early rejection always has a handler.
@@ -299,11 +302,11 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     }
   }
   const upload = () => {
-    // The budget measures chunkMeshes.apply CPU time only; the GPU upload happens later, inside renderer.render.
+    // The budget measures Visuals.applyMesh CPU time only; the GPU upload happens later, inside renderer.render.
     const start = performance.now()
     while (results.length > 0 && performance.now() - start < UPLOAD_BUDGET_MS) {
       const r = results.shift()!
-      if (queue.accept(r.chunk, r.version)) chunkMeshes.apply(r.chunk, r.data)
+      if (queue.accept(r.chunk, r.version)) visuals.applyMesh(r.chunk, r.data)
     }
   }
   let last = performance.now(), fpsT = last, frames = 0, fps = 0, frameMs = 0
@@ -315,7 +318,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     controls.apply(camera)
     dispatch()
     upload()
-    renderer.render(scene, camera)
+    visuals.frame(dt)
     frameMs = performance.now() - now
     frames++
     if (now - fpsT >= 500) { fps = (frames * 1000) / (now - fpsT); frames = 0; fpsT = now }
@@ -328,8 +331,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     halt()
     detachControls()
     ro.disconnect()
-    scene.remove(chunkMeshes.group, highlight)
-    chunkMeshes.dispose()
+    scene.remove(highlight)
+    visuals.dispose()
     highlight.geometry.dispose()
     highlight.material.dispose()
     tex.texture.dispose()
@@ -352,6 +355,11 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   return {
     scene, camera, renderer, blocks: registry, layout, controls, world,
+    atmosphere: visuals.atmosphere,
+    get quality(): Quality { return visuals.getQuality() },
+    set quality(value: Partial<Quality>) { visuals.setQuality(value) },
+    get effects(): Effects { return visuals.getEffects() },
+    set effects(value: Partial<Effects>) { visuals.setEffects(value) },
     submit(cmd) {
       const s = ++seq
       if (halted) return s // stopped: there is no sim to ack it
@@ -378,7 +386,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     stats: () => ({
       fps, frameMs, tick: lastTick, tickMs: lastTickMs,
       meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
-      slotsUsed, meshes: chunkMeshes.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
+      slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
+      shadowCasters: visuals.stats().shadowCasters,
     }),
     dispose,
   }

@@ -35,6 +35,13 @@ export class ChunkMeshes {
 
   get meshCount(): number { return this.group.children.length }
 
+  /** Chunk meshes that render into the sun's shadow map. */
+  get shadowCasterCount(): number {
+    let n = 0
+    for (const m of this.group.children) if ((m as THREE.Mesh).castShadow) n++
+    return n
+  }
+
   apply(ci: number, data: ChunkMeshData): void {
     let slots = this.meshes.get(ci)
     if (!slots) { slots = [null, null, null]; this.meshes.set(ci, slots) }
@@ -56,6 +63,8 @@ export class ChunkMeshes {
       // `position` aliases the packed uint attribute, so three's Raycaster would decode garbage triangles.
       // Voxel picking goes through engine.raycast instead; keep chunk meshes out of scene raycasts.
       mesh.raycast = () => {}
+      mesh.castShadow = name === 'opaque' || name === 'cutout'
+      mesh.receiveShadow = true
       mesh.position.set(cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()
