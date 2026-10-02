@@ -127,7 +127,6 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const backend: 'webgpu' | 'webgl' = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend ? 'webgpu' : 'webgl'
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
   const scene = new THREE.Scene()
-  scene.background = new THREE.Color(0xdfe3e6)
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 3000)
   const resize = () => {
     const w = canvas.clientWidth || innerWidth, h = canvas.clientHeight || innerHeight

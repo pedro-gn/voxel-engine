@@ -10,6 +10,7 @@ import {
   type Backend, type Effects, type Quality,
 } from './settings.ts'
 import { shadowDistance } from './shadowFit.ts'
+import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 
 export interface VisualsOptions {
@@ -30,6 +31,7 @@ export class Visuals {
   private readonly o: VisualsOptions
   private readonly lights: LightUniforms
   private readonly sun: SunLights
+  private readonly sky = new Sky()
   private quality: Quality = DEFAULT_QUALITY
   private requested: Effects = DEFAULT_EFFECTS
   private effects: Effects
@@ -44,6 +46,7 @@ export class Visuals {
     o.scene.add(this.chunks.group)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
+    this.sky.attach(o.scene, this.effects.fog)
   }
 
   getQuality(): Quality { return this.quality }
@@ -56,6 +59,7 @@ export class Visuals {
   setEffects(input: Partial<Effects>): void {
     this.requested = mergeEffects(this.requested, input)
     this.effects = this.resolve(this.requested)
+    this.sky.attach(this.o.scene, this.effects.fog)
   }
 
   applyMesh(ci: number, data: ChunkMeshData): void {
@@ -78,10 +82,12 @@ export class Visuals {
     this.o.scene.remove(this.chunks.group)
     this.chunks.dispose()
     this.sun.dispose()
+    this.sky.detach(this.o.scene)
   }
 
   private applyAtmosphere(a: Atmosphere): void {
     this.sun.apply(a)
+    this.sky.apply(a)
     const t = a.shadow.tint, k = a.shadow.strength
     this.lights.shadowColor.value.setRGB(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k, THREE.LinearSRGBColorSpace)
   }
