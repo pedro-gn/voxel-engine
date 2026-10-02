@@ -219,6 +219,16 @@ describe('Simulation', () => {
     expect(sim.pendingWork).toBe(0) // all shell notifications fit in the default cap
   })
 
+  it('queues exactly the shell notifications of a fillRegion', () => {
+    const sim = makeSim({ workCap: 1 })
+    sim.submit(1, 0, { type: 'fillRegion', min: [0, 0, 0], max: [9, 9, 9], voxel: ID.stone })
+    sim.step()
+    // Shell = 10³ − 8³ = 488 voxels, 7 notifications each (self + 6 neighbours) = 3416.
+    // The 100 shell voxels on each of the x = 0, y = 0 and z = 0 faces lose one out-of-bounds
+    // neighbour: −300 → 3116 queued. The cap of 1 consumes one. (Notifying all 1000 voxels: 6699.)
+    expect(sim.pendingWork).toBe(3116 - 1)
+  })
+
   it('rejects rules for unknown blocks at construction', () => {
     expect(() => new Simulation({
       buffers: createWorldBuffers([32, 32, 32]), blocks: BLOCKS, seed: 1,
