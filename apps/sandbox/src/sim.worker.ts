@@ -1,3 +1,4 @@
 import { runSimWorker, testGenerator } from '@elovox/engine/sim-worker'
+import rules from './rules.ts'
 
-runSimWorker({ generator: testGenerator })
+runSimWorker({ rules, generator: testGenerator })
