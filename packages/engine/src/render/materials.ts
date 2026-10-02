@@ -7,6 +7,7 @@ export interface ChunkMaterials {
   opaque: VoxelNodeMaterial
   cutout: VoxelNodeMaterial
   translucent: VoxelNodeMaterial
+  liquid: VoxelNodeMaterial
 }
 
 export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightUniforms): ChunkMaterials {
@@ -29,5 +30,5 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     }
     return m
   }
-  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent') }
+  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent'), liquid: build('translucent') }
 }

@@ -1,7 +1,7 @@
 import { MAX_BLOCK_ID } from '../world/voxel.ts'
 
-export type RenderLayer = 'opaque' | 'cutout' | 'translucent'
-export const LAYER = { NONE: 0, OPAQUE: 1, CUTOUT: 2, TRANSLUCENT: 3 } as const
+export type RenderLayer = 'opaque' | 'cutout' | 'translucent' | 'liquid'
+export const LAYER = { NONE: 0, OPAQUE: 1, CUTOUT: 2, TRANSLUCENT: 3, LIQUID: 4 } as const
 export const FACE_COUNT = 6 // +X, -X, +Y, -Y, +Z, -Z
 
 export interface BlockDef {
@@ -19,7 +19,7 @@ export function defineBlock(def: BlockDef): BlockDef {
   return def
 }
 
-const LAYER_CODE: Record<RenderLayer, number> = { opaque: LAYER.OPAQUE, cutout: LAYER.CUTOUT, translucent: LAYER.TRANSLUCENT }
+const LAYER_CODE: Record<RenderLayer, number> = { opaque: LAYER.OPAQUE, cutout: LAYER.CUTOUT, translucent: LAYER.TRANSLUCENT, liquid: LAYER.LIQUID }
 
 export class BlockRegistry {
   readonly count: number
@@ -54,7 +54,8 @@ export class BlockRegistry {
         return
       }
       const liquid = d.liquid ?? false
-      const layer: RenderLayer = d.layer ?? (liquid ? 'translucent' : 'opaque')
+      const layer: RenderLayer = d.layer ?? (liquid ? 'liquid' : 'opaque')
+      if (layer === 'liquid' && !liquid) throw new Error(`block "${d.name}": layer "liquid" needs liquid: true`)
       this.layer[id] = LAYER_CODE[layer]
       this.opaque[id] = (d.opaque ?? layer === 'opaque') ? 1 : 0
       this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid

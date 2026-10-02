@@ -22,7 +22,7 @@ describe('BlockRegistry', () => {
     expect(r.layer[ID.air]).toBe(LAYER.NONE)
     expect(r.layer[ID.stone]).toBe(LAYER.OPAQUE)
     expect(r.layer[ID.torch]).toBe(LAYER.CUTOUT)
-    expect(r.layer[ID.water]).toBe(LAYER.TRANSLUCENT) // liquids default to translucent
+    expect(r.layer[ID.water]).toBe(LAYER.LIQUID) // liquids default to the liquid layer
     expect(r.liquid[ID.water]).toBe(1)
     expect(r.emits[ID.torch]).toBe(14)
   })
@@ -30,6 +30,11 @@ describe('BlockRegistry', () => {
     const lr = new BlockRegistry([defineBlock({ name: 'lava', liquid: true }), defineBlock({ name: 'slime', liquid: true, solid: true })])
     expect(lr.solid[lr.id('lava')]).toBe(0)
     expect(lr.solid[lr.id('slime')]).toBe(1)
+  })
+  it('only allows the liquid layer on liquid blocks', () => {
+    expect(() => new BlockRegistry([defineBlock({ name: 'goo', layer: 'liquid' })])).toThrow(/block "goo": layer "liquid" needs liquid: true/)
+    const r = new BlockRegistry([defineBlock({ name: 'syrup', liquid: true, layer: 'translucent' })])
+    expect(r.layer[r.id('syrup')]).toBe(LAYER.TRANSLUCENT)
   })
   it('lists unique texture names in first-appearance order', () => {
     // faces are visited side, side, top, bottom, side, side → grass_side comes before grass_top

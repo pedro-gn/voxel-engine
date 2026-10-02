@@ -4,7 +4,7 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import type { ChunkMaterials } from './materials.ts'
 
-const LAYERS = ['opaque', 'cutout', 'translucent'] as const
+const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
 const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
 
 function geometryOf(m: LayerMesh): THREE.BufferGeometry {
@@ -24,12 +24,14 @@ function geometryOf(m: LayerMesh): THREE.BufferGeometry {
 export class ChunkMeshes {
   readonly group = new THREE.Group()
   private readonly layout: Layout
-  private readonly materials: ChunkMaterials
+  private readonly owned: ChunkMaterials
+  private readonly materials: Record<(typeof LAYERS)[number], THREE.Material>
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
 
   constructor(layout: Layout, materials: ChunkMaterials) {
     this.layout = layout
-    this.materials = materials
+    this.owned = materials
+    this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
   }
 
@@ -42,9 +44,18 @@ export class ChunkMeshes {
     return n
   }
 
+  /** Swaps the material of every mesh in one layer (water on/off). */
+  setLayerMaterial(layer: 'liquid', material: THREE.Material): void {
+    this.materials[layer] = material
+    for (const slots of this.meshes.values()) {
+      const m = slots[LAYERS.indexOf(layer)]
+      if (m) m.material = material
+    }
+  }
+
   apply(ci: number, data: ChunkMeshData): void {
     let slots = this.meshes.get(ci)
-    if (!slots) { slots = [null, null, null]; this.meshes.set(ci, slots) }
+    if (!slots) { slots = [null, null, null, null]; this.meshes.set(ci, slots) }
     const [cx, cy, cz] = this.layout.chunkCoords(ci)
     LAYERS.forEach((name, k) => {
       const lm = data[name]
@@ -65,6 +76,7 @@ export class ChunkMeshes {
       mesh.raycast = () => {}
       mesh.castShadow = name === 'opaque' || name === 'cutout'
       mesh.receiveShadow = true
+      if (name === 'liquid') mesh.renderOrder = 1 // draw after glass
       mesh.position.set(cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()
@@ -83,6 +95,6 @@ export class ChunkMeshes {
 
   dispose(): void {
     for (const ci of [...this.meshes.keys()]) this.remove(ci)
-    for (const name of LAYERS) this.materials[name].dispose()
+    for (const name of LAYERS) this.owned[name].dispose()
   }
 }

@@ -5,7 +5,7 @@ import { voxelId } from '../world/voxel.ts'
 import { Mesher, type ChunkMeshData } from './mesher.ts'
 import type { MeshTables } from './tables.ts'
 
-const EMPTY: ChunkMeshData = { opaque: null, cutout: null, translucent: null }
+const EMPTY: ChunkMeshData = { opaque: null, cutout: null, translucent: null, liquid: null }
 const OFFS = [1, -1, PAD * PAD, -PAD * PAD, PAD, -PAD] // +x -x +y -y +z -z in padded index space
 const UP = 2
 

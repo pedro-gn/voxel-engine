@@ -39,12 +39,14 @@ function cornerIndex(sx: number, sz: number): number {
   return sz < 0 ? (sx < 0 ? 0 : 1) : (sx > 0 ? 2 : 3)
 }
 
-export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder): void {
+export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: QuadBuilder, liquidOut: QuadBuilder): void {
   const p = [0, 0, 0]
   for (let y = 0; y < 32; y++) for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
     const pi = padIndex(x + 1, y + 1, z + 1)
     const id = voxelId(s.voxels[pi]!)
-    if (t.layer[id] !== LAYER.TRANSLUCENT) continue
+    const layer = t.layer[id]
+    if (layer !== LAYER.TRANSLUCENT && layer !== LAYER.LIQUID) continue
+    const out = layer === LAYER.LIQUID ? liquidOut : translucent
     const liquid = t.liquid[id] === 1
     if (liquid) cornerHeights(s, pi, id)
     for (let f = 0; f < 6; f++) {
