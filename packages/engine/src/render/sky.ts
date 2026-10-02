@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu'
 import {
   cameraPosition, dot, float, fog, mix, mx_fractal_noise_float, normalWorldGeometry, positionView, positionWorld,
-  screenUV, smoothstep, time, uniform, vec2, vec3,
+  screenUV, smoothstep, step, time, uniform, vec2, vec3,
 } from 'three/tsl'
 import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
@@ -44,7 +44,8 @@ export class Sky {
     const n = mx_fractal_noise_float(vec3(p, 0), 4, 2, 0.5).mul(0.5).add(0.5)
     const n2 = mx_fractal_noise_float(vec3(p.add(u.sunDir.xz.mul(0.06)), 0), 4, 2, 0.5).mul(0.5).add(0.5)
     const edge = float(1).sub(u.coverage)
-    const density = smoothstep(edge, edge.add(0.12), n).mul(smoothstep(0.03, 0.2, dir.y))
+    // step(0, t): above the cloud layer t is negative and the hit point lies behind the camera, so no clouds.
+    const density = smoothstep(edge, edge.add(0.12), n).mul(smoothstep(0.03, 0.2, dir.y)).mul(step(0, t))
     const cloud = mix(u.cloudShade, u.cloudLight, smoothstep(-0.02, 0.06, n.sub(n2)))
     const dome = mix(gradient.add(glow), cloud, density)
     // Spike P7 (confirmed on WebGPU and WebGL): screenUV.y is 1 at the BOTTOM of the screen, so flip it.
