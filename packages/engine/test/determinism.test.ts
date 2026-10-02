@@ -9,7 +9,8 @@ import { AIR } from '../src/world/voxel.ts'
 import { TEST_BLOCKS } from './helpers.ts'
 
 const BLOCKS = [...TEST_BLOCKS, defineBlock({ name: 'sand' })]
-const rules = defineRules({
+/** Counts world changes made by the random-tick rule, per sim, so the test cannot go vacuous. */
+function makeRules(counter: { n: number }) { return defineRules({
   blocks: {
     sand: {
       onNeighborChanged(ctx, x, y, z) { ctx.schedule(x, y, z, 1 + Math.floor(ctx.random() * 3)) },
@@ -20,7 +21,9 @@ const rules = defineRules({
     grass: {
       onRandomTick(ctx, x, y, z) {
         const dx = ctx.random() < 0.5 ? -1 : 1
-        if (ctx.get(x + dx, y, z) === ctx.id('dirt') && ctx.isAir(ctx.get(x + dx, y + 1, z))) ctx.set(x + dx, y, z, ctx.id('grass'))
+        if (ctx.get(x + dx, y, z) === ctx.id('dirt') && ctx.isAir(ctx.get(x + dx, y + 1, z))) { ctx.set(x + dx, y, z, ctx.id('grass')); counter.n++ }
+        // Exposed grass withers to dirt half the time; fires often enough to pin random-tick positions.
+        else if (ctx.isAir(ctx.get(x, y + 1, z)) && ctx.random() < 0.5) { ctx.set(x, y, z, ctx.id('dirt')); counter.n++ }
       },
     },
   },
@@ -32,10 +35,10 @@ const rules = defineRules({
       throw new Error('half done')
     },
   },
-})
+}) }
 
-function makeSim(seed = 77) {
-  const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: BLOCKS, rules, seed, log: () => {} })
+function makeSim(seed = 77, counter = { n: 0 }) {
+  const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: BLOCKS, rules: makeRules(counter), seed, log: () => {} })
   sim.generate(testGenerator)
   return sim
 }
@@ -65,11 +68,14 @@ function replay(log: readonly StampedCommand[], ticks: number): number {
 
 describe('determinism', () => {
   it('produces the same world hash for the same seed and commands', () => {
-    const a = makeSim()
+    const ca = { n: 0 }
+    const a = makeSim(77, ca)
     const b = makeSim()
     const ha = run(a, 500)
     const hb = run(b, 500)
     expect(ha).toBe(hb)
+    console.log("randomTickChanges", ca.n)
+    expect(ca.n).toBeGreaterThan(20) // the random-tick rule really changed the world
     expect(a.commandLog.some((c) => c.cmd.type === 'setThenThrow')).toBe(true)
     expect(a.store.getVoxel(5, 1, 5)).toBe(4) // the failing handler's partial effect (glass) stuck
     expect(replay(a.commandLog, 500)).toBe(ha)
