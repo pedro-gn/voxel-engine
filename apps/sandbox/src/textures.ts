@@ -71,6 +71,7 @@ export function paintTextures(): Record<string, string> {
       c.fillStyle = 'rgba(160, 210, 245, 0.55)'
       for (let i = 0; i < 18; i++) c.fillRect(Math.floor(r() * 56), Math.floor(r() * 64), 8, 2)
     }),
+    rock: tile(13, (c, r) => speckle(c, r, '#8a8f99', ['#7b808a', '#9aa0aa', '#6f7580'], 90, 9)),
     torch: tile(12, (c) => {
       c.clearRect(0, 0, 64, 64)
       c.fillStyle = '#6e4b2a'

@@ -1,10 +1,13 @@
 import { AIR, createEngine } from '@elovox/engine'
 import { BLOCKS } from './blocks.ts'
+import { createControls } from './controls.ts'
 import { createHud } from './hud.ts'
+import { DIORAMA_SIZE } from './scenes/diorama.ts'
 import { paintTextures } from './textures.ts'
 
-const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'glass', 'torch']
+const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'rock', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
+const sceneName = params.get('scene') === 'diorama' ? 'diorama' : 'world'
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
   const v = Number(raw ?? 1024)
@@ -16,18 +19,30 @@ const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 
 const engine = await createEngine({
   canvas,
-  size: [n, 128, n],
+  size: sceneName === 'diorama' ? [...DIORAMA_SIZE] : [n, 128, n],
   seed: Number(params.get('seed') ?? 1234),
   blocks: BLOCKS,
   textures: paintTextures(),
-  simWorker: () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
+  simWorker: sceneName === 'diorama'
+    ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
+    : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   forceWebGL: params.has('webgl'),
 })
 
+engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
+if (sceneName === 'diorama') {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = 64; s.target[1] = 30; s.target[2] = 64
+    s.distance = 150
+    s.pitch = 0.7
+  }
+}
+createControls(engine)
+
 let selected = 0
-createHud(engine, () => HOTBAR[selected]!)
+createHud(engine, () => HOTBAR[selected]!, sceneName)
 window.addEventListener('keydown', (e) => {
-  const k = Number(e.key)
+  const k = e.key === '0' ? 10 : Number(e.key)
   if (k >= 1 && k <= HOTBAR.length) selected = k - 1
 })
 

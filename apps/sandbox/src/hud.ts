@@ -1,6 +1,6 @@
 import type { Engine } from '@elovox/engine'
 
-export function createHud(engine: Engine, getSelected: () => string): () => void {
+export function createHud(engine: Engine, getSelected: () => string, sceneName: string): () => void {
   const el = document.createElement('div')
   el.id = 'hud'
   Object.assign(el.style, {
@@ -12,7 +12,7 @@ export function createHud(engine: Engine, getSelected: () => string): () => void
   const render = () => {
     const s = engine.stats()
     el.textContent = [
-      `fps ${s.fps.toFixed(0)}   frame ${s.frameMs.toFixed(1)} ms   [${s.backend}]`,
+      `[${sceneName}] fps ${s.fps.toFixed(0)}   frame ${s.frameMs.toFixed(1)} ms   [${s.backend}]`,
       `tick ${s.tick}   ${s.tickMs.toFixed(2)} ms`,
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
