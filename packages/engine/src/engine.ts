@@ -13,6 +13,7 @@ import type { Effects, Quality, WaterInput, WaterParams } from './render/setting
 import { Visuals } from './render/visuals.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
+import { TILE, checkTileSize } from './render/tiles.ts'
 import { validateCommand, type Ack, type Command, type SetBlockCommand } from './sim/commands.ts'
 import type { SimEvent } from './sim/simulation.ts'
 import { createWorldBuffers } from './world/buffers.ts'
@@ -33,6 +34,8 @@ export interface EngineOptions {
   forceWebGL?: boolean
   /** Opt-in GPU timestamp queries (WebGPU; sampled every 30 frames). Default false. */
   gpuTiming?: boolean
+  /** Texture tile resolution in texels: a power of two in [16, 1024]. Every texture is resized to it. Default 64. */
+  tileSize?: number
 }
 
 export interface EngineEvents {
@@ -120,6 +123,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const layout = new Layout(size)
   const registry = new BlockRegistry(o.blocks)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
+  const tileSize = checkTileSize(o.tileSize ?? TILE)
   const buffers = createWorldBuffers(size)
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
@@ -148,7 +152,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const ro = new ResizeObserver(resize)
   ro.observe(canvas)
 
-  const tex = await buildTextureArray(o.textures, registry.textureNames())
+  const tex = await buildTextureArray(o.textures, registry.textureNames(), tileSize)
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
   const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf), decorations.tables)
   const highlight = new THREE.LineSegments(

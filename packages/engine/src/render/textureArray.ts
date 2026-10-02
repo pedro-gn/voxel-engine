@@ -16,16 +16,17 @@ export async function loadTilePixels(url: string, size = TILE): Promise<Uint8Arr
   }
 }
 
-export async function buildTextureArray(textures: Record<string, string>, names: string[]) {
+/** Every source image is resized to `size` × `size` (so tiles of any resolution can be mixed). */
+export async function buildTextureArray(textures: Record<string, string>, names: string[], size = TILE) {
   const loaded = new Map<string, Uint8Array | null>(
     await Promise.all(names.map(async (n) => {
-      const px = textures[n] ? await loadTilePixels(textures[n]!) : null
-      return [n, px ? dilateAlpha(px) : null] as const
+      const px = textures[n] ? await loadTilePixels(textures[n]!, size) : null
+      return [n, px ? dilateAlpha(px, size) : null] as const
     })),
   )
-  const packed = packTiles(names, (n) => loaded.get(n) ?? null)
+  const packed = packTiles(names, (n) => loaded.get(n) ?? null, size)
   for (const n of packed.missing) console.warn(`[elovox] missing texture "${n}" — using the checker layer`)
-  const texture = new THREE.DataArrayTexture(packed.data, TILE, TILE, packed.layers)
+  const texture = new THREE.DataArrayTexture(packed.data, size, size, packed.layers)
   texture.format = THREE.RGBAFormat
   texture.type = THREE.UnsignedByteType
   texture.colorSpace = THREE.SRGBColorSpace

@@ -1,5 +1,13 @@
 export const TILE = 64
 
+/** Validates the `tileSize` engine option: a power of two in [16, 1024]. Returns it unchanged. */
+export function checkTileSize(n: number): number {
+  if (!Number.isInteger(n) || n < 16 || n > 1024 || (n & (n - 1)) !== 0) {
+    throw new RangeError(`tileSize must be a power of two in [16, 1024], got ${n}`)
+  }
+  return n
+}
+
 export function checkerTile(size = TILE): Uint8Array {
   const px = new Uint8Array(size * size * 4)
   const cell = Math.max(1, size >> 3)

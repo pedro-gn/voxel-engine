@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TILE, checkerTile, packTiles, dilateAlpha } from '../src/render/tiles.ts'
+import { TILE, checkTileSize, checkerTile, packTiles, dilateAlpha } from '../src/render/tiles.ts'
 
 function solid(size: number, r: number, g: number, b: number): Uint8Array {
   const px = new Uint8Array(size * size * 4)
@@ -64,5 +64,22 @@ describe('dilateAlpha', () => {
   it('leaves fully opaque tiles unchanged', () => {
     const px = new Uint8Array(S * S * 4).fill(255)
     expect(dilateAlpha(px, S)).toEqual(px)
+  })
+})
+
+describe('checkTileSize', () => {
+  it('accepts powers of two from 16 to 1024 and returns them', () => {
+    expect(checkTileSize(TILE)).toBe(64)
+    expect(checkTileSize(128)).toBe(128)
+    expect(checkTileSize(16)).toBe(16)
+    expect(checkTileSize(1024)).toBe(1024)
+  })
+  it('rejects anything else with the option name', () => {
+    for (const bad of [0, 8, 100, 2048, 64.5, Number.NaN]) expect(() => checkTileSize(bad)).toThrow(/tileSize/)
+  })
+  it('packs tiles at the chosen size', () => {
+    const p = packTiles(['a'], () => solid(128, 10, 20, 30), 128)
+    expect(p.data.length).toBe(2 * 128 * 128 * 4)
+    expect([...p.data.subarray(128 * 128 * 4, 128 * 128 * 4 + 4)]).toEqual([10, 20, 30, 255])
   })
 })

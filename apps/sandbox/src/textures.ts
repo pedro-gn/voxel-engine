@@ -10,5 +10,11 @@ export function paintTextures(): Record<string, string> {
     ctx.putImageData(new ImageData(new Uint8ClampedArray(px), 64, 64), 0, 0)
     out[name] = canvas.toDataURL('image/png')
   }
-  return out
+  return { ...out, ...HAND_PAINTED }
+}
+
+/** Hand-painted tiles (512 px, in public/textures) that replace the painter's versions. */
+const HAND_PAINTED: Record<string, string> = {
+  grass_top: '/textures/grass_top.png',
+  grass_side: '/textures/grass_side.png',
 }
