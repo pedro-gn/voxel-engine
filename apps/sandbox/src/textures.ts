@@ -17,4 +17,5 @@ export function paintTextures(): Record<string, string> {
 const HAND_PAINTED: Record<string, string> = {
   grass_top: '/textures/grass_top.png',
   grass_side: '/textures/grass_side.png',
+  stone: '/textures/stone.png',
 }
