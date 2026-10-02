@@ -37,7 +37,7 @@ These are deliberate. Each one fills a gap or fixes something that would not wor
 3. **Flower colour index** goes in instance word 2, bits 8–10, which the spec lists as reserved. The worker picks it, so the shader needs no palette hashing.
 4. **Caps:** at most 16 decoration definitions (per-decoration parameters live in uniform arrays), 24 blades per tuft and 8 flower colours per decoration.
 5. **`EngineStats.shadowCasters`** (the number of chunk meshes that cast shadows) replaces `shadowDraws`. three.js doesn't report draw calls per pass.
-6. **Shadows fade out over the last 15 % of the shadow distance**, so the edge of the shadow map is never a hard line. The shadow distance is `clamp(3 × orbit distance, 96, 700)` blocks.
+6. **Shadows fade out over the last 15 % of the shadow distance**, so the edge of the shadow map is never a hard line. The shadow distance is `clamp(3 × orbit distance, 96, 350)` blocks (lowered from 700 at Checkpoint 3 for zoomed-out performance).
 7. **GPU timing is opt-in** (`createEngine({ gpuTiming: true })`, which the sandbox sets from `?gpu`). On backends without timestamp queries three.js would otherwise log a warning.
 8. **Water specular and fresnel are added as emissive light**, so the specular glint isn't shadowed. The water's diffuse term is lit and shadowed normally.
 9. **Decoration validation lives in a `DecorationRegistry`** built on the main thread, not in `BlockRegistry`. The sim worker builds a `BlockRegistry` without decorations, so validating there would reject every decorated block.

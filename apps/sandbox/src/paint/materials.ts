@@ -2,7 +2,7 @@ import { hashId, tileFbm, tileNoise, worley } from './noise.ts'
 import { SIZE, createLayer, disc, hex, mixRgb, paint, scaleRgb, vary, wrap, type Layer, type RGB, type Rand } from './raster.ts'
 import type { ShadeOptions } from './shade.ts'
 
-interface Courses { rows: readonly number[]; minW: number; maxW: number; gap: number; round: number; mortar: RGB; mortarH: number }
+interface Courses { rows: readonly number[]; minW: number; maxW: number; gap: number; round: number; mortar: RGB; mortarH: number; lift?: number }
 
 /** Rows of bricks/plates (row heights sum to SIZE) with random widths and a random shift per row; everything wraps. */
 function courses(l: Layer, r: Rand, c: Courses, colour: (r: Rand) => RGB): void {
@@ -18,13 +18,13 @@ function courses(l: Layer, r: Rand, c: Courses, colour: (r: Rand) => RGB): void 
     }
     let x0 = Math.floor(r() * SIZE)
     for (const w of widths) {
-      const col = colour(r), tilt = (r() - 0.5) * 0.3
+      const col = colour(r), tilt = (r() - 0.5) * 0.3, lift = c.lift ? (r() - 0.5) * c.lift : 0
       for (let yy = 0; yy < rh; yy++) for (let xx = 0; xx < w; xx++) {
         const i = wrap(x0 + xx, y0 + yy)
         const e = Math.min(xx + 0.5, w - xx - 0.5, yy + 0.5, rh - yy - 0.5)
         if (e < c.gap) { paint(l, i, c.mortar, c.mortarH); continue }
         const s = Math.min(1, (e - c.gap) / c.round)
-        paint(l, i, col, 0.45 + 0.4 * s * s * (3 - 2 * s) + tilt * (xx / w - 0.5))
+        paint(l, i, col, 0.45 + 0.4 * s * s * (3 - 2 * s) + tilt * (xx / w - 0.5) + lift)
       }
       x0 += w
     }
@@ -44,7 +44,7 @@ function roughen(l: Layer, seed: number, amount: number): void {
 export function stone(r: Rand): Layer {
   const base = hex('#7f8a9c')
   const l = createLayer(base)
-  courses(l, r, { rows: [14, 18, 15, 17], minW: 14, maxW: 28, gap: 1.4, round: 4, mortar: hex('#4b5260'), mortarH: 0.1 }, (r) => vary(base, r, 0.1))
+  courses(l, r, { rows: [21, 22, 21], minW: 18, maxW: 40, gap: 1.6, round: 6, mortar: hex('#4b5260'), mortarH: 0.1, lift: 0.12 }, (r) => vary(base, r, 0.14))
   roughen(l, 11, 0.08)
   return l
 }
@@ -98,11 +98,18 @@ export function grassSide(r: Rand): Layer {
   return l
 }
 
-export function sand(r: Rand): Layer {
+export function sand(_r: Rand): Layer {
   const base = hex('#d8b77a')
   const l = createLayer(base)
-  courses(l, r, { rows: [11, 10, 12, 9, 12, 10], minW: 14, maxW: 24, gap: 1, round: 3.5, mortar: hex('#a8854f'), mortarH: 0.15 }, (r) => vary(base, r, 0.08))
-  roughen(l, 51, 0.06)
+  const tones = [hex('#e3c78f'), hex('#c9a566'), hex('#d2b073')]
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), n = tileFbm(51, x, y, 4, 3)
+    paint(l, i, scaleRgb(base, 0.9 + n * 0.2), 0.4 + n * 0.2)
+    const c = worley(52, x, y, 8)
+    if (c.d < 0.36 && hashId(c.id) < 0.4) paint(l, i, scaleRgb(tones[c.id % tones.length]!, 0.9 + n * 0.2), 0.55 + 0.35 * (1 - c.d / 0.36))
+    const g = (tileNoise(53, x, y, 16) - 0.5) * 0.08
+    for (let k = 0; k < 3; k++) l.color[i * 3 + k]! *= 1 + g
+  }
   return l
 }
 

@@ -80,9 +80,9 @@ describe('fitShadow', () => {
 })
 
 describe('shadowDistance', () => {
-  it('scales with the orbit distance inside [96, 700]', () => {
+  it('scales with the orbit distance inside [96, 350]', () => {
     expect(shadowDistance(10)).toBe(96)
     expect(shadowDistance(70)).toBe(210)
-    expect(shadowDistance(400)).toBe(700)
+    expect(shadowDistance(400)).toBe(350)
   })
 })
