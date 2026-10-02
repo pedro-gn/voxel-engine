@@ -273,6 +273,8 @@ sub-project 3 and will extend this API.
   translucent block type (culled).
 - Per face direction, faces are merged into rectangles only when block id, the AO of
   all 4 corners and the light values all match. Merging never smears shading.
+  - Note: the implementation merges by the face's texture layer rather than block id
+    (plan Deviation 10).
 - AO is per vertex, 0–3, from the classic side1/side2/corner test. When
   `ao0 + ao2 < ao1 + ao3`, the quad's diagonal is flipped to avoid the anisotropy
   artifact.

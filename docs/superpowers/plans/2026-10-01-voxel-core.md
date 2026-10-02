@@ -39,6 +39,9 @@ These are deliberate. Each one fixes something that would not work as the spec w
 5. **Liquid top heights** use 5 of the 7 reserved bits of vertex word 1 (`drop`, in sixteenths). The spec's 6-bit integer positions can't express a water level.
 6. **`fillRegion` is capped at 1 048 576 voxels**, and larger fills are rejected with an ack error. This stops one command from freezing the sim.
 7. **Texture sources** in the `textures` map are URL strings. Data URLs are allowed, which is how the sandbox ships procedurally painted tiles.
+8. **The chunk shader adds a `+0.04` light floor and a hemisphere ambient.** Ambient is multiplied by a sky or ground colour picked by the face normal, which differs slightly from the spec §5 formula. It keeps unlit faces readable.
+9. **New slot pages reach mesh workers by relay through the main thread**, not directly from the sim. A reader that hasn't received a page yet returns air (or `null` from `snapshot`), and the mesh job returns `retry` (Review Focus 1).
+10. **The greedy merge key is the face's texture layer, not the block id.** Identical face textures render identically today. When per-block vertex attributes (tint, state) arrive, the key must switch back to block id.
 
 ## Review Focus
 
