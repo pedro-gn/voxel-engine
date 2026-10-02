@@ -3,7 +3,9 @@ import { CHUNK_VOLUME, Layout } from './layout.ts'
 import { AIR, FULL_SKY, voxelId } from './voxel.ts'
 
 export class WorldFullError extends Error {
-  constructor(message: string) { super(message); this.name = 'WorldFullError' }
+  /** `slots`: slot count in use when allocation failed. */
+  readonly slots: number
+  constructor(message: string, slots = 0) { super(message); this.name = 'WorldFullError'; this.slots = slots }
 }
 
 export interface ChunkStoreOptions {
@@ -131,12 +133,12 @@ export class ChunkStore {
 
   private addPage(): void {
     const index = this.views.pageCount
-    if (index >= this.maxPages) throw new WorldFullError(`world full: ${index} pages (${index * SLOTS_PER_PAGE} slots) in use`)
+    if (index >= this.maxPages) throw new WorldFullError(`world full: ${index} pages (${index * SLOTS_PER_PAGE} slots) in use`, index * SLOTS_PER_PAGE)
     let page: SharedArrayBuffer
     try {
       page = new SharedArrayBuffer(PAGE_BYTES)
     } catch (err) {
-      throw new WorldFullError(`could not allocate slot page ${index}: ${String(err)}`)
+      throw new WorldFullError(`could not allocate slot page ${index}: ${String(err)}`, index * SLOTS_PER_PAGE)
     }
     this.views.addPage(index, page)
     this.onNewPage?.(index, page)
