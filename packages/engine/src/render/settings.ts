@@ -1,3 +1,5 @@
+import { hexToLinear, type Rgb } from './atmosphere.ts'
+
 export type Backend = 'webgpu' | 'webgl'
 
 export interface Quality {
@@ -64,4 +66,29 @@ export function resolveEffects(requested: Effects, support: Support): { effects:
   }
   if (!support.waterDepth) warnings.push('water depth effects (shore foam, depth colour) are not supported on this backend; water renders without them')
   return { effects, waterDepth: support.waterDepth, warnings }
+}
+
+export interface WaterParams { shallow: Rgb; deep: Rgb; depthScale: number; foamWidth: number; waveScale: number; waveSpeed: number }
+export interface WaterInput { shallow?: string; deep?: string; depthScale?: number; foamWidth?: number; waveScale?: number; waveSpeed?: number }
+
+export const DEFAULT_WATER: WaterParams = Object.freeze({
+  shallow: hexToLinear('#5fd0d6'), deep: hexToLinear('#1f6fae'), depthScale: 3, foamWidth: 0.35, waveScale: 0.35, waveSpeed: 0.6,
+})
+
+export function mergeWater(cur: WaterParams, input: WaterInput): WaterParams {
+  const patch = checked('water', cur as unknown as Required<WaterInput>, input)
+  const out: WaterParams = { ...cur }
+  if (patch.shallow !== undefined) out.shallow = hexToLinear(patch.shallow, 'water.shallow')
+  if (patch.deep !== undefined) out.deep = hexToLinear(patch.deep, 'water.deep')
+  const num = (k: 'depthScale' | 'foamWidth' | 'waveScale' | 'waveSpeed', ok: (v: number) => boolean, rule: string) => {
+    const v = patch[k]
+    if (v === undefined) return
+    if (typeof v !== 'number' || !Number.isFinite(v) || !ok(v)) throw new RangeError(`water.${k} must be ${rule}, got ${String(v)}`)
+    out[k] = v
+  }
+  num('depthScale', (v) => v > 0, 'a finite number > 0')
+  num('foamWidth', (v) => v >= 0, 'a finite number ≥ 0')
+  num('waveScale', (v) => v > 0, 'a finite number > 0')
+  num('waveSpeed', () => true, 'a finite number')
+  return Object.freeze(out)
 }

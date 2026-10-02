@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_EFFECTS, DEFAULT_QUALITY, mergeEffects, mergeQuality, resolveEffects } from '../src/render/settings.ts'
+import { hexToLinear } from '../src/render/atmosphere.ts'
+import { DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, mergeEffects, mergeQuality, mergeWater, resolveEffects } from '../src/render/settings.ts'
 
 describe('quality', () => {
   it('has the spec defaults', () => {
@@ -41,5 +42,25 @@ describe('effects', () => {
   it('passes requests through on a capable backend', () => {
     const r = resolveEffects({ ...DEFAULT_EFFECTS, shadows: false }, { shadows: true, waterDepth: true })
     expect(r).toEqual({ effects: { ...DEFAULT_EFFECTS, shadows: false }, waterDepth: true, warnings: [] })
+  })
+})
+
+describe('water params', () => {
+  it('has turquoise-to-blue defaults', () => {
+    expect(DEFAULT_WATER.shallow).toEqual(hexToLinear('#5fd0d6'))
+    expect(DEFAULT_WATER.deep).toEqual(hexToLinear('#1f6fae'))
+  })
+  it('merges colours and numbers', () => {
+    const w = mergeWater(DEFAULT_WATER, { shallow: '#ffffff', foamWidth: 0.5 })
+    expect(w.shallow).toEqual([1, 1, 1])
+    expect(w.foamWidth).toBe(0.5)
+    expect(w.deep).toEqual(DEFAULT_WATER.deep)
+  })
+  it('rejects bad values with the field name', () => {
+    expect(() => mergeWater(DEFAULT_WATER, { deep: 'blue' })).toThrow(/water\.deep/)
+    expect(() => mergeWater(DEFAULT_WATER, { depthScale: 0 })).toThrow(/water\.depthScale/)
+    expect(() => mergeWater(DEFAULT_WATER, { foamWidth: -1 })).toThrow(/water\.foamWidth/)
+    expect(() => mergeWater(DEFAULT_WATER, { waveSpeed: Number.NaN })).toThrow(/water\.waveSpeed/)
+    expect(() => mergeWater(DEFAULT_WATER, { colour: '#fff' } as never)).toThrow(/unknown water field "colour"/)
   })
 })

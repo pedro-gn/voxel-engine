@@ -8,7 +8,7 @@ import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, SimInitOptions, ToMesh, ToSim } from './protocol.ts'
 import type { AtmosphereController } from './render/atmosphere.ts'
-import type { Effects, Quality } from './render/settings.ts'
+import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
@@ -60,6 +60,8 @@ export interface Engine {
   set quality(value: Partial<Quality>)
   get effects(): Effects
   set effects(value: Partial<Effects>)
+  get water(): WaterParams
+  set water(value: WaterInput)
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
   submit(cmd: Command): number
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
@@ -359,6 +361,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     set quality(value: Partial<Quality>) { visuals.setQuality(value) },
     get effects(): Effects { return visuals.getEffects() },
     set effects(value: Partial<Effects>) { visuals.setEffects(value) },
+    get water(): WaterParams { return visuals.getWater() },
+    set water(value: WaterInput) { visuals.setWater(value) },
     submit(cmd) {
       const s = ++seq
       if (halted) return s // stopped: there is no sim to ack it

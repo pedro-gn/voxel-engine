@@ -44,6 +44,9 @@ export class ChunkMeshes {
     return n
   }
 
+  /** The material this layer was constructed with. */
+  baseMaterial(layer: (typeof LAYERS)[number]): THREE.Material { return this.owned[layer] }
+
   /** Swaps the material of every mesh in one layer (water on/off). */
   setLayerMaterial(layer: 'liquid', material: THREE.Material): void {
     this.materials[layer] = material

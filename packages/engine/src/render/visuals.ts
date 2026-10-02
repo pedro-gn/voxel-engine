@@ -7,12 +7,13 @@ import { SunLights } from './lighting.ts'
 import { createChunkMaterials } from './materials.ts'
 import { PostPipeline, TONE_MAPPING } from './post.ts'
 import {
-  DEFAULT_EFFECTS, DEFAULT_QUALITY, SUPPORT, mergeEffects, mergeQuality, resolveEffects,
-  type Backend, type Effects, type Quality,
+  DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, SUPPORT, mergeEffects, mergeQuality, mergeWater, resolveEffects,
+  type Backend, type Effects, type Quality, type WaterInput, type WaterParams,
 } from './settings.ts'
 import { shadowDistance } from './shadowFit.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
+import { WaterMaterial } from './water.ts'
 
 export interface VisualsOptions {
   renderer: THREE.WebGPURenderer
@@ -37,6 +38,8 @@ export class Visuals {
   private quality: Quality = DEFAULT_QUALITY
   private requested: Effects = DEFAULT_EFFECTS
   private effects: Effects
+  private readonly water: WaterMaterial
+  private waterParams: WaterParams = DEFAULT_WATER
   private readonly warned = new Set<string>()
 
   constructor(o: VisualsOptions) {
@@ -48,6 +51,9 @@ export class Visuals {
     o.scene.add(this.chunks.group)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
+    this.water = new WaterMaterial(this.lights, resolveEffects(this.requested, SUPPORT[o.backend]).waterDepth)
+    this.water.setParams(this.waterParams)
+    this.syncWater()
     o.renderer.toneMapping = TONE_MAPPING
     this.post = new PostPipeline(o.renderer, o.scene, o.camera, this.quality.msaa)
     this.sky.attach(o.scene, this.effects.fog)
@@ -64,7 +70,14 @@ export class Visuals {
   setEffects(input: Partial<Effects>): void {
     this.requested = mergeEffects(this.requested, input)
     this.effects = this.resolve(this.requested)
+    this.syncWater()
     this.sky.attach(this.o.scene, this.effects.fog)
+  }
+
+  getWater(): WaterParams { return this.waterParams }
+  setWater(input: WaterInput): void {
+    this.waterParams = mergeWater(this.waterParams, input)
+    this.water.setParams(this.waterParams)
   }
 
   applyMesh(ci: number, data: ChunkMeshData): void {
@@ -87,6 +100,7 @@ export class Visuals {
   dispose(): void {
     this.o.scene.remove(this.chunks.group)
     this.chunks.dispose()
+    this.water.dispose()
     this.sun.dispose()
     this.sky.detach(this.o.scene)
     this.post.dispose()
@@ -96,8 +110,13 @@ export class Visuals {
     this.sun.apply(a)
     this.sky.apply(a)
     this.post.apply(a)
+    this.water.applyAtmosphere(a)
     const t = a.shadow.tint, k = a.shadow.strength
     this.lights.shadowColor.value.setRGB(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k, THREE.LinearSRGBColorSpace)
+  }
+
+  private syncWater(): void {
+    this.chunks.setLayerMaterial('liquid', this.effects.water ? this.water.material : this.chunks.baseMaterial('liquid'))
   }
 
   private resolve(requested: Effects): Effects {
