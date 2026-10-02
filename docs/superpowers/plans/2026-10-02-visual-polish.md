@@ -4662,3 +4662,27 @@ Warnings seen: none (console clean on every variant; no "normal not found" warni
 Workarounds adopted (later tasks must apply them):
 - None for three.js itself. `SUPPORT` stays all-true.
 - Lesson: a value derived from an integer attribute (`packed`, `inst`) and read in the fragment stage must go through an explicit `varying()`. Otherwise it is flat-interpolated (constant per triangle). The spike's un-varyinged `uv` rendered flat; `chunkVertex()` already wraps uv/layer/sky/blk/ao/normal. The water and decoration materials must keep doing the same for any float they read in the fragment shader.
+
+## Performance results (Task 16)
+
+Measured 2026-10-02 on the user's desktop (WebGPU, headed Chromium, 1920 × 889 viewport, display capped at 180 fps). This is **not** a mid-range laptop. `?size=1024&gpu`, open preset, after the mesh queue drained. Each value is the mean of 6 samples taken 0.5 s apart.
+
+| View | fps | frame ms (CPU) | GPU ms | draws | deco instances | shadow casters |
+|---|---|---|---|---|---|---|
+| world 1024, 3/4 default (distance 70) | 120 | 8.9 | 1.40 | 791 | 51 153 | 2 569 |
+| world 1024, zoomed out (distance 400) | 34 | 31.7 | 1.75 | 3 939 | 49 233 | 2 569 |
+| diorama (default view) | 180 (cap) | 1.3–1.9 | — | 77–118 | 11 306 | 32 |
+
+| Effect turned off | fps | frame ms | GPU ms | GPU cost of the effect | Budget | OK? |
+|---|---|---|---|---|---|---|
+| shadows | 137 | 6.8 | 1.32 | 0.08 ms (+2.1 ms CPU, −512 draws) | 2.5 | yes (GPU) |
+| decorations | 157 | 6.9 | 0.86 | 0.54 ms (+2.0 ms CPU) | 3 | yes |
+| water | 143 | 7.6 | 1.42 | ≈0 | 1 | yes |
+| post | 55* | 14.9* | 1.46 | ≈0 | 1.5 | yes |
+| fog | 113 | 7.9 | 1.44 | ≈0 | — | yes |
+
+\* The post-off sample is distorted: toggling effects recompiles materials during the 3 s settle. Post on is the default.
+
+bench:node: 2.673 ms/chunk (limit 3 ms).
+
+Reading: every GPU budget holds by a wide margin on this machine. The limit is **CPU-side draw submission**. At the default view the frame takes 8.9 ms (≤ 16.7). Fully zoomed out, the frame takes 31.7 ms (34 fps), because the shadow pass re-draws all 2 569 casters (shadow distance clamps at 700) on top of about 1 300 main draws. Note that "shadows off" keeps shadow sampling in materials (three 0.186.1 workaround, Task 16), so its GPU saving undercounts sampling. Options for the user: cap the shadow distance lower at far zoom; reduce caster draws (fewer, larger casters or `BatchedMesh`, the spec's planned upgrade); or accept the 34 fps at the extreme zoom.
