@@ -13,6 +13,8 @@ export class PostPipeline {
   private readonly camera: THREE.Camera
   private samples: number
   private pipeline: THREE.RenderPipeline
+  /** RenderPipeline.dispose() only frees its quad material, so the pass's (multisampled) render target is freed here. */
+  private scenePass: ReturnType<typeof pass>
   private readonly u = {
     exposure: uniform(1),
     saturation: uniform(1),
@@ -26,6 +28,7 @@ export class PostPipeline {
     this.scene = scene
     this.camera = camera
     this.samples = samples
+    this.scenePass = pass(scene, camera, { samples })
     this.pipeline = this.build()
   }
 
@@ -41,18 +44,22 @@ export class PostPipeline {
     if (n === this.samples) return
     this.samples = n
     this.pipeline.dispose()
+    this.scenePass.dispose()
+    this.scenePass = pass(this.scene, this.camera, { samples: n })
     this.pipeline = this.build()
   }
 
   render(): void { this.pipeline.render() }
 
-  dispose(): void { this.pipeline.dispose() }
+  dispose(): void {
+    this.pipeline.dispose()
+    this.scenePass.dispose()
+  }
 
   private build(): THREE.RenderPipeline {
     const p = new THREE.RenderPipeline(this.renderer)
-    const scenePass = pass(this.scene, this.camera, { samples: this.samples })
     const u = this.u
-    const c = scenePass.rgb.mul(u.exposure)
+    const c = this.scenePass.rgb.mul(u.exposure)
     const luma = dot(c, vec3(0.2126, 0.7152, 0.0722))
     const sat = mix(vec3(luma), c, u.saturation)
     const con = sat.sub(0.18).mul(u.contrast).add(0.18).max(0)
