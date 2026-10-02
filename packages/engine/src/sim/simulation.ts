@@ -7,6 +7,7 @@ import {
   compareStamped, validateCommand,
   type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
 } from './commands.ts'
+import { fbm2, valueNoise2, type GeneratorContext, type GeneratorModule } from './generator.ts'
 import { LightEngine } from './light.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
@@ -82,6 +83,40 @@ export class Simulation {
 
   submit(clientId: number, seq: number, cmd: Command): void {
     this.pending.push({ tick: this.tick, clientId, seq, cmd })
+  }
+
+  /** Runs once before tick 0. Returns every chunk index; the mesher skips trivial ones. */
+  generate(gen: GeneratorModule): number[] {
+    const L = this.layout
+    const H = L.size[1]
+    const column = new Uint16Array(32 * 32 * H)
+    const seed = this.seed
+    const ctx: GeneratorContext = {
+      seed,
+      height: H,
+      set: (lx, y, lz, v) => {
+        if (!Number.isInteger(lx) || !Number.isInteger(y) || !Number.isInteger(lz) ||
+            lx < 0 || lx > 31 || lz < 0 || lz > 31 || y < 0 || y >= H) {
+          throw new RangeError(`generator write outside column: (${lx}, ${y}, ${lz})`)
+        }
+        column[lx + (lz << 5) + (y << 10)] = v
+      },
+      id: (name) => this.registry.id(name),
+      noise2: (x, z) => valueNoise2(seed, x, z),
+      fbm2: (x, z, octaves) => fbm2(seed, x, z, octaves),
+    }
+    for (let cz = 0; cz < L.cz; cz++) for (let cx = 0; cx < L.cx; cx++) {
+      column.fill(AIR)
+      gen.generateColumn(ctx, cx, cz)
+      for (let cy = 0; cy < L.cy; cy++) {
+        this.store.writeChunkDense(L.chunkIndex(cx, cy, cz), column.subarray(cy * 32768, (cy + 1) * 32768))
+      }
+    }
+    // No commit between the dense writes and initialize(): initialize writes slots directly and
+    // relies on generation having left those chunks open. Commit after, so every version is even.
+    this.light.initialize()
+    this.store.commit()
+    return Array.from({ length: L.chunkCount }, (_, i) => i)
   }
 
   step(): TickResult {
