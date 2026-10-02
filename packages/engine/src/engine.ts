@@ -65,6 +65,8 @@ export interface Engine {
 
 const CLIENT_ID = 0
 const UPLOAD_BUDGET_MS = 4
+/** Default ray length for picking: beyond the orbit camera's 400 max distance plus the default world's extent. */
+const PICK_DISTANCE = 1024
 /** Per chunk: failed jobs (error or crash) before it keeps its last mesh. */
 const MAX_FAILURES = 3
 /** Per pool slot: consecutive worker crashes before the engine gives up. */
@@ -291,6 +293,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     }
   }
   const upload = () => {
+    // The budget measures chunkMeshes.apply CPU time only; the GPU upload happens later, inside renderer.render.
     const start = performance.now()
     while (results.length > 0 && performance.now() - start < UPLOAD_BUDGET_MS) {
       const r = results.shift()!
@@ -319,6 +322,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     halt()
     detachControls()
     ro.disconnect()
+    scene.remove(chunkMeshes.group, highlight)
     chunkMeshes.dispose()
     highlight.geometry.dispose()
     highlight.material.dispose()
@@ -336,7 +340,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   // ---- public API ----
   let seq = 0
   const pickable = (v: number) => { const id = voxelId(v); return id !== 0 && registry.liquid[id] === 0 }
-  const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = 256) => raycast(world.get, pickable, size, origin, dir, maxDist)
+  const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(world.get, pickable, size, origin, dir, maxDist)
   const raycaster = new THREE.Raycaster()
   const ndc = new THREE.Vector2()
 
@@ -354,7 +358,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       return s
     },
     raycast: rc,
-    pickScreen(clientX, clientY, maxDist = 256) {
+    pickScreen(clientX, clientY, maxDist = PICK_DISTANCE) {
       const r = canvas.getBoundingClientRect()
       ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
