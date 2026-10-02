@@ -3,8 +3,8 @@ import { dot, mix, pass, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
 
-/** Tone mapping operator: AgX or Neutral, whichever keeps greens vivid without clipping (picked at Checkpoint 1). */
-export const TONE_MAPPING = THREE.AgXToneMapping
+/** Tone mapping operator: Neutral was chosen at Checkpoint 1 because AgX muted the greens. */
+export const TONE_MAPPING = THREE.NeutralToneMapping
 
 /** Scene pass (with MSAA) → colour grading; the pipeline output then applies the renderer's tone mapping. */
 export class PostPipeline {

@@ -128,7 +128,7 @@ const OPEN = resolveAtmosphere(TEMPLATE, {
   },
   fog: { color: '#bcd9f2', followHorizon: 1, near: 140, far: 900, heightFalloff: 0.012 },
   shadow: { strength: 0.85, tint: '#5b6b99' },
-  grade: { exposure: 1, saturation: 1.12, contrast: 1.05, highlights: '#fff6e8', shadows: '#e8eeff' },
+  grade: { exposure: 1, saturation: 1.0, contrast: 1.05, highlights: '#fff6e8', shadows: '#e8eeff' },
 })
 
 export const PRESETS: Readonly<Record<'open' | 'diorama' | 'sunset', Atmosphere>> = Object.freeze({
