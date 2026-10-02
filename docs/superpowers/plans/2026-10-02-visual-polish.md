@@ -4642,3 +4642,23 @@ git commit -m "test: e2e for both scenes and presets; opt-in GPU timing; record 
 | §9 Performance (budgets, quality, stats) | 5, 11 (bench), 12, 16 |
 | §10 Error handling | 2, 5, 10, 11 |
 | §11 Testing and checkpoints | every task; checkpoints in 8, 12, 16 |
+
+## Spike results (Task 1)
+
+Checked 2026-10-02 in headed Chromium (Playwright, `--enable-unsafe-webgpu`), three 0.186.1.
+
+| Check | WebGPU | WebGL2 | Notes |
+|---|---|---|---|
+| P1 shadow pass uses packed positionNode | pass | pass | step edges shadow the lower steps, aligned with the geometry; no acne or peter-panning at bias −0.0004 (kept) |
+| P2 custom LightingModel + normalNode + receivedShadowNode | pass | pass | directional shading correct; shadows take the blue-grey tint |
+| P3 viewportDepthTexture in a transparent material | pass | pass | white foam line where the water plane meets the pool walls |
+| P4 integer InstancedBufferAttribute (uvec2) | pass | pass | 64 cubes in the 8 × 8 grid at y = 12 |
+| P5 PCF radius soft shadows | pass | pass | radius 2.5 gives soft edges (kept) |
+| P6 RenderPipeline + fogNode + backgroundNode + tone mapping | pass | pass | `?nopost` direct render also fine |
+| P7 screenUV.y = 1 is at the … | bottom | bottom | "up" = `screenUV.y.oneMinus()` (the plan's default in sky.ts) |
+
+Warnings seen: none (console clean on every variant; no "normal not found" warning).
+
+Workarounds adopted (later tasks must apply them):
+- None for three.js itself. `SUPPORT` stays all-true.
+- Lesson: a value derived from an integer attribute (`packed`, `inst`) and read in the fragment stage must go through an explicit `varying()`. Otherwise it is flat-interpolated (constant per triangle). The spike's un-varyinged `uv` rendered flat; `chunkVertex()` already wraps uv/layer/sky/blk/ao/normal. The water and decoration materials must keep doing the same for any float they read in the fragment shader.
