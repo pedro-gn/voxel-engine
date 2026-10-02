@@ -31,6 +31,8 @@ export interface EngineOptions {
   sim?: SimInitOptions
   meshWorkers?: number
   forceWebGL?: boolean
+  /** Opt-in GPU timestamp queries (WebGPU; sampled every 30 frames). Default false. */
+  gpuTiming?: boolean
 }
 
 export interface EngineEvents {
@@ -49,6 +51,8 @@ export interface EngineStats {
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
   shadowCasters: number
   decorationInstances: number; decorationDraws: number
+  /** GPU render time in ms; null when not tracked or unsupported. */
+  gpuMs: number | null
 }
 
 export interface Engine {
@@ -123,7 +127,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
 
-  const renderer = new THREE.WebGPURenderer({ canvas, antialias: true, forceWebGL: o.forceWebGL ?? false })
+  const renderer = new THREE.WebGPURenderer({ canvas, antialias: true, forceWebGL: o.forceWebGL ?? false, trackTimestamp: o.gpuTiming ?? false })
   try {
     await renderer.init()
   } catch (err) {
@@ -316,6 +320,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     }
   }
   let last = performance.now(), fpsT = last, frames = 0, fps = 0, frameMs = 0
+  let gpuMs: number | null = null, gpuFrames = 0
   renderer.setAnimationLoop(() => {
     const now = performance.now()
     const dt = Math.min(0.1, (now - last) / 1000)
@@ -325,6 +330,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     dispatch()
     upload()
     visuals.frame(dt)
+    if (o.gpuTiming && ++gpuFrames % 30 === 0) {
+      renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})
+    }
     frameMs = performance.now() - now
     frames++
     if (now - fpsT >= 500) { fps = (frames * 1000) / (now - fpsT); frames = 0; fpsT = now }
@@ -397,7 +405,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       fps, frameMs, tick: lastTick, tickMs: lastTickMs,
       meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
       slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
-        shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws,
+        shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
       }
     },
     dispose,

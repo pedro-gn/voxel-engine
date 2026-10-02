@@ -12,7 +12,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
   const render = () => {
     const s = engine.stats()
     el.textContent = [
-      `[${sceneName}] fps ${s.fps.toFixed(0)}   frame ${s.frameMs.toFixed(1)} ms   [${s.backend}]`,
+      `[${sceneName}] fps ${s.fps.toFixed(0)}   frame ${s.frameMs.toFixed(1)} ms   [${s.backend}]   gpu ${s.gpuMs === null ? '—' : s.gpuMs.toFixed(2) + ' ms'}`,
       `tick ${s.tick}   ${s.tickMs.toFixed(2)} ms`,
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,

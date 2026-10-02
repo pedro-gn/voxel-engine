@@ -37,7 +37,7 @@ export class SunLights {
     setLinear(this.hemi.color, a.ambient.sky)
     setLinear(this.hemi.groundColor, a.ambient.ground)
     this.hemi.intensity = a.ambient.intensity * Math.PI
-    this.sun.castShadow = this.enabled && this.visible > 0
+    this.syncShadow()
   }
 
   /** Refits the shadow camera to the view (call every frame shadows are on). */
@@ -69,7 +69,19 @@ export class SunLights {
 
   setEnabled(on: boolean): void {
     this.enabled = on
-    this.sun.castShadow = on && this.visible > 0
+    this.syncShadow()
+  }
+
+  /**
+   * castShadow stays true: three 0.186.1 disposes the light's ShadowNode when a material is rebuilt with castShadow false,
+   * and a later rebuild reusing the cached true-state program then reads the disposed map ("reading 'depthTexture'").
+   * So "off" is a zero shadow intensity and no map updates instead.
+   */
+  private syncShadow(): void {
+    const on = this.enabled && this.visible > 0
+    this.sun.castShadow = true
+    this.sun.shadow.autoUpdate = on
+    this.sun.shadow.intensity = on ? 1 : 0
   }
 
   dispose(): void {
