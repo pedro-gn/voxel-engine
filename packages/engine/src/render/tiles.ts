@@ -1,5 +1,31 @@
 export const TILE = 64
 
+/**
+ * Validates the `textureScale` engine option: texture name → how many blocks one repeat of that texture spans
+ * (1 = one tile per block face, the default). Names must be textures the blocks use; scales are in (0, 64].
+ */
+export function checkTextureScale(scale: Readonly<Record<string, number>> | undefined, names: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [name, s] of Object.entries(scale ?? {})) {
+    if (!names.includes(name)) throw new RangeError(`textureScale.${name}: unknown texture (no block uses it)`)
+    if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0 || s > 64) {
+      throw new RangeError(`textureScale.${name} must be a number in (0, 64], got ${String(s)}`)
+    }
+    out[name] = s
+  }
+  return out
+}
+
+/** Per texture-array layer scale (1 unless `scale` names that layer's texture). */
+export function layerScales(layerOf: ReadonlyMap<string, number>, layers: number, scale: Readonly<Record<string, number>>): Float32Array {
+  const out = new Float32Array(layers).fill(1)
+  for (const [name, s] of Object.entries(scale)) {
+    const layer = layerOf.get(name)
+    if (layer !== undefined) out[layer] = s
+  }
+  return out
+}
+
 /** Validates the `tileSize` engine option: a power of two in [16, 1024]. Returns it unchanged. */
 export function checkTileSize(n: number): number {
   if (!Number.isInteger(n) || n < 16 || n > 1024 || (n & (n - 1)) !== 0) {

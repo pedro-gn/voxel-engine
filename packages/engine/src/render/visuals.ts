@@ -24,6 +24,8 @@ export interface VisualsOptions {
   camera: THREE.PerspectiveCamera
   backend: Backend
   texture: THREE.DataArrayTexture
+  /** Per texture-array layer: blocks spanned by one texture repeat (engine `textureScale` option). */
+  textureScales?: Float32Array
   layout: Layout
   /** The orbit camera's distance to its target; sets how far shadows reach. */
   viewDistance: () => number
@@ -54,7 +56,7 @@ export class Visuals {
     o.renderer.shadowMap.enabled = true
     o.renderer.shadowMap.type = THREE.PCFShadowMap
     this.lights = createLightUniforms()
-    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights))
+    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales))
     o.scene.add(this.chunks.group)
     const dm = createDecorationMaterials(o.decorations, this.lights)
     this.decoRadius = dm.radius

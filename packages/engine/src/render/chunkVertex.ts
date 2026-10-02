@@ -1,9 +1,15 @@
-import { attribute, bool, float, select, uint, varying, vec2, vec3 } from 'three/tsl'
+import { attribute, bool, float, modelWorldMatrix, select, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { FLIP_U } from './faceUv.ts'
 
-/** TSL nodes decoded from the packed 8-byte chunk vertex (sub-project 1 format; spec §5 of the core spec). */
-export function chunkVertex() {
+/** Loose TSL node type for the optional per-layer scale table (a `uniformArray` of floats). */
+type ScaleTable = { element(i: unknown): ReturnType<typeof float> }
+
+/**
+ * TSL nodes decoded from the packed 8-byte chunk vertex (sub-project 1 format; spec §5 of the core spec).
+ * `scales`, when given, holds one entry per texture-array layer: how many blocks one repeat of that texture spans.
+ */
+export function chunkVertex(scales?: ScaleTable) {
   const packed = attribute('packed', 'uvec2')
   const a = packed.x, b = packed.y
   const px = a.bitAnd(uint(63)).toFloat()
@@ -23,7 +29,11 @@ export function chunkVertex() {
         select(nIdx.equal(uint(3)), vec3(0, -1, 0),
           select(nIdx.equal(uint(4)), vec3(0, 0, 1), vec3(0, 0, -1))))))
   const axis = nIdx.shiftRight(uint(1))
-  const uvRaw = select(axis.equal(uint(0)), vec2(local.z, local.y), select(axis.equal(uint(1)), vec2(local.x, local.z), vec2(local.x, local.y)))
+  // Project the WORLD position, not the chunk-local one: chunk origins are multiples of 32, so this is identical at
+  // scale 1, and a non-integer texture scale stays continuous across chunk borders.
+  const world = modelWorldMatrix.mul(vec4(local.sub(16), 1)).xyz
+  const proj = select(axis.equal(uint(0)), vec2(world.z, world.y), select(axis.equal(uint(1)), vec2(world.x, world.z), vec2(world.x, world.y)))
+  const uvRaw = scales ? proj.div(scales.element(b.bitAnd(uint(4095)).toInt())) : proj
   const flip = FLIP_U.reduce<ReturnType<typeof nIdx.equal>>((acc, on, f) => (on ? acc.or(nIdx.equal(uint(f))) : acc), bool(false) as unknown as ReturnType<typeof nIdx.equal>)
   const uv = vec2(select(flip, uvRaw.x.negate(), uvRaw.x), uvRaw.y)
   const aoF = select(ao.equal(uint(0)), float(AO_CURVE[0]!),

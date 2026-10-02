@@ -13,7 +13,7 @@ import type { Effects, Quality, WaterInput, WaterParams } from './render/setting
 import { Visuals } from './render/visuals.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
-import { TILE, checkTileSize } from './render/tiles.ts'
+import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
 import { validateCommand, type Ack, type Command, type SetBlockCommand } from './sim/commands.ts'
 import type { SimEvent } from './sim/simulation.ts'
 import { createWorldBuffers } from './world/buffers.ts'
@@ -36,6 +36,8 @@ export interface EngineOptions {
   gpuTiming?: boolean
   /** Texture tile resolution in texels: a power of two in [16, 1024]. Every texture is resized to it. Default 64. */
   tileSize?: number
+  /** Texture name → how many blocks one repeat of it spans (default 1). Use > 1 for large painted textures that would otherwise repeat on every block. */
+  textureScale?: Record<string, number>
 }
 
 export interface EngineEvents {
@@ -124,6 +126,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const registry = new BlockRegistry(o.blocks)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const tileSize = checkTileSize(o.tileSize ?? TILE)
+  const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
   const buffers = createWorldBuffers(size)
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
@@ -170,6 +173,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const detachControls = controls.attach(canvas)
   const visuals = new Visuals({
     renderer, scene, camera, backend, texture: tex.texture, layout,
+    textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     viewDistance: () => controls.current.distance,
     decorations,
   })

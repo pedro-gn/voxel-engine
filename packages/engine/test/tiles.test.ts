@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TILE, checkTileSize, checkerTile, packTiles, dilateAlpha } from '../src/render/tiles.ts'
+import { TILE, checkTextureScale, checkTileSize, checkerTile, layerScales, packTiles, dilateAlpha } from '../src/render/tiles.ts'
 
 function solid(size: number, r: number, g: number, b: number): Uint8Array {
   const px = new Uint8Array(size * size * 4)
@@ -81,5 +81,23 @@ describe('checkTileSize', () => {
     const p = packTiles(['a'], () => solid(128, 10, 20, 30), 128)
     expect(p.data.length).toBe(2 * 128 * 128 * 4)
     expect([...p.data.subarray(128 * 128 * 4, 128 * 128 * 4 + 4)]).toEqual([10, 20, 30, 255])
+  })
+})
+
+describe('texture scale', () => {
+  const names = ['grass_top', 'dirt', 'stone']
+  it('accepts positive scales for known textures', () => {
+    expect(checkTextureScale({ grass_top: 3, dirt: 0.5 }, names)).toEqual({ grass_top: 3, dirt: 0.5 })
+    expect(checkTextureScale(undefined, names)).toEqual({})
+  })
+  it('rejects unknown textures and bad numbers with the field name', () => {
+    expect(() => checkTextureScale({ gras_top: 2 }, names)).toThrow(/textureScale\.gras_top: unknown texture/)
+    for (const bad of [0, -1, Number.NaN, Infinity, 65]) expect(() => checkTextureScale({ dirt: bad }, names)).toThrow(/textureScale\.dirt/)
+  })
+  it('maps scales onto texture-array layers, 1 everywhere else', () => {
+    const layerOf = new Map([['grass_top', 1], ['dirt', 2], ['stone', 3]])
+    expect([...layerScales(layerOf, 4, { grass_top: 3 })]).toEqual([1, 3, 1, 1])
+    // a texture without a loaded image has no layer: its scale is ignored
+    expect([...layerScales(new Map([['dirt', 1]]), 2, { grass_top: 3 })]).toEqual([1, 1])
   })
 })
