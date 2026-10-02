@@ -63,9 +63,8 @@ export class SunLights {
   setMapSize(n: number): void {
     const s = this.sun.shadow
     if (s.mapSize.x === n) return
+    // three 0.186.1's ShadowNode resizes its own render target from mapSize on every update.
     s.mapSize.set(n, n)
-    s.map?.dispose()
-    s.map = null
   }
 
   setEnabled(on: boolean): void {
