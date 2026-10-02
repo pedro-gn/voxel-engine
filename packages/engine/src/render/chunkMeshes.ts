@@ -53,6 +53,9 @@ export class ChunkMeshes {
         return
       }
       const mesh = new THREE.Mesh(geo, this.materials[name])
+      // `position` aliases the packed uint attribute, so three's Raycaster would decode garbage triangles.
+      // Voxel picking goes through engine.raycast instead; keep chunk meshes out of scene raycasts.
+      mesh.raycast = () => {}
       mesh.position.set(cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()

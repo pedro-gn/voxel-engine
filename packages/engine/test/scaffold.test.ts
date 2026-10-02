@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ENGINE_VERSION } from '../src/index.ts'
+import { ENGINE_VERSION } from '../src/version.ts'
 
 describe('scaffold', () => {
   it('exposes a version and supports SharedArrayBuffer', () => {
