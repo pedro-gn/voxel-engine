@@ -3,7 +3,7 @@ import {
   cameraFar, cameraNear, cameraPosition, dot, float, fract, max, mix, mx_noise_float, normalize, perspectiveDepthToViewZ,
   positionView, positionWorld, select, smoothstep, step, time, uniform, vec2, vec3, vec4, viewportDepthTexture,
 } from 'three/tsl'
-import { sunDirection, type Atmosphere } from './atmosphere.ts'
+import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
 import { chunkVertex } from './chunkVertex.ts'
 import { setLinear } from './lighting.ts'
 import type { WaterParams } from './settings.ts'
@@ -26,6 +26,8 @@ export class WaterMaterial {
     waveSpeed: uniform(0.6),
     sunDir: uniform(new THREE.Vector3(0, 1, 0)),
     sunColor: uniform(new THREE.Color()),
+    /** sunVisibility(elevation) × min(intensity, 1): no glint once the sun has set. */
+    sunVis: uniform(1),
     horizon: uniform(new THREE.Color()),
   }
 
@@ -68,7 +70,7 @@ export class WaterMaterial {
 
     const view = cameraPosition.sub(wp).normalize()
     const half = normalize(view.add(u.sunDir))
-    const spec = dot(n, half).max(0).pow(160).mul(2.5).mul(smoothstep(0.35, 0.95, v.sky))
+    const spec = dot(n, half).max(0).pow(160).mul(2.5).mul(smoothstep(0.35, 0.95, v.sky)).mul(u.sunVis)
     const fresnel = float(1).sub(dot(n, view).max(0)).pow(4).mul(0.35)
     m.emissiveNode = (m.emissiveNode as N).add(u.sunColor.mul(spec)).add(u.horizon.mul(fresnel))
     this.material = m
@@ -87,6 +89,7 @@ export class WaterMaterial {
     const [x, y, z] = sunDirection(a.sun.azimuth, a.sun.elevation)
     this.u.sunDir.value.set(x, y, z)
     setLinear(this.u.sunColor.value, a.sun.color)
+    this.u.sunVis.value = sunVisibility(a.sun.elevation) * Math.min(a.sun.intensity, 1)
     setLinear(this.u.horizon.value, a.sky.horizon)
   }
 

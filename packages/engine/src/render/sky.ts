@@ -3,7 +3,7 @@ import {
   cameraPosition, dot, float, fog, mix, mx_fractal_noise_float, normalWorldGeometry, positionView, positionWorld,
   screenUV, smoothstep, time, uniform, vec2, vec3,
 } from 'three/tsl'
-import { sunDirection, type Atmosphere } from './atmosphere.ts'
+import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
 
 const CLOUD_ALTITUDE = 300
@@ -16,6 +16,8 @@ export class Sky {
     sunDir: uniform(new THREE.Vector3(0, 1, 0)),
     sunColor: uniform(new THREE.Color()),
     sunGlow: uniform(0),
+    /** sunVisibility(elevation) × min(intensity, 1): hides the disc and halo once the sun has set. */
+    sunVis: uniform(1),
     dome: uniform(1),
     coverage: uniform(0.4),
     cloudScale: uniform(400),
@@ -36,7 +38,7 @@ export class Sky {
     const dir = normalWorldGeometry.normalize()
     const gradient = mix(u.horizon, u.zenith, dir.y.max(0).pow(0.55))
     const sd = dot(dir, u.sunDir).max(0)
-    const glow = u.sunColor.mul(sd.pow(48).mul(u.sunGlow).add(smoothstep(0.9995, 0.9999, sd).mul(3)))
+    const glow = u.sunColor.mul(sd.pow(48).mul(u.sunGlow).add(smoothstep(0.9995, 0.9999, sd).mul(3))).mul(u.sunVis)
     const t = float(CLOUD_ALTITUDE).sub(cameraPosition.y).div(dir.y.max(0.03))
     const p = cameraPosition.xz.add(dir.xz.mul(t)).add(vec2(time.mul(u.cloudSpeed), 0)).div(u.cloudScale)
     const n = mx_fractal_noise_float(vec3(p, 0), 4, 2, 0.5).mul(0.5).add(0.5)
@@ -67,6 +69,7 @@ export class Sky {
     u.sunDir.value.set(x, y, z)
     setLinear(u.sunColor.value, a.sun.color)
     u.sunGlow.value = a.sky.sunGlow
+    u.sunVis.value = sunVisibility(a.sun.elevation) * Math.min(a.sun.intensity, 1)
     u.dome.value = a.sky.dome
     u.coverage.value = a.sky.clouds.coverage
     u.cloudScale.value = a.sky.clouds.scale
