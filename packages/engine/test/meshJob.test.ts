@@ -68,4 +68,22 @@ describe('MeshJobRunner', () => {
     }
     expect(checked).toBe(1)
   })
+  it('does not return an EMPTY trivial result when a write commits during the trivial check', () => {
+    const { store, runner } = setup()
+    const reader = (runner as unknown as { reader: { isTrivial(ci: number): boolean } }).reader
+    const orig = reader.isTrivial.bind(reader)
+    reader.isTrivial = (ci) => { const t = orig(ci); store.setVoxel(3, 3, 3, ID.stone); store.commit(); return t }
+    const r = runner.run({ id: 20, chunk: 0 })
+    expect(r.type).toBe('result')
+    if (r.type !== 'result') return
+    expect(r.version).toBe(2)
+    expect(r.data.opaque!.indices.length).toBe(36)
+  })
+  it('never reports a trivial result under an odd (mid-write) version', () => {
+    const { store, runner } = setup()
+    const reader = (runner as unknown as { reader: { isTrivial(ci: number): boolean } }).reader
+    store.setVoxel(3, 3, 3, ID.stone) // chunk open: odd version
+    reader.isTrivial = () => true
+    expect(runner.run({ id: 21, chunk: 0 }).type).toBe('retry')
+  })
 })

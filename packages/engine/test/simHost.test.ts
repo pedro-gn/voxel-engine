@@ -95,4 +95,32 @@ describe('SimHost', () => {
     host.handle({ type: 'init', buffers: createWorldBuffers([32, 32, 32]), blocks: TEST_BLOCKS, seed: 1, options: {} })
     expect(out.at(-1)).toMatchObject({ type: 'fatal', message: expect.stringMatching(/kaboom/) })
   })
+  it('stays dead after a failed init: start and submit never produce ticks', () => {
+    const out: FromSim[] = []
+    const clock = { t: 0, now() { return this.t }, setTimeout() { return 0 }, clearTimeout() {} }
+    const boom = defineGenerator({ generateColumn() { throw new Error('kaboom') } })
+    const host = new SimHost((m) => out.push(m), { generator: boom }, clock)
+    host.handle({ type: 'init', buffers: createWorldBuffers([32, 32, 32]), blocks: TEST_BLOCKS, seed: 1, options: {} })
+    host.handle({ type: 'start' })
+    host.handle({ type: 'submit', clientId: 0, seq: 1, cmd: { type: 'setBlock', pos: [1, 1, 1], voxel: ID.stone } })
+    clock.t = 200; host.pump()
+    expect(out.filter((m) => m.type === 'tick')).toHaveLength(0)
+  })
+  it('stays dead after a mid-run fatal: a later start does not resume ticking', () => {
+    const out: FromSim[] = []
+    const clock = { t: 0, now() { return this.t }, setTimeout() { return 0 }, clearTimeout() {} }
+    const host = new SimHost((m) => out.push(m), { generator: empty }, clock)
+    host.handle({ type: 'init', buffers: createWorldBuffers([512, 64, 512]), blocks: TEST_BLOCKS, seed: 1, options: { maxPages: 1 } })
+    host.handle({ type: 'start' })
+    let seq = 0
+    for (let cz = 0; cz < 16; cz++) for (let cx = 0; cx < 16; cx++) for (let cy = 0; cy < 2; cy++) {
+      host.handle({ type: 'submit', clientId: 0, seq: seq++, cmd: { type: 'setBlock', pos: [cx * 32, cy * 32, cz * 32], voxel: ID.stone } })
+    }
+    clock.t = 50; host.pump()
+    expect(out.some((m) => m.type === 'fatal')).toBe(true)
+    host.handle({ type: 'start' })
+    host.handle({ type: 'submit', clientId: 0, seq: 9999, cmd: { type: 'setBlock', pos: [1, 1, 1], voxel: ID.stone } })
+    clock.t = 400; host.pump()
+    expect(out.filter((m) => m.type === 'tick')).toHaveLength(0)
+  })
 })

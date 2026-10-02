@@ -26,6 +26,8 @@ export class SimHost {
   private readonly modules: SimModules
   private readonly clock: Clock
   private sim: Simulation | null = null
+  /** Latched by a fatal: nothing is accepted or ticked afterwards. */
+  private dead = false
   private stepMs = 50
   private running = false
   private acc = 0
@@ -41,6 +43,7 @@ export class SimHost {
   }
 
   handle(msg: ToSim): void {
+    if (this.dead) return
     switch (msg.type) {
       case 'init':
         try {
@@ -81,7 +84,7 @@ export class SimHost {
   }
 
   pump(): void {
-    if (!this.running || !this.sim) return
+    if (this.dead || !this.running || !this.sim) return
     const now = this.clock.now()
     this.acc += now - this.last
     this.last = now
@@ -112,6 +115,8 @@ export class SimHost {
   }
 
   private fail(e: unknown): void {
+    this.dead = true
+    this.sim = null
     this.running = false
     this.clock.clearTimeout(this.timer)
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e)

@@ -26,8 +26,13 @@ export class MeshJobRunner {
   run(job: { id: number; chunk: number; overrides?: readonly Override[] }): FromMesh {
     const { id, chunk } = job
     const hasOverrides = job.overrides !== undefined && job.overrides.length > 0
-    if (!hasOverrides && this.reader.isTrivial(chunk)) {
-      return { type: 'result', id, chunk, version: Atomics.load(this.reader.versions, chunk), data: EMPTY }
+    if (!hasOverrides) {
+      // isTrivial reads the table without a seqlock bracket, so only trust it if the version
+      // was even before and unchanged after; otherwise fall through to the validated snapshot.
+      const v0 = Atomics.load(this.reader.versions, chunk)
+      if ((v0 & 1) === 0 && this.reader.isTrivial(chunk) && Atomics.load(this.reader.versions, chunk) === v0) {
+        return { type: 'result', id, chunk, version: v0, data: EMPTY }
+      }
     }
     const version = this.reader.snapshot(chunk, this.snap)
     if (version === null) return { type: 'retry', id, chunk }
