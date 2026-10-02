@@ -30,7 +30,7 @@ export interface VisualsOptions {
   decorations: DecorationRegistry
 }
 
-/** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Water and decorations come in later tasks. */
+/** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water material and the instanced grass and flower decorations. */
 export class Visuals {
   readonly atmosphere = new AtmosphereController()
   readonly chunks: ChunkMeshes

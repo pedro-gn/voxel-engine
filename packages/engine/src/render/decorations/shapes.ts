@@ -29,13 +29,13 @@ export function tuftArrays(): DecorationArrays {
   return { position, info, index }
 }
 
-/** A thin stem and two crossed petal quads around (0, 0); sizes in blocks. info.x: 0 stem, 1 petal; info.y: height fraction. */
+/** A thin stem and two horizontal petal quads 45° apart around (0, 0); sizes in blocks. info.x: 0 stem, 1 petal; info.y: height fraction. */
 export function flowerArrays(): DecorationArrays {
-  const H = 0.42, P = 0.11, S = 0.015
+  const H = 0.42, P = 0.13, R = P * Math.SQRT2, S = 0.015, Y = H + 0.005
   const verts: [number, number, number, number, number][] = [
     [-S, 0, 0, 0, 0], [S, 0, 0, 0, 0], [S, H, 0, 0, 1], [-S, H, 0, 0, 1],
-    [-P, H - 0.02, -P, 1, 1], [P, H - 0.02, P, 1, 1], [P, H + 0.04, P, 1, 1], [-P, H + 0.04, -P, 1, 1],
-    [-P, H - 0.02, P, 1, 1], [P, H - 0.02, -P, 1, 1], [P, H + 0.04, -P, 1, 1], [-P, H + 0.04, P, 1, 1],
+    [-P, H, -P, 1, 1], [P, H, -P, 1, 1], [P, H, P, 1, 1], [-P, H, P, 1, 1],
+    [0, Y, -R, 1, 1], [R, Y, 0, 1, 1], [0, Y, R, 1, 1], [-R, Y, 0, 1, 1],
   ]
   const position = new Float32Array(12 * 3)
   const info = new Float32Array(12 * 4)

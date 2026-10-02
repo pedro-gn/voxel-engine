@@ -42,6 +42,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
 
   // ---- grass ----
   const gi = instance()
+  const vBase: N = varying((bases.element(gi.deco) as N).xyz), vTip: N = varying((tips.element(gi.deco) as N).xyz)
   const pos = attribute('position', 'vec3'), info = attribute('info', 'vec4')
   const P: N = params.element(gi.deco)
   const k = floor(gi.rnd.mul(8))
@@ -65,7 +66,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const grass = new VoxelNodeMaterial(gi.sky)
   grass.positionNode = select(info.x.lessThan(P.x), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
   const vt: N = varying(t), vr: N = varying(gi.rnd)
-  const gAlbedo: N = mix((bases.element(gi.deco) as N).xyz, (tips.element(gi.deco) as N).xyz, vt.pow(1.2)).mul(vr.mul(0.3).add(0.85))
+  const gAlbedo: N = mix(vBase, vTip, vt.pow(1.2)).mul(vr.mul(0.3).add(0.85))
   grass.colorNode = vec4(gAlbedo, 1)
   grass.side = THREE.DoubleSide
   voxelLit(grass, { normal: vec3(0, 1, 0), sky: gi.sky, blk: gi.blk, ao: mix(float(0.55), float(1), vt), albedo: gAlbedo }, lights)
@@ -80,7 +81,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const ox = fi.rnd.mul(0.6).add(0.2), oz = fract(fi.rnd.mul(13.7)).mul(0.6).add(0.2)
   const flowers = new VoxelNodeMaterial(fi.sky)
   flowers.positionNode = fi.cell.add(vec3(ox.add(fpos.x.mul(scale)).add(fsway), fpos.y.mul(scale), oz.add(fpos.z.mul(scale)).add(fsway.mul(0.6))))
-  const petal = (petals.element(fi.deco.mul(MAX_FLOWER_COLORS).add(fi.color)) as N).xyz
+  const petal: N = varying((petals.element(fi.deco.mul(MAX_FLOWER_COLORS).add(fi.color)) as N).xyz)
   const fAlbedo = select(varying(finfo.x).lessThan(0.5), vec3(0.16, 0.36, 0.09), petal)
   flowers.colorNode = vec4(fAlbedo, 1)
   flowers.side = THREE.DoubleSide

@@ -57,7 +57,7 @@ export class DecorationMeshes {
 
   cull(camera: THREE.Vector3, radius: number, maxInstances: number): { instances: number; draws: number } {
     const list: DecorationChunk[] = []
-    for (const [ci, e] of this.entries) list.push({ ci, dist: e.centre.distanceTo(camera), count: e.count })
+    for (const [ci, e] of this.entries) list.push({ ci, dist: Math.hypot(e.centre.x - camera.x, e.centre.z - camera.z), count: e.count })
     const show = selectVisible(list, radius, maxInstances)
     let instances = 0, draws = 0
     for (const [ci, e] of this.entries) {

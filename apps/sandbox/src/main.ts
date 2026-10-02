@@ -32,6 +32,7 @@ const engine = await createEngine({
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
 if (sceneName === 'diorama') {
+  engine.quality = { decorationRadius: 256 } // the 128-block diorama is viewed from ~150 blocks; the engine default (96) would fade all grass out
   for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 64; s.target[1] = 30; s.target[2] = 64
     s.distance = 150

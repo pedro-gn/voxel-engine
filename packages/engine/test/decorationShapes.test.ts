@@ -34,4 +34,18 @@ describe('flowerArrays', () => {
     for (let v = 0; v < 12; v++) parts.add(f.info[v * 4]!)
     expect([...parts].sort()).toEqual([0, 1])
   })
+  it('lays the petals flat at the flower head, non-degenerate in xz', () => {
+    const f = flowerArrays()
+    const ys = []
+    for (let v = 4; v < 12; v++) ys.push(f.position[v * 3 + 1]!)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(0.01)
+    expect(Math.abs(ys[0]! - 0.42)).toBeLessThan(0.01)
+    for (const q of [4, 8]) {
+      const p = (v: number) => [f.position[(q + v) * 3]!, f.position[(q + v) * 3 + 2]!] as const
+      // shoelace area over the 4 corners
+      let a = 0
+      for (let i = 0; i < 4; i++) { const [x1, z1] = p(i), [x2, z2] = p((i + 1) % 4); a += x1 * z2 - x2 * z1 }
+      expect(Math.abs(a / 2)).toBeGreaterThan(0.01)
+    }
+  })
 })

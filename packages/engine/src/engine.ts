@@ -391,12 +391,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       if (pos) highlight.position.set(pos[0] + 0.5, pos[1] + 0.5, pos[2] + 0.5)
     },
     on: (type, fn) => events.on(type, fn),
-    stats: () => ({
+    stats: () => {
+      const vs = visuals.stats()
+      return {
       fps, frameMs, tick: lastTick, tickMs: lastTickMs,
       meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
       slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
-      ...(({ shadowCasters, decorationInstances, decorationDraws }) => ({ shadowCasters, decorationInstances, decorationDraws }))(visuals.stats()),
-    }),
+        shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws,
+      }
+    },
     dispose,
   }
 }
