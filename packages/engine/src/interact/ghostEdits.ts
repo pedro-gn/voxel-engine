@@ -24,6 +24,7 @@ export class GhostEdits {
   get size(): number { return this.byPos.size }
 
   add(seq: number, x: number, y: number, z: number, voxel: number): number[] {
+    if (!this.layout.inBounds(x, y, z)) return [] // would alias onto an in-bounds voxel
     const key = this.layout.voxelIndex(x, y, z)
     this.byPos.set(key, { seq, x, y, z, voxel })
     const list = this.bySeq.get(seq)

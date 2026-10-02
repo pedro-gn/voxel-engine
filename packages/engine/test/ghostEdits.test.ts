@@ -40,6 +40,20 @@ describe('GhostEdits', () => {
     expect(g.overridesFor(0)).toEqual([[32, 5, 5, 3]])
     expect(g.overridesFor(1)).toHaveLength(2)
   })
+  it('ignores out-of-bounds adds instead of aliasing onto in-bounds voxels', () => {
+    const g = new GhostEdits(L)
+    g.add(1, 0, 5, 6, 3)
+    const cases: [number, number, number][] = [[64, 5, 5], [-1, 5, 6], [5, 64, 5]]
+    cases.forEach(([x, y, z], i) => {
+      const seq = 10 + i
+      expect(g.add(seq, x, y, z, 7)).toEqual([])
+      expect(g.get(0, 5, 6)).toBe(3)
+      expect(g.size).toBe(1)
+      expect(g.resolve(seq)).toEqual([])
+    })
+    for (let c = 0; c < 8; c++) for (const [x, y, z] of g.overridesFor(c)) expect(L.inBounds(x, y, z)).toBe(true)
+    expect(g.resolve(1)).toEqual([0])
+  })
   it('feeds the raycast through an overlay getter', () => {
     const g = new GhostEdits(L)
     g.add(1, 5, 10, 0, 1)
