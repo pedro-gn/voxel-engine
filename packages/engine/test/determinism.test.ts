@@ -74,7 +74,6 @@ describe('determinism', () => {
     const ha = run(a, 500)
     const hb = run(b, 500)
     expect(ha).toBe(hb)
-    console.log("randomTickChanges", ca.n)
     expect(ca.n).toBeGreaterThan(20) // the random-tick rule really changed the world
     expect(a.commandLog.some((c) => c.cmd.type === 'setThenThrow')).toBe(true)
     expect(a.store.getVoxel(5, 1, 5)).toBe(4) // the failing handler's partial effect (glass) stuck
