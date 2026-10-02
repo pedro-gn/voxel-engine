@@ -1,26 +1,13 @@
 import { expect } from 'vitest'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
-import { meshTablesFrom, type MeshTables } from '../src/mesh/tables.ts'
 import { FACE_NORMALS, unpackA } from '../src/mesh/vertexFormat.ts'
-import { createSnapshot, padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
-import { AIR, FULL_SKY } from '../src/world/voxel.ts'
-import { testRegistry } from './helpers.ts'
+import { padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
 
-export function emptySnap(): ChunkSnapshot {
-  const s = createSnapshot()
-  s.voxels.fill(AIR)
-  s.light.fill(FULL_SKY)
-  return s
-}
+export { emptySnap, meshTables } from './meshFixtures.ts'
 
 /** Local chunk coords; -1 and 32 address the 1-voxel border. */
 export function put(s: ChunkSnapshot, lx: number, ly: number, lz: number, v: number): void {
   s.voxels[padIndex(lx + 1, ly + 1, lz + 1)] = v
-}
-
-export function meshTables(): MeshTables {
-  const reg = testRegistry()
-  return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
 }
 
 export function countByNormal(m: LayerMesh | null, normal: number): number {
