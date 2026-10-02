@@ -1,7 +1,7 @@
 # Elovox — Sub-project 2b: Terrain Toolkit — Design
 
 Date: 2026-10-02
-Status: Approved in brainstorming; awaiting written-spec review
+Status: Approved; implementation plan in `docs/superpowers/plans/2026-10-02-terrain-toolkit.md`
 Builds on: `2026-10-01-voxel-core-design.md` (sub-project 1) and
 `2026-10-02-visual-polish-design.md` (sub-project 2a), both merged on `main`
 
@@ -116,7 +116,8 @@ interface TerrainDoc {
   format: 'elovox-terrain'
   version: 1
   size: [number, number]        // x, z; must equal the world's x, z (y = world height)
-  seaLevel: number              // water fills open basins below this
+  seaLevel: number              // every non-solid voxel below this y is water (column-local: keep inland ground above it)
+  blocks?: Partial<BlockNames>  // names of fill, water, log, leaves, pineLeaves and rock blocks (defaults: stone, water, …)
   base: BaseDef                 // the procedural fill: scale, amplitude, octaves, warp
   biomes: BiomeDef[]            // palette: surface rules, tree and rock settings
   biomeRule: BiomeRule          // default biome from height and a moisture noise
@@ -160,6 +161,7 @@ Each op combines a **shape**, a **profile**, a **blend mode** and **noise**.
   | `river` | Carves the channel, sets the water level and shapes the banks |
   | `lake` | A basin and its water level |
   | `flatten` | A flat building site |
+  | `biome` | Paints a biome over an area (border optionally jittered with noise); changes no height |
 
 - **Volume ops (3D):** each declares a bounding box and adds density, subtracts it, or
   both.
@@ -258,7 +260,8 @@ runGenWorker({ generator: terrainGenerator })
 
 engine.terrain.setDocument(doc)                       // validates, sends to sim and gen workers
 await engine.terrain.regenerate({ x0, z0, x1, z1 })   // resolves once the area is replaced
-engine.on('generated', ({ ms, columns }) => { /* ... */ })
+engine.terrain.initial                                // { ms, columns } of the initial generation
+engine.on('generated', ({ ms, columns }) => { /* ... */ })   // after each regeneration
 ```
 
 - Without `genWorker`, generation stays serial in the sim worker, as today. The
