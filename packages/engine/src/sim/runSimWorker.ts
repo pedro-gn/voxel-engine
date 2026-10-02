@@ -15,5 +15,7 @@ export function runSimWorker(modules: SimModules): void {
 
 export type { SimModules } from './simHost.ts'
 export { defineRules } from './rules.ts'
+export type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
 export { defineGenerator } from './generator.ts'
+export type { GeneratorContext, GeneratorModule } from './generator.ts'
 export { testGenerator } from './testGenerator.ts'
