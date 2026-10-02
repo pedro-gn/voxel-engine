@@ -23,6 +23,7 @@ function surfaceSnap() {
   return s
 }
 
+// Tracks relative regressions only; the absolute 3 ms gate is `bench:node` (Vitest's runtime adds ~4x overhead).
 describe('mesher', () => {
   const tables = meshTables()
   const mesher = new Mesher()
