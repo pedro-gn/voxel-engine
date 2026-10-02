@@ -5,7 +5,13 @@ import { paintTextures } from './textures.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'glass', 'torch']
 const params = new URLSearchParams(location.search)
-const n = Number(params.get('size') ?? 1024)
+/** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
+function worldSide(raw: string | null): number {
+  const v = Number(raw ?? 1024)
+  if (!Number.isFinite(v)) return 1024
+  return Math.min(1024, Math.max(32, Math.round(v / 32) * 32))
+}
+const n = worldSide(params.get('size'))
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 
 const engine = await createEngine({
