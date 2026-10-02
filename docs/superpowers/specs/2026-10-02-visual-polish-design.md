@@ -1,7 +1,7 @@
 # Elovox — Sub-project 2a: Visual Polish — Design
 
 Date: 2026-10-02
-Status: Approved in brainstorming, pending spec review
+Status: Approved; implemented on feat/visual-polish
 Builds on: `2026-10-01-voxel-core-design.md` (sub-project 1, merged on `main`)
 
 ## 1. Context

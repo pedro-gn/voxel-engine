@@ -4663,6 +4663,8 @@ Workarounds adopted (later tasks must apply them):
 - None for three.js itself. `SUPPORT` stays all-true.
 - Lesson: a value derived from an integer attribute (`packed`, `inst`) and read in the fragment stage must go through an explicit `varying()`. Otherwise it is flat-interpolated (constant per triangle). The spike's un-varyinged `uv` rendered flat; `chunkVertex()` already wraps uv/layer/sky/blk/ao/normal. The water and decoration materials must keep doing the same for any float they read in the fragment shader.
 
+Tone mapping chosen at Checkpoint 1: Neutral (AgX muted the greens); OPEN grade saturation 1.0.
+
 ## Performance results (Task 16)
 
 Measured 2026-10-02 on the user's desktop (WebGPU, headed Chromium, 1920 × 889 viewport, display capped at 180 fps). This is **not** a mid-range laptop. `?size=1024&gpu`, open preset, after the mesh queue drained. Each value is the mean of 6 samples taken 0.5 s apart.
@@ -4686,3 +4688,5 @@ Measured 2026-10-02 on the user's desktop (WebGPU, headed Chromium, 1920 × 889 
 bench:node: 2.673 ms/chunk (limit 3 ms).
 
 Reading: every GPU budget holds by a wide margin on this machine. The limit is **CPU-side draw submission**. At the default view the frame takes 8.9 ms (≤ 16.7). Fully zoomed out, the frame takes 31.7 ms (34 fps), because the shadow pass re-draws all 2 569 casters (shadow distance clamps at 700) on top of about 1 300 main draws. Note that "shadows off" keeps shadow sampling in materials (three 0.186.1 workaround, Task 16), so its GPU saving undercounts sampling. Options for the user: cap the shadow distance lower at far zoom; reduce caster draws (fewer, larger casters or `BatchedMesh`, the spec's planned upgrade); or accept the 34 fps at the extreme zoom.
+
+Re-measured after Checkpoint 3 tune: with the fixed 350 shadow-distance cap, the default view ran at 142 fps / 7.5 ms / 791 draws and the zoomed-out view at 40 fps / 22.2 ms / 2 961 draws. The final review then replaced the cap with `clamp(min(3d, d + 150), 96, 700)` (Deviation 6), so the zoomed-out figure is expected between 34 and 40 fps; the controller re-measures it.
