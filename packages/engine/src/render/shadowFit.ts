@@ -30,7 +30,10 @@ export function frustumCorners(position: V3, forward: V3, up: V3, fovYDeg: numbe
 export interface ShadowFit { position: V3; target: V3; up: V3; halfSize: number; near: number; far: number; texel: number }
 
 export function fitShadow(corners: readonly V3[], sunDir: V3, mapSize: number, minY: number, maxY: number): ShadowFit {
-  const f = norm([-sunDir[0], -sunDir[1], -sunDir[2]])
+  const s = norm(sunDir)
+  const f: V3 = [-s[0], -s[1], -s[2]]
+  // Distance back along the light per block of height: casters up the sun ray to maxY stay inside the near plane.
+  const perHeight = 1 / Math.max(s[1], 0.1)
   let r = cross(f, [0, 1, 0])
   if (Math.hypot(r[0], r[1], r[2]) < 1e-4) r = cross(f, [0, 0, 1])
   r = norm(r)
@@ -41,7 +44,7 @@ export function fitShadow(corners: readonly V3[], sunDir: V3, mapSize: number, m
     const pr = dot(p, r), pu = dot(p, u), pf = dot(p, f)
     r0 = Math.min(r0, pr); r1 = Math.max(r1, pr)
     u0 = Math.min(u0, pu); u1 = Math.max(u1, pu)
-    f0 = Math.min(f0, pf, dot([c[0], maxY, c[2]], f)); f1 = Math.max(f1, pf)
+    f0 = Math.min(f0, pf - (maxY - p[1]) * perHeight); f1 = Math.max(f1, pf)
   }
   const halfSize = Math.ceil((Math.max(r1 - r0, u1 - u0) / 2 + PAD) / HALF_STEP) * HALF_STEP
   const texel = (2 * halfSize) / mapSize

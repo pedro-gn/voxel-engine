@@ -43,12 +43,20 @@ describe('fitShadow', () => {
     }
   })
 
-  it('reaches up to the world top towards the sun', () => {
+  it('includes casters up the sun ray to the world top for a low sun', () => {
+    const elev = (9 * Math.PI) / 180, yaw = (30 * Math.PI) / 180
+    const sun: V3 = [Math.cos(elev) * Math.cos(yaw), Math.sin(elev), Math.cos(elev) * Math.sin(yaw)]
     const corners = viewCorners()
-    const s = fitShadow(corners, SUN, 2048, 0, 128)
-    const { f } = basis()
+    const s = fitShadow(corners, sun, 2048, 0, 128)
+    const f = norm([-sun[0], -sun[1], -sun[2]])
     const cf = dot(s.position, f)
-    for (const c of corners) expect(dot([c[0], 128, c[2]], f) - cf).toBeGreaterThanOrEqual(0)
+    for (const c0 of corners) {
+      const c: V3 = [c0[0], Math.min(128, Math.max(0, c0[1])), c0[2]]
+      const k = (128 - c[1]) / sun[1]
+      const q: V3 = [c[0] + sun[0] * k, c[1] + sun[1] * k, c[2] + sun[2] * k]
+      expect(dot(q, f) - cf).toBeGreaterThanOrEqual(s.near)
+      expect(dot(q, f) - cf).toBeLessThanOrEqual(s.far)
+    }
   })
 
   it('snaps the centre to whole texels and quantises the size', () => {
