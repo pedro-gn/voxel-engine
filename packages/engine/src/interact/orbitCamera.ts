@@ -54,7 +54,8 @@ export class OrbitCamera {
     this.translate(forward * speed * dt, right * speed * dt)
   }
 
-  update(dt: number): void {
+  update(rawDt: number): void {
+    const dt = Number.isFinite(rawDt) ? clamp(rawDt, 0, 0.1) : 0
     const f = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0) - this.edge[1]
     const r = (this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('KeyA') ? 1 : 0) + this.edge[0]
     if (f || r) this.move(clamp(f, -1, 1), clamp(r, -1, 1), dt)
@@ -76,10 +77,12 @@ export class OrbitCamera {
 
   attach(canvas: HTMLCanvasElement): () => void {
     let dragging = false
+    let dragPointer = -1
     let lx = 0, ly = 0
     const down = (e: PointerEvent) => {
       if (e.button !== 1 && e.button !== 2) return
       dragging = true
+      dragPointer = e.pointerId
       this.lastDragDistance = 0
       lx = e.clientX; ly = e.clientY
       canvas.setPointerCapture(e.pointerId)
@@ -88,13 +91,17 @@ export class OrbitCamera {
       const rect = canvas.getBoundingClientRect()
       const ex = e.clientX - rect.left, ey = e.clientY - rect.top
       this.edge = [ex < EDGE_PX ? -1 : ex > rect.width - EDGE_PX ? 1 : 0, ey < EDGE_PX ? -1 : ey > rect.height - EDGE_PX ? 1 : 0]
-      if (!dragging) return
+      if (!dragging || e.pointerId !== dragPointer) return
       const dx = e.clientX - lx, dy = e.clientY - ly
       lx = e.clientX; ly = e.clientY
       this.lastDragDistance += Math.abs(dx) + Math.abs(dy)
       this.rotate(-dx * 0.005, dy * 0.005)
     }
-    const up = (e: PointerEvent) => { if (dragging) { dragging = false; canvas.releasePointerCapture(e.pointerId) } }
+    const endDrag = (e: PointerEvent) => { if (dragging && e.pointerId === dragPointer) dragging = false }
+    const up = (e: PointerEvent) => {
+      if (dragging && e.pointerId === dragPointer) canvas.releasePointerCapture(e.pointerId)
+      endDrag(e)
+    }
     const leave = () => { this.edge = [0, 0] }
     const wheel = (e: WheelEvent) => { e.preventDefault(); this.zoom(e.deltaY) }
     const menu = (e: Event) => e.preventDefault()
@@ -105,6 +112,8 @@ export class OrbitCamera {
     canvas.addEventListener('pointermove', move)
     canvas.addEventListener('pointerup', up)
     canvas.addEventListener('pointerleave', leave)
+    canvas.addEventListener('pointercancel', endDrag)
+    canvas.addEventListener('lostpointercapture', endDrag)
     canvas.addEventListener('wheel', wheel, { passive: false })
     canvas.addEventListener('contextmenu', menu)
     window.addEventListener('keydown', kd)
@@ -115,6 +124,8 @@ export class OrbitCamera {
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerup', up)
       canvas.removeEventListener('pointerleave', leave)
+      canvas.removeEventListener('pointercancel', endDrag)
+      canvas.removeEventListener('lostpointercapture', endDrag)
       canvas.removeEventListener('wheel', wheel)
       canvas.removeEventListener('contextmenu', menu)
       window.removeEventListener('keydown', kd)

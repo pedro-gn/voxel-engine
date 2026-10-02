@@ -56,3 +56,55 @@ describe('OrbitCamera', () => {
     expect(seen[1]).toEqual([0, 0, 0])
   })
 })
+
+describe('OrbitCamera robustness', () => {
+  const finite = (c: OrbitCamera) =>
+    [...c.current.target, c.current.yaw, c.current.pitch, c.current.distance, ...c.goal.target].every(Number.isFinite)
+  const press = (c: OrbitCamera) => (c as unknown as { keys: Set<string> }).keys.add('KeyW')
+  it('ignores NaN and negative dt', () => {
+    const c = make()
+    press(c)
+    const before = JSON.stringify([c.goal, c.current])
+    c.update(NaN)
+    c.update(-1)
+    expect(finite(c)).toBe(true)
+    expect(JSON.stringify([c.goal, c.current])).toBe(before)
+  })
+  it('caps a huge dt at 0.1 s', () => {
+    const a = make(), b = make()
+    press(a); press(b)
+    a.update(60)
+    b.update(0.1)
+    expect(a.goal.target).toEqual(b.goal.target)
+    expect(a.current.target).toEqual(b.current.target)
+  })
+  it('ends the drag only for the dragging pointer, and on cancel / lost capture', () => {
+    const handlers = new Map<string, (e: unknown) => void>()
+    const canvas = {
+      addEventListener: (n: string, h: (e: unknown) => void) => handlers.set(n, h),
+      removeEventListener: (n: string) => handlers.delete(n),
+      setPointerCapture: () => {}, releasePointerCapture: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1000 }),
+    }
+    const win = { addEventListener: () => {}, removeEventListener: () => {} }
+    ;(globalThis as { window?: unknown }).window = win
+    try {
+      const c = make()
+      const detach = c.attach(canvas as unknown as HTMLCanvasElement)
+      const ev = (id: number, x: number) => ({ pointerId: id, button: 2, clientX: x, clientY: 500 })
+      let x = 500
+      const rotates = () => { const y = c.goal.yaw; x += 10; handlers.get('pointermove')!(ev(1, x)); return c.goal.yaw !== y }
+      for (const end of ['pointercancel', 'lostpointercapture', 'pointerup']) {
+        handlers.get('pointerdown')!(ev(1, x))
+        handlers.get('pointerup')!(ev(2, x)) // another pointer: drag continues
+        expect(rotates()).toBe(true)
+        handlers.get(end)!(ev(1, x))
+        expect(rotates()).toBe(false)
+      }
+      detach()
+      expect(handlers.size).toBe(0)
+    } finally {
+      delete (globalThis as { window?: unknown }).window
+    }
+  })
+})
