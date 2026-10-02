@@ -9,6 +9,7 @@ import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, SimInitOptions, ToMesh, ToSim } from './protocol.ts'
 import { ChunkMeshes } from './render/chunkMeshes.ts'
 import { createChunkMaterials } from './render/materials.ts'
+import { createLightUniforms } from './render/voxelLighting.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { validateCommand, type Ack, type Command, type SetBlockCommand } from './sim/commands.ts'
@@ -135,8 +136,13 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const tex = await buildTextureArray(o.textures, registry.textureNames())
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
   const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf))
-  const chunkMeshes = new ChunkMeshes(layout, createChunkMaterials(tex.texture))
+  const lightUniforms = createLightUniforms()
+  const chunkMeshes = new ChunkMeshes(layout, createChunkMaterials(tex.texture, lightUniforms))
   scene.add(chunkMeshes.group)
+  // Temporary until Task 5's Visuals: plain lights so the lit chunk materials aren't black.
+  const tmpSun = new THREE.DirectionalLight(0xfff1d6, Math.PI * 1.6)
+  tmpSun.position.set(0.45, 0.8, 0.35)
+  scene.add(tmpSun, new THREE.HemisphereLight(0xa8c8ff, 0x6b5a45, Math.PI * 0.7))
   const highlight = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
     new THREE.LineBasicNodeMaterial({ color: 0x1b1f24 }),
