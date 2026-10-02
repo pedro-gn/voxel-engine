@@ -85,6 +85,16 @@ describe('presets', () => {
     expect(PRESETS.open.sky.dome).toBe(1)
     expect(PRESETS.sunset.sun.elevation).toBeLessThan(PRESETS.open.sun.elevation)
   })
+  it('are deep-frozen, and set() still builds new values over them', () => {
+    expect(Object.isFrozen(PRESETS.open.sun)).toBe(true)
+    expect(Object.isFrozen(PRESETS.sunset.sky.clouds.light)).toBe(true)
+    const c = new AtmosphereController()
+    c.set({ sun: { elevation: 20 }, fog: { near: 950 } })
+    expect(c.current.sun.elevation).toBe(20)
+    expect(c.current.fog.far).toBe(951)
+    expect(PRESETS.open.sun.elevation).toBe(50)
+    expect(PRESETS.open.fog.near).toBe(140)
+  })
 })
 
 describe('AtmosphereController', () => {

@@ -131,7 +131,16 @@ const OPEN = resolveAtmosphere(TEMPLATE, {
   grade: { exposure: 1, saturation: 1.0, contrast: 1.05, highlights: '#fff6e8', shadows: '#e8eeff' },
 })
 
-export const PRESETS: Readonly<Record<'open' | 'diorama' | 'sunset', Atmosphere>> = Object.freeze({
+/** Freezes `o` and everything reachable from it, so a caller can't corrupt a shared preset through `current`. */
+function deepFreeze<T>(o: T): T {
+  if (o !== null && typeof o === 'object') {
+    for (const v of Object.values(o)) deepFreeze(v)
+    Object.freeze(o)
+  }
+  return o
+}
+
+export const PRESETS: Readonly<Record<'open' | 'diorama' | 'sunset', Atmosphere>> = deepFreeze({
   open: OPEN,
   diorama: resolveAtmosphere(OPEN, {
     sun: { azimuth: 215, elevation: 55, intensity: 1.5 },
