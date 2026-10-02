@@ -47,7 +47,9 @@ export class SimHost {
     switch (msg.type) {
       case 'init':
         try {
-          this.stepMs = 1000 / (msg.options.tickHz ?? 20)
+          const tickHz = msg.options.tickHz ?? 20
+          if (!(tickHz > 0) || !Number.isFinite(tickHz)) throw new RangeError(`tickHz must be a finite number > 0, got ${tickHz}`)
+          this.stepMs = 1000 / tickHz
           this.sim = new Simulation({
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,

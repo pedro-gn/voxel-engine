@@ -88,6 +88,15 @@ describe('SimHost', () => {
     host.handle({ type: 'init', buffers: createWorldBuffers([32, 32, 32]), blocks: TEST_BLOCKS, seed: 1, options: {} })
     expect(out.at(-1)).toMatchObject({ type: 'fatal' })
   })
+  it('rejects a non-finite or non-positive tickHz as a fatal init error', () => {
+    for (const tickHz of [0, -5, Number.NaN, Infinity]) {
+      const out: FromSim[] = []
+      const host = new SimHost((m) => out.push(m), { generator: empty })
+      host.handle({ type: 'init', buffers: createWorldBuffers([32, 32, 32]), blocks: TEST_BLOCKS, seed: 1, options: { tickHz } })
+      expect(out).toHaveLength(1)
+      expect(out[0]).toMatchObject({ type: 'fatal', message: expect.stringMatching(/tickHz must be a finite number > 0/) })
+    }
+  })
   it('reports a generator crash as fatal with the error', () => {
     const out: FromSim[] = []
     const boom = defineGenerator({ generateColumn() { throw new Error('kaboom') } })
