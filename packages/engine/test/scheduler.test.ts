@@ -34,4 +34,13 @@ describe('Scheduler', () => {
     s.schedule(5, 2)
     expect(s.drain(2, 10)).toEqual([5])
   })
+  it('preserves FIFO when position is moved earlier, drained, then rescheduled to original tick', () => {
+    const s = new Scheduler()
+    s.schedule(1, 10)
+    s.schedule(1, 8)   // move to earlier tick
+    s.schedule(2, 10)  // schedule another position at original tick
+    expect(s.drain(8, 100)).toEqual([1])
+    s.schedule(1, 10)  // reschedule to original tick
+    expect(s.drain(10, 100)).toEqual([2, 1]) // 2 should come before 1 (FIFO)
+  })
 })

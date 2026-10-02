@@ -1,17 +1,21 @@
-interface Bucket { items: number[]; head: number }
+interface Entry { pos: number; seq: number }
+interface DueEntry { tick: number; seq: number }
+interface Bucket { items: Entry[]; head: number }
 
 /** Scheduled block updates. Deterministic: (due tick, insertion order). */
 export class Scheduler {
-  private readonly due = new Map<number, number>()
+  private readonly due = new Map<number, DueEntry>()
   private readonly buckets = new Map<number, Bucket>()
   private readonly ticks: number[] = [] // ascending distinct due ticks that have a bucket
+  private seq = 0 // monotonically increasing sequence number
 
   get size(): number { return this.due.size }
 
   schedule(pos: number, dueTick: number): void {
     const cur = this.due.get(pos)
-    if (cur !== undefined && cur <= dueTick) return
-    this.due.set(pos, dueTick)
+    if (cur !== undefined && cur.tick <= dueTick) return
+    this.seq++
+    this.due.set(pos, { tick: dueTick, seq: this.seq })
     let b = this.buckets.get(dueTick)
     if (!b) {
       b = { items: [], head: 0 }
@@ -20,7 +24,7 @@ export class Scheduler {
       while (i > 0 && this.ticks[i - 1]! > dueTick) i--
       this.ticks.splice(i, 0, dueTick)
     }
-    b.items.push(pos)
+    b.items.push({ pos, seq: this.seq })
   }
 
   drain(tick: number, limit: number): number[] {
@@ -29,10 +33,11 @@ export class Scheduler {
       const t = this.ticks[0]!
       const b = this.buckets.get(t)!
       while (out.length < limit && b.head < b.items.length) {
-        const pos = b.items[b.head++]!
-        if (this.due.get(pos) !== t) continue // stale: moved earlier or already run
-        this.due.delete(pos)
-        out.push(pos)
+        const entry = b.items[b.head++]!
+        const due = this.due.get(entry.pos)
+        if (!due || due.tick !== t || due.seq !== entry.seq) continue // stale: moved earlier or already run
+        this.due.delete(entry.pos)
+        out.push(entry.pos)
       }
       if (b.head >= b.items.length) {
         this.buckets.delete(t)
