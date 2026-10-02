@@ -10,6 +10,6 @@ export const BLOCKS = [
   defineBlock({ name: 'leaves', textures: 'leaves', layer: 'cutout' }),
   defineBlock({ name: 'glass', textures: 'glass', layer: 'translucent' }),
   defineBlock({ name: 'water', textures: 'water', liquid: true, solid: false }),
-  defineBlock({ name: 'rock', textures: 'rock' }),
   defineBlock({ name: 'torch', textures: 'torch', layer: 'cutout', emits: 14, solid: false }),
+  defineBlock({ name: 'rock', textures: 'rock' }),
 ]

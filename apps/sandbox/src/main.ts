@@ -35,6 +35,7 @@ if (sceneName === 'diorama') {
     s.target[0] = 64; s.target[1] = 30; s.target[2] = 64
     s.distance = 150
     s.pitch = 0.7
+    s.yaw = 0.7 + Math.PI // camera on the lower-terrace side, so the cliff faces the viewer
   }
 }
 createControls(engine)
