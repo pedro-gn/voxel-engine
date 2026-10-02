@@ -3,7 +3,8 @@ import { LightEngine } from '../src/sim/light.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
 import { AIR, blockLight, skyLight } from '../src/world/voxel.ts'
-import { ID, testRegistry } from './helpers.ts'
+import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
+import { ID, TEST_BLOCKS, testRegistry } from './helpers.ts'
 
 const reg = testRegistry()
 function world(size: [number, number, number] = [64, 64, 64]) {
@@ -113,4 +114,26 @@ describe('LightEngine incremental updates', () => {
     expect(w.sky(3, 63, 3)).toBe(15)
     expect(w.sky(3, 62, 3)).toBe(15)
   })
+})
+
+describe('LightEngine uniform emitter chunks', () => {
+  const glow = TEST_BLOCKS.length + 1
+  const reg2 = new BlockRegistry([
+    ...TEST_BLOCKS,
+    defineBlock({ name: 'glowair', textures: 'torch', layer: 'cutout', emits: 15, solid: false }),
+    defineBlock({ name: 'lamp', textures: 'stone', emits: 15 }),
+  ])
+  for (const [name, id] of [['non-opaque', glow], ['opaque', glow + 1]] as const) {
+    it(`lights a uniform ${name} emitter chunk and its neighbour`, () => {
+      const store = new ChunkStore({ buffers: createWorldBuffers([64, 64, 64]), opaque: reg2.opaque })
+      const light = new LightEngine(store, { opaque: reg2.opaque, emits: reg2.emits })
+      expect(reg2.emits[id]).toBe(15)
+      store.writeChunkDense(0, new Uint16Array(32768).fill(id))
+      expect(store.slotOf(0)).toBe(-1)
+      light.initialize()
+      expect(store.slotOf(0)).toBeGreaterThanOrEqual(0)
+      expect(blockLight(store.getLight(5, 5, 5))).toBe(15)
+      expect(blockLight(store.getLight(32, 5, 5))).toBe(14)
+    })
+  }
 })

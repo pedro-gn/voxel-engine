@@ -100,6 +100,16 @@ export class LightEngine {
         }
       }
     }
+    // Uniform chunks of an emitter would be skipped by the slot loop below: give them a slot first.
+    for (let ci = 0; ci < L.chunkCount; ci++) {
+      const e = store.table[ci]!
+      if (e >= 0) continue
+      const em = this.emits[voxelId(decodeUniform(e))]!
+      if (em === 0) continue
+      const [cx, cy, cz] = L.chunkCoords(ci)
+      const x = cx * 32, y = cy * 32, z = cz * 32
+      store.setLight(x, y, z, withChannel(store.getLight(x, y, z), BLOCK, em))
+    }
     // 2. Seed dark non-opaque voxels from brighter neighbours; 3. seed emitters.
     for (let ci = 0; ci < L.chunkCount; ci++) {
       const slot = store.slotOf(ci)
