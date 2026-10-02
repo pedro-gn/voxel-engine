@@ -55,7 +55,10 @@ export function fitShadow(corners: readonly V3[], sunDir: V3, mapSize: number, m
   return { position, target: add(position, f), up: u, halfSize, near: 0, far: f1 + PAD - back, texel }
 }
 
-/** How far from the camera shadows reach, from the orbit camera's distance to its target: clamp(3 × distance, 96, 350). */
+/**
+ * How far from the camera shadows reach, from the orbit camera's distance d to its target:
+ * clamp(min(3d, d + 150), 96, 700). The orbit target plus 150 blocks beyond it stay shadowed at any zoom.
+ */
 export function shadowDistance(orbitDistance: number): number {
-  return Math.min(350, Math.max(96, 3 * orbitDistance))
+  return Math.min(700, Math.max(96, Math.min(3 * orbitDistance, orbitDistance + 150)))
 }
