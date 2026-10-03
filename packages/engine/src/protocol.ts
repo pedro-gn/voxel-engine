@@ -4,6 +4,7 @@ import type { MeshTables } from './mesh/tables.ts'
 import type { Ack, Command } from './sim/commands.ts'
 import type { SimEvent } from './sim/simulation.ts'
 import type { WorldBuffers } from './world/buffers.ts'
+import type { WorldSize } from './world/layout.ts'
 
 export interface SimInitOptions {
   workCap?: number
@@ -40,3 +41,16 @@ export type FromMesh =
   | { type: 'result'; id: number; chunk: number; version: number; data: ChunkMeshData }
   | { type: 'retry'; id: number; chunk: number }
   | { type: 'error'; id: number; chunk: number; message: string }
+
+/** Sim worker → generation worker (over a MessagePort). Jobs answer with the configuration in force. */
+export type ToGen =
+  | { type: 'configure'; epoch: number; doc: unknown; size: WorldSize; seed: number; blocks: BlockDef[] }
+  | { type: 'job'; id: number; cx: number; cz: number }
+
+/** Generation worker → sim worker. `epoch` is the configuration the column was generated with. */
+export type FromGen =
+  | { type: 'column'; id: number; epoch: number; cx: number; cz: number; data: Uint16Array }
+  | { type: 'error'; id: number; epoch: number; message: string }
+
+/** Main thread → generation worker, once: the port to the sim worker. */
+export interface GenConnect { type: 'connect'; port: MessagePort }
