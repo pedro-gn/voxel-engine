@@ -31,6 +31,8 @@ export type ToSim =
   | { type: 'patchTerrain'; id: number; patch: unknown }
   /** Regenerates the chunk columns overlapping `rect` between two ticks; answered by 'regenerated'. */
   | { type: 'regenerate'; id: number; rect: TerrainRect }
+  /** Stops or resumes physics (gravity, fluids, region jobs). Rules, random ticks and light keep running. */
+  | { type: 'setPaused'; paused: boolean }
   /** Main thread: generation worker `index` died. */
   | { type: 'genLost'; index: number }
 

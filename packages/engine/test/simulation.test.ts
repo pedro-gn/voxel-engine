@@ -288,3 +288,25 @@ describe('rule context reads and write trimming', () => {
     expect(sim.pendingWork).toBe(0)
   })
 })
+
+describe('region jobs and pause', () => {
+  it('bumps a chunk epoch on every voxel write', () => {
+    const sim = makeSim()
+    const ci = sim.layout.chunkOf(5, 5, 5)
+    const e0 = sim.epochs[ci]!
+    sim.submit(1, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.stone })
+    sim.step()
+    expect(sim.epochs[ci]).toBe(e0 + 1)
+  })
+  it('runs region jobs in the tick, and not while paused', () => {
+    const sim = makeSim()
+    let steps = 0
+    sim.jobs.start({ kind: 't', done: false, step() { steps++; (this as { done: boolean }).done = true; return 1 }, finish() {}, reset() {}, mixState() {} })
+    sim.setPaused(true)
+    sim.step()
+    expect([sim.paused, steps]).toEqual([true, 0])
+    sim.setPaused(false)
+    sim.step()
+    expect(steps).toBe(1)
+  })
+})

@@ -10,6 +10,7 @@ import {
 import { diffMask, forNeighbours } from './chunkDiff.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
 import { LightEngine, RELIGHT_MARGIN } from './light.ts'
+import { JobRunner } from './jobs.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
 import { Scheduler } from './scheduler.ts'
@@ -20,6 +21,8 @@ export interface SimulationOptions {
   rules?: RulesModule
   seed: number
   workCap?: number
+  /** Region-job budget: visited cells per tick. Default 50 000. */
+  jobCap?: number
   /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
   regenLightDiffLimit?: number
   randomTicksPerChunk?: number
@@ -43,6 +46,11 @@ export class Simulation {
   readonly layout: Layout
   tick = 0
   readonly commandLog: StampedCommand[] = []
+  /** Per chunk: bumped on every voxel write. Region jobs compare it to notice a world that changed under them. */
+  readonly epochs: Uint32Array
+  readonly jobs: JobRunner
+  private isPaused = false
+  private readonly jobCap: number
 
   private pending: StampedCommand[] = []
   private readonly scheduler = new Scheduler()
@@ -69,6 +77,9 @@ export class Simulation {
     this.registry = new BlockRegistry(o.blocks)
     this.store = new ChunkStore({ buffers: o.buffers, opaque: this.registry.opaque, onNewPage: o.onNewPage, maxPages: o.maxPages })
     this.layout = this.store.layout
+    this.epochs = new Uint32Array(this.layout.chunkCount)
+    this.jobs = new JobRunner(this.layout, this.epochs, (x, y, z) => this.store.getVoxel(x, y, z))
+    this.jobCap = o.jobCap ?? 50_000
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
@@ -88,6 +99,10 @@ export class Simulation {
   }
 
   get pendingWork(): number { return this.neighbors.length - this.neighborHead + this.scheduler.size }
+
+  /** True while physics (gravity, fluids, region jobs) is stopped. Rules, random ticks and light still run. */
+  get paused(): boolean { return this.isPaused }
+  setPaused(paused: boolean): void { this.isPaused = paused }
 
   submit(clientId: number, seq: number, cmd: Command): void {
     this.pending.push({ tick: this.tick, clientId, seq, cmd })
@@ -156,7 +171,7 @@ export class Simulation {
     for (let cy = 0; cy < L.cy; cy++) for (let cz = rz0; cz <= rz1; cz++) for (let cx = rx0; cx <= rx1; cx++) reach.push(L.chunkIndex(cx, cy, cz))
     const before = reach.length <= this.regenLightDiffLimit ? new Map(reach.map((ci) => [ci, store.lightSnapshot(ci)])) : null
     // 3. Write, relight, commit. commit() closes every written or relit chunk; its list over-marks and is only the fallback.
-    for (const w of writes) store.writeChunkDense(w.ci, w.data)
+    for (const w of writes) { store.writeChunkDense(w.ci, w.data); this.epochs[w.ci]!++ }
     this.light.relightRegion(x0, z0, x1, z1)
     // Light can only differ in a chunk that is open: every write opens one.
     const touched = before ? [...before].filter(([ci]) => store.isOpen(ci)) : []
@@ -229,6 +244,10 @@ export class Simulation {
         this.runAt(pos, 'onScheduledTick')
         budget = this.processNeighbors(budget)
       }
+      if (!this.isPaused) {
+        // 5. region jobs (phases 3 and 4, gravity and fluids, are added by later tasks above this line)
+        this.jobs.run(this.jobCap)
+      }
       // 3. random ticks
       if (this.hasRandom) {
         for (let ci = 0; ci < this.layout.chunkCount; ci++) {
@@ -268,6 +287,8 @@ export class Simulation {
       for (let i = 0; i < v32.length; i++) mix(v32[i]!)
       for (let i = 0; i < l32.length; i++) mix(l32[i]!)
     }
+    mix(this.isPaused ? 1 : 0)
+    this.jobs.mixState(mix)
     return h >>> 0
   }
 
@@ -292,6 +313,7 @@ export class Simulation {
   private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
     const old = this.store.getVoxel(x, y, z)
     if (!this.store.setVoxel(x, y, z, v)) return
+    this.epochs[this.layout.chunkOf(x, y, z)]!++
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
     if (!notify || !this.hasNeighborRules) return

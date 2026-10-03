@@ -132,4 +132,11 @@ describe('SimHost', () => {
     clock.t = 400; host.pump()
     expect(out.filter((m) => m.type === 'tick')).toHaveLength(0)
   })
+  it('pauses and resumes physics on request', () => {
+    const { host } = setup()
+    host.handle({ type: 'setPaused', paused: true })
+    expect(host.simulation!.paused).toBe(true)
+    host.handle({ type: 'setPaused', paused: false })
+    expect(host.simulation!.paused).toBe(false)
+  })
 })

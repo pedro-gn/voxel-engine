@@ -98,6 +98,11 @@ export interface Engine {
     /** Regenerates the chunk columns overlapping `rect`; resolves once the new voxels and light are in the world. */
     regenerate(rect: TerrainRect): Promise<{ ms: number; chunks: number }>
   }
+  /** Physics (falling blocks, fluids, region jobs). Paused, the world only changes through commands, rules and regeneration. */
+  readonly physics: {
+    readonly paused: boolean
+    setPaused(paused: boolean): void
+  }
   submit(cmd: Command): number
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
   pickScreen(clientX: number, clientY: number, maxDist?: number): RayHit | null
@@ -477,6 +482,16 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     })
   }
 
+  let physicsPaused = false
+  const physics = {
+    get paused() { return physicsPaused },
+    setPaused(paused: boolean) {
+      if (typeof paused !== 'boolean') throw new TypeError(`physics.setPaused expects a boolean, got ${typeof paused}`)
+      physicsPaused = paused
+      if (!halted) sim.postMessage({ type: 'setPaused', paused } satisfies ToSim)
+    },
+  }
+
   return {
     scene, camera, renderer, blocks: registry, layout, controls, world,
     terrain: {
@@ -488,6 +503,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         [rect.x0, rect.z0, rect.x1, rect.z1].every(Number.isInteger) && rect.x1 > rect.x0 && rect.z1 > rect.z0 ? columnsIn(rect).length : 0,
       ),
     },
+    physics,
     atmosphere: visuals.atmosphere,
     get quality(): Quality { return visuals.getQuality() },
     set quality(value: Partial<Quality>) { visuals.setQuality(value) },
