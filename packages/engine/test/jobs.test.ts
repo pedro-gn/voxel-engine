@@ -72,6 +72,15 @@ describe('JobRunner', () => {
     runner.drain()
     expect([first.finished, later.finished, runner.size]).toEqual([[2], [2], 0])
   })
+  it('drain restarts a job whose chunk was written since its partial steps', () => {
+    const { runner, epochs } = setup()
+    const job = new CountJob(10)
+    runner.start(job)
+    runner.run(4)
+    epochs[0]!++
+    runner.drain()
+    expect([job.resets, job.finished, runner.size]).toEqual([1, [10], 0])
+  })
   it('cancels matching jobs', () => {
     const { runner } = setup()
     const a = new CountJob(3)

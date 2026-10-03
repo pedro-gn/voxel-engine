@@ -96,7 +96,9 @@ export class JobRunner {
   drain(): void {
     while (this.queue.length > 0) {
       const e = this.queue.shift()!
+      if (e.reader.stale()) { e.job.reset(); e.reader.reset(); e.restarts++ }
       e.job.step(e.reader, Infinity)
+      if (!e.job.done) throw new Error(`region job "${e.job.kind}" did not finish with an unbounded budget`)
       e.job.finish()
     }
   }
