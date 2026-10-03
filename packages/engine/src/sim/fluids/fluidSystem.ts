@@ -236,6 +236,12 @@ export class FluidSystem {
       const v = this.port.get(x, y, z)
       const g = flowGroup(this.reg, v)
       if (g === 0 || this.members.has(x, y, z)) { this.active.drop(pos); continue }
+      if (this.inlet(pos, x, y, z, g, volumeOf(this.reg, v))) {
+        // Joined or absorbed cells left the queue. A cell waiting at a pool's edge stays in line and can still
+        // fall asleep, so a pool that cannot fill it never leaves it active forever.
+        if (this.active.has(pos)) keep.push(pos)
+        continue
+      }
       this.propose(pos, x, y, z, g, volumeOf(this.reg, v))
       keep.push(pos)
     }
@@ -246,6 +252,195 @@ export class FluidSystem {
       if (this.active.rest(pos) >= SLEEP_STEPS) { this.active.drop(pos); this.settleQueue.add(pos) }
       else this.active.requeue(pos)
     }
+  }
+
+  /** Pools owning a face neighbour of (x, y, z), by id. */
+  protected adjacentPools(x: number, y: number, z: number): Pool[] {
+    const out: Pool[] = []
+    for (let d = 0; d < 6; d++) {
+      const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
+      if (!this.members.has(nx, ny, nz)) continue
+      const p = this.pools.ownerOf(nx, ny, nz)
+      if (p && !out.includes(p)) out.push(p)
+    }
+    return out.sort((a, b) => a.id - b.id)
+  }
+
+  /** Resting: the world floor, a pool member, or any block that is neither air nor flowing liquid. */
+  protected supported(x: number, y: number, z: number): boolean {
+    if (y === 0 || this.members.has(x, y - 1, z)) return true
+    const b = this.port.get(x, y - 1, z)
+    return b !== AIR && flowGroup(this.reg, b) === 0
+  }
+
+  /** A deep cell may join p only with p's water or a ceiling above it (never air or loose water). */
+  protected closedAbove(p: Pool, x: number, y: number, z: number): boolean {
+    if (this.members.has(x, y + 1, z)) return this.pools.ownerOf(x, y + 1, z) === p
+    const a = this.port.get(x, y + 1, z)
+    return a !== AIR && flowGroup(this.reg, a) === 0
+  }
+
+  protected touches(p: Pool, x: number, y: number, z: number): boolean {
+    for (let d = 0; d < 6; d++) {
+      const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
+      if (this.members.has(nx, ny, nz) && this.pools.ownerOf(nx, ny, nz) === p) return true
+    }
+    return false
+  }
+
+  /**
+   * A moving cell next to a pool (design notes: A cell next to a pool). Returns true when the pool took
+   * the cell's step; false lets the automaton move the cell.
+   */
+  protected inlet(pos: number, x: number, y: number, z: number, g: number, v: number): boolean {
+    const adj = this.adjacentPools(x, y, z)
+    if (adj.length === 0) return false
+    for (const p of adj) {
+      if (p.frozen || p.liquid !== g || y !== p.surfaceY + 1) continue
+      if (!this.members.has(x, y - 1, z) || this.pools.ownerOf(x, y - 1, z) !== p || !this.accepts(p, v)) continue
+      p.balance += v // falling onto the surface
+      this.active.drop(pos)
+      this.port.write(x, y, z, AIR)
+      return true
+    }
+    for (const p of adj) {
+      if (p.frozen || p.liquid !== g || y > p.surfaceY) continue
+      if (!this.supported(x, y, z)) { p.outlets.add(pos); return false }
+      if (y === p.surfaceY) {
+        const want = p.level + 1
+        if (v < want) { p.outlets.add(pos); return true }
+        if (v > want) {
+          if (!this.accepts(p, v - want)) continue
+          p.balance += v - want
+          this.port.write(x, y, z, liquidVoxel(g, want))
+        }
+        this.join(p, x, y, z, pos, want)
+        return true
+      }
+      if (v === FULL && this.closedAbove(p, x, y, z)) { this.join(p, x, y, z, pos, FULL); return true }
+      p.outlets.add(pos)
+      return false
+    }
+    return false
+  }
+
+  /** A cell becomes a member of p: index or capped entry, then its open neighbours become outlets or contacts. */
+  protected join(p: Pool, x: number, y: number, z: number, pos: number, units: number): void {
+    this.members.add(x, y, z)
+    this.active.drop(pos)
+    p.outlets.delete(pos)
+    p.grid += units
+    if (y === p.surfaceY) {
+      p.tiles.add(this.index.set(x, y, z, p.id))
+      p.area++
+    } else if (!this.members.has(x, y + 1, z)) {
+      this.pools.capped.set(pos, p.id)
+      p.capped.add(pos)
+    }
+    for (let d = 0; d < 6; d++) {
+      const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
+      if (!this.inside(nx, ny, nz) || ny > p.surfaceY) continue
+      const npos = this.layout.voxelIndex(nx, ny, nz)
+      if (this.members.has(nx, ny, nz)) {
+        const q = this.pools.ownerOf(nx, ny, nz)
+        if (q && q !== p) this.contacts.add(p.id, pos, q.id, npos)
+        continue
+      }
+      const nv = this.port.get(nx, ny, nz)
+      if (nv === AIR) p.outlets.add(npos)
+      else if (flowGroup(this.reg, nv) === p.liquid) this.active.add(npos)
+    }
+  }
+
+  /** Each pool fills its outlets once (design notes: Outlets), debiting its balance. */
+  protected runOutlets(): void {
+    for (const p of this.pools.all()) {
+      if (p.frozen) continue
+      for (const o of [...p.outlets]) {
+        const [x, y, z] = this.layout.voxelCoords(o)
+        if (y > p.surfaceY || this.members.has(x, y, z) || !this.touches(p, x, y, z)) { p.outlets.delete(o); continue }
+        const v = this.port.get(x, y, z)
+        const g = flowGroup(this.reg, v)
+        if (v !== AIR && g !== p.liquid) { p.outlets.delete(o); continue }
+        const have = g === 0 ? 0 : volumeOf(this.reg, v)
+        let target = FULL
+        if (y === p.surfaceY) {
+          target = p.level + 1
+          const onMember = this.members.has(x, y - 1, z) && this.pools.ownerOf(x, y - 1, z) === p
+          if (!onMember && p.level < have + 1) { p.outlets.delete(o); continue }
+        }
+        const t = Math.min(target - have, this.o.outletRate, p.grid + p.balance)
+        if (t <= 0) continue
+        p.balance -= t
+        this.port.write(x, y, z, liquidVoxel(p.liquid, have + t))
+      }
+    }
+  }
+
+  /** Cells that fell asleep this step: one settle scan from their column tops. */
+  protected queueSettles(): void {
+    if (this.settleQueue.size === 0) return
+    const tops: number[] = []
+    const seen = new Set<number>()
+    const H = this.layout.size[1]
+    for (const pos of this.settleQueue) {
+      const [x, y0, z] = this.layout.voxelCoords(pos)
+      const g = flowGroup(this.reg, this.port.get(x, y0, z))
+      if (g === 0 || this.members.has(x, y0, z)) continue
+      let y = y0
+      while (y + 1 < H && !this.members.has(x, y + 1, z) && flowGroup(this.reg, this.port.get(x, y + 1, z)) === g) y++
+      const top = this.layout.voxelIndex(x, y, z)
+      if (this.active.has(top) || seen.has(top)) continue
+      seen.add(top)
+      tops.push(top)
+    }
+    this.settleQueue.clear()
+    if (tops.length === 0) return
+    this.port.jobs.start(new PoolScan({
+      kind: 'settle', registry: this.reg, layout: this.layout, seeds: sortSeeds(this.layout, tops),
+      claimable: (x, y, z, pos) => !this.members.has(x, y, z) && !this.active.has(pos),
+      onFinish: (cs) => this.finishSettle(cs),
+    }))
+  }
+
+  /** Installs settled bodies. A body with a cell that joined a pool meanwhile (joins write nothing, so the job did not go stale) is retried later. */
+  protected finishSettle(cs: readonly ScanComponent[]): void {
+    const fresh: ScanComponent[] = []
+    for (const c of cs) {
+      const cells = [...c.surface, ...c.deep]
+      const clash = cells.some((pos) => { const [x, y, z] = this.layout.voxelCoords(pos); return this.members.has(x, y, z) })
+      if (clash) { for (const pos of cells) this.settleQueue.add(pos) }
+      else fresh.push(c)
+    }
+    this.install(fresh)
+  }
+
+  /** Every pool-invariant violation (design notes: Members and ownership). Whole-world: tests and debug builds only. */
+  checkInvariants(): string[] {
+    const out: string[] = []
+    const grid = new Map<number, number>()
+    const area = new Map<number, number>()
+    this.forEachLiquid((x, y, z, _pos, v) => {
+      if (!this.members.has(x, y, z)) return
+      const p = this.pools.ownerOf(x, y, z)
+      if (!p) { out.push(`member (${x}, ${y}, ${z}) has no owner`); return }
+      if (p.frozen) return // a pending job may legitimately leave a frozen pool's cells out of date
+      if (flowGroup(this.reg, v) !== p.liquid) { out.push(`member (${x}, ${y}, ${z}) is not pool ${p.id}'s liquid`); return }
+      const u = volumeOf(this.reg, v)
+      grid.set(p.id, (grid.get(p.id) ?? 0) + u)
+      if (y > p.surfaceY) out.push(`member (${x}, ${y}, ${z}) is above pool ${p.id}'s surface ${p.surfaceY}`)
+      else if (y === p.surfaceY && this.pools.resolve(this.index.get(x, y, z)) === p.id) {
+        area.set(p.id, (area.get(p.id) ?? 0) + 1)
+        if (u !== p.level + 1) out.push(`surface (${x}, ${y}, ${z}) holds ${u}, pool ${p.id} is at level ${p.level}`)
+      } else if (y < p.surfaceY && u !== FULL) out.push(`deep (${x}, ${y}, ${z}) of pool ${p.id} holds ${u}`)
+    })
+    for (const p of this.pools.all()) {
+      if (p.frozen) continue
+      if ((grid.get(p.id) ?? 0) !== p.grid) out.push(`pool ${p.id} grid ${p.grid}, cells hold ${grid.get(p.id) ?? 0}`)
+      if ((area.get(p.id) ?? 0) !== p.area) out.push(`pool ${p.id} area ${p.area}, surface cells ${area.get(p.id) ?? 0}`)
+      if (p.grid + p.balance < 0) out.push(`pool ${p.id} has negative volume ${p.grid + p.balance}`)
+    }
+    return out
   }
 
   /** Down first, then sideways by halving differences of 2 or more; sides that lead to a drop win. */
@@ -352,8 +547,9 @@ export class FluidSystem {
     if (tick % this.o.fluidEvery !== 0) return
     this.steps++
     this.flowCells()
-    // Fluid-step phases added by Tasks 6–8, in this order:
-    // runOutlets, runContacts, runSprings, queueResurfaces, queueSettles
+    this.runOutlets()
+    // runContacts, runSprings, queueResurfaces (Tasks 7–8)
+    this.queueSettles()
   }
 
   // ---- rebuild ----

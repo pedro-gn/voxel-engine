@@ -73,3 +73,16 @@ export function basin(side: number, wallTop: number): Fill {
     return AIR
   }
 }
+
+/** Every pool-invariant violation in the world (see FluidSystem.checkInvariants); [] when consistent. */
+export const poolProblems = (sim: Simulation): string[] => sim.fluids.checkInvariants()
+
+/** A basin of side 12 (walls to y = 8) holding full water for 1 ≤ y ≤ top. */
+export function lake(top: number, side = 12, wallTop = 8): Fill {
+  const b = basin(side, wallTop)
+  return (x, y, z) => {
+    const v = b(x, y, z)
+    if (v !== AIR) return v
+    return x > 0 && x < side - 1 && z > 0 && z < side - 1 && y >= 1 && y <= top ? w(7) : AIR
+  }
+}
