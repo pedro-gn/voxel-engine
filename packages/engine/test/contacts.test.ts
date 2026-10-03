@@ -41,6 +41,24 @@ describe('pools in contact', () => {
     expect(volume(sim)).toBe(v0)
     expect(poolProblems(sim)).toEqual([])
   })
+  it('settles when a full sealed pool touches a higher one (no endless pending contact)', () => {
+    const base = lake(6, 12, 9)
+    const sim = fluidSim((x, y, z) => {
+      if (y === 0) return B.stone
+      if (x >= 11 && x <= 17 && z >= 4 && z <= 6 && y <= 12) {
+        if (z === 5 && y === 1 && x >= 12 && x <= 16) return w(7) // a flooded tunnel
+        if (z === 5 && x === 16 && y === 2) return w(7) // a one-cell shaft, ceiling above
+        return B.stone
+      }
+      return base(x, y, z)
+    })
+    const v0 = volume(sim)
+    sim.submit(0, 0, { type: 'setBlock', pos: [11, 1, 5], voxel: AIR })
+    expect(() => settle(sim)).not.toThrow()
+    expect(sim.fluids.contactsPending()).toBe(false)
+    expect(volume(sim)).toBe(v0)
+    expect(poolProblems(sim)).toEqual([])
+  })
 })
 
 describe('springs', () => {

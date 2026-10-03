@@ -7,7 +7,7 @@ import { JobReader, type JobRunner } from '../jobs.ts'
 import { ActiveQueue } from './activeQueue.ts'
 import { FULL, SPRING_RATES, flowGroup, liquidVoxel, volumeOf } from './cell.ts'
 import { ChunkBits } from './chunkBits.ts'
-import { ContactTable } from './contacts.ts'
+import { ContactTable, type Contact } from './contacts.ts'
 import { PoolTable, type Pool } from './pools.ts'
 import { FLUID_JOBS, PoolScan, sortSeeds, type ScanComponent } from './scan.ts'
 import { Resurface } from './resurface.ts'
@@ -623,32 +623,35 @@ export class FluidSystem {
     return this.members.has(x, y, z) && this.pools.ownerOf(x, y, z) === p
   }
 
+  /** What a contact would do this step, by exact heights; the single source for runContacts and contactsPending. */
+  private contactStep(c: Contact): { kind: 'drop' } | { kind: 'wait' } | { kind: 'merge'; a: Pool; b: Pool } | { kind: 'move'; hi: Pool; lo: Pool; t: number } {
+    const a = this.pools.get(c.a), b = this.pools.get(c.b)
+    if (!a || !b || a === b) return { kind: 'drop' }
+    if (a.frozen || b.frozen || a.area === 0 || b.area === 0) return { kind: 'wait' }
+    let faces = 0
+    for (const [fa, fb] of c.faces) if (this.ownedBy(fa, a) && this.ownedBy(fb, b)) faces++
+    if (faces === 0) return { kind: 'drop' }
+    const ha = (a.surfaceY * 8 + a.level) * a.area + a.balance
+    const hb = (b.surfaceY * 8 + b.level) * b.area + b.balance
+    const d = ha * b.area - hb * a.area
+    const [hi, lo] = d >= 0 ? [a, b] : [b, a]
+    const tMax = Math.floor(Math.abs(d) / (a.area + b.area))
+    if (tMax === 0) return a.surfaceY === b.surfaceY ? { kind: 'merge', a, b } : { kind: 'wait' }
+    let t = Math.min(tMax, this.o.outletRate * faces, hi.grid + hi.balance)
+    if (lo.sealed) t = Math.min(t, lo.area - 1 - lo.balance)
+    return t > 0 ? { kind: 'move', hi, lo, t } : { kind: 'wait' }
+  }
+
   /**
    * Touching pools trade water from the higher to the lower by exact heights,
    * H = (surfaceY·8 + level)·area + balance, at most outletRate per live face. Equal pools on one layer merge.
    */
   protected runContacts(): void {
     for (const c of this.contacts.all()) {
-      const a = this.pools.get(c.a), b = this.pools.get(c.b)
-      if (!a || !b || a === b) { this.contacts.delete(c); continue }
-      if (a.frozen || b.frozen || a.area === 0 || b.area === 0) continue
-      let faces = 0
-      for (const [fa, fb] of c.faces) if (this.ownedBy(fa, a) && this.ownedBy(fb, b)) faces++
-      if (faces === 0) { this.contacts.delete(c); continue }
-      const ha = (a.surfaceY * 8 + a.level) * a.area + a.balance
-      const hb = (b.surfaceY * 8 + b.level) * b.area + b.balance
-      const d = ha * b.area - hb * a.area
-      const [hi, lo] = d >= 0 ? [a, b] : [b, a]
-      const tMax = Math.floor(Math.abs(d) / (a.area + b.area))
-      if (tMax === 0) {
-        if (a.surfaceY === b.surfaceY) this.merge(a, b)
-        continue
-      }
-      let t = Math.min(tMax, this.o.outletRate * faces, hi.grid + hi.balance)
-      if (lo.sealed) t = Math.min(t, lo.area - 1 - lo.balance)
-      if (t <= 0) continue
-      hi.balance -= t
-      lo.balance += t
+      const r = this.contactStep(c)
+      if (r.kind === 'drop') this.contacts.delete(c)
+      else if (r.kind === 'merge') this.merge(r.a, r.b)
+      else if (r.kind === 'move') { r.hi.balance -= r.t; r.lo.balance += r.t }
     }
   }
 
@@ -717,19 +720,9 @@ export class FluidSystem {
     }
   }
 
-  /** True while some contact would still move water or merge on the next step (tests use it to know when the world is at rest). */
+  /** Test/debug hook: true while some contact would still move water or merge on the next step. */
   contactsPending(): boolean {
-    for (const c of this.contacts.all()) {
-      const a = this.pools.get(c.a), b = this.pools.get(c.b)
-      if (!a || !b || a === b) continue
-      if (a.frozen || b.frozen || a.area === 0 || b.area === 0) continue
-      const ha = (a.surfaceY * 8 + a.level) * a.area + a.balance
-      const hb = (b.surfaceY * 8 + b.level) * b.area + b.balance
-      const d = ha * b.area - hb * a.area
-      if (Math.floor(Math.abs(d) / (a.area + b.area)) > 0) return true
-      if (a.surfaceY === b.surfaceY) return true
-    }
-    return false
+    return this.contacts.all().some((c) => { const k = this.contactStep(c).kind; return k === 'merge' || k === 'move' })
   }
 
   /** Every pool-invariant violation (design notes: Members and ownership). Whole-world: tests and debug builds only. */
