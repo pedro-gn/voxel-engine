@@ -2,6 +2,8 @@ import type { Engine } from '@elovox/engine'
 
 /** Side of the square the "regenerate" button rebuilds around the orbit target (the spec's editor budget case). */
 const REGEN_SIDE = 128
+/** Give up waiting for the mesh queue to drain after this long. */
+const MESH_DRAIN_TIMEOUT_MS = 10_000
 
 /** Terrain scene panel, bottom right: generation times and a regenerate-around-view button. */
 export function createTerrainPanel(engine: Engine): () => void {
@@ -30,8 +32,12 @@ export function createTerrainPanel(engine: Engine): () => void {
     try {
       const r = await engine.terrain.regenerate({ x0, z0, x1: x0 + REGEN_SIDE, z1: z0 + REGEN_SIDE })
       // Visible = the regenerated chunks are meshed; poll the mesh queue until it drains.
-      while (engine.stats().meshQueue + engine.stats().meshInFlight > 0) await new Promise((res) => requestAnimationFrame(res))
-      last.textContent = `regen: ${r.ms.toFixed(0)} ms in sim, ${(performance.now() - start).toFixed(0)} ms to mesh, ${r.chunks} chunks`
+      const drainStart = performance.now()
+      const busy = () => engine.stats().meshQueue + engine.stats().meshInFlight > 0
+      while (busy() && performance.now() - drainStart < MESH_DRAIN_TIMEOUT_MS) await new Promise((res) => requestAnimationFrame(res))
+      last.textContent = busy()
+        ? `regen: ${r.ms.toFixed(0)} ms in sim, mesh still queued after ${MESH_DRAIN_TIMEOUT_MS / 1000} s`
+        : `regen: ${r.ms.toFixed(0)} ms in sim, ${(performance.now() - start).toFixed(0)} ms to mesh, ${r.chunks} chunks`
     } catch (e) {
       last.textContent = `regen failed: ${e instanceof Error ? e.message : String(e)}`
     } finally {
