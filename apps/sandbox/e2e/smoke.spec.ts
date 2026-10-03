@@ -53,3 +53,28 @@ for (const scene of ['world', 'diorama'] as const) {
     expect(errors).toEqual([])
   })
 }
+
+test('terrain scene generates on workers and regenerates an area', async ({ page }) => {
+  const errors = watchErrors(page)
+  await boot(page, '/?scene=terrain&size=256')
+  const r = await page.evaluate(async () => {
+    const e = (window as W).__elovox!.engine
+    const initial = e.terrain.initial
+    const regen = await e.terrain.regenerate({ x0: 64, z0: 64, x1: 192, z1: 192 })
+    let rejected = ''
+    try { await e.terrain.setDocument({ format: 'elovox-terrain' }) } catch (err) { rejected = (err as Error).message }
+    let bad = ''
+    try { await e.terrain.regenerate({ x0: 0, z0: 0, x1: 999, z1: 10 }) } catch (err) { bad = (err as Error).message }
+    return { columns: initial.columns, ms: initial.ms, chunks: regen.chunks, rejected, bad }
+  })
+  expect(r.columns).toBe(64)
+  expect(r.ms).toBeGreaterThan(0)
+  expect(r.chunks).toBeGreaterThan(0)
+  expect(r.rejected).toContain('invalid terrain document')
+  expect(r.bad).toContain('rect must be integers')
+  await page.locator('#terrain-regen').click()
+  await expect(page.locator('#terrain-last')).toContainText('regen:', { timeout: 60_000 })
+  const shot = await page.locator('canvas').screenshot()
+  expect(shot.byteLength).toBeGreaterThan(10_000)
+  expect(errors).toEqual([])
+})
