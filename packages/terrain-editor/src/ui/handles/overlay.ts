@@ -1,7 +1,7 @@
 import { voxelId } from '@elovox/engine'
 import type { OpDef, OpImpl, Vec2 } from '@elovox/terrain'
 import {
-  BoxGeometry, BufferGeometry, Group, Line, LineBasicNodeMaterial, LineLoop, Mesh, MeshBasicNodeMaterial, Vector3,
+  BoxGeometry, BufferGeometry, Group, Line, LineBasicNodeMaterial, Mesh, MeshBasicNodeMaterial, Vector3,
   type PerspectiveCamera,
 } from 'three/webgpu'
 import { handlesOf, outlinesOf, resample, type Handle } from './geometry.ts'
@@ -90,9 +90,10 @@ export class Overlay {
   }
 
   private addLine(points: Vector3[], closed: boolean, color: number, opacity: number): void {
-    const geometry = new BufferGeometry().setFromPoints(points)
+    // The WebGPU renderer does not support LineLoop: close the loop by repeating the first point.
+    const geometry = new BufferGeometry().setFromPoints(closed && points[0] ? [...points, points[0]] : points)
     this.geometries.push(geometry)
-    const line = closed ? new LineLoop(geometry, this.lineMaterial(color, opacity)) : new Line(geometry, this.lineMaterial(color, opacity))
+    const line = new Line(geometry, this.lineMaterial(color, opacity))
     line.renderOrder = 1000
     this.group.add(line)
   }
