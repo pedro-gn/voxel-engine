@@ -111,7 +111,10 @@ export class FluidSystem {
     if (this.reg.source[voxelId(old)] === 1) this.springs.delete(pos)
     if (this.reg.source[voxelId(v)] === 1) this.springs.add(pos)
     if (source !== 'fluid') this.external(x, y, z, pos, old, v, owner)
-    if (v === AIR) this.openNear(x, y, z, pos)
+    if (v === AIR) {
+      this.openNear(x, y, z, pos)
+      this.unsealBelow(x, y, z)
+    }
     this.wakeAround(x, y, z)
   }
 
@@ -154,6 +157,13 @@ export class FluidSystem {
       p.capped.add(below)
     }
     if (p.area === 0 && !p.frozen) this.rescan(p)
+  }
+
+  /** A cell became air above a pool's surface cell: that pool can rise again. */
+  protected unsealBelow(x: number, y: number, z: number): void {
+    if (y === 0 || !this.members.has(x, y - 1, z)) return
+    const p = this.pools.ownerOf(x, y - 1, z)
+    if (p && p.sealed && y - 1 === p.surfaceY) p.sealed = false
   }
 
   /** A cell became air: each pool touching it at y ≤ its surface gains an outlet there. */
@@ -482,6 +492,7 @@ export class FluidSystem {
   private setLevel(p: Pool, live: readonly number[], level: number): void {
     const d = level - p.level
     p.level = level
+    if (d < 0) p.sealed = false
     for (const pos of live) {
       const [x, y, z] = this.layout.voxelCoords(pos)
       this.port.write(x, y, z, liquidVoxel(p.liquid, level + 1))

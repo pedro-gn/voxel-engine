@@ -30,6 +30,32 @@ describe('resurfacing', () => {
     expect(p).toMatchObject({ surfaceY: 4, level: 7, sealed: true })
     expect(sim.fluids.accepts(p!, 1)).toBe(false)
   })
+  it('unseals a pool when its ceiling is removed', () => {
+    const base = lake(4)
+    const sim = fluidSim((x, y, z) => (y === 5 && x < 12 && z < 12 ? B.stone : base(x, y, z)))
+    const [p] = sim.fluids.pools.all()
+    p!.balance = 100
+    run(sim, 2)
+    expect(p!.sealed).toBe(true)
+    sim.submit(0, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: AIR })
+    run(sim, 1)
+    expect(p!.sealed).toBe(false)
+    expect(sim.fluids.accepts(p!, 1000)).toBe(true)
+    p!.balance = 100
+    run(sim, 3)
+    expect(p!.surfaceY).toBeGreaterThan(4) // rose through the one-cell hole
+  })
+  it('unseals a sealed pool that loses a level', () => {
+    const base = lake(4)
+    const sim = fluidSim((x, y, z) => (y === 5 && x < 12 && z < 12 ? B.stone : base(x, y, z)))
+    const [p] = sim.fluids.pools.all()
+    p!.balance = 100
+    run(sim, 2)
+    expect(p!.sealed).toBe(true)
+    p!.balance = -p!.area
+    run(sim, 2)
+    expect(p).toMatchObject({ level: 6, sealed: false })
+  })
   it('drops layers and splits a lake over a ridge', () => {
     const base = lake(4)
     const sim = fluidSim((x, y, z) => (x === 6 && y >= 1 && y <= 2 && z > 0 && z < 11 ? B.stone : base(x, y, z)))
