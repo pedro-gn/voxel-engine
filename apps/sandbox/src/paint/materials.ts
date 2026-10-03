@@ -175,6 +175,66 @@ export function rock(_r: Rand): Layer {
   return l
 }
 
+export function snow(_r: Rand): Layer {
+  const base = hex('#eef3f8')
+  const l = createLayer(base, 0.5)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), n = tileFbm(121, x, y, 4, 3), c = worley(122, x, y, 6)
+    const drift = c.d < 0.4 ? (1 - c.d / 0.4) * 0.15 : 0
+    paint(l, i, mixRgb(hex('#c9d6e6'), base, 0.55 + 0.45 * n), 0.4 + 0.3 * n + drift)
+  }
+  return l
+}
+
+export function gravel(r: Rand): Layer {
+  const l = createLayer(hex('#6f6a64'), 0.3)
+  const stones = ['#8c867e', '#7a746d', '#9b958c', '#66615b'].map(hex)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), c = worley(131, x, y, 10)
+    if (c.d < 0.38) paint(l, i, vary(stones[c.id % stones.length]!, r, 0.04), 0.45 + 0.5 * (1 - c.d / 0.38))
+    else paint(l, i, hex('#4f4b46'), 0.15)
+  }
+  return l
+}
+
+/** Horizontal strata, 8 px per band; tones cycle through `tones`. Shared by both sandstones. */
+function strata(seed: number, tones: readonly string[], line: string): Layer {
+  const cols = tones.map(hex)
+  const l = createLayer(cols[0]!)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), band = Math.floor(y / 8), n = tileFbm(seed, x, y, 8, 3)
+    const edge = y % 8 === 0 && tileNoise(seed + 1, x, band, 8, 8) < 0.7
+    if (edge) { paint(l, i, hex(line), 0.25); continue }
+    paint(l, i, scaleRgb(cols[band % cols.length]!, 0.9 + 0.2 * n), 0.45 + 0.25 * n)
+  }
+  return l
+}
+
+export function sandstone(_r: Rand): Layer {
+  return strata(141, ['#d9b98a', '#cfa977', '#e2c597', '#c9a06c'], '#a8835a')
+}
+
+export function sandstoneRed(_r: Rand): Layer {
+  return strata(151, ['#b8603f', '#a85536', '#c47050', '#9c4b2f'], '#7a3a24')
+}
+
+export function pineLeaves(_r: Rand): Layer {
+  const l = createLayer(hex('#2f5e3a'), 0.3)
+  const greens = ['#356b41', '#2a5534', '#3f7a4a', '#2f5e3a'].map(hex)
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    const i = wrap(x, y), c = worley(161, x, y, 12)
+    if (c.d < 0.45) {
+      const k = 1 - c.d / 0.45
+      paint(l, i, scaleRgb(greens[c.id % greens.length]!, 0.85 + 0.25 * k), 0.4 + 0.5 * k, 1)
+    } else if (tileNoise(162, x, y, 8) < 0.45) {
+      paint(l, i, hex('#1d3a24'), 0.05, 0)
+    } else {
+      paint(l, i, hex('#1d3a24'), 0.15, 1)
+    }
+  }
+  return l
+}
+
 export function glass(_r: Rand): Layer {
   const l = createLayer(hex('#d7ecff'), 0.5, 0.22)
   for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
@@ -214,4 +274,9 @@ export const TILES: readonly (readonly [string, (r: Rand) => Layer, ShadeOptions
   ['glass', glass, { cavity: 0, highlight: 0, baked: 0 }],
   ['torch', torch, { cavity: 0, baked: 0.1 }],
   ['water', water, { cavity: 0, highlight: 0.15 }],
+  ['snow', snow, { highlight: 0.3 }],
+  ['gravel', gravel, {}],
+  ['sandstone', sandstone, {}],
+  ['sandstone_red', sandstoneRed, {}],
+  ['pine_leaves', pineLeaves, {}],
 ]
