@@ -158,3 +158,31 @@ describe('EditorSession selection, open and save', () => {
     expect(JSON.parse(JSON.stringify(s.doc))).toEqual(s.doc)
   })
 })
+
+describe('EditorSession gesture and save edge cases', () => {
+  it('treats a gesture that ends where it started as a cancel', () => {
+    const { s, changes } = session()
+    const start = s.doc
+    s.begin('drag')
+    s.update(setParam('hill', 'amplitude', 3))
+    s.update(setParam('hill', 'amplitude', start.ops[0]!.params.amplitude as number))
+    s.commit()
+    expect(s.doc).toBe(start)
+    expect(s.canUndo).toBe(false)
+    expect(s.dirty).toBe(false)
+    expect(s.inGesture).toBe(false)
+    expect(changes[changes.length - 1]!.cause).toBe('cancel')
+    expect(changes.some((c) => c.cause === 'commit')).toBe(false)
+  })
+
+  it('marks the given document saved, not whatever is current', () => {
+    const { s } = session()
+    s.apply('amplitude', setParam('hill', 'amplitude', 3))
+    const serialized = s.doc
+    s.apply('amplitude', setParam('hill', 'amplitude', 4))
+    s.markSaved(serialized)
+    expect(s.dirty).toBe(true)
+    s.markSaved()
+    expect(s.dirty).toBe(false)
+  })
+})

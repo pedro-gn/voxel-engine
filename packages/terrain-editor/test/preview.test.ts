@@ -138,4 +138,32 @@ describe('PreviewScheduler', () => {
     expect(p.status.state).toBe('idle')
     expect(p.status).toEqual({ state: 'idle', last: { ms: 5, chunks: 3, wallMs: 0 } })
   })
+
+  it('regenerates with the pre-gesture document while a whole-world gesture is deferred and then cancelled', async () => {
+    const { p, start, calls, waiting } = setup()
+    const d1 = setParam('hill', 'amplitude', 3)(start), d2 = setParam('hill', 'amplitude', 4)(start)
+    const sea = setSeaLevel(12)(d2)
+    p.onChange(ev(d1, A, 'edit'))
+    await tick() // d1 in flight
+    p.onChange(ev(d2, B, 'edit')) // queued behind it
+    p.onChange(ev(sea, 'all', 'gesture'))
+    p.onChange(ev(d2, 'all', 'cancel'))
+    waiting[0]!.resolve()
+    await tick()
+    const sent = calls.filter((c) => c[0] === 'set').map((c) => c[1])
+    expect(sent).not.toContain(sea)
+    expect(sent[sent.length - 1]).toBe(d2)
+  })
+
+  it('sends the pre-gesture document if the queued regeneration runs mid-gesture', async () => {
+    const { p, start, calls, waiting } = setup()
+    const d1 = setParam('hill', 'amplitude', 3)(start), d2 = setParam('hill', 'amplitude', 4)(start)
+    p.onChange(ev(d1, A, 'edit'))
+    await tick()
+    p.onChange(ev(d2, B, 'edit'))
+    p.onChange(ev(setSeaLevel(12)(d2), 'all', 'gesture'))
+    waiting[0]!.resolve()
+    await tick()
+    expect(calls.slice(2)).toEqual([['set', d2], ['regen', B]])
+  })
 })

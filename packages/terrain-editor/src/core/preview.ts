@@ -38,6 +38,8 @@ export class PreviewScheduler {
   private failed: Area = null
   /** A whole-world change waits for its gesture to end. */
   private deferred = false
+  /** The document from before the deferred gesture began: what the loop regenerates with meanwhile. */
+  private beforeDeferred: TerrainDoc | null = null
   private running: Promise<void> | null = null
   private generation = 0
   private current: PreviewStatus = { state: 'idle', last: null }
@@ -54,6 +56,7 @@ export class PreviewScheduler {
   /** Feeds a session change. */
   onChange(e: ChangeEvent): void {
     if (e.cause === 'gesture' && e.area === 'all') {
+      if (!this.deferred) this.beforeDeferred = this.latest
       this.deferred = true // a full regeneration takes seconds: wait for the release
       this.latest = e.doc
       return
@@ -61,6 +64,7 @@ export class PreviewScheduler {
     if (e.cause === 'commit' || e.cause === 'cancel') {
       const deferred = this.deferred
       this.deferred = false
+      this.beforeDeferred = null
       if (e.cause === 'commit' && !deferred) return // an op gesture was previewed while it ran
       if (e.cause === 'cancel' && deferred) { this.latest = e.doc; return } // the world never left the start
     }
@@ -91,7 +95,7 @@ export class PreviewScheduler {
   private async loop(): Promise<void> {
     while (this.pending !== null) {
       const area = unionArea(this.pending, this.failed) as Exclude<Area, null>
-      const doc = this.latest
+      const doc = this.deferred && this.beforeDeferred ? this.beforeDeferred : this.latest
       this.pending = null
       this.failed = null
       const gen = ++this.generation

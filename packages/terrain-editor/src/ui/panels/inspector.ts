@@ -60,7 +60,10 @@ export function createInspector(parent: HTMLElement, actions: InspectorActions):
         set(f)
         sync.set(f.path, (g) => set(g as NumberField))
         range.addEventListener('input', () => { const g = latest<NumberField>(f.path); actions.live(g.label, g.edit(Number(range.value))) })
+        // Chrome fires no change when a slider is released at its starting value
         range.addEventListener('change', () => actions.endLive())
+        range.addEventListener('pointerup', () => actions.endLive())
+        range.addEventListener('keyup', () => actions.endLive())
         box.addEventListener('change', () => {
           const g = latest<NumberField>(f.path)
           const raw = box.value.trim()

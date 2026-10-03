@@ -2,7 +2,7 @@
 export interface FileHandle {
   readonly name: string
   getFile(): Promise<{ text(): Promise<string> }>
-  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }>
+  createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void>; abort?(): Promise<void> }>
 }
 
 /** The File System Access pickers; `window` in Chrome and Edge. Missing methods mean no API. */
@@ -65,8 +65,13 @@ export class TerrainFiles {
       }
     }
     const w = await h.createWritable()
-    await w.write(text)
-    await w.close()
+    try {
+      await w.write(text)
+      await w.close()
+    } catch (e) {
+      await w.abort?.()
+      throw e
+    }
     return { handle: h, name: h.name }
   }
 }

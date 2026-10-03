@@ -54,6 +54,20 @@ describe('TerrainFiles with the File System Access API', () => {
   })
 })
 
+describe('TerrainFiles write failures', () => {
+  it('aborts the writable and rethrows when write fails', async () => {
+    let aborted = false
+    const h: FileHandle = {
+      name: 'm.json',
+      getFile: async () => ({ text: async () => '' }),
+      createWritable: async () => ({ write: async () => { throw new Error('disk full') }, close: async () => {}, abort: async () => { aborted = true } }),
+    }
+    const files = new TerrainFiles({ showOpenFilePicker: async () => [h], showSaveFilePicker: async () => h }, fallback().f)
+    await expect(files.save('x', h, 'm.json')).rejects.toThrow('disk full')
+    expect(aborted).toBe(true)
+  })
+})
+
 describe('TerrainFiles without the API', () => {
   it('opens through the fallback picker and saves by download', async () => {
     const picked = { name: 'a.json', text: '{}', handle: null }

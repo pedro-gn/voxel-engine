@@ -107,7 +107,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   let fileName = o.fileName
   let showAll = false
 
-  const ground = groundSampler(engine.world.get, treeIds(engine, parsed.doc), height, size)
+  const skip = treeIds(engine, parsed.doc)
+  const ground = groundSampler(engine.world.get, skip, height, size)
   const overlay = new Overlay(ground)
   engine.scene.add(overlay.group)
 
@@ -202,9 +203,6 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   let click: ScreenPoint | null = null
 
   function startDrag(e: PointerEvent, def: OpDef, handle: Handle | 'body', pos: Vector3, mode: 'xz' | 'y', at: ScreenPoint): void {
-    // let a pending field change land, and settle any open gesture, before this one begins
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
-    if (session.inGesture) session.commit()
     const forward = new Vector3()
     camera.getWorldDirection(forward)
     const grab: DragPoint = mode === 'y'
@@ -230,6 +228,9 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
 
   const onDown = (e: PointerEvent) => {
     if (e.button !== 0 || drag) return
+    // let a pending field change land (the blur fires its change) and settle any open gesture, before reading the document
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    finishGesture()
     flushOverlay()
     const at = local(e)
     const def = selectedDef()
@@ -347,6 +348,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
       if (!r.ok) { inspector.setErrors(r.errors.map((err) => `${f.name}: ${err}`)); return }
       endDrag()
       session.open(r.doc)
+      skip.clear()
+      for (const id of treeIds(engine, r.doc)) skip.add(id)
       fileHandle = f.handle
       fileName = f.name
       renderToolbar()
@@ -358,11 +361,12 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   async function save(as: boolean): Promise<void> {
     finishGesture()
     try {
-      const r = await files.save(serializeTerrain(session.doc), as ? null : fileHandle, fileName)
+      const doc = session.doc
+      const r = await files.save(serializeTerrain(doc), as ? null : fileHandle, fileName)
       if (!r) return
       fileHandle = r.handle
       fileName = r.name
-      session.markSaved()
+      session.markSaved(doc)
       renderToolbar()
     } catch (err) {
       inspector.setErrors([`save failed: ${err instanceof Error ? err.message : String(err)}`])

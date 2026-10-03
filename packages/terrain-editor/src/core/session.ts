@@ -96,6 +96,10 @@ export class EditorSession {
     if (!g) return
     this.gesture = null
     if (this.current === g.start) return
+    if (this.area(g.start, this.current) === null) { // no change in content: a cancel, not a step
+      this.set(g.start, 'cancel')
+      return
+    }
     this.history.push({ label: g.label, before: g.start, after: this.current })
     this.emit({ doc: this.current, prev: g.start, area: this.area(g.start, this.current), cause: 'commit' })
   }
@@ -136,7 +140,7 @@ export class EditorSession {
     this.emit({ doc, prev, area: 'all', cause: 'open' })
   }
 
-  markSaved(): void { this.saved = this.current }
+  markSaved(doc: TerrainDoc = this.current): void { this.saved = doc }
 
   private attempt(doc: TerrainDoc): { ok: true; doc: TerrainDoc } | { ok: false; errors: string[] } {
     if (doc === this.current) return { ok: true, doc }
