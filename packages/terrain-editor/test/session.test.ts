@@ -1,3 +1,4 @@
+import { HEIGHT_VALUES } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { removeOp, setParam, setSeaLevel, setShape } from '../src/core/edits.ts'
 import { EditorSession, type ChangeEvent } from '../src/core/session.ts'
@@ -184,5 +185,27 @@ describe('EditorSession gesture and save edge cases', () => {
     expect(s.dirty).toBe(true)
     s.markSaved()
     expect(s.dirty).toBe(false)
+  })
+})
+
+describe('EditorSession layers', () => {
+  it('records a layers-only gesture as one step with the area it changed', () => {
+    const { s, changes } = session()
+    const values = new Int16Array(HEIGHT_VALUES)
+    values[0] = 16 // column (0, 0)
+    const painted = { ...s.doc, layers: { height: { tiles: [{ x: 0, z: 0, values }] } } }
+    s.begin('raise')
+    expect(s.update(() => painted)).toEqual({ ok: true })
+    s.commit()
+    expect(s.doc).toBe(painted)
+    expect(changes.at(-1)).toMatchObject({ cause: 'commit', area: { x0: 0, z0: 0, x1: 32, z1: 32 } })
+    s.undo()
+    expect(s.doc.layers).toEqual({})
+  })
+
+  it('trusts a layers-only change without validating it (brushes clamp what they write)', () => {
+    const { s } = session()
+    const outside = { ...s.doc, layers: { height: { tiles: [{ x: 99, z: 0, values: new Int16Array(HEIGHT_VALUES).fill(1) }] } } }
+    expect(s.apply('paint', () => outside)).toEqual({ ok: true })
   })
 })

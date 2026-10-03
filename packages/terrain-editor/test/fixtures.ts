@@ -28,9 +28,16 @@ export function doc(): TerrainDoc {
   return r.doc
 }
 
-/** Freezes a value deeply, so a test fails if code under test mutates it. */
+/** A flat 256 × 256 document (ground at 30, no ops), so brush tests can predict every height. */
+export function flatDoc(): TerrainDoc {
+  const r = validateTerrainDoc({ ...rawDoc(), base: { height: 30, amplitude: 0, noise: { scale: 64 } }, ops: [] }, { worldHeight: HEIGHT })
+  if (!r.ok) throw new Error(r.errors.join('\n'))
+  return r.doc
+}
+
+/** Freezes a value deeply, so a test fails if code under test mutates it. Typed arrays cannot be frozen and are skipped. */
 export function deepFreeze<T>(v: T): T {
-  if (typeof v === 'object' && v !== null && !Object.isFrozen(v)) {
+  if (typeof v === 'object' && v !== null && !ArrayBuffer.isView(v) && !Object.isFrozen(v)) {
     Object.freeze(v)
     for (const k of Object.keys(v)) deepFreeze((v as Record<string, unknown>)[k])
   }

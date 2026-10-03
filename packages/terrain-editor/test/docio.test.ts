@@ -1,3 +1,4 @@
+import { HEIGHT_VALUES } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { parseTerrainText, serializeTerrain } from '../src/core/docio.ts'
 import { HEIGHT, SIZE, doc, rawDoc } from './fixtures.ts'
@@ -35,5 +36,18 @@ describe('serializeTerrain', () => {
     expect(text.split('\n')[1]).toBe('  "format": "elovox-terrain",')
     const r = parseTerrainText(text, o)
     expect(r.ok && r.doc).toEqual(d)
+  })
+})
+
+describe('serializeTerrain with layers', () => {
+  it('writes painted layers as base64 tiles that read back as the same document', () => {
+    const values = Int16Array.from({ length: HEIGHT_VALUES }, (_, i) => (i % 7) - 3)
+    const d = { ...doc(), layers: { height: { tiles: [{ x: 1, z: 2, values }] } } }
+    const r = parseTerrainText(serializeTerrain(d), { size: SIZE, worldHeight: HEIGHT })
+    expect(r.ok && r.doc).toEqual(d)
+  })
+
+  it('writes "layers": {} when nothing is painted', () => {
+    expect(serializeTerrain(doc())).toContain('"layers": {}')
   })
 })

@@ -1,3 +1,4 @@
+import { BIOME_VALUES, BRICK_VALUES, HEIGHT_VALUES, type HeightTile, type TerrainDoc } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { diffArea, toArea, unionArea } from '../src/core/area.ts'
 import { addOp, removeOp, reorderOp, setBase, setParam, setSeaLevel, setShape } from '../src/core/edits.ts'
@@ -65,5 +66,49 @@ describe('diffArea', () => {
     const d = doc()
     expect(diffArea(d, setSeaLevel(12)(d), o)).toBe('all')
     expect(diffArea(d, setBase({ ...d.base, height: 40 })(d), o)).toBe('all')
+  })
+})
+
+describe('diffArea: layers', () => {
+  const withHeight = (d: TerrainDoc, tiles: HeightTile[]): TerrainDoc => ({ ...d, layers: { ...d.layers, height: { tiles } } })
+  // Column (100, 50) is index (100 - 64) + 50 * 64 of tile (1, 0).
+  function tile(): HeightTile {
+    const values = new Int16Array(HEIGHT_VALUES)
+    values[100 - 64 + 50 * 64] = 16
+    return { x: 1, z: 0, values }
+  }
+  // (100, 50) padded by AREA_PAD (8): 92..109 × 42..59, rounded out to chunk columns.
+  const area = { x0: 64, z0: 32, x1: 128, z1: 64 }
+
+  it('covers the changed columns, padded and rounded, never the whole world', () => {
+    const d = doc()
+    expect(diffArea(d, withHeight(d, [tile()]), o)).toEqual(area)
+  })
+
+  it('covers a removed tile', () => {
+    const d = doc()
+    expect(diffArea(withHeight(d, [tile()]), d, o)).toEqual(area)
+  })
+
+  it('skips tiles both documents share, and finds nothing between equal copies', () => {
+    const d = doc()
+    const t = tile()
+    const a = withHeight(d, [t])
+    expect(diffArea(a, { ...a, layers: { height: { tiles: [t] } } }, o)).toBeNull()
+    expect(diffArea(a, withHeight(d, [{ ...t, values: t.values.slice() }]), o)).toBeNull()
+  })
+
+  it('covers a biome cell as its 4 × 4 columns', () => {
+    const d = doc()
+    const values = new Uint8Array(BIOME_VALUES)
+    values[5 + 2 * 16] = 1 // cell (5, 2): columns 20..23 × 8..11
+    expect(diffArea(d, { ...d, layers: { biome: { tiles: [{ x: 0, z: 0, values }] } } }, o)).toEqual({ x0: 0, z0: 0, x1: 32, z1: 32 })
+  })
+
+  it('reaches two blocks around a changed density sample', () => {
+    const d = doc()
+    const values = new Int8Array(BRICK_VALUES)
+    values[0] = 8 // sample (0, 0, 0) of brick (6, 1, 3) = block (96, 16, 48): 94..98 × 46..50
+    expect(diffArea(d, { ...d, layers: { density: { bricks: [{ x: 6, y: 1, z: 3, values }] } } }, o)).toEqual({ x0: 64, z0: 32, x1: 128, z1: 64 })
   })
 })

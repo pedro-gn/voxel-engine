@@ -1,5 +1,5 @@
 import { validateTerrainDoc, type OpRegistry, type TerrainDoc } from '@elovox/terrain'
-import { diffArea, type Area } from './area.ts'
+import { diffArea, onlyLayersDiffer, type Area } from './area.ts'
 import type { Edit } from './edits.ts'
 import { History } from './history.ts'
 
@@ -144,6 +144,9 @@ export class EditorSession {
 
   private attempt(doc: TerrainDoc): { ok: true; doc: TerrainDoc } | { ok: false; errors: string[] } {
     if (doc === this.current) return { ok: true, doc }
+    // Brushes clamp every value they write, so a document that differs only in its layers is valid by
+    // construction; validating it would cost time proportional to everything painted.
+    if (onlyLayersDiffer(doc, this.current)) return { ok: true, doc }
     const r = validateTerrainDoc(doc, { ops: this.o.ops, worldHeight: this.o.worldHeight })
     // Keep the candidate, not r.doc: validation rebuilds every op, and the candidate shares the unchanged ones.
     return r.ok ? { ok: true, doc } : r

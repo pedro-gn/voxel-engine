@@ -1,4 +1,4 @@
-import { validateTerrainDoc, type OpRegistry, type TerrainDoc, type Vec2 } from '@elovox/terrain'
+import { toTerrainJSON, validateTerrainDoc, type OpRegistry, type TerrainDoc, type Vec2 } from '@elovox/terrain'
 
 export type ParseResult = { ok: true; doc: TerrainDoc } | { ok: false; errors: string[] }
 
@@ -21,5 +21,5 @@ export function parseTerrainText(text: string, o: { size: Vec2; worldHeight: num
 
 /** The document as `.terrain.json` text: two-space JSON and a final newline. */
 export function serializeTerrain(doc: TerrainDoc): string {
-  return `${JSON.stringify(doc, null, 2)}\n`
+  return `${JSON.stringify(toTerrainJSON(doc), null, 2)}\n`
 }
