@@ -1,6 +1,7 @@
 import { surfaceBlock, type SurfaceInput } from '../biomes/biomes.ts'
 import { fillCells, slopeAt } from './cells.ts'
 import type { CompiledTerrain } from './compile.ts'
+import { stampFeatures } from '../features/place.ts'
 import { VolumeField } from './volume.ts'
 
 export interface RegionOptions {
@@ -47,4 +48,5 @@ export function generateRegion(t: CompiledTerrain, x0: number, z0: number, w: nu
       out[i] = surfaceBlock(biome, t.blocks.fill, input)
     }
   }
+  if (o.features !== false) stampFeatures(t, x0, z0, w, d, out)
 }
