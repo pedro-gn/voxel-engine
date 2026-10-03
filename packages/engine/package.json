@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./sim-worker": "./src/sim/runSimWorker.ts",
+    "./gen-worker": "./src/gen/runGenWorker.ts",
     "./src/*": "./src/*"
   },
   "scripts": {

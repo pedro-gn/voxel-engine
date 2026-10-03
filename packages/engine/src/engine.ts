@@ -7,7 +7,8 @@ import { OrbitCamera } from './interact/orbitCamera.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
-import type { FromMesh, FromSim, SimInitOptions, ToMesh, ToSim } from './protocol.ts'
+import type { FromMesh, FromSim, GenConnect, SimInitOptions, TerrainRect, ToMesh, ToSim } from './protocol.ts'
+import { columnsIn } from './sim/simHost.ts'
 import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
@@ -38,6 +39,15 @@ export interface EngineOptions {
   tileSize?: number
   /** Texture name → how many blocks one repeat of it spans (default 1). Use > 1 for large painted textures that would otherwise repeat on every block. */
   textureScale?: Record<string, number>
+  /** A terrain document for the generator (structured-cloneable, e.g. parsed JSON). Passed to its configure(). */
+  terrain?: unknown
+  /**
+   * Starts a generation worker, e.g. `() => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' })`
+   * running `runGenWorker` with the sim's generator. With it, (re)generation runs in parallel; without it, the sim generates serially.
+   */
+  genWorker?: () => Worker
+  /** Generation workers to start. Default: the mesh worker count. */
+  genWorkers?: number
 }
 
 export interface EngineEvents {
@@ -48,6 +58,8 @@ export interface EngineEvents {
   log: { message: string }
   /** `slots` is set when the world ran out of slot pages. */
   fatal: { message: string; slots?: number }
+  /** A regeneration finished: wall time from request to the new voxels being in the world, and chunk columns rebuilt. */
+  generated: { ms: number; columns: number }
 }
 
 export interface EngineStats {
@@ -75,6 +87,14 @@ export interface Engine {
   get water(): WaterParams
   set water(value: WaterInput)
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
+  readonly terrain: {
+    /** The initial generation: wall time (light pass included) and chunk columns. */
+    readonly initial: { ms: number; columns: number }
+    /** Hands the generator a new document. Rejects with EngineError 'terrain' if it refuses it; the world changes only on regenerate(). */
+    setDocument(doc: unknown): Promise<void>
+    /** Regenerates the chunk columns overlapping `rect`; resolves once the new voxels and light are in the world. */
+    regenerate(rect: TerrainRect): Promise<{ ms: number; chunks: number }>
+  }
   submit(cmd: Command): number
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
   pickScreen(clientX: number, clientY: number, maxDist?: number): RayHit | null
@@ -185,8 +205,13 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const ready = new Promise<number>((res, rej) => { resolveReady = res; rejectReady = rej })
   const sim = o.simWorker()
   const pool: PoolSlot[] = []
+  const genWorkers: Worker[] = []
   let halted = false
   let fatal: string | null = null
+  let generated = false
+  let initialGen = { ms: 0, columns: 0 }
+  let terrainSeq = 0
+  const terrainWaits = new Map<number, { resolve: (v: never) => void; reject: (e: EngineError) => void; columns: number }>()
   /** Stops ticking, meshing and rendering. GPU resources stay until dispose(). */
   const halt = () => {
     if (halted) return
@@ -194,6 +219,12 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     renderer.setAnimationLoop(null)
     sim.terminate()
     for (const s of pool) s.worker.terminate()
+    for (const w of genWorkers) w.terminate()
+  }
+  /** Rejects every pending terrain request and forgets it. */
+  const rejectTerrainWaits = (message: string) => {
+    for (const w of terrainWaits.values()) w.reject(new EngineError('fatal', message))
+    terrainWaits.clear()
   }
   const fail = (message: string, slots?: number) => {
     if (fatal !== null) return
@@ -203,6 +234,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     events.emit('fatal', slots === undefined ? { message } : { message, slots })
     showErrorScreen(canvas, 'The engine stopped', message)
     rejectReady(new EngineError('fatal', message))
+    rejectTerrainWaits(message)
   }
 
   // ---- mesh worker pool ----
@@ -259,6 +291,35 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const poolSize = o.meshWorkers ?? Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 2))
   for (let i = 0; i < poolSize; i++) spawn(i, 0)
 
+  // ---- generation workers (optional) ----
+  const genPorts: MessagePort[] = []
+  if (o.genWorker) {
+    const n = Math.max(1, o.genWorkers ?? poolSize)
+    for (let i = 0; i < n; i++) {
+      try {
+        const worker = o.genWorker()
+        const ch = new MessageChannel()
+        worker.postMessage({ type: 'connect', port: ch.port2 } satisfies GenConnect, [ch.port2])
+        const lost = (reason: string) => {
+          worker.terminate()
+          if (!generated) fail(`generation worker crashed: ${reason}`)
+          else if (!halted) sim.postMessage({ type: 'genLost', index: i } satisfies ToSim)
+        }
+        worker.onerror = (e) => {
+          e.preventDefault()
+          lost(e.message || 'the worker failed to load or crashed')
+        }
+        worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
+        genWorkers.push(worker)
+        genPorts.push(ch.port1)
+      } catch (err) {
+        // Startup failure: halt and reject `ready`, so createEngine cleans up instead of leaking the sim, pool and renderer.
+        fail(`generation worker failed to start: ${err instanceof Error ? err.message : String(err)}`)
+        break
+      }
+    }
+  }
+
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
   sim.onmessage = (e: MessageEvent<FromSim>) => {
@@ -270,6 +331,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         for (const s of pool) s.worker.postMessage({ type: 'page', index: m.index, page: m.page } satisfies ToMesh)
         break
       case 'ready':
+        generated = true
+        initialGen = { ms: m.genMs, columns: m.columns }
         slotsUsed = m.slotsUsed
         for (const ci of m.chunks) queue.mark(ci, PRIORITY.INITIAL)
         sim.postMessage({ type: 'start' } satisfies ToSim)
@@ -285,6 +348,23 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         for (const ev of m.events) events.emit('event', ev)
         events.emit('tick', { tick: m.tick, tickMs: m.tickMs })
         break
+      case 'terrain': {
+        const w = terrainWaits.get(m.id)
+        terrainWaits.delete(m.id)
+        if (m.ok) w?.resolve(undefined as never)
+        else w?.reject(new EngineError('terrain', m.message))
+        break
+      }
+      case 'regenerated': {
+        const w = terrainWaits.get(m.id)
+        terrainWaits.delete(m.id)
+        if (!m.ok) { w?.reject(new EngineError('terrain', m.message)); break }
+        slotsUsed = m.slotsUsed
+        for (const ci of m.dirtyChunks) markDirty(ci, PRIORITY.DIRTY)
+        events.emit('generated', { ms: m.ms, columns: w?.columns ?? 0 })
+        w?.resolve({ ms: m.ms, chunks: m.dirtyChunks.length } as never)
+        break
+      }
       case 'log':
         console.info(`[elovox sim] ${m.message}`)
         events.emit('log', { message: m.message })
@@ -298,7 +378,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     e.preventDefault()
     fail(`sim worker crashed: ${e.message || 'the worker failed to load or crashed'}`)
   }
-  sim.postMessage({ type: 'init', buffers, blocks: o.blocks, seed: o.seed, options: o.sim ?? {} } satisfies ToSim)
+  const init: Extract<ToSim, { type: 'init' }> = { type: 'init', buffers, blocks: o.blocks, seed: o.seed, options: o.sim ?? {}, terrain: o.terrain }
+  if (genPorts.length > 0) init.genPorts = genPorts
+  sim.postMessage(init, genPorts)
 
   // ---- frame loop ----
   const distanceTo = (ci: number) => {
@@ -351,6 +433,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     if (disposed) return
     disposed = true
     halt()
+    rejectTerrainWaits('the engine was disposed')
     detachControls()
     ro.disconnect()
     scene.remove(highlight)
@@ -374,9 +457,26 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(world.get, pickable, size, origin, dir, maxDist)
   const raycaster = new THREE.Raycaster()
   const ndc = new THREE.Vector2()
+  /** Posts a terrain request and settles with the sim's answer. */
+  const terrainRequest = <T>(msg: (id: number) => ToSim, columns = 0): Promise<T> => {
+    if (halted) return Promise.reject(new EngineError('fatal', fatal ?? 'the engine is stopped'))
+    const id = ++terrainSeq
+    return new Promise<T>((resolve, reject) => {
+      terrainWaits.set(id, { resolve: resolve as (v: never) => void, reject, columns })
+      sim.postMessage(msg(id))
+    })
+  }
 
   return {
     scene, camera, renderer, blocks: registry, layout, controls, world,
+    terrain: {
+      get initial() { return initialGen },
+      setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })),
+      regenerate: (rect) => terrainRequest<{ ms: number; chunks: number }>(
+        (id) => ({ type: 'regenerate', id, rect }),
+        [rect.x0, rect.z0, rect.x1, rect.z1].every(Number.isInteger) && rect.x1 > rect.x0 && rect.z1 > rect.z0 ? columnsIn(rect).length : 0,
+      ),
+    },
     atmosphere: visuals.atmosphere,
     get quality(): Quality { return visuals.getQuality() },
     set quality(value: Partial<Quality>) { visuals.setQuality(value) },

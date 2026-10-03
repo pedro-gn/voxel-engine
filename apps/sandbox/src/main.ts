@@ -5,10 +5,14 @@ import { createControls } from './controls.ts'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
 import { paintTextures } from './textures.ts'
+import e2eDoc from './terrain/e2e.terrain.json'
+import showcaseDoc from './terrain/showcase.terrain.json'
+import { createTerrainPanel } from './terrainPanel.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'rock', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
-const sceneName = params.get('scene') === 'diorama' ? 'diorama' : 'world'
+const sceneParam = params.get('scene')
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' ? sceneParam : 'world'
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
   const v = Number(raw ?? 1024)
@@ -16,18 +20,27 @@ function worldSide(raw: string | null): number {
   return Math.min(1024, Math.max(32, Math.round(v / 32) * 32))
 }
 const n = worldSide(params.get('size'))
+/** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
+const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
+const size: [number, number, number] = sceneName === 'diorama' ? [...DIORAMA_SIZE]
+  : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
+  : [n, 128, n]
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 
 const engine = await createEngine({
   canvas,
-  size: sceneName === 'diorama' ? [...DIORAMA_SIZE] : [n, 128, n],
+  size,
   seed: Number(params.get('seed') ?? 1234),
   blocks: BLOCKS,
   decorations: DECORATIONS,
   textures: paintTextures(),
   simWorker: sceneName === 'diorama'
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
-    : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
+    : sceneName === 'terrain'
+      ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
+      : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
+  terrain: terrainDoc,
+  genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
@@ -44,6 +57,14 @@ if (sceneName === 'diorama') {
     s.pitch = 0.7
     s.yaw = 0.7 + Math.PI // camera on the lower-terrace side, so the cliff faces the viewer
   }
+}
+if (sceneName === 'terrain') {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = size[0] / 2; s.target[1] = 50; s.target[2] = size[2] / 2
+    s.distance = Math.min(400, size[0] * 0.6)
+    s.pitch = 0.75
+  }
+  createTerrainPanel(engine)
 }
 createControls(engine)
 

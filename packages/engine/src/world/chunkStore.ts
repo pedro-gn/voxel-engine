@@ -87,6 +87,15 @@ export class ChunkStore {
     for (let i = 0; i < CHUNK_VOLUME; i++) light[i] = this.opaque[voxelId(voxels[i]!)] ? 0 : FULL_SKY
   }
 
+  /**
+   * Opens chunk `ci` for a bulk write and returns its slot, giving a uniform chunk a slot first.
+   * Callers then write the slot's voxel/light arrays directly; commit() closes the chunk.
+   */
+  writableSlot(ci: number): number { return this.writable(ci) }
+
+  /** Marks chunk `ci` for remeshing at the next commit() without opening it (its data is unchanged but a neighbour's is). */
+  markDirty(ci: number): void { this.dirty.add(ci) }
+
   slotOf(ci: number): number {
     const e = this.table[ci]!
     return e >= 0 ? e : -1

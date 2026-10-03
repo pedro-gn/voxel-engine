@@ -12,6 +12,12 @@ export const BLOCKS = [
   defineBlock({ name: 'water', textures: 'water', liquid: true, solid: false }),
   defineBlock({ name: 'torch', textures: 'torch', layer: 'cutout', emits: 14, solid: false }),
   defineBlock({ name: 'rock', textures: 'rock' }),
+  // terrain toolkit (sub-project 2b)
+  defineBlock({ name: 'snow', textures: 'snow' }),
+  defineBlock({ name: 'gravel', textures: 'gravel' }),
+  defineBlock({ name: 'sandstone', textures: 'sandstone' }),
+  defineBlock({ name: 'sandstone_red', textures: 'sandstone_red' }),
+  defineBlock({ name: 'pine_leaves', textures: 'pine_leaves', layer: 'cutout' }),
 ]
 
 export const DECORATIONS = [

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@elovox/engine": "0.1.0",
+    "@elovox/terrain": "0.1.0",
     "three": "0.186.1"
   },
   "devDependencies": {
