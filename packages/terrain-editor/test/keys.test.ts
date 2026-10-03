@@ -26,6 +26,14 @@ describe('actionFor', () => {
     expect(actionFor(key('s', { ctrlKey: true }), true)).toBe('save')
     expect(actionFor(key('Escape'), true)).toBe('cancel')
   })
+
+  it('maps the mode and radius keys, but not with a modifier or while typing', () => {
+    expect(['1', '2', '3', '4'].map((k) => actionFor(key(k), false))).toEqual(['mode-ops', 'mode-height', 'mode-biome', 'mode-density'])
+    expect(actionFor(key('['), false)).toBe('radius-down')
+    expect(actionFor(key(']'), false)).toBe('radius-up')
+    expect(actionFor(key('2', { ctrlKey: true }), false)).toBeNull()
+    expect(actionFor(key('2'), true)).toBeNull()
+  })
 })
 
 describe('isTyping', () => {

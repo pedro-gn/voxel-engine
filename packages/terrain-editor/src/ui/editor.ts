@@ -2,9 +2,12 @@ import type { Engine } from '@elovox/engine'
 import { TerrainDocError, builtinOps, validateTerrainDoc, type OpDef, type OpRegistry, type ShapeKind, type TerrainDoc, type Vec2 } from '@elovox/terrain'
 import { Vector3 } from 'three/webgpu'
 import { parseTerrainText, serializeTerrain } from '../core/docio.ts'
+import type { Point3 } from '../core/brush.ts'
+import { BrushController, type EditorMode } from '../core/brushes.ts'
 import { addOp, removeOp, removeVertex, reorderOp, replaceOp, setEnabled, type Edit } from '../core/edits.ts'
 import { newOp, nextOpId } from '../core/newOp.ts'
 import { PreviewScheduler } from '../core/preview.ts'
+import { TerrainSampler } from '../core/sampler.ts'
 import { EditorSession, type EditResult } from '../core/session.ts'
 import { TerrainFiles, browserFallback, type FileHandle, type FileHost } from './files.ts'
 import { dragHandle, translateShape, type DragPoint, type Handle, type HandleKind } from './handles/geometry.ts'
@@ -20,6 +23,8 @@ import { createToolbar } from './panels/toolbar.ts'
 export interface TerrainEditorOptions {
   /** The document the engine was created with (raw JSON or a validated document). */
   doc: unknown
+  /** The engine's seed: the brushes recompute base heights with it. */
+  seed: number
   /** The name "Save" suggests when the document did not come from a file. */
   fileName: string
   ops?: OpRegistry
@@ -30,6 +35,7 @@ export interface TerrainEditorOptions {
 export interface TerrainEditor {
   readonly session: EditorSession
   readonly preview: PreviewScheduler
+  readonly brushes: BrushController
   /** Client coordinates of a handle of the selected op; null if there is none or it is off screen. */
   handleScreen(kind: HandleKind, index?: number): { x: number; y: number } | null
   dispose(): void
@@ -92,6 +98,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const root = o.root ?? document.body
 
   const session = new EditorSession(parsed.doc, { worldHeight: height, ops: registry })
+  const brushes = new BrushController(session, new TerrainSampler({ seed: o.seed, height, ops: registry }))
   let failedId: string | null = null
   const preview = new PreviewScheduler(engine.terrain, parsed.doc, {
     size,
@@ -173,7 +180,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const flushOverlay = () => {
     if (!overlayDirty) return
     overlayDirty = false
-    overlay.draw(session.doc.ops.map((def) => ({ def, impl: registry.get(def.type)!, selected: def.id === session.selected, failed: def.id === failedId })), showAll)
+    const ops = brushes.mode === 'ops' ? session.doc.ops : [] // brushes hide the op outlines and handles
+    overlay.draw(ops.map((def) => ({ def, impl: registry.get(def.type)!, selected: def.id === session.selected, failed: def.id === failedId })), showAll && brushes.mode === 'ops')
   }
   let raf = 0
   const frame = () => {
@@ -192,6 +200,13 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     renderList(); renderInspector(); invalidate()
   })
   const offGenerated = engine.on('generated', invalidate) // the ground under the outlines changed
+  const offBrushes = brushes.onChange(() => { invalidate() })
+
+  function setMode(m: EditorMode): void {
+    if (brushes.stroking) return
+    finishGesture()
+    brushes.setMode(m)
+  }
 
   // ---- pointer
   const viewport = () => ({ width: canvas.clientWidth, height: canvas.clientHeight })
@@ -202,6 +217,30 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const screenOf = (p: Vector3) => toScreen(p, camera, viewport())
   let drag: Drag | null = null
   let click: ScreenPoint | null = null
+  let brushPointer: number | null = null
+  /** Camera distance of the stroke's first aim point: Shift keeps the density sphere there. */
+  let lockDistance: number | null = null
+
+  /**
+   * Where the brush aims: just above the voxel under the pointer (height, biome), that voxel's centre
+   * (density), or with `lock` during a density stroke the point at the stroke's first distance along the ray.
+   */
+  function aimPoint(e: { clientX: number; clientY: number }, lock: boolean): Point3 | null {
+    if (brushes.mode === 'density' && lock && lockDistance !== null) {
+      const ray = rayAt(camera, viewport(), local(e))
+      return { x: ray.origin.x + ray.dir.x * lockDistance, y: ray.origin.y + ray.dir.y * lockDistance, z: ray.origin.z + ray.dir.z * lockDistance }
+    }
+    const hit = engine.pickScreen(e.clientX, e.clientY)
+    if (!hit) return null
+    const [x, y, z] = hit.pos
+    return brushes.mode === 'density' ? { x: x + 0.5, y: y + 0.5, z: z + 0.5 } : { x: x + 0.5, y: y + 1, z: z + 0.5 }
+  }
+
+  function releaseBrush(): void {
+    if (brushPointer !== null && canvas.hasPointerCapture(brushPointer)) canvas.releasePointerCapture(brushPointer)
+    brushPointer = null
+    lockDistance = null
+  }
 
   function startDrag(e: PointerEvent, def: OpDef, handle: Handle | 'body', pos: Vector3, mode: 'xz' | 'y', at: ScreenPoint): void {
     const forward = new Vector3()
@@ -233,6 +272,16 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
     finishGesture()
     flushOverlay()
+    if (brushes.mode !== 'ops') {
+      const aim = aimPoint(e, false)
+      if (!aim) return
+      lockDistance = new Vector3().setFromMatrixPosition(camera.matrixWorld).distanceTo(new Vector3(aim.x, aim.y, aim.z))
+      brushes.begin(aim, e.ctrlKey)
+      brushPointer = e.pointerId
+      canvas.setPointerCapture(e.pointerId)
+      e.preventDefault()
+      return
+    }
     const at = local(e)
     const def = selectedDef()
     if (def) {
@@ -267,6 +316,11 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   const onMove = (e: PointerEvent) => {
+    if (brushPointer === e.pointerId) {
+      const aim = aimPoint(e, e.shiftKey)
+      if (aim) brushes.move(aim, e.ctrlKey)
+      return
+    }
     if (!drag || e.pointerId !== drag.pointerId) return
     const ray = rayAt(camera, viewport(), local(e))
     let to: DragPoint | null
@@ -282,6 +336,11 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   const onUp = (e: PointerEvent) => {
+    if (brushPointer === e.pointerId) {
+      releaseBrush()
+      brushes.end()
+      return
+    }
     if (drag && e.pointerId === drag.pointerId) {
       finishGesture()
       return
@@ -296,7 +355,10 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
   canvas.addEventListener('pointerup', onUp)
-  const onLost = (e: PointerEvent) => { if (drag && e.pointerId === drag.pointerId) finishGesture() }
+  const onLost = (e: PointerEvent) => {
+    if (brushPointer === e.pointerId) { brushPointer = null; lockDistance = null; brushes.end() }
+    if (drag && e.pointerId === drag.pointerId) finishGesture()
+  }
   canvas.addEventListener('lostpointercapture', onLost)
 
   // ---- keyboard
@@ -305,9 +367,29 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     if (!action) return
     switch (action) {
       case 'save': e.preventDefault(); void save(false); break
-      case 'cancel': endDrag(); session.cancel(); break
-      case 'undo': e.preventDefault(); endDrag(); session.undo(); break
-      case 'redo': e.preventDefault(); endDrag(); session.redo(); break
+      case 'cancel': {
+        const busy = brushes.stroking || session.inGesture || drag !== null
+        endDrag(); releaseBrush(); brushes.cancel(); session.cancel()
+        if (!busy) setMode('ops') // Esc outside a stroke leaves the brushes
+        break
+      }
+      case 'undo':
+        e.preventDefault(); endDrag()
+        if (brushes.stroking) { releaseBrush(); brushes.cancel() } else session.undo()
+        break
+      case 'redo':
+        e.preventDefault(); endDrag()
+        if (brushes.stroking) { releaseBrush(); brushes.cancel() } else session.redo()
+        break
+      case 'mode-ops': setMode('ops'); break
+      case 'mode-height': setMode('height'); break
+      case 'mode-biome': setMode('biome'); break
+      case 'mode-density': setMode('density'); break
+      case 'radius-down': case 'radius-up': {
+        const c = brushes.current
+        if (c) brushes.setSettings({ radius: c.settings.radius * (action === 'radius-up' ? 1.25 : 0.8) })
+        break
+      }
       case 'delete': if (session.selected) run(`delete ${session.selected}`, removeOp(session.selected)); break
       case 'duplicate': e.preventDefault(); duplicate(); break
       case 'toggle': { const d = selectedDef(); if (d) run(d.enabled ? 'disable' : 'enable', setEnabled(d.id, !d.enabled)); break }
@@ -379,6 +461,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   return {
     session,
     preview,
+    brushes,
     handleScreen(kind, index = 0) {
       flushOverlay()
       const p = overlay.handles.find((x) => x.handle.kind === kind && x.handle.index === index)
@@ -390,8 +473,10 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     dispose() {
       cancelAnimationFrame(raf)
       endDrag()
+      releaseBrush(); brushes.cancel()
       if (session.inGesture) session.cancel()
       offChange(); offSelect(); offGenerated()
+      offBrushes()
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp)

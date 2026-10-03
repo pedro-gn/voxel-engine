@@ -24,6 +24,7 @@ function worldSide(raw: string | null): number {
 const editing = sceneName === 'terrain' && params.has('edit')
 const EDIT_HINT = 'LMB select · drag handles/outline · Shift-drag height · Alt-click remove vertex · Ctrl+Z/Y · Del · Ctrl+D · H · RMB rotate'
 const n = worldSide(params.get('size'))
+const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
 const size: [number, number, number] = sceneName === 'diorama' ? [...DIORAMA_SIZE]
@@ -34,7 +35,7 @@ const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 const engine = await createEngine({
   canvas,
   size,
-  seed: Number(params.get('seed') ?? 1234),
+  seed,
   blocks: BLOCKS,
   decorations: DECORATIONS,
   textures: paintTextures(),
@@ -72,7 +73,7 @@ if (sceneName === 'terrain') {
 }
 createControls(engine, { collapsed: editing })
 const editor = editing
-  ? createTerrainEditor(engine, { doc: terrainDoc, fileName: n <= 256 ? 'e2e.terrain.json' : 'showcase.terrain.json' })
+  ? createTerrainEditor(engine, { doc: terrainDoc, seed, fileName: n <= 256 ? 'e2e.terrain.json' : 'showcase.terrain.json' })
   : null
 
 // The bean stands at the camera target, facing the camera; V toggles idle / walk.

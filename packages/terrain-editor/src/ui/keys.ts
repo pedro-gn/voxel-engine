@@ -1,4 +1,6 @@
-export type Action = 'undo' | 'redo' | 'delete' | 'duplicate' | 'toggle' | 'cancel' | 'save'
+export type Action =
+  | 'undo' | 'redo' | 'delete' | 'duplicate' | 'toggle' | 'cancel' | 'save'
+  | 'mode-ops' | 'mode-height' | 'mode-biome' | 'mode-density' | 'radius-down' | 'radius-up'
 
 export interface KeyLike { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }
 
@@ -15,6 +17,12 @@ export function actionFor(e: KeyLike, typing: boolean): Action | null {
   if (mod || e.altKey) return null
   if (k === 'delete' || k === 'backspace') return 'delete'
   if (k === 'h') return 'toggle'
+  if (k === '1') return 'mode-ops'
+  if (k === '2') return 'mode-height'
+  if (k === '3') return 'mode-biome'
+  if (k === '4') return 'mode-density'
+  if (k === '[') return 'radius-down'
+  if (k === ']') return 'radius-up'
   return null
 }
 
