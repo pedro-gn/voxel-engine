@@ -128,11 +128,20 @@ describe('stampFeatures', () => {
     expect(out.includes(IDS.log!)).toBe(false)
   })
 
-  it('writes nothing outside its region', () => {
+  it('writes only feature blocks, and something', () => {
     const t = compileDoc(busyDoc())
-    const out = new Uint16Array(32 * 32 * H)
-    stampFeatures(t, 40, 40, 32, 32, out) // empty terrain buffer: every candidate column is probed, stamps are clipped
-    expect(out.length).toBe(32 * 32 * H)
+    const featureBlocks = [IDS.log, IDS.leaves, IDS.pine_leaves, IDS.rock]
+    const on = regionOf(t, 40, 40, 32, 32), off = regionOf(t, 40, 40, 32, 32, false)
+    let changed = 0
+    for (let i = 0; i < on.length; i++) {
+      if (on[i] === off[i]) continue
+      changed++
+      expect(featureBlocks).toContain(on[i])
+    }
+    expect(changed).toBeGreaterThan(0)
+    const bare = new Uint16Array(32 * 32 * H)
+    stampFeatures(t, 40, 40, 32, 32, bare)
+    expect(bare.some((v) => v !== 0)).toBe(true)
   })
 
   it('matches a golden hash, so generation is identical on every JS engine', () => {
