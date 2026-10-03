@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { defineBlock } from '../src/blocks/registry.ts'
 import type { Command } from '../src/sim/commands.ts'
 import { Pcg32, hash32 } from '../src/sim/rng.ts'
@@ -242,5 +242,49 @@ describe('Simulation', () => {
     a.submit(1, 0, { type: 'setBlock', pos: [1, 1, 1], voxel: ID.stone })
     a.step(); b.step()
     expect(a.hash()).not.toBe(b.hash())
+  })
+})
+
+describe('rule context reads and write trimming', () => {
+  it('reads registry flags, light and liquid levels', () => {
+    const seen: Record<string, unknown> = {}
+    const r = defineRules({
+      commands: {
+        probe(ctx) {
+          seen.solid = [ctx.isSolid(ID.stone), ctx.isSolid(ID.water), ctx.isSolid(AIR)]
+          seen.liquid = [ctx.isLiquid(ID.water), ctx.isLiquid(ID.stone)]
+          seen.opaque = [ctx.isOpaque(ID.stone), ctx.isOpaque(ID.glass)]
+          seen.falls = [ctx.falls(SAND), ctx.falls(ID.stone)]
+          seen.level = [ctx.level(ctx.withState(ID.water, 3)), ctx.level(ID.stone)]
+          seen.sky = ctx.skyLight(10, 60, 10)
+          seen.block = ctx.blockLight(10, 60, 10)
+        },
+      },
+    })
+    const blocks = [...TEST_BLOCKS, defineBlock({ name: 'sand', falls: true })]
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks, rules: r, seed: 1 })
+    sim.submit(1, 0, { type: 'probe' })
+    sim.step()
+    expect(seen).toEqual({
+      solid: [true, false, false], liquid: [true, false], opaque: [true, false], falls: [true, false],
+      level: [3, -1], sky: 15, block: 0,
+    })
+  })
+  it('does not relight when only a block state changes', () => {
+    const sim = makeSim()
+    sim.submit(1, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.water })
+    sim.step()
+    const spy = vi.spyOn(sim.light, 'onVoxelChanged')
+    sim.submit(1, 1, { type: 'setBlock', pos: [5, 5, 5], voxel: (3 << 12) | ID.water })
+    sim.step()
+    expect(spy).not.toHaveBeenCalled()
+    expect(sim.store.getVoxel(5, 5, 5)).toBe((3 << 12) | ID.water)
+  })
+  it('queues no neighbour notifications when no block listens for them', () => {
+    const quiet = defineRules({ blocks: { grass: { onRandomTick() {} } } })
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: TEST_BLOCKS, rules: quiet, seed: 1 })
+    sim.submit(1, 0, { type: 'fillRegion', min: [0, 0, 0], max: [9, 9, 9], voxel: ID.stone })
+    sim.step()
+    expect(sim.pendingWork).toBe(0)
   })
 })

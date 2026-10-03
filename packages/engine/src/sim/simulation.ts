@@ -2,7 +2,7 @@ import { BlockRegistry, type BlockDef } from '../blocks/registry.ts'
 import type { WorldBuffers } from '../world/buffers.ts'
 import { ChunkStore, WorldFullError } from '../world/chunkStore.ts'
 import { CHUNK_VOLUME, type Layout } from '../world/layout.ts'
-import { AIR, voxelId, voxelState, withState } from '../world/voxel.ts'
+import { AIR, blockLight, skyLight, voxelId, voxelState, withState } from '../world/voxel.ts'
 import {
   compareStamped, validateCommand,
   type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
@@ -54,6 +54,8 @@ export class Simulation {
   private readonly handlers: Map<string, CommandHandler>
   private readonly customTypes: Set<string>
   private readonly hasRandom: boolean
+  /** False when no block defines onNeighborChanged: writes then skip the notification queue entirely. */
+  private readonly hasNeighborRules: boolean
   private readonly ctx: RuleContext
   private readonly seed: number
   private readonly workCap: number
@@ -79,6 +81,7 @@ export class Simulation {
     for (const name of Object.keys(blockRules)) this.registry.id(name) // throws for unknown blocks
     this.byId = this.registry.defs.map((d) => blockRules[d.name])
     this.hasRandom = this.byId.some((r) => r?.onRandomTick)
+    this.hasNeighborRules = this.byId.some((r) => r?.onNeighborChanged)
     this.handlers = new Map(Object.entries(o.rules?.commands ?? {}))
     this.customTypes = new Set(this.handlers.keys())
     this.ctx = this.makeContext()
@@ -289,8 +292,9 @@ export class Simulation {
   private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
     const old = this.store.getVoxel(x, y, z)
     if (!this.store.setVoxel(x, y, z, v)) return
-    this.light.onVoxelChanged(x, y, z, old, v)
-    if (!notify) return
+    // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
+    if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
+    if (!notify || !this.hasNeighborRules) return
     this.neighbors.push(this.layout.voxelIndex(x, y, z))
     for (let d = 0; d < 6; d++) {
       const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
@@ -353,6 +357,17 @@ export class Simulation {
       isAir: (v) => voxelId(v) === AIR,
       state: (v) => voxelState(v),
       withState: (v, s) => withState(v, s),
+      isSolid: (v) => sim.registry.solid[voxelId(v)] === 1,
+      isLiquid: (v) => sim.registry.liquid[voxelId(v)] === 1,
+      isOpaque: (v) => sim.registry.opaque[voxelId(v)] === 1,
+      falls: (v) => sim.registry.falls[voxelId(v)] === 1,
+      skyLight: (x, y, z) => skyLight(sim.store.getLight(x, y, z)),
+      blockLight: (x, y, z) => blockLight(sim.store.getLight(x, y, z)),
+      level: (v) => {
+        const id = voxelId(v)
+        if (sim.registry.liquid[id] !== 1) return -1
+        return sim.registry.source[id] === 1 ? 7 : voxelState(v) & 7
+      },
     }
   }
 }

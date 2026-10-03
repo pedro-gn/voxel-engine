@@ -13,6 +13,10 @@ export interface BlockDef {
   emits?: number
   liquid?: boolean
   decoration?: string
+  /** Falls when the cell below is air or a flowing liquid (sand, gravel). Cannot be combined with `liquid`. */
+  falls?: boolean
+  /** Makes this liquid block a spring of the named liquid: it counts as full and injects that liquid every fluid step. */
+  source?: string
 }
 
 export function defineBlock(def: BlockDef): BlockDef {
@@ -29,6 +33,11 @@ export class BlockRegistry {
   readonly layer: Uint8Array
   readonly liquid: Uint8Array
   readonly emits: Uint8Array
+  readonly falls: Uint8Array
+  /** 1 for a spring (a liquid with `source`). */
+  readonly source: Uint8Array
+  /** The base liquid's id for a liquid or a spring; 0 for every other block. */
+  readonly liquidGroup: Uint16Array
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
 
@@ -42,6 +51,9 @@ export class BlockRegistry {
     this.layer = new Uint8Array(this.count)
     this.liquid = new Uint8Array(this.count)
     this.emits = new Uint8Array(this.count)
+    this.falls = new Uint8Array(this.count)
+    this.source = new Uint8Array(this.count)
+    this.liquidGroup = new Uint16Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -54,6 +66,10 @@ export class BlockRegistry {
         return
       }
       const liquid = d.liquid ?? false
+      const falls = d.falls ?? false
+      if (falls && liquid) throw new Error(`block "${d.name}": falls cannot be combined with liquid`)
+      if (d.source !== undefined && !liquid) throw new Error(`block "${d.name}": source needs liquid: true`)
+      this.falls[id] = falls ? 1 : 0
       const layer: RenderLayer = d.layer ?? (liquid ? 'liquid' : 'opaque')
       if (layer === 'liquid' && !liquid) throw new Error(`block "${d.name}": layer "liquid" needs liquid: true`)
       this.layer[id] = LAYER_CODE[layer]
@@ -64,6 +80,18 @@ export class BlockRegistry {
       const t = d.textures ?? d.name
       const [top, side, bottom] = typeof t === 'string' ? [t, t, t] : [t.top, t.side, t.bottom]
       this.faceTex.push(side, side, top, bottom, side, side)
+    })
+
+    all.forEach((d, id) => {
+      if (!this.liquid[id]) return
+      if (d.source === undefined) { this.liquidGroup[id] = id; return }
+      const target = this.ids.get(d.source)
+      if (target === undefined) throw new Error(`block "${d.name}": source names "${d.source}", which is not a block`)
+      if (!this.liquid[target] || all[target]!.source !== undefined) {
+        throw new Error(`block "${d.name}": source "${d.source}" must be a liquid that is not itself a source`)
+      }
+      this.source[id] = 1
+      this.liquidGroup[id] = target
     })
   }
 

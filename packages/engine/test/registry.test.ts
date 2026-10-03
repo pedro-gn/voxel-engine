@@ -58,4 +58,33 @@ describe('BlockRegistry', () => {
     const many = Array.from({ length: 4096 }, (_, i) => defineBlock({ name: `b${i}` }))
     expect(() => new BlockRegistry(many)).toThrow(/too many/)
   })
+  it('records falls, springs and liquid groups', () => {
+    const r2 = new BlockRegistry([
+      defineBlock({ name: 'water', liquid: true }),
+      defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' }),
+      defineBlock({ name: 'sand', falls: true }),
+      defineBlock({ name: 'stone' }),
+    ])
+    const [water, spring, sand, stone] = [1, 2, 3, 4]
+    expect(r2.falls[sand]).toBe(1)
+    expect(r2.falls[stone]).toBe(0)
+    expect(r2.source[spring]).toBe(1)
+    expect(r2.source[water]).toBe(0)
+    expect(r2.liquidGroup[water]).toBe(water)
+    expect(r2.liquidGroup[spring]).toBe(water)
+    expect(r2.liquidGroup[stone]).toBe(0)
+    expect(r2.liquidGroup[0]).toBe(0)
+  })
+  it('rejects falls on a liquid and bad sources', () => {
+    expect(() => new BlockRegistry([defineBlock({ name: 'w', liquid: true, falls: true })])).toThrow(/falls cannot be combined with liquid/)
+    expect(() => new BlockRegistry([defineBlock({ name: 's', source: 'w' })])).toThrow(/source needs liquid: true/)
+    expect(() => new BlockRegistry([defineBlock({ name: 's', liquid: true, source: 'nope' })])).toThrow(/names "nope", which is not a block/)
+    expect(() => new BlockRegistry([defineBlock({ name: 'stone' }), defineBlock({ name: 's', liquid: true, source: 'stone' })]))
+      .toThrow(/must be a liquid that is not itself a source/)
+    expect(() => new BlockRegistry([
+      defineBlock({ name: 'w', liquid: true }),
+      defineBlock({ name: 'a', liquid: true, source: 'w' }),
+      defineBlock({ name: 'b', liquid: true, source: 'a' }),
+    ])).toThrow(/must be a liquid that is not itself a source/)
+  })
 })
