@@ -221,6 +221,11 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     for (const s of pool) s.worker.terminate()
     for (const w of genWorkers) w.terminate()
   }
+  /** Rejects every pending terrain request and forgets it. */
+  const rejectTerrainWaits = (message: string) => {
+    for (const w of terrainWaits.values()) w.reject(new EngineError('fatal', message))
+    terrainWaits.clear()
+  }
   const fail = (message: string, slots?: number) => {
     if (fatal !== null) return
     fatal = message
@@ -229,8 +234,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     events.emit('fatal', slots === undefined ? { message } : { message, slots })
     showErrorScreen(canvas, 'The engine stopped', message)
     rejectReady(new EngineError('fatal', message))
-    for (const w of terrainWaits.values()) w.reject(new EngineError('fatal', message))
-    terrainWaits.clear()
+    rejectTerrainWaits(message)
   }
 
   // ---- mesh worker pool ----
@@ -420,6 +424,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     if (disposed) return
     disposed = true
     halt()
+    rejectTerrainWaits('the engine was disposed')
     detachControls()
     ro.disconnect()
     scene.remove(highlight)
@@ -460,7 +465,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })),
       regenerate: (rect) => terrainRequest<{ ms: number; chunks: number }>(
         (id) => ({ type: 'regenerate', id, rect }),
-        Number.isInteger(rect.x0) && rect.x1 > rect.x0 && rect.z1 > rect.z0 ? columnsIn(rect).length : 0,
+        [rect.x0, rect.z0, rect.x1, rect.z1].every(Number.isInteger) && rect.x1 > rect.x0 && rect.z1 > rect.z0 ? columnsIn(rect).length : 0,
       ),
     },
     atmosphere: visuals.atmosphere,
