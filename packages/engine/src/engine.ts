@@ -134,9 +134,10 @@ interface PoolSlot { worker: Worker; jobs: { id: number; chunk: number }[]; cras
 /**
  * Mesh jobs each worker holds at once. The main thread spends most of a frame rendering and only hands out
  * jobs between frames, so with one job per worker the pool meshed one chunk per worker per frame however
- * fast the jobs were. A short queue keeps every worker busy through the frame.
+ * fast the jobs were. A queue keeps every worker busy through the frame. 8 drains a 128² terrain edit (~90 chunks,
+ * 6 workers) in 3 frames; a deeper queue only delays a player edit queued behind a large remesh.
  */
-const MESH_JOBS_PER_WORKER = 4
+const MESH_JOBS_PER_WORKER = 8
 type MeshResult = Extract<FromMesh, { type: 'result' }>
 
 export async function createEngine(o: EngineOptions): Promise<Engine> {
