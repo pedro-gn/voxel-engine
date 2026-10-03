@@ -4,6 +4,13 @@ import { TerrainOpError, type CompiledTerrain } from './compile.ts'
 /** Volume ops are sampled every LATTICE blocks on a grid aligned to world multiples of LATTICE. */
 export const LATTICE = 4
 
+/**
+ * The height field and volume ops are clamped to ±DENSITY_CLAMP blocks before the density layer is
+ * added, so a brush stroke changes solidity by the same amount at any depth. Clamping keeps the sign,
+ * so without a layer the voxels are unchanged.
+ */
+export const DENSITY_CLAMP = 4
+
 interface OpLattice {
   op: VolumeOp
   /** Voxel ranges (inclusive) where the op applies, already clamped to the region and the world. */
@@ -52,17 +59,13 @@ export class VolumeField {
   /** Whether any volume op or density brick reaches this rectangle. */
   get empty(): boolean { return this.lattices.length === 0 && !this.useLayer }
 
-  /** Fills solid[y] (1/0) for the column at (x, z) whose ground height is `top`. */
-  column(x: number, z: number, top: number, solid: Uint8Array): void {
+  /**
+   * The density at every y of the column at (x, z) whose ground height is `top`: the height field and
+   * volume ops clamped to ±DENSITY_CLAMP, plus the density layer. Solid means > 0.
+   */
+  densities(x: number, z: number, top: number, out: Float64Array): void {
     const H = this.height
-    let touched = this.useLayer
-    if (!touched) for (const l of this.lattices) if (x >= l.xa && x <= l.xb && z >= l.za && z <= l.zb) { touched = true; break }
-    if (!touched) {
-      for (let y = 0; y < H; y++) solid[y] = y < top ? 1 : 0
-      return
-    }
-    const dens = this.density
-    for (let y = 0; y < H; y++) dens[y] = top - y - 0.5
+    for (let y = 0; y < H; y++) out[y] = top - y - 0.5
     for (const l of this.lattices) {
       if (x < l.xa || x > l.xb || z < l.za || z > l.zb) continue
       const fx = x / LATTICE - l.gx0, fz = z / LATTICE - l.gz0
@@ -81,13 +84,31 @@ export class VolumeField {
         const c11 = v[b + nxz + l.nx]! + (v[b + nxz + l.nx + 1]! - v[b + nxz + l.nx]!) * tx
         const lo = c00 + (c10 - c00) * tz, hi = c01 + (c11 - c01) * tz
         const s = lo + (hi - lo) * ty
-        dens[y] = add ? Math.max(dens[y]!, s) : Math.min(dens[y]!, -s)
+        out[y] = add ? Math.max(out[y]!, s) : Math.min(out[y]!, -s)
       }
+    }
+    const C = DENSITY_CLAMP
+    for (let y = 0; y < H; y++) {
+      const v = out[y]!
+      out[y] = v > C ? C : v < -C ? -C : v
     }
     if (this.useLayer) {
       const layer = this.t.densityLayer
-      for (let y = 0; y < H; y++) dens[y] = dens[y]! + layer.sample(x, y, z)
+      for (let y = 0; y < H; y++) out[y] = out[y]! + layer.sample(x, y, z)
     }
+  }
+
+  /** Fills solid[y] (1/0) for the column at (x, z) whose ground height is `top`. */
+  column(x: number, z: number, top: number, solid: Uint8Array): void {
+    const H = this.height
+    let touched = this.useLayer
+    if (!touched) for (const l of this.lattices) if (x >= l.xa && x <= l.xb && z >= l.za && z <= l.zb) { touched = true; break }
+    if (!touched) {
+      for (let y = 0; y < H; y++) solid[y] = y < top ? 1 : 0
+      return
+    }
+    const dens = this.density
+    this.densities(x, z, top, dens)
     for (let y = 0; y < H; y++) solid[y] = dens[y]! > 0 ? 1 : 0
   }
 }

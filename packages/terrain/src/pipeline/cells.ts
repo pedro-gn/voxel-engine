@@ -16,8 +16,16 @@ export interface CellGrid {
   readonly biome: Int32Array
 }
 
-/** Runs base, height ops (in document order), the height layer and biome selection for every column. */
-export function fillCells(t: CompiledTerrain, x0: number, z0: number, w: number, d: number): CellGrid {
+/** Ground height and water before the height layer, for a rectangle of columns. Index: (x - x0) + (z - z0) * w. */
+export interface HeightGrid {
+  readonly h: Float64Array
+  readonly water: Float64Array
+  readonly wet: Float64Array
+  readonly opBiome: Int32Array
+}
+
+/** Runs base and height ops (in document order) for every column of [x0, x0 + w) × [z0, z0 + d). */
+export function fillHeights(t: CompiledTerrain, x0: number, z0: number, w: number, d: number): HeightGrid {
   const n = w * d
   const h = new Float64Array(n)
   const water = new Float64Array(n).fill(-1)
@@ -42,6 +50,13 @@ export function fillCells(t: CompiledTerrain, x0: number, z0: number, w: number,
       throw new TerrainOpError(op.id, `at columns x ${xa}..${xb}, z ${za}..${zb}`, e)
     }
   }
+  return { h, water, wet, opBiome }
+}
+
+/** Runs fillHeights, then the height layer and biome selection for every column. */
+export function fillCells(t: CompiledTerrain, x0: number, z0: number, w: number, d: number): CellGrid {
+  const n = w * d
+  const { h, water, wet, opBiome } = fillHeights(t, x0, z0, w, d)
 
   const top = new Int32Array(n)
   const biome = new Int32Array(n)
