@@ -29,4 +29,11 @@ describe('sandbox terrain documents', () => {
   it('the e2e document uses every built-in op', () => {
     expect(new Set(e2eDoc.ops.map((o) => o.type))).toEqual(new Set(BUILTIN_OPS.map((o) => o.type)))
   })
+
+  it('showcase columns match their golden hashes (cave, mesa and canyon, river and lake, coast)', () => {
+    const t = compile(showcaseDoc)
+    expect([[16, 7], [25, 15], [13, 21], [4, 29]].map(([cx, cz]) => columnHash(t, cx!, cz!))).toEqual(GOLDEN)
+  })
 })
+
+const GOLDEN = [3661734573, 2782277415, 447834565, 3048637645]
