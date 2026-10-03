@@ -93,6 +93,9 @@ export class ChunkStore {
    */
   writableSlot(ci: number): number { return this.writable(ci) }
 
+  /** Marks chunk `ci` for remeshing at the next commit() without opening it (its data is unchanged but a neighbour's is). */
+  markDirty(ci: number): void { this.dirty.add(ci) }
+
   slotOf(ci: number): number {
     const e = this.table[ci]!
     return e >= 0 ? e : -1

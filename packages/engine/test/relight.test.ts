@@ -78,4 +78,39 @@ describe('LightEngine.relightRegion', () => {
     const edge = defineGenerator({ generateColumn(ctx, cx, cz) { (cx === 0 && cz === 0 ? scene('b') : scene('a')).generateColumn(ctx, cx, cz) } })
     expect(sameLight(sim, world(edge))).toBe(0)
   })
+
+  it('marks the neighbours of every relit chunk for remeshing', () => {
+    const sim = world(scene('a'))
+    const L = sim.store.layout
+    const hashes = () => {
+      const out: number[] = []
+      for (let ci = 0; ci < L.chunkCount; ci++) {
+        const [cx, cy, cz] = L.chunkCoords(ci)
+        let h = 0
+        for (let ly = 0; ly < 32; ly++) for (let lz = 0; lz < 32; lz++) for (let lx = 0; lx < 32; lx++) {
+          const x = cx * 32 + lx, y = cy * 32 + ly, z = cz * 32 + lz
+          h = (Math.imul(h, 31) + sim.store.getVoxel(x, y, z) + sim.store.getLight(x, y, z) * 65537) | 0
+        }
+        out.push(h)
+      }
+      return out
+    }
+    const before = hashes()
+    const column = new Uint16Array(32 * 32 * SIZE[1])
+    sim.generateColumnData(scene('b'), 1, 0, column)
+    sim.applyColumn(1, 0, column)
+    sim.light.relightRegion(32, 0, 64, 32)
+    const dirty = new Set(sim.store.commit())
+    const after = hashes()
+    let changed = 0
+    for (let ci = 0; ci < L.chunkCount; ci++) {
+      if (before[ci] === after[ci]) continue
+      changed++
+      const [cx, cy, cz] = L.chunkCoords(ci)
+      for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) expect(dirty.has(L.chunkIndex(cx + dx, cy + dy, cz + dz))).toBe(true)
+      }
+    }
+    expect(changed).toBeGreaterThan(0)
+  })
 })

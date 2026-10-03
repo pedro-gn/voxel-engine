@@ -165,6 +165,7 @@ export class LightEngine {
     // so slot memory is read in order.
     const covered = new Uint8Array(1024)
     const dark: number[] = [] // covered open voxels: the only ones step 2 has to light
+    const changed = new Set<number>() // chunks whose light step 1 wrote
     for (let cz = z0 >> 5; cz <= (z1 - 1) >> 5; cz++) for (let cx = x0 >> 5; cx <= (x1 - 1) >> 5; cx++) {
       const lx0 = Math.max(x0 - cx * 32, 0), lx1 = Math.min(x1 - cx * 32, 32)
       const lz0 = Math.max(z0 - cz * 32, 0), lz1 = Math.min(z1 - cz * 32, 32)
@@ -186,6 +187,7 @@ export class LightEngine {
         }
         // A slot chunk is opened (and so remeshed) only if its light actually changes.
         let opened = e < 0
+        if (opened) changed.add(ci)
         const slot = opened ? store.writableSlot(ci) : e
         const vox = store.views.voxels(slot), lt = store.views.light(slot)
         for (let ly = 31; ly >= 0; ly--) for (let lz = lz0; lz < lz1; lz++) for (let lx = lx0; lx < lx1; lx++) {
@@ -195,12 +197,19 @@ export class LightEngine {
           const em = this.emits[id]!
           const l = (covered[lane] ? 0 : 15) | (em << 4)
           if (lt[i] !== l) {
-            if (!opened) { store.writableSlot(ci); opened = true }
+            if (!opened) { store.writableSlot(ci); changed.add(ci); opened = true }
             lt[i] = l
           }
           if (em > 0) this.add[BLOCK]!.push(this.pack(cx * 32 + lx, cy * 32 + ly, cz * 32 + lz))
           else if (covered[lane] && !this.opaque[id]) dark.push(this.pack(cx * 32 + lx, cy * 32 + ly, cz * 32 + lz))
         }
+      }
+    }
+    // Direct slot writes bypass the store's border marking: chunks around a relit one sample its light when meshing.
+    for (const ci of changed) {
+      const [cx, cy, cz] = L.chunkCoords(ci)
+      for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) store.markDirty(L.chunkIndex(cx + dx, cy + dy, cz + dz))
       }
     }
     // 2. Dark open voxels take light from their brightest neighbour (inside or outside the area).
