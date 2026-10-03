@@ -8,6 +8,7 @@ import {
   type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
 } from './commands.ts'
 import { diffMask, forNeighbours } from './chunkDiff.ts'
+import { FluidSystem, type FluidOptions, type WriteSource } from './fluids/fluidSystem.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
 import { LightEngine, RELIGHT_MARGIN } from './light.ts'
 import { JobRunner } from './jobs.ts'
@@ -23,6 +24,7 @@ export interface SimulationOptions {
   workCap?: number
   /** Region-job budget: visited cells per tick. Default 50 000. */
   jobCap?: number
+  fluids?: Partial<FluidOptions>
   /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
   regenLightDiffLimit?: number
   randomTicksPerChunk?: number
@@ -49,6 +51,7 @@ export class Simulation {
   /** Per chunk: bumped on every voxel write. Region jobs compare it to notice a world that changed under them. */
   readonly epochs: Uint32Array
   readonly jobs: JobRunner
+  readonly fluids: FluidSystem
   private isPaused = false
   private readonly jobCap: number
 
@@ -80,6 +83,13 @@ export class Simulation {
     this.epochs = new Uint32Array(this.layout.chunkCount)
     this.jobs = new JobRunner(this.layout, this.epochs, (x, y, z) => this.store.getVoxel(x, y, z))
     this.jobCap = o.jobCap ?? 50_000
+    const sim = this
+    this.fluids = new FluidSystem({
+      layout: this.layout, registry: this.registry, store: this.store, jobs: this.jobs, epochs: this.epochs,
+      get: (x, y, z) => sim.store.getVoxel(x, y, z),
+      write: (x, y, z, v) => sim.applySet(x, y, z, v, true, 'fluid'),
+      log: (m) => sim.log(m),
+    }, o.fluids)
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
@@ -110,7 +120,9 @@ export class Simulation {
 
   /** Hands the generator its document (GeneratorModule.configure). Throws if the generator rejects it. */
   configure(gen: GeneratorModule, doc: unknown): void {
-    gen.configure?.(doc, { size: this.layout.size, seed: this.seed, id: (name) => this.registry.id(name) })
+    const r = gen.configure?.(doc, { size: this.layout.size, seed: this.seed, id: (name) => this.registry.id(name) })
+    const sea = r && typeof r === 'object' ? r.seaLevel : undefined
+    this.fluids.seaLevel = Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0
   }
 
   /** Runs the generator for chunk column (cx, cz) into `column` (32 × 32 × height voxels, cleared to air first). */
@@ -134,6 +146,7 @@ export class Simulation {
     // relies on generation having left those chunks open. Commit after, so every version is even.
     this.light.initialize()
     this.store.commit()
+    this.fluids.rebuild()
     return Array.from({ length: this.layout.chunkCount }, (_, i) => i)
   }
 
@@ -163,6 +176,7 @@ export class Simulation {
       }
     }
     if (writes.length === 0) return [] // identical voxels give identical light
+    this.fluids.needsRebuild = true
     // 2. Light before, wherever the relight can reach.
     const x0 = cx0 * 32, z0 = cz0 * 32, x1 = cx1 * 32 + 32, z1 = cz1 * 32 + 32
     const reach: number[] = []
@@ -245,7 +259,9 @@ export class Simulation {
         budget = this.processNeighbors(budget)
       }
       if (!this.isPaused) {
-        // 5. region jobs (phases 3 and 4, gravity and fluids, are added by later tasks above this line)
+        // 4. fluids
+        this.fluids.step(t)
+        // 5. region jobs (phase 3, gravity, is added by a later task above this line)
         this.jobs.run(this.jobCap)
       }
       // 3. random ticks
@@ -288,6 +304,7 @@ export class Simulation {
       for (let i = 0; i < l32.length; i++) mix(l32[i]!)
     }
     mix(this.isPaused ? 1 : 0)
+    this.fluids.mixState(mix)
     this.jobs.mixState(mix)
     return h >>> 0
   }
@@ -310,12 +327,15 @@ export class Simulation {
     this.handlers.get(cmd.type)!(this.ctx, cmd)
   }
 
-  private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
+  private applySet(x: number, y: number, z: number, v: number, notify: boolean, source: WriteSource = 'external'): void {
     const old = this.store.getVoxel(x, y, z)
+    if (old === v || !this.layout.inBounds(x, y, z)) return
+    const owner = this.fluids.beforeWrite(x, y, z, old, source)
     if (!this.store.setVoxel(x, y, z, v)) return
     this.epochs[this.layout.chunkOf(x, y, z)]!++
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
+    this.fluids.afterWrite(x, y, z, old, v, source, owner)
     if (!notify || !this.hasNeighborRules) return
     this.neighbors.push(this.layout.voxelIndex(x, y, z))
     for (let d = 0; d < 6; d++) {

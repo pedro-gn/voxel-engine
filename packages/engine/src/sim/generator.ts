@@ -9,6 +9,12 @@ export interface GeneratorInfo {
   id(name: string): number
 }
 
+/** What a generator may return from configure(). */
+export interface GeneratorConfig {
+  /** Water fills y < seaLevel; the pool at seaLevel − 1 is the sea that springs draw from. */
+  seaLevel?: number
+}
+
 export interface GeneratorContext {
   readonly seed: number
   readonly height: number
@@ -30,7 +36,7 @@ export interface GeneratorModule {
    * Receives the engine's `terrain` document before the first column, and again on every
    * `engine.terrain.setDocument`. Throw to reject the document; the error message reaches the caller.
    */
-  configure?(doc: unknown, info: GeneratorInfo): void
+  configure?(doc: unknown, info: GeneratorInfo): void | GeneratorConfig
   /**
    * Applies an incremental change to the configured document (`engine.terrain.patch`). Throw to refuse
    * it; a refused patch must leave the generator as it was.
