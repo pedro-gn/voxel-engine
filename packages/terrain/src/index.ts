@@ -27,3 +27,4 @@ export { makeNoise2, makeNoise3, type NoiseDef, type NoiseType, type Sampler2, t
 export { compileTerrain, TerrainOpError, type CompiledTerrain } from './pipeline/compile.ts'
 export { generateRegion } from './pipeline/region.ts'
 export { hash2, hash3, unit } from './noise/hash.ts'
+export { opBounds } from './ops/bounds.ts'
