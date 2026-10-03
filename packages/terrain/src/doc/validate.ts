@@ -132,7 +132,7 @@ export function validateTerrainDoc(json: unknown, o: ValidateOptions = {}): Vali
   }
 
   const size = Array.isArray(d.size) ? d.size : null
-  if (size && size.length === 2) checkLayers(c, 'layers', d.layers, Number(size[0]), Number(size[1]))
+  if (size && size.length === 2) checkLayers(c, 'layers', d.layers, Number(size[0]), Number(size[1]), biomeNames.length)
 
   if (c.errors.length > 0) return { ok: false, errors: c.errors }
   const doc: TerrainDoc = {

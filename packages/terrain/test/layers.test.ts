@@ -57,7 +57,7 @@ describe('checkLayers', () => {
       height: encodeRaster('i16', 32, 32, new Int16Array(32 * 32)),
       biome: encodeRaster('u8', 4, 4, new Uint8Array(16)),
       density: { bricks: [{ x: 0, y: 0, z: -1, data: 'AAAA' }] },
-    }, 64, 32)
+    }, 64, 32, 2)
     expect(c.errors).toEqual([
       'layers.height: must be 64 × 32, got 32 × 32',
       'layers.biome: must be 16 × 8, got 4 × 4',
@@ -65,10 +65,21 @@ describe('checkLayers', () => {
       'layers.density.bricks[0].data: must hold 512 samples, got 3',
     ])
   })
+  it('rejects a biome value past the biome count', () => {
+    const v = new Uint8Array(16 * 16)
+    v[2 + 3 * 16] = 3 // 2 biomes: stored 1..2 are valid
+    const c = new Check()
+    checkLayers(c, 'layers', { biome: encodeRaster('u8', 16, 16, v) }, 64, 64, 2)
+    expect(c.errors).toEqual(['layers.biome.data: value 3 at cell (2, 3) exceeds the 2 biomes'])
+    const ok = new Check()
+    v[2 + 3 * 16] = 2
+    checkLayers(ok, 'layers', { biome: encodeRaster('u8', 16, 16, v) }, 64, 64, 2)
+    expect(ok.errors).toEqual([])
+  })
   it('accepts missing layers', () => {
     const c = new Check()
-    checkLayers(c, 'layers', {}, 64, 64)
-    checkLayers(c, 'layers', undefined, 64, 64)
+    checkLayers(c, 'layers', {}, 64, 64, 2)
+    checkLayers(c, 'layers', undefined, 64, 64, 2)
     expect(c.errors).toEqual([])
   })
 })

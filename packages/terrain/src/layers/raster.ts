@@ -124,11 +124,18 @@ function checkRaster(c: Check, path: string, v: unknown, type: 'i16' | 'u8', wid
   }
 }
 
-/** Validates the layers object against the world's x/z size. */
-export function checkLayers(c: Check, path: string, v: unknown, sizeX: number, sizeZ: number): void {
+/** Validates the layers object against the world's x/z size and the number of biomes. */
+export function checkLayers(c: Check, path: string, v: unknown, sizeX: number, sizeZ: number, biomeCount: number): void {
   if (!c.obj(path, v, true)) return
   checkRaster(c, `${path}.height`, v.height, 'i16', sizeX, sizeZ)
-  checkRaster(c, `${path}.biome`, v.biome, 'u8', Math.ceil(sizeX / BIOME_CELL), Math.ceil(sizeZ / BIOME_CELL))
+  const biomeW = Math.ceil(sizeX / BIOME_CELL)
+  const before = c.errors.length
+  checkRaster(c, `${path}.biome`, v.biome, 'u8', biomeW, Math.ceil(sizeZ / BIOME_CELL))
+  if (c.errors.length === before && v.biome !== undefined) {
+    const values = decodeRaster(v.biome as unknown as RasterRef)
+    const i = values.findIndex((n) => n > biomeCount)
+    if (i >= 0) c.fail(`${path}.biome.data`, `value ${values[i]} at cell (${i % biomeW}, ${Math.floor(i / biomeW)}) exceeds the ${biomeCount} biomes`)
+  }
   if (!c.obj(`${path}.density`, v.density, true)) return
   if (!c.arr(`${path}.density.bricks`, v.density.bricks)) return
   v.density.bricks.forEach((b, i) => {
