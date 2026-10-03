@@ -2,6 +2,7 @@ import { AIR, createEngine } from '@elovox/engine'
 import { BLOCKS, DECORATIONS } from './blocks.ts'
 import { spawnCharacter } from './character.ts'
 import { createControls } from './controls.ts'
+import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
 import { paintTextures } from './textures.ts'
@@ -19,6 +20,9 @@ function worldSide(raw: string | null): number {
   if (!Number.isFinite(v)) return 1024
   return Math.min(1024, Math.max(32, Math.round(v / 32) * 32))
 }
+/** `?scene=terrain&edit` opens the terrain editor on the scene's document. */
+const editing = sceneName === 'terrain' && params.has('edit')
+const EDIT_HINT = 'LMB select · drag handles/outline · Shift-drag height · Alt-click remove vertex · Ctrl+Z/Y · Del · Ctrl+D · H · RMB rotate'
 const n = worldSide(params.get('size'))
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
@@ -64,9 +68,12 @@ if (sceneName === 'terrain') {
     s.distance = Math.min(400, size[0] * 0.6)
     s.pitch = 0.75
   }
-  createTerrainPanel(engine)
+  if (!editing) createTerrainPanel(engine, terrainDoc!)
 }
-createControls(engine)
+createControls(engine, { collapsed: editing })
+const editor = editing
+  ? createTerrainEditor(engine, { doc: terrainDoc, fileName: n <= 256 ? 'e2e.terrain.json' : 'showcase.terrain.json' })
+  : null
 
 // The bean stands at the camera target, facing the camera; V toggles idle / walk.
 engine.controls.apply(engine.camera)
@@ -74,7 +81,7 @@ const [bx, , bz] = engine.controls.current.target
 const bean = await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
 
 let selected = 0
-createHud(engine, () => HOTBAR[selected]!, sceneName)
+createHud(engine, () => HOTBAR[selected]!, editing ? 'terrain · edit' : sceneName, editing ? { corner: 'bottom', hint: EDIT_HINT } : {})
 window.addEventListener('keydown', (e) => {
   if (e.key === 'v' || e.key === 'V') bean.play(bean.clip === 'walk' ? 'idle' : 'walk')
   const k = e.key === '0' ? 10 : Number(e.key)
@@ -82,9 +89,11 @@ window.addEventListener('keydown', (e) => {
 })
 
 canvas.addEventListener('pointermove', (e) => {
+  if (editing) return
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
 canvas.addEventListener('pointerup', (e) => {
+  if (editing) return
   const hit = engine.pickScreen(e.clientX, e.clientY)
   if (!hit) return
   if (e.button === 0) {
@@ -99,4 +108,4 @@ canvas.addEventListener('pointerup', (e) => {
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
 
-Object.assign(window, { __elovox: { engine, bean, ready: true } })
+Object.assign(window, { __elovox: { engine, bean, editor, ready: true } })

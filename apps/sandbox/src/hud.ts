@@ -1,13 +1,13 @@
 import type { Engine } from '@elovox/engine'
 
-export function createHud(engine: Engine, getSelected: () => string, sceneName: string): () => void {
+export function createHud(engine: Engine, getSelected: () => string, sceneName: string, o: { corner?: 'top' | 'bottom'; hint?: string } = {}): () => void {
   const el = document.createElement('div')
   el.id = 'hud'
   Object.assign(el.style, {
-    position: 'fixed', top: '12px', left: '12px', padding: '10px 12px', borderRadius: '8px',
+    position: 'fixed', left: '12px', padding: '10px 12px', borderRadius: '8px',
     background: 'rgba(255, 255, 255, 0.82)', color: '#1b1f24', font: '12px/1.45 ui-monospace, Menlo, Consolas, monospace',
     whiteSpace: 'pre', pointerEvents: 'none', zIndex: '5',
-  })
+  }, o.corner === 'bottom' ? { bottom: '12px' } : { top: '12px' })
   document.body.append(el)
   const render = () => {
     const s = engine.stats()
@@ -17,7 +17,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
       `decorations ${s.decorationInstances} instances   ${s.decorationDraws} draws   shadow casters ${s.shadowCasters}`,
-      `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom · V bean walk`,
+      o.hint ?? `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom · V bean walk`,
     ].join('\n')
   }
   render()

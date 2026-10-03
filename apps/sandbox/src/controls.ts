@@ -2,8 +2,8 @@ import type { Effects, Engine } from '@elovox/engine'
 
 const EFFECTS: (keyof Effects)[] = ['shadows', 'decorations', 'water', 'post', 'fog']
 
-/** Preset buttons and per-effect toggles, top right. */
-export function createControls(engine: Engine): () => void {
+/** Preset buttons and per-effect toggles, top right. `collapsed` starts them folded under a summary. */
+export function createControls(engine: Engine, o: { collapsed?: boolean } = {}): () => void {
   const el = document.createElement('div')
   el.id = 'controls'
   Object.assign(el.style, {
@@ -30,6 +30,16 @@ export function createControls(engine: Engine): () => void {
     box.addEventListener('change', () => { engine.effects = { [fx]: box.checked } })
     label.append(box, ` ${fx}`)
     el.append(label)
+  }
+  if (o.collapsed) {
+    const details = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = 'atmosphere & effects'
+    summary.style.cursor = 'pointer'
+    details.append(summary, ...[...el.childNodes])
+    details.style.display = 'grid'
+    details.style.gap = '6px'
+    el.append(details)
   }
   document.body.append(el)
   return () => el.remove()

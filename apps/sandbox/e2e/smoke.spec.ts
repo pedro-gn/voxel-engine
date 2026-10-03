@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Engine } from '@elovox/engine'
+import type { TerrainEditor } from '@elovox/terrain-editor'
 import type { Character } from '../src/character.ts'
 
-type W = Window & { __elovox?: { engine: Engine; bean: Character; ready: boolean } }
+type W = Window & { __elovox?: { engine: Engine; bean: Character; editor: TerrainEditor | null; ready: boolean } }
 
 function watchErrors(page: Page): string[] {
   const errors: string[] = []
@@ -88,12 +89,59 @@ test('terrain scene generates on workers and regenerates an area', async ({ page
   })
   expect(r.columns).toBe(64)
   expect(r.ms).toBeGreaterThan(0)
-  expect(r.chunks).toBeGreaterThan(0)
+  expect(r.chunks).toBe(0) // same document: nothing changed, so nothing is remeshed
   expect(r.rejected).toContain('invalid terrain document')
   expect(r.bad).toContain('rect must be integers')
   await page.locator('#terrain-regen').click()
   await expect(page.locator('#terrain-last')).toContainText('regen:', { timeout: 60_000 })
   const shot = await page.locator('canvas').screenshot()
   expect(shot.byteLength).toBeGreaterThan(10_000)
+  expect(errors).toEqual([])
+})
+
+test('terrain editor adds an op, drags it live, and undoes back to the original world', async ({ page }) => {
+  const errors = watchErrors(page)
+  await boot(page, '/?scene=terrain&size=256&edit')
+  await expect(page.locator('#editor-toolbar')).toBeVisible()
+  const idle = () => page.evaluate(() => (window as W).__elovox!.editor!.preview.idle())
+  /** Top solid y on a coarse grid: changes wherever the terrain changes. */
+  const heights = () => page.evaluate(() => {
+    const e = (window as W).__elovox!.engine
+    const out: number[] = []
+    for (let z = 4; z < 256; z += 8) for (let x = 4; x < 256; x += 8) {
+      let y = 127
+      while (y > 0 && e.world.get(x, y, z) === 0) y--
+      out.push(y)
+    }
+    return out
+  })
+  const original = await heights()
+  const opCount = await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.ops.length)
+
+  await page.selectOption('#editor-add', 'hills:circle')
+  await page.waitForFunction(() => (window as W).__elovox!.editor!.session.selected === 'hills-1')
+  await idle()
+  const added = await heights()
+  expect(added).not.toEqual(original)
+
+  const c = await page.evaluate(() => (window as W).__elovox!.editor!.handleScreen('center'))
+  expect(c).not.toBeNull()
+  const centreBefore = await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.ops.at(-1)!.shape)
+  await page.mouse.move(c!.x, c!.y)
+  await page.mouse.down()
+  for (let i = 1; i <= 6; i++) await page.mouse.move(c!.x + i * 12, c!.y)
+  await page.mouse.up()
+  await idle()
+  const centreAfter = await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.ops.at(-1)!.shape)
+  expect(centreAfter).not.toEqual(centreBefore)
+  expect(await heights()).not.toEqual(added)
+
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Control+z') // the drag
+  await page.keyboard.press('Control+z') // the add
+  expect(await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.ops.length)).toBe(opCount)
+  await idle()
+  expect(await heights()).toEqual(original)
+  await expect(page.locator('#editor-status')).not.toContainText('error')
   expect(errors).toEqual([])
 })
