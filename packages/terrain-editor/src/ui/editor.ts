@@ -3,7 +3,7 @@ import { TerrainDocError, builtinOps, validateTerrainDoc, type OpDef, type OpReg
 import { Vector3 } from 'three/webgpu'
 import { parseTerrainText, serializeTerrain } from '../core/docio.ts'
 import type { Point3 } from '../core/brush.ts'
-import { BrushController, type EditorMode } from '../core/brushes.ts'
+import { BrushController, type BrushMode, type EditorMode } from '../core/brushes.ts'
 import { addOp, removeOp, removeVertex, reorderOp, replaceOp, setEnabled, type Edit } from '../core/edits.ts'
 import { newOp, nextOpId } from '../core/newOp.ts'
 import { PreviewScheduler } from '../core/preview.ts'
@@ -16,7 +16,9 @@ import { distanceToPolyline, hitHorizontal, hitVertical, nearest, rayAt, toScree
 import { actionFor, isTyping } from './keys.ts'
 import { h } from './panels/dom.ts'
 import { docFields, opFields } from './panels/fields.ts'
+import { createBrushPanel } from './panels/brushPanel.ts'
 import { createInspector } from './panels/inspector.ts'
+import { createModeTabs } from './panels/modes.ts'
 import { createOpList } from './panels/opList.ts'
 import { createToolbar } from './panels/toolbar.ts'
 
@@ -157,6 +159,20 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     },
     endLive: () => { if (session.inGesture) session.commit() },
   })
+  const tabs = createModeTabs(toolbar.el, setMode)
+  const brushPanel = createBrushPanel(right, {
+    tool: (t) => brushes.setTool(t),
+    settings: (s) => brushes.setSettings(s),
+    biome: (k) => brushes.setBiome(k),
+  })
+
+  function renderBrushes(): void {
+    tabs.render(brushes.mode)
+    const c = brushes.current
+    inspector.el.style.display = c ? 'none' : 'grid' // both panels lay out as grids (PANEL_STYLE)
+    brushPanel.el.style.display = c ? 'grid' : 'none'
+    if (c) brushPanel.render({ mode: brushes.mode as BrushMode, tool: c.tool, settings: c.settings, biomes: session.doc.biomes.map((b) => b.name), biome: brushes.biome })
+  }
 
   function renderToolbar(): void {
     toolbar.render({ fileName, dirty: session.dirty, canUndo: session.canUndo, canRedo: session.canRedo, status: preview.status, showAll })
@@ -193,14 +209,14 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
 
   const offChange = session.on('change', (e) => {
     preview.onChange(e)
-    renderToolbar(); renderList(); renderInspector(); invalidate()
+    renderToolbar(); renderList(); renderInspector(); invalidate(); renderBrushes()
   })
   const offSelect = session.on('select', () => {
     inspector.setErrors([])
     renderList(); renderInspector(); invalidate()
   })
   const offGenerated = engine.on('generated', invalidate) // the ground under the outlines changed
-  const offBrushes = brushes.onChange(() => { invalidate() })
+  const offBrushes = brushes.onChange(() => { invalidate(); renderBrushes() })
 
   function setMode(m: EditorMode): void {
     if (brushes.stroking) return
@@ -456,7 +472,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     }
   }
 
-  renderToolbar(); renderList(); renderInspector()
+  renderToolbar(); renderList(); renderInspector(); renderBrushes()
 
   return {
     session,
