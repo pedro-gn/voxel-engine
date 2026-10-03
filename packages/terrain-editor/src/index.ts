@@ -8,3 +8,6 @@ export { parseTerrainText, serializeTerrain, type ParseResult } from './core/doc
 export { TerrainFiles, browserFallback, type FileFallback, type FileHandle, type FileHost, type OpenedFile } from './ui/files.ts'
 export { createTerrainEditor, type TerrainEditor, type TerrainEditorOptions } from './ui/editor.ts'
 export type { Handle, HandleKind } from './ui/handles/geometry.ts'
+export { DabSpacer, RADIUS_MAX, RADIUS_MIN, brushWeight, clampSettings, dabSpacing, type BrushSettings, type Point3 } from './core/brush.ts'
+export { BrickWriter, TileWriter, replaceLayer, type LayerLists } from './core/layerWriter.ts'
+export { TerrainSampler, type SamplerOptions } from './core/sampler.ts'
