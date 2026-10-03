@@ -42,6 +42,30 @@ describe('GenPool', () => {
     expect(b.posted).toHaveLength(2)
   })
 
+  it('reports a refused patch as fatal even when another patch follows it', () => {
+    const a = new FakePort()
+    const pool = new GenPool([a])
+    const fatals: string[] = []
+    pool.onFatal = (m) => fatals.push(m)
+    pool.configure(undefined, [64, 64, 64], 3, TEST_BLOCKS)
+    pool.patch({ n: 1 })
+    pool.patch({ n: 2 })
+    a.onmessage?.({ data: { type: 'fatal', epoch: 2, message: 'refused' } } as MessageEvent<FromGen>)
+    expect(fatals).toEqual(['refused'])
+  })
+
+  it('ignores a refused patch that a later configure superseded', () => {
+    const a = new FakePort()
+    const pool = new GenPool([a])
+    const fatals: string[] = []
+    pool.onFatal = (m) => fatals.push(m)
+    pool.configure(undefined, [64, 64, 64], 3, TEST_BLOCKS)
+    pool.patch({ n: 1 })
+    pool.configure(undefined, [64, 64, 64], 3, TEST_BLOCKS)
+    a.onmessage?.({ data: { type: 'fatal', epoch: 2, message: 'stale' } } as MessageEvent<FromGen>)
+    expect(fatals).toEqual([])
+  })
+
   it('keeps at most two jobs in flight per worker and finishes once', () => {
     const a = new FakePort(), b = new FakePort()
     const pool = new GenPool([a, b])

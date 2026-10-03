@@ -28,7 +28,9 @@ export class GenPool {
   private remaining = 0
   private nextId = 0
   private epoch = 0
-  /** Called when a worker refuses a patch of the current epoch. */
+  /** Epoch of the last configure: patches accumulate on it, so a refusal stays fatal until the next one. */
+  private configureEpoch = 0
+  /** Called when a worker refuses a patch applied on the current configuration. */
   onFatal: ((message: string) => void) | null = null
 
   constructor(ports: readonly PortLike[]) {
@@ -45,6 +47,7 @@ export class GenPool {
   /** Sends a new configuration to every worker. Columns of earlier configurations are ignored from now on. */
   configure(doc: unknown, size: WorldSize, seed: number, blocks: BlockDef[]): void {
     this.epoch++
+    this.configureEpoch = this.epoch
     for (const p of this.ports) p?.postMessage({ type: 'configure', epoch: this.epoch, doc, size, seed, blocks })
   }
 
@@ -98,7 +101,7 @@ export class GenPool {
 
   private onMessage(port: number, m: FromGen): void {
     if (m.type === 'fatal') {
-      if (m.epoch === this.epoch) this.onFatal?.(m.message)
+      if (m.epoch >= this.configureEpoch) this.onFatal?.(m.message)
       return
     }
     const job = this.jobs.get(m.id)
