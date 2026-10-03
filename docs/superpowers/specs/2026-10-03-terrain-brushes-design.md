@@ -123,8 +123,8 @@ interface DecodedLayers {
 
 The height delta is stored in **1/16 block** (fixed point, range ±2048 blocks). With whole
 blocks, a stroke at strength 0.3 per dab would round to nothing and smoothing would step.
-The pipeline adds `value / 16` to the height before rounding the column top, so the slope
-also sees the fractional delta.
+The pipeline adds `value / 16` to the height before rounding the column top. The slope is
+computed from the rounded tops, so it does not see the fraction.
 
 ### Density clamp
 
