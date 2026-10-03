@@ -1,4 +1,4 @@
-export type EngineErrorCode = 'not-isolated' | 'no-gpu' | 'fatal'
+export type EngineErrorCode = 'not-isolated' | 'no-gpu' | 'fatal' | 'terrain'
 
 export class EngineError extends Error {
   readonly code: EngineErrorCode
