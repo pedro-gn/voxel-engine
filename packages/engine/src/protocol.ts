@@ -14,8 +14,11 @@ export interface SimInitOptions {
 }
 
 export type ToSim =
-  /** `terrain`: the document handed to the generator's configure() before generation. */
-  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions; terrain?: unknown }
+  /**
+   * `terrain`: the document handed to the generator's configure() before generation.
+   * `genPorts`: one port per generation worker; when present, columns are generated there in parallel.
+   */
+  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions; terrain?: unknown; genPorts?: MessagePort[] }
   | { type: 'submit'; clientId: number; seq: number; cmd: Command }
   | { type: 'start' }
   | { type: 'stop' }
