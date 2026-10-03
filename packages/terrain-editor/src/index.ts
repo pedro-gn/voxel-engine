@@ -3,3 +3,4 @@ export { NEW_HALF, NEW_RADIUS, NEW_WIDTH, newOp, newParams, newShape, nextOpId, 
 export { AREA_PAD, diffArea, toArea, unionArea, type Area, type AreaOptions, type AreaRect } from './core/area.ts'
 export { History, type Step } from './core/history.ts'
 export { EditorSession, type Cause, type ChangeEvent, type EditResult, type SessionOptions } from './core/session.ts'
+export { PreviewScheduler, type PreviewOptions, type PreviewStatus, type TerrainTarget } from './core/preview.ts'
