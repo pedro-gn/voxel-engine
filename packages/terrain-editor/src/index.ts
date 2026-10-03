@@ -13,3 +13,4 @@ export { BrickWriter, TileWriter, replaceLayer, type LayerLists } from './core/l
 export { TerrainSampler, type SamplerOptions } from './core/sampler.ts'
 export { HEIGHT_TOOLS, heightAt, heightDab, type HeightDab, type HeightTool } from './core/heightBrush.ts'
 export { biomeDab, type BiomeDab } from './core/biomeBrush.ts'
+export { DENSITY_TOOLS, densityDab, type DensityDab, type DensityTool } from './core/densityBrush.ts'
