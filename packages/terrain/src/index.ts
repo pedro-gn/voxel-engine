@@ -27,6 +27,7 @@ export {
   brickKey, checkLayers, decodeValues, encodeValues, layersToJSON, tileKey,
   type LayerLimits, type LayerValues,
 } from './layers/tiles.ts'
+export { applyPatch, checkPatch, diffLayers, type TerrainPatch } from './layers/patch.ts'
 export { BiomeLayer, DensityLayer, HeightLayer, compileLayers, type CompiledLayers } from './layers/layers.ts'
 export { toTerrainJSON } from './doc/json.ts'
 export { makeNoise2, makeNoise3, type NoiseDef, type NoiseType, type Sampler2, type Sampler3 } from './noise/def.ts'
