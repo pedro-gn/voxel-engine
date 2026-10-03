@@ -26,7 +26,7 @@ const B: AreaRect = { x0: 64, z0: 64, x1: 96, z1: 96 }
 const C: AreaRect = { x0: 128, z0: 0, x1: 160, z1: 32 }
 const ev = (d: TerrainDoc, area: ChangeEvent['area'], cause: ChangeEvent['cause']): ChangeEvent => ({ doc: d, prev: d, area, cause })
 
-function setup(settle?: () => Promise<void>) {
+function setup(settle?: () => Promise<{ frames: number } | void>) {
   const f = fake()
   const statuses: PreviewStatus[] = []
   const start = doc()
@@ -113,6 +113,16 @@ describe('PreviewScheduler', () => {
     waiting[1]!.resolve()
     await p.idle()
     expect(statuses.at(-1)!.state).toBe('idle')
+  })
+
+  it('reports the frames the mesh drain took when settle gives them', async () => {
+    const { p, start, waiting } = setup(() => Promise.resolve({ frames: 3 }))
+    p.push(setParam('hill', 'amplitude', 3)(start), A)
+    await tick()
+    waiting[0]!.resolve()
+    await p.idle()
+    await tick()
+    expect(p.status).toEqual({ state: 'idle', last: { ms: 5, chunks: 3, wallMs: 0, meshMs: 0, meshFrames: 3 } })
   })
 
   it('stays busy until the meshes settle, then reports the wall time', async () => {

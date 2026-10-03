@@ -58,14 +58,15 @@ interface Drag {
   pointerId: number
 }
 
-/** Resolves once the mesh queue drained (the regenerated chunks are visible), or after a timeout. */
-function waitForMeshes(engine: Engine): Promise<void> {
+/** Resolves once the mesh queue drained (the regenerated chunks are visible), or after a timeout, with the frames it took. */
+function waitForMeshes(engine: Engine): Promise<{ frames: number }> {
   const start = performance.now()
+  let frames = 0
   return new Promise((resolve) => {
     const check = () => {
       const s = engine.stats()
-      if (s.meshQueue + s.meshInFlight === 0 || performance.now() - start > MESH_SETTLE_TIMEOUT_MS) resolve()
-      else requestAnimationFrame(check)
+      if (s.meshQueue + s.meshInFlight === 0 || performance.now() - start > MESH_SETTLE_TIMEOUT_MS) resolve({ frames })
+      else { frames++; requestAnimationFrame(check) }
     }
     check()
   })

@@ -9,7 +9,11 @@ export interface TerrainTarget {
 }
 
 export type PreviewStatus =
-  | { state: 'idle'; last: { ms: number; chunks: number; wallMs: number } | null }
+  | {
+    state: 'idle'
+    /** ms: sim time; wallMs: request to visible; meshMs/meshFrames: the drain after the regeneration, when settle reports it. */
+    last: { ms: number; chunks: number; wallMs: number; meshMs?: number; meshFrames?: number } | null
+  }
   | { state: 'busy' }
   | { state: 'error'; message: string; opId: string | null }
 
@@ -18,7 +22,7 @@ export interface PreviewOptions {
   size: Vec2
   onStatus?(s: PreviewStatus): void
   /** Resolves when the regenerated chunks are visible (the mesh queue drained). Default: at once. */
-  settle?(): Promise<void>
+  settle?(): Promise<{ frames: number } | void>
   now?(): number
 }
 
@@ -117,13 +121,17 @@ export class PreviewScheduler {
   }
 
   private async settle(gen: number, r: { ms: number; chunks: number }, t0: number): Promise<void> {
+    const s0 = this.now()
+    let drained: { frames: number } | void = undefined
     try {
-      await this.o.settle?.()
+      drained = await this.o.settle?.()
     } catch {
       // settle() rejected; continue to idle state anyway
     }
     if (gen !== this.generation || this.current.state === 'error') return // a newer regeneration owns the status
-    this.setStatus({ state: 'idle', last: { ms: r.ms, chunks: r.chunks, wallMs: this.now() - t0 } })
+    const now = this.now()
+    const last = { ms: r.ms, chunks: r.chunks, wallMs: now - t0 }
+    this.setStatus({ state: 'idle', last: drained ? { ...last, meshMs: now - s0, meshFrames: drained.frames } : last })
   }
 
   private rectOf(area: Exclude<Area, null>): AreaRect {

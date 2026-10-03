@@ -44,6 +44,7 @@ describe('statusText', () => {
   it('describes each preview state', () => {
     expect(statusText({ state: 'idle', last: null })).toBe('ready')
     expect(statusText({ state: 'idle', last: { ms: 84.4, chunks: 12, wallMs: 131.6 } })).toBe('regen 84 ms · 12 chunks · 132 ms to mesh')
+    expect(statusText({ state: 'idle', last: { ms: 37, chunks: 9, wallMs: 150.2, meshMs: 61.4, meshFrames: 3 } })).toBe('regen 37 ms · 9 chunks · 150 ms to mesh (meshing 3 frames, 61 ms)')
     expect(statusText({ state: 'busy' })).toBe('updating…')
     expect(statusText({ state: 'error', message: 'op "x" failed: boom', opId: 'x' })).toBe('error: op "x" failed: boom')
   })

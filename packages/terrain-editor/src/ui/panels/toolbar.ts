@@ -9,7 +9,9 @@ export function statusText(s: PreviewStatus): string {
     case 'busy': return 'updating…'
     case 'error': return `error: ${s.message}`
     case 'idle':
-      return s.last ? `regen ${s.last.ms.toFixed(0)} ms · ${s.last.chunks} chunks · ${s.last.wallMs.toFixed(0)} ms to mesh` : 'ready'
+      if (!s.last) return 'ready'
+      return `regen ${s.last.ms.toFixed(0)} ms · ${s.last.chunks} chunks · ${s.last.wallMs.toFixed(0)} ms to mesh` +
+        (s.last.meshFrames === undefined ? '' : ` (meshing ${s.last.meshFrames} frames, ${(s.last.meshMs ?? 0).toFixed(0)} ms)`)
   }
 }
 
