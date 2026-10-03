@@ -1,13 +1,16 @@
 import { decodeUniform } from '../world/buffers.ts'
 import type { ChunkStore } from '../world/chunkStore.ts'
 import { Layout } from '../world/layout.ts'
-import { voxelId } from '../world/voxel.ts'
+import { packLight, voxelId } from '../world/voxel.ts'
 
 export interface LightTables { opaque: Uint8Array; emits: Uint8Array }
 
 const SKY = 0
 const BLOCK = 1
 const DOWN = 3
+
+/** Light reaches 15 blocks from a source; a relit area extends this far past the changed columns. */
+export const RELIGHT_MARGIN = 16
 const DX = [1, -1, 0, 0, 0, 0]
 const DY = [0, 0, 1, -1, 0, 0]
 const DZ = [0, 0, 0, 0, 1, -1]
@@ -144,6 +147,96 @@ export class LightEngine {
     }
     this.runAdd(SKY)
     this.runAdd(BLOCK)
+  }
+
+  /**
+   * Recomputes light after the voxels of columns [ax0, ax1) × [az0, az1) (full height) were replaced
+   * wholesale. The pass covers the area plus RELIGHT_MARGIN; light beyond that cannot have changed,
+   * and it flows back in across the border. The result equals a full initialize() of the new world.
+   * Works on slot arrays directly, like initialize(), and leaves the touched chunks open for commit().
+   */
+  relightRegion(ax0: number, az0: number, ax1: number, az1: number): void {
+    const store = this.store
+    const L = store.layout
+    const x0 = Math.max(0, ax0 - RELIGHT_MARGIN), z0 = Math.max(0, az0 - RELIGHT_MARGIN)
+    const x1 = Math.min(this.sx, ax1 + RELIGHT_MARGIN), z1 = Math.min(this.sz, az1 + RELIGHT_MARGIN)
+    // 1. Reset, chunk column by chunk column, top down: sky light 15 until the first opaque voxel of
+    // each voxel column, 0 below; block light cleared; emitters re-seeded. Lanes (lx, lz) run innermost
+    // so slot memory is read in order.
+    const covered = new Uint8Array(1024)
+    const dark: number[] = [] // covered open voxels: the only ones step 2 has to light
+    for (let cz = z0 >> 5; cz <= (z1 - 1) >> 5; cz++) for (let cx = x0 >> 5; cx <= (x1 - 1) >> 5; cx++) {
+      const lx0 = Math.max(x0 - cx * 32, 0), lx1 = Math.min(x1 - cx * 32, 32)
+      const lz0 = Math.max(z0 - cz * 32, 0), lz1 = Math.min(z1 - cz * 32, 32)
+      covered.fill(0)
+      for (let cy = L.cy - 1; cy >= 0; cy--) {
+        const ci = L.chunkIndex(cx, cy, cz)
+        const e = store.table[ci]!
+        if (e < 0) {
+          const id = voxelId(decodeUniform(e))
+          if (this.emits[id] === 0) {
+            if (this.opaque[id]) { // implied 0 is right, and everything below is covered
+              for (let lz = lz0; lz < lz1; lz++) covered.fill(1, lx0 + (lz << 5), lx1 + (lz << 5))
+              continue
+            }
+            let anyCovered = false
+            for (let lz = lz0; lz < lz1 && !anyCovered; lz++) for (let lx = lx0; lx < lx1; lx++) if (covered[lx + (lz << 5)]) { anyCovered = true; break }
+            if (!anyCovered) continue // open sky everywhere: implied 15 is right
+          }
+        }
+        // A slot chunk is opened (and so remeshed) only if its light actually changes.
+        let opened = e < 0
+        const slot = opened ? store.writableSlot(ci) : e
+        const vox = store.views.voxels(slot), lt = store.views.light(slot)
+        for (let ly = 31; ly >= 0; ly--) for (let lz = lz0; lz < lz1; lz++) for (let lx = lx0; lx < lx1; lx++) {
+          const lane = lx + (lz << 5), i = lane + (ly << 10)
+          const id = voxelId(vox[i]!)
+          if (this.opaque[id]) covered[lane] = 1
+          const em = this.emits[id]!
+          const l = (covered[lane] ? 0 : 15) | (em << 4)
+          if (lt[i] !== l) {
+            if (!opened) { store.writableSlot(ci); opened = true }
+            lt[i] = l
+          }
+          if (em > 0) this.add[BLOCK]!.push(this.pack(cx * 32 + lx, cy * 32 + ly, cz * 32 + lz))
+          else if (covered[lane] && !this.opaque[id]) dark.push(this.pack(cx * 32 + lx, cy * 32 + ly, cz * 32 + lz))
+        }
+      }
+    }
+    // 2. Dark open voxels take light from their brightest neighbour (inside or outside the area).
+    for (const pos of dark) {
+      this.unpack(pos)
+      const x = this.ux, y = this.uy, z = this.uz
+      let best = 0
+      for (let d = 0; d < 6; d++) {
+        const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
+        if (!this.inBounds(nx, ny, nz)) continue
+        const nl = store.getLight(nx, ny, nz) & 0xf
+        const t = d === 2 && nl === 15 ? 15 : nl - 1
+        if (t > best) best = t
+      }
+      if (best > (store.getLight(x, y, z) & 0xf)) {
+        this.setChannel(x, y, z, SKY, best)
+        this.add[SKY]!.push(pos)
+      }
+    }
+    // 3. Block light from outside the area flows back in across its border.
+    for (let y = 0; y < this.sy; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (z0 > 0) this.seedBlockFrom(x, y, z0 - 1)
+        if (z1 < this.sz) this.seedBlockFrom(x, y, z1)
+      }
+      for (let z = z0; z < z1; z++) {
+        if (x0 > 0) this.seedBlockFrom(x0 - 1, y, z)
+        if (x1 < this.sx) this.seedBlockFrom(x1, y, z)
+      }
+    }
+    this.runAdd(SKY)
+    this.runAdd(BLOCK)
+  }
+
+  private seedBlockFrom(x: number, y: number, z: number): void {
+    if (channel(this.store.getLight(x, y, z), BLOCK) > 1) this.add[BLOCK]!.push(this.pack(x, y, z))
   }
 
   private runRemoval(ch: number): void {
