@@ -145,3 +145,64 @@ test('terrain editor adds an op, drags it live, and undoes back to the original 
   await expect(page.locator('#editor-status')).not.toContainText('error')
   expect(errors).toEqual([])
 })
+
+test('terrain editor brushes paint height and biome live, and undo back to the original world', async ({ page }) => {
+  test.setTimeout(300_000) // software GL: each live regen waits on slow frames
+  const errors = watchErrors(page)
+  await boot(page, '/?scene=terrain&size=256&edit')
+  const idle = () => page.evaluate(() => (window as W).__elovox!.editor!.preview.idle())
+  /** Top solid y on a coarse grid: changes wherever the terrain changes. */
+  const heights = () => page.evaluate(() => {
+    const e = (window as W).__elovox!.engine
+    const out: number[] = []
+    for (let z = 4; z < 256; z += 8) for (let x = 4; x < 256; x += 8) {
+      let y = 127
+      while (y > 0 && e.world.get(x, y, z) === 0) y--
+      out.push(y)
+    }
+    return out
+  })
+  const original = await heights()
+
+  await page.locator('#editor-mode-height').click()
+  await expect(page.locator('#editor-brush')).toBeVisible()
+  // A real pointer stroke across the middle of the canvas.
+  const box = (await page.locator('canvas').boundingBox())!
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2
+  await page.mouse.move(cx - 60, cy)
+  await page.mouse.down()
+  for (let i = 1; i <= 12; i++) await page.mouse.move(cx - 60 + i * 10, cy)
+  await page.mouse.up()
+  await page.waitForFunction(() => (window as W).__elovox!.editor!.session.canUndo)
+  await idle()
+
+  // A strong stroke through the API, back and forth along z = 128.
+  await page.evaluate(() => {
+    const b = (window as W).__elovox!.editor!.brushes
+    b.setTool('raise')
+    b.setSettings({ radius: 16, strength: 1, falloff: 0 })
+    const pts: { x: number; y: number; z: number }[] = []
+    for (let pass = 0; pass < 4; pass++) for (let x = 100; x <= 156; x += 4) pts.push({ x: pass % 2 ? 256 - x : x, y: 0, z: 128 })
+    b.strokeThrough(pts)
+  })
+  await idle()
+  expect(await heights()).not.toEqual(original)
+
+  await page.locator('#editor-mode-biome').click()
+  await page.evaluate(() => {
+    const b = (window as W).__elovox!.editor!.brushes
+    b.setBiome(2)
+    b.setSettings({ radius: 12 })
+    b.strokeThrough([{ x: 60, y: 0, z: 60 }, { x: 90, y: 0, z: 60 }])
+  })
+  await idle()
+  expect(await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.layers.biome !== undefined)).toBe(true)
+
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  for (let i = 0; i < 3; i++) await page.keyboard.press('Control+z') // biome, API stroke, pointer stroke
+  await idle()
+  expect(await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.layers)).toEqual({})
+  expect(await heights()).toEqual(original)
+  await expect(page.locator('#editor-status')).not.toContainText('error')
+  expect(errors).toEqual([])
+})
