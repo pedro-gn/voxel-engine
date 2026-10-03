@@ -1,8 +1,9 @@
 import type { Engine } from '@elovox/engine'
-import { TerrainDocError, builtinOps, validateTerrainDoc, type OpDef, type OpRegistry, type ShapeKind, type TerrainDoc, type Vec2 } from '@elovox/terrain'
+import { BIOME_CELL, TerrainDocError, builtinOps, validateTerrainDoc, type OpDef, type OpRegistry, type ShapeKind, type TerrainDoc, type Vec2 } from '@elovox/terrain'
 import { Vector3 } from 'three/webgpu'
 import { parseTerrainText, serializeTerrain } from '../core/docio.ts'
 import type { Point3 } from '../core/brush.ts'
+import { BrushCursor } from './brushes/cursor.ts'
 import { BrushController, type BrushMode, type EditorMode } from '../core/brushes.ts'
 import { addOp, removeOp, removeVertex, reorderOp, replaceOp, setEnabled, type Edit } from '../core/edits.ts'
 import { newOp, nextOpId } from '../core/newOp.ts'
@@ -121,6 +122,20 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const ground = groundSampler(engine.world.get, skip, height, size)
   const overlay = new Overlay(ground)
   engine.scene.add(overlay.group)
+  const cursor = new BrushCursor(ground)
+  engine.scene.add(cursor.group)
+  /** The last aim point under the pointer, and whether it was the Shift-locked one. */
+  let lastAim: { aim: Point3; locked: boolean } | null = null
+
+  function drawCursor(): void {
+    const c = brushes.current
+    if (!c || !lastAim) { cursor.hide(); return }
+    const { aim, locked } = lastAim
+    const r = c.settings.radius
+    if (brushes.mode === 'density') cursor.sphere(aim.x, aim.y, aim.z, r, locked)
+    else if (brushes.mode === 'biome') cursor.cells(aim.x, aim.z, r, BIOME_CELL)
+    else cursor.circle(aim.x, aim.z, r, c.settings.falloff > 0 ? r * (1 - c.settings.falloff) : null)
+  }
 
   // ---- panels
   const left = h('div', { style: { position: 'fixed', top: '12px', left: '12px', width: '300px', display: 'grid', gap: '8px', zIndex: '6', maxHeight: 'calc(100vh - 24px)', alignContent: 'start' } })
@@ -216,7 +231,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     renderList(); renderInspector(); invalidate()
   })
   const offGenerated = engine.on('generated', invalidate) // the ground under the outlines changed
-  const offBrushes = brushes.onChange(() => { invalidate(); renderBrushes() })
+  const offCursorGenerated = engine.on('generated', drawCursor) // the ground under the cursor moved
+  const offBrushes = brushes.onChange(() => { invalidate(); renderBrushes(); drawCursor() })
 
   function setMode(m: EditorMode): void {
     if (brushes.stroking) return
@@ -332,9 +348,12 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   const onMove = (e: PointerEvent) => {
-    if (brushPointer === e.pointerId) {
-      const aim = aimPoint(e, e.shiftKey)
-      if (aim) brushes.move(aim, e.ctrlKey)
+    if (brushes.mode !== 'ops') {
+      const locked = brushPointer === e.pointerId && e.shiftKey && brushes.mode === 'density'
+      const aim = aimPoint(e, locked)
+      lastAim = aim ? { aim, locked } : null
+      drawCursor()
+      if (brushPointer === e.pointerId && aim) brushes.move(aim, e.ctrlKey)
       return
     }
     if (!drag || e.pointerId !== drag.pointerId) return
@@ -376,6 +395,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     if (drag && e.pointerId === drag.pointerId) finishGesture()
   }
   canvas.addEventListener('lostpointercapture', onLost)
+  const onLeave = () => { if (brushPointer === null) { lastAim = null; cursor.hide() } } // the pointer went over a panel or off the canvas
+  canvas.addEventListener('pointerleave', onLeave)
 
   // ---- keyboard
   const onKey = (e: KeyboardEvent) => {
@@ -491,15 +512,17 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
       endDrag()
       releaseBrush(); brushes.cancel()
       if (session.inGesture) session.cancel()
-      offChange(); offSelect(); offGenerated()
+      offChange(); offSelect(); offGenerated(); offCursorGenerated()
       offBrushes()
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp)
       canvas.removeEventListener('lostpointercapture', onLost)
+      canvas.removeEventListener('pointerleave', onLeave)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('beforeunload', onUnload)
       overlay.dispose()
+      cursor.dispose()
       left.remove()
       right.remove()
     },
