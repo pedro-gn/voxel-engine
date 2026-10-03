@@ -127,4 +127,15 @@ describe('PreviewScheduler', () => {
     await tick()
     expect(p.status.state).toBe('idle')
   })
+
+  it('ends the busy state even if settle rejects', async () => {
+    const { p, start, waiting } = setup(() => Promise.reject(new Error('settle failed')))
+    p.push(setParam('hill', 'amplitude', 3)(start), A)
+    await tick()
+    waiting[0]!.resolve()
+    await p.idle()
+    await tick()
+    expect(p.status.state).toBe('idle')
+    expect(p.status).toEqual({ state: 'idle', last: { ms: 5, chunks: 3, wallMs: 0 } })
+  })
 })

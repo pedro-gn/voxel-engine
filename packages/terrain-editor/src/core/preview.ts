@@ -113,7 +113,11 @@ export class PreviewScheduler {
   }
 
   private async settle(gen: number, r: { ms: number; chunks: number }, t0: number): Promise<void> {
-    await this.o.settle?.()
+    try {
+      await this.o.settle?.()
+    } catch {
+      // settle() rejected; continue to idle state anyway
+    }
     if (gen !== this.generation || this.current.state === 'error') return // a newer regeneration owns the status
     this.setStatus({ state: 'idle', last: { ms: r.ms, chunks: r.chunks, wallMs: this.now() - t0 } })
   }
