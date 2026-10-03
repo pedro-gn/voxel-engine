@@ -296,18 +296,27 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   if (o.genWorker) {
     const n = Math.max(1, o.genWorkers ?? poolSize)
     for (let i = 0; i < n; i++) {
-      const worker = o.genWorker()
-      const ch = new MessageChannel()
-      worker.postMessage({ type: 'connect', port: ch.port2 } satisfies GenConnect, [ch.port2])
-      worker.onerror = (e) => {
-        e.preventDefault()
-        worker.terminate()
-        const reason = e.message || 'the worker failed to load or crashed'
-        if (!generated) fail(`generation worker crashed: ${reason}`)
-        else if (!halted) sim.postMessage({ type: 'genLost', index: i } satisfies ToSim)
+      try {
+        const worker = o.genWorker()
+        const ch = new MessageChannel()
+        worker.postMessage({ type: 'connect', port: ch.port2 } satisfies GenConnect, [ch.port2])
+        const lost = (reason: string) => {
+          worker.terminate()
+          if (!generated) fail(`generation worker crashed: ${reason}`)
+          else if (!halted) sim.postMessage({ type: 'genLost', index: i } satisfies ToSim)
+        }
+        worker.onerror = (e) => {
+          e.preventDefault()
+          lost(e.message || 'the worker failed to load or crashed')
+        }
+        worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
+        genWorkers.push(worker)
+        genPorts.push(ch.port1)
+      } catch (err) {
+        // Startup failure: halt and reject `ready`, so createEngine cleans up instead of leaking the sim, pool and renderer.
+        fail(`generation worker failed to start: ${err instanceof Error ? err.message : String(err)}`)
+        break
       }
-      genWorkers.push(worker)
-      genPorts.push(ch.port1)
     }
   }
 
