@@ -31,6 +31,11 @@ export interface GeneratorModule {
    * `engine.terrain.setDocument`. Throw to reject the document; the error message reaches the caller.
    */
   configure?(doc: unknown, info: GeneratorInfo): void
+  /**
+   * Applies an incremental change to the configured document (`engine.terrain.patch`). Throw to refuse
+   * it; a refused patch must leave the generator as it was.
+   */
+  patch?(patch: unknown): void
 }
 
 export function defineGenerator(g: GeneratorModule): GeneratorModule {

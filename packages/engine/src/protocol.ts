@@ -27,6 +27,8 @@ export type ToSim =
   | { type: 'stop' }
   /** Replaces the generator's document (configure) everywhere; answered by 'terrain'. */
   | { type: 'setTerrain'; id: number; doc: unknown }
+  /** Applies an incremental change to the generator's document everywhere (patch); answered by 'terrain'. */
+  | { type: 'patchTerrain'; id: number; patch: unknown }
   /** Regenerates the chunk columns overlapping `rect` between two ticks; answered by 'regenerated'. */
   | { type: 'regenerate'; id: number; rect: TerrainRect }
   /** Main thread: generation worker `index` died. */
@@ -61,12 +63,16 @@ export type FromMesh =
 /** Sim worker → generation worker (over a MessagePort). Jobs answer with the configuration in force. */
 export type ToGen =
   | { type: 'configure'; epoch: number; doc: unknown; size: WorldSize; seed: number; blocks: BlockDef[] }
+  /** An incremental change to the configuration; starts a new epoch. */
+  | { type: 'patch'; epoch: number; patch: unknown }
   | { type: 'job'; id: number; cx: number; cz: number }
 
 /** Generation worker → sim worker. `epoch` is the configuration the column was generated with. */
 export type FromGen =
   | { type: 'column'; id: number; epoch: number; cx: number; cz: number; data: Uint16Array }
   | { type: 'error'; id: number; epoch: number; message: string }
+  /** The worker refused a patch: its configuration no longer matches the sim's. */
+  | { type: 'fatal'; epoch: number; message: string }
 
 /** Main thread → generation worker, once: the port to the sim worker. */
 export interface GenConnect { type: 'connect'; port: MessagePort }

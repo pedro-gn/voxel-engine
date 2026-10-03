@@ -67,6 +67,8 @@ export class SimHost {
   private readonly regenQueue: RegenRequest[] = []
   /** The regeneration running on the pool, if any. */
   private active: RegenRequest | null = null
+  /** Set once the initial generation is in: a patch before that would invalidate its columns. */
+  private ready = false
 
   constructor(post: (m: FromSim) => void, modules: SimModules, clock: Clock = realClock) {
     this.post = post
@@ -97,12 +99,14 @@ export class SimHost {
           if (msg.terrain !== undefined) this.sim.configure(this.modules.generator, msg.terrain)
           if (msg.genPorts && msg.genPorts.length > 0) {
             this.pool = new GenPool(msg.genPorts as PortLike[])
+            this.pool.onFatal = (message) => this.fail(new Error(`a generation worker refused a patch the sim accepted: ${message}`))
             this.generateInPool()
             return
           }
           const t0 = this.clock.now()
           const chunks = this.sim.generate(this.modules.generator)
           const L = this.sim.layout
+          this.ready = true
           this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
         } catch (e) {
           this.fail(e)
@@ -130,6 +134,9 @@ export class SimHost {
         return
       case 'setTerrain':
         this.setTerrain(msg.id, msg.doc)
+        return
+      case 'patchTerrain':
+        this.patchTerrain(msg.id, msg.patch)
         return
       case 'regenerate': {
         if (!this.sim) return
@@ -188,14 +195,34 @@ export class SimHost {
     const pool = this.pool
     if (!pool) return
     pool.configure(doc, sim.layout.size, this.seed, this.blocks)
-    const active = this.active
-    if (active) {
-      // Columns in flight were generated from the old document: drop them and run the request again.
-      pool.cancel()
-      this.active = null
-      this.regenQueue.unshift(active)
-      this.nextRegen()
+    this.restartActive()
+  }
+
+  private patchTerrain(id: number, patch: unknown): void {
+    if (!this.sim) return
+    const gen = this.modules.generator
+    if (!gen.patch) { this.post({ type: 'terrain', id, ok: false, message: 'the generator does not support patches' }); return }
+    if (!this.ready) { this.post({ type: 'terrain', id, ok: false, message: 'the world is still generating' }); return }
+    try {
+      gen.patch(patch)
+    } catch (e) {
+      this.post({ type: 'terrain', id, ok: false, message: errorMessage(e) })
+      return
     }
+    this.post({ type: 'terrain', id, ok: true })
+    if (!this.pool) return
+    this.pool.patch(patch)
+    this.restartActive()
+  }
+
+  /** Columns in flight were generated from an older configuration: drop them and run the request again. */
+  private restartActive(): void {
+    const pool = this.pool, active = this.active
+    if (!pool || !active) return
+    pool.cancel()
+    this.active = null
+    this.regenQueue.unshift(active)
+    this.nextRegen()
   }
 
   /** Starts the next queued regeneration unless one is running. */
@@ -274,6 +301,7 @@ export class SimHost {
         if (this.sim !== sim) return
         try {
           const chunks = sim.finishGenerate()
+          this.ready = true
           this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
         } catch (e) {
           this.fail(e)

@@ -28,6 +28,8 @@ export class GenPool {
   private remaining = 0
   private nextId = 0
   private epoch = 0
+  /** Called when a worker refuses a patch of the current epoch. */
+  onFatal: ((message: string) => void) | null = null
 
   constructor(ports: readonly PortLike[]) {
     this.ports = [...ports]
@@ -44,6 +46,12 @@ export class GenPool {
   configure(doc: unknown, size: WorldSize, seed: number, blocks: BlockDef[]): void {
     this.epoch++
     for (const p of this.ports) p?.postMessage({ type: 'configure', epoch: this.epoch, doc, size, seed, blocks })
+  }
+
+  /** Sends an incremental change to every worker. Columns generated before it are ignored from now on. */
+  patch(patch: unknown): void {
+    this.epoch++
+    for (const p of this.ports) p?.postMessage({ type: 'patch', epoch: this.epoch, patch })
   }
 
   run(batch: GenBatch): void {
@@ -89,6 +97,10 @@ export class GenPool {
   }
 
   private onMessage(port: number, m: FromGen): void {
+    if (m.type === 'fatal') {
+      if (m.epoch === this.epoch) this.onFatal?.(m.message)
+      return
+    }
     const job = this.jobs.get(m.id)
     if (!job || job.port !== port || m.epoch !== this.epoch) return // cancelled, stale or foreign
     this.jobs.delete(m.id)

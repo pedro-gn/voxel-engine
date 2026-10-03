@@ -32,6 +32,17 @@ export class GenHost {
       }
       return
     }
+    if (m.type === 'patch') {
+      this.epoch = m.epoch
+      if (this.error !== null) return // jobs keep answering with the configuration error
+      try {
+        if (!this.gen.patch) throw new Error('the generator does not support patches')
+        this.gen.patch(m.patch)
+      } catch (e) {
+        this.post({ type: 'fatal', epoch: m.epoch, message: message(e) }, [])
+      }
+      return
+    }
     if (this.error !== null) {
       this.post({ type: 'error', id: m.id, epoch: this.epoch, message: this.error }, [])
       return

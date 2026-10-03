@@ -93,6 +93,8 @@ export interface Engine {
     readonly initial: { ms: number; columns: number }
     /** Hands the generator a new document. Rejects with EngineError 'terrain' if it refuses it; the world changes only on regenerate(). */
     setDocument(doc: unknown): Promise<void>
+    /** Applies an incremental change to the generator's document (the generator's patch). Rejects with EngineError 'terrain' if it refuses it; the world changes only on regenerate(). */
+    patch(patch: unknown): Promise<void>
     /** Regenerates the chunk columns overlapping `rect`; resolves once the new voxels and light are in the world. */
     regenerate(rect: TerrainRect): Promise<{ ms: number; chunks: number }>
   }
@@ -480,6 +482,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     terrain: {
       get initial() { return initialGen },
       setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })),
+      patch: (patch) => terrainRequest<void>((id) => ({ type: 'patchTerrain', id, patch })),
       regenerate: (rect) => terrainRequest<{ ms: number; chunks: number }>(
         (id) => ({ type: 'regenerate', id, rect }),
         [rect.x0, rect.z0, rect.x1, rect.z1].every(Number.isInteger) && rect.x1 > rect.x0 && rect.z1 > rect.z0 ? columnsIn(rect).length : 0,
