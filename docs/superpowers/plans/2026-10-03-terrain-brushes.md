@@ -4454,3 +4454,14 @@ Add a "Checkpoint results" section at the end of this plan with the date, the us
 git add docs/superpowers/plans/2026-10-03-terrain-brushes.md
 git commit -m "docs(plan): terrain brushes checkpoint results"
 ```
+
+---
+
+## Checkpoint results
+
+Date: 2026-10-03.
+
+- **Checkpoint 1 (tools):** approved by the user as is ("acho que está bom"). No changes to the brush defaults. The per-dab 1/16-block rounding (soft edges and strength below ~0.03 do not move the ground; flatten/smooth stall near the target at low strength) was raised and left as is.
+- **Checkpoint 2 (performance):** on the user's laptop, a height stroke (radius 12, strength 1, falloff 0) on the showcase showed `regen 16 ms · 12 chunks · 114 ms to mesh (meshing 2 frames, 55 ms)`: within the ≤ 150 ms budget (one sample, before a large painted area; the radius-16 bench was not run on the laptop).
+- **Headless bench** (software GL, not a guide): fresh median 7571 / p90 15021 ms; after 512² painted median 5739 / p90 12001 ms.
+- **Follow-ups:** carry the sub-unit remainder through a stroke if soft edges feel weak; measure radius 16 after painting a large area on the laptop; the overlay and cursor rebuild costs grow with painted area; op deltas through `patch` for the 2c drag budget.
