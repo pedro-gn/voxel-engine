@@ -101,6 +101,28 @@ export class ChunkStore {
     return e >= 0 ? e : -1
   }
 
+  /** Chunk ci's voxels: its slot's array, or `scratch` filled with the uniform value. Do not write to it. */
+  readVoxels(ci: number, scratch: Uint16Array): Uint16Array {
+    const e = this.table[ci]!
+    if (e >= 0) return this.views.voxels(e)
+    scratch.fill(decodeUniform(e))
+    return scratch
+  }
+
+  /** Chunk ci's light: its slot's array, or `scratch` filled with a uniform chunk's implied light. Do not write to it. */
+  readLight(ci: number, scratch: Uint8Array): Uint8Array {
+    const e = this.table[ci]!
+    if (e >= 0) return this.views.light(e)
+    scratch.fill(impliedLight(decodeUniform(e), this.opaque))
+    return scratch
+  }
+
+  /** A copy of a slot chunk's light, or the single light value of a uniform chunk. */
+  lightSnapshot(ci: number): Uint8Array | number {
+    const e = this.table[ci]!
+    return e >= 0 ? this.views.light(e).slice() : impliedLight(decodeUniform(e), this.opaque)
+  }
+
   slotsUsed(): number { return this.nextSlot - this.free.length }
 
   commit(): number[] {

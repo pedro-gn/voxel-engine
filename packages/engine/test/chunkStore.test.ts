@@ -121,4 +121,29 @@ describe('ChunkStore', () => {
     store.setVoxel(31, 31, 31, ID.stone)
     expect(store.commit()).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
   })
+
+  it('reads a uniform chunk into the scratch array and a slot chunk from its slot', () => {
+    const { store } = makeStore([64, 64, 64])
+    const vox = new Uint16Array(32768), light = new Uint8Array(32768)
+    expect(store.readVoxels(0, vox)).toBe(vox)
+    expect(vox.every((v) => v === AIR)).toBe(true)
+    expect(store.readLight(0, light).every((l) => l === FULL_SKY)).toBe(true)
+    expect(store.lightSnapshot(0)).toBe(FULL_SKY)
+    store.setVoxel(1, 1, 1, ID.stone)
+    store.commit()
+    const slotVox = store.readVoxels(0, vox)
+    expect(slotVox).not.toBe(vox)
+    expect(slotVox[1 + (1 << 5) + (1 << 10)]).toBe(ID.stone)
+    const snap = store.lightSnapshot(0)
+    expect(snap).toBeInstanceOf(Uint8Array)
+    expect(snap).not.toBe(store.readLight(0, light)) // a copy, not the live slot
+  })
+
+  it('gives the implied light of an opaque uniform chunk', () => {
+    const { store } = makeStore([64, 64, 64])
+    store.writeChunkDense(0, new Uint16Array(32768).fill(ID.stone))
+    store.commit()
+    expect(store.lightSnapshot(0)).toBe(0)
+    expect(store.readLight(0, new Uint8Array(32768)).every((l) => l === 0)).toBe(true)
+  })
 })
