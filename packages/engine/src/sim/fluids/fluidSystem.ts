@@ -325,6 +325,9 @@ export class FluidSystem {
       if (this.members.has(tx, ty, tz)) continue
       const tv = this.port.get(tx, ty, tz)
       if (tv !== AIR && flowGroup(this.reg, tv) !== g) continue
+      // A cell already claimed this step by another liquid (or sending another liquid) keeps that liquid.
+      const gt = group.get(t), gf = group.get(f)
+      if ((gt !== undefined && gt !== g) || (gf !== undefined && gf !== g)) continue
       const a = Math.min(this.pAmt[k]!, units(f), FULL - units(t))
       if (a <= 0) continue
       delta.set(f, (delta.get(f) ?? 0) - a)

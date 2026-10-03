@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { AIR } from '../src/world/voxel.ts'
-import { B, basin, fluidSim, run, settle, volume, w } from './fluidHelpers.ts'
+import { defineBlock } from '../src/blocks/registry.ts'
+import { AIR, packVoxel } from '../src/world/voxel.ts'
+import { B, FLUID_BLOCKS, basin, fluidSim, run, settle, volume, w } from './fluidHelpers.ts'
 
 const level = (v: number) => (v >>> 12) & 7
 const units = (v: number) => ((v & 0xfff) === B.water ? level(v) + 1 : 0)
@@ -56,6 +57,29 @@ describe('cell automaton', () => {
     settle(sim)
     expect(volume(sim)).toBe(24)
     expect(sim.fluids.lost).toBe(0)
+  })
+})
+
+describe('two liquids', () => {
+  it('never turns one liquid into another when both flow into the same air cell', () => {
+    const lava = defineBlock({ name: 'lava', liquid: true, textures: 'water' })
+    const sim = fluidSim(floor, { blocks: [...FLUID_BLOCKS, lava] })
+    const lavaId = FLUID_BLOCKS.length + 1 // ids start at 1 after air
+    sim.submit(0, 0, { type: 'setBlock', pos: [10, 1, 10], voxel: w(7) })
+    sim.submit(0, 1, { type: 'setBlock', pos: [12, 1, 10], voxel: packVoxel(lavaId, 7) })
+    sim.step()
+    const count = (id: number) => {
+      let n = 0
+      for (let x = 0; x < 32; x++) for (let z = 0; z < 32; z++) {
+        const v = sim.store.getVoxel(x, 1, z)
+        if ((v & 0xfff) === id) n += level(v) + 1
+      }
+      return n
+    }
+    const mid = sim.store.getVoxel(11, 1, 10)
+    expect([0, B.water, lavaId]).toContain(mid & 0xfff)
+    expect(count(B.water)).toBe(8)
+    expect(count(lavaId)).toBe(8)
   })
 })
 
