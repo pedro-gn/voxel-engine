@@ -64,6 +64,7 @@ export interface EngineEvents {
 
 export interface EngineStats {
   fps: number; frameMs: number; tick: number; tickMs: number
+  /** meshInFlight: chunks being meshed or meshed but not yet uploaded; queue + inFlight = 0 means everything is visible. */
   meshQueue: number; meshInFlight: number; failedChunks: number
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
   shadowCasters: number
@@ -129,7 +130,13 @@ class Emitter<E> {
   }
 }
 
-interface PoolSlot { worker: Worker; job: { id: number; chunk: number } | null; crashes: number }
+interface PoolSlot { worker: Worker; jobs: { id: number; chunk: number }[]; crashes: number }
+/**
+ * Mesh jobs each worker holds at once. The main thread spends most of a frame rendering and only hands out
+ * jobs between frames, so with one job per worker the pool meshed one chunk per worker per frame however
+ * fast the jobs were. A short queue keeps every worker busy through the frame.
+ */
+const MESH_JOBS_PER_WORKER = 4
 type MeshResult = Extract<FromMesh, { type: 'result' }>
 
 export async function createEngine(o: EngineOptions): Promise<Engine> {
@@ -257,7 +264,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     console.error(`[elovox] chunk ${ci} failed to mesh ${n} times; keeping its last mesh. ${message}`)
   }
   const onMeshMessage = (slot: PoolSlot, m: FromMesh) => {
-    slot.job = null
+    slot.jobs = slot.jobs.filter((j) => j.id !== m.id)
     slot.crashes = 0 // the worker is alive and answering
     if (m.type === 'result') {
       queue.finish(m.chunk)
@@ -269,19 +276,20 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     } else {
       jobFailed(m.chunk, m.message)
     }
+    dispatch() // top the worker's queue up now rather than at the next frame
   }
   const spawn = (i: number, crashes: number) => {
     if (halted) return
     const worker = new Worker(new URL('./mesh/mesh.worker.ts', import.meta.url), { type: 'module' })
-    const slot: PoolSlot = { worker, job: null, crashes }
+    const slot: PoolSlot = { worker, jobs: [], crashes }
     worker.onmessage = (e: MessageEvent<FromMesh>) => onMeshMessage(slot, e.data)
     worker.onerror = (e) => {
       e.preventDefault()
       worker.terminate()
       const reason = e.message || 'the worker failed to load or crashed'
-      const job = slot.job
-      slot.job = null
-      if (job) jobFailed(job.chunk, `mesh worker crashed: ${reason}`)
+      const jobs = slot.jobs
+      slot.jobs = []
+      for (const job of jobs) jobFailed(job.chunk, `mesh worker crashed: ${reason}`)
       if (slot.crashes + 1 >= MAX_WORKER_CRASHES) fail(`mesh worker keeps crashing: ${reason}`)
       else spawn(i, slot.crashes + 1)
     }
@@ -388,16 +396,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const dx = cx * 32 + 16 - camera.position.x, dy = cy * 32 + 16 - camera.position.y, dz = cz * 32 + 16 - camera.position.z
     return dx * dx + dy * dy + dz * dz
   }
-  const dispatch = () => {
-    for (const slot of pool) {
-      if (slot.job) continue
+  function dispatch(): void {
+    for (const slot of pool) while (slot.jobs.length < MESH_JOBS_PER_WORKER) {
       const ci = queue.next(distanceTo)
       if (ci < 0) return
       const overrides = ghosts.size > 0 ? ghosts.overridesFor(ci) : []
       const msg: ToMesh = overrides.length > 0
         ? { type: 'job', id: ++jobId, chunk: ci, overrides }
         : { type: 'job', id: ++jobId, chunk: ci }
-      slot.job = { id: msg.id, chunk: ci }
+      slot.jobs.push({ id: msg.id, chunk: ci })
       slot.worker.postMessage(msg)
     }
   }
@@ -511,7 +518,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       const vs = visuals.stats()
       return {
         fps, frameMs, tick: lastTick, tickMs: lastTickMs,
-        meshQueue: queue.size, meshInFlight: queue.inFlightCount, failedChunks: failed.size,
+        meshQueue: queue.size, meshInFlight: queue.inFlightCount + results.length, failedChunks: failed.size,
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
       }
