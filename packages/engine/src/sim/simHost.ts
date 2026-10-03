@@ -1,5 +1,5 @@
 import type { BlockDef } from '../blocks/registry.ts'
-import type { FromSim, ToSim } from '../protocol.ts'
+import type { FromSim, TerrainRect, ToSim } from '../protocol.ts'
 import { WorldFullError } from '../world/chunkStore.ts'
 import type { Layout } from '../world/layout.ts'
 import type { Ack } from './commands.ts'
@@ -22,6 +22,20 @@ const realClock: Clock = {
 }
 
 const MAX_CATCH_UP = 4
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+}
+
+/** Chunk columns overlapping a block rectangle. */
+export function columnsIn(r: TerrainRect): [number, number][] {
+  const out: [number, number][] = []
+  for (let cz = r.z0 >> 5; cz <= (r.z1 - 1) >> 5; cz++) for (let cx = r.x0 >> 5; cx <= (r.x1 - 1) >> 5; cx++) out.push([cx, cz])
+  return out
+}
+
+interface RegenRequest { id: number; rect: TerrainRect }
+interface Column { cx: number; cz: number; data: Uint16Array }
 
 /** Every chunk column, row by row. */
 export function allColumns(L: Layout): [number, number][] {
@@ -50,6 +64,9 @@ export class SimHost {
   private seed = 0
   /** The generator's current document (undefined: none). */
   private terrain: unknown = undefined
+  private readonly regenQueue: RegenRequest[] = []
+  /** The regeneration running on the pool, if any. */
+  private active: RegenRequest | null = null
 
   constructor(post: (m: FromSim) => void, modules: SimModules, clock: Clock = realClock) {
     this.post = post
@@ -111,6 +128,30 @@ export class SimHost {
         this.running = false
         this.clock.clearTimeout(this.timer)
         return
+      case 'setTerrain':
+        this.setTerrain(msg.id, msg.doc)
+        return
+      case 'regenerate': {
+        if (!this.sim) return
+        const [sx, , sz] = this.sim.layout.size
+        const r = msg.rect
+        const ok = typeof r === 'object' && r !== null && [r.x0, r.z0, r.x1, r.z1].every(Number.isInteger) &&
+          r.x0 >= 0 && r.z0 >= 0 && r.x0 < r.x1 && r.z0 < r.z1 && r.x1 <= sx && r.z1 <= sz
+        if (!ok) {
+          this.post({ type: 'regenerated', id: msg.id, ok: false, message: `rect must be integers with 0 <= x0 < x1 <= ${sx} and 0 <= z0 < z1 <= ${sz}` })
+          return
+        }
+        this.regenQueue.push({ id: msg.id, rect: { x0: r.x0, z0: r.z0, x1: r.x1, z1: r.z1 } })
+        this.nextRegen()
+        return
+      }
+      case 'genLost': {
+        const pool = this.pool
+        if (!pool) return
+        pool.lose(msg.index)
+        if (pool.size === 0 && this.pool === pool) this.pool = null // later work runs serially here
+        return
+      }
     }
   }
 
@@ -131,6 +172,86 @@ export class SimHost {
       this.post({ type: 'log', message: `sim behind: dropped ${dropped} ticks` })
     }
     if (this.running) this.timer = this.clock.setTimeout(() => this.pump(), Math.max(0, this.stepMs - this.acc))
+  }
+
+  private setTerrain(id: number, doc: unknown): void {
+    const sim = this.sim
+    if (!sim) return
+    try {
+      sim.configure(this.modules.generator, doc)
+    } catch (e) {
+      this.post({ type: 'terrain', id, ok: false, message: errorMessage(e) })
+      return
+    }
+    this.terrain = doc
+    this.post({ type: 'terrain', id, ok: true })
+    const pool = this.pool
+    if (!pool) return
+    pool.configure(doc, sim.layout.size, this.seed, this.blocks)
+    const active = this.active
+    if (active) {
+      // Columns in flight were generated from the old document: drop them and run the request again.
+      pool.cancel()
+      this.active = null
+      this.regenQueue.unshift(active)
+      this.nextRegen()
+    }
+  }
+
+  /** Starts the next queued regeneration unless one is running. */
+  private nextRegen(): void {
+    const sim = this.sim
+    if (!sim || this.active || this.regenQueue.length === 0) return
+    const req = this.regenQueue.shift()!
+    const columns = columnsIn(req.rect)
+    const t0 = this.clock.now()
+    const pool = this.pool && this.pool.size > 0 ? this.pool : null
+    if (!pool) {
+      const H = sim.layout.size[1]
+      let cols: Column[]
+      try {
+        cols = columns.map(([cx, cz]) => {
+          const data = new Uint16Array(32 * 32 * H)
+          sim.generateColumnData(this.modules.generator, cx, cz, data)
+          return { cx, cz, data }
+        })
+      } catch (e) {
+        this.post({ type: 'regenerated', id: req.id, ok: false, message: errorMessage(e) })
+        this.nextRegen()
+        return
+      }
+      this.finishRegen(req.id, t0, cols)
+      this.nextRegen()
+      return
+    }
+    const cols: Column[] = []
+    this.active = req
+    pool.run({
+      columns,
+      onColumn: (cx, cz, data) => { cols.push({ cx, cz, data }) },
+      onDone: () => {
+        this.active = null
+        this.finishRegen(req.id, t0, cols)
+        this.nextRegen()
+      },
+      onError: (message) => {
+        this.active = null
+        this.post({ type: 'regenerated', id: req.id, ok: false, message })
+        this.nextRegen()
+      },
+    })
+  }
+
+  /** Applies a finished regeneration atomically (we are between ticks) and reports the chunks to remesh. */
+  private finishRegen(id: number, t0: number, cols: Column[]): void {
+    const sim = this.sim
+    if (!sim) return
+    try {
+      const dirtyChunks = sim.replaceColumns(cols)
+      this.post({ type: 'regenerated', id, ok: true, dirtyChunks, ms: this.clock.now() - t0, slotsUsed: sim.store.slotsUsed() })
+    } catch (e) {
+      this.fail(e)
+    }
   }
 
   /** Initial generation on the generation workers; 'ready' is posted once every column is in. */

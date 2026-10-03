@@ -114,6 +114,32 @@ export class Simulation {
     return Array.from({ length: this.layout.chunkCount }, (_, i) => i)
   }
 
+  /**
+   * Swaps in freshly generated columns between ticks, relights around them and commits.
+   * Returns the chunks to remesh.
+   */
+  replaceColumns(cols: readonly { cx: number; cz: number; data: Uint16Array }[]): number[] {
+    if (cols.length === 0) return []
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity
+    for (const c of cols) {
+      this.applyColumn(c.cx, c.cz, c.data)
+      x0 = Math.min(x0, c.cx * 32); z0 = Math.min(z0, c.cz * 32)
+      x1 = Math.max(x1, c.cx * 32 + 32); z1 = Math.max(z1, c.cz * 32 + 32)
+    }
+    this.light.relightRegion(x0, z0, x1, z1)
+    // Replaced voxels at the border change the neighbours' face culling and AO even when their light is
+    // unchanged, and writeChunkDense does not mark borders: remesh the 1-chunk ring around the columns too.
+    const L = this.layout
+    for (const c of cols) {
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        for (let cy = 0; cy < L.cy; cy++) {
+          if (L.chunkInBounds(c.cx + dx, cy, c.cz + dz)) this.store.markDirty(L.chunkIndex(c.cx + dx, cy, c.cz + dz))
+        }
+      }
+    }
+    return this.store.commit()
+  }
+
   /** Runs once before tick 0, serially. Returns every chunk index; the mesher skips trivial ones. */
   generate(gen: GeneratorModule): number[] {
     const L = this.layout

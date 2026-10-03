@@ -13,6 +13,9 @@ export interface SimInitOptions {
   tickHz?: number
 }
 
+/** World blocks [x0, x1) × [z0, z1), full height. */
+export interface TerrainRect { x0: number; z0: number; x1: number; z1: number }
+
 export type ToSim =
   /**
    * `terrain`: the document handed to the generator's configure() before generation.
@@ -22,6 +25,12 @@ export type ToSim =
   | { type: 'submit'; clientId: number; seq: number; cmd: Command }
   | { type: 'start' }
   | { type: 'stop' }
+  /** Replaces the generator's document (configure) everywhere; answered by 'terrain'. */
+  | { type: 'setTerrain'; id: number; doc: unknown }
+  /** Regenerates the chunk columns overlapping `rect` between two ticks; answered by 'regenerated'. */
+  | { type: 'regenerate'; id: number; rect: TerrainRect }
+  /** Main thread: generation worker `index` died. */
+  | { type: 'genLost'; index: number }
 
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
@@ -29,6 +38,10 @@ export type FromSim =
   | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
   | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
+  | { type: 'terrain'; id: number; ok: true }
+  | { type: 'terrain'; id: number; ok: false; message: string }
+  | { type: 'regenerated'; id: number; ok: true; dirtyChunks: number[]; ms: number; slotsUsed: number }
+  | { type: 'regenerated'; id: number; ok: false; message: string }
   /** `slots` is set when the world ran out of slot pages: the slot count in use at that point. */
   | { type: 'fatal'; message: string; slots?: number }
 
