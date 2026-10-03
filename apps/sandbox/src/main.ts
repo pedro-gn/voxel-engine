@@ -22,7 +22,8 @@ function worldSide(raw: string | null): number {
 }
 /** `?scene=terrain&edit` opens the terrain editor on the scene's document. */
 const editing = sceneName === 'terrain' && params.has('edit')
-const EDIT_HINT = 'LMB select · drag handles/outline · Shift-drag height · Alt-click remove vertex · Ctrl+Z/Y · Del · Ctrl+D · H · RMB rotate'
+const EDIT_HINT = '1–4 mode · Ops: LMB select, drag handles/outline, Shift-drag height, Alt-click remove vertex, Del, Ctrl+D, H · ' +
+  'Brushes: LMB paint, Ctrl invert, Shift keep depth, [ ] radius · Ctrl+Z/Y · RMB rotate'
 const n = worldSide(params.get('size'))
 const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
