@@ -1,7 +1,7 @@
 import { decodeUniform } from '../world/buffers.ts'
 import type { ChunkStore } from '../world/chunkStore.ts'
 import { Layout } from '../world/layout.ts'
-import { packLight, voxelId } from '../world/voxel.ts'
+import { voxelId } from '../world/voxel.ts'
 
 export interface LightTables { opaque: Uint8Array; emits: Uint8Array }
 
