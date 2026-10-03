@@ -1,5 +1,6 @@
 import { AIR, createEngine } from '@elovox/engine'
 import { BLOCKS, DECORATIONS } from './blocks.ts'
+import { spawnCharacter } from './character.ts'
 import { createControls } from './controls.ts'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
@@ -29,7 +30,9 @@ const engine = await createEngine({
     : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
-  tileSize: 128,
+  // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
+  // render at full resolution (~14 layers ≈ 19 MB with mipmaps).
+  tileSize: 512,
 })
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
@@ -44,9 +47,15 @@ if (sceneName === 'diorama') {
 }
 createControls(engine)
 
+// The bean stands at the camera target, facing the camera; V toggles idle / walk.
+engine.controls.apply(engine.camera)
+const [bx, , bz] = engine.controls.current.target
+const bean = await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
+
 let selected = 0
 createHud(engine, () => HOTBAR[selected]!, sceneName)
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'v' || e.key === 'V') bean.play(bean.clip === 'walk' ? 'idle' : 'walk')
   const k = e.key === '0' ? 10 : Number(e.key)
   if (k >= 1 && k <= HOTBAR.length) selected = k - 1
 })
@@ -69,4 +78,4 @@ canvas.addEventListener('pointerup', (e) => {
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
 
-Object.assign(window, { __elovox: { engine, ready: true } })
+Object.assign(window, { __elovox: { engine, bean, ready: true } })

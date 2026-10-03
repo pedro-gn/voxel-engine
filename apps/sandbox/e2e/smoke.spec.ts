@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Engine } from '@elovox/engine'
+import type { Character } from '../src/character.ts'
 
-type W = Window & { __elovox?: { engine: Engine; ready: boolean } }
+type W = Window & { __elovox?: { engine: Engine; bean: Character; ready: boolean } }
 
 function watchErrors(page: Page): string[] {
   const errors: string[] = []
@@ -35,6 +36,24 @@ test('sandbox boots isolated, renders, and round-trips an edit', async ({ page }
   await expect(page.locator('#hud')).toContainText('fps')
   const shot = await page.locator('canvas').screenshot()
   expect(shot.byteLength).toBeGreaterThan(10_000) // a blank canvas compresses to far less
+  expect(errors).toEqual([])
+})
+
+test('bean stands on the terrain, plays idle, and V switches to walk', async ({ page }) => {
+  const errors = watchErrors(page)
+  await boot(page, '/?size=128')
+  const read = () => page.evaluate(() => {
+    const { engine, bean } = (window as W).__elovox!
+    const p = bean.root.position
+    const below = engine.world.get(Math.floor(p.x), Math.round(p.y) - 1, Math.floor(p.z))
+    const above = engine.world.get(Math.floor(p.x), Math.round(p.y), Math.floor(p.z))
+    return { clip: bean.clip, time: bean.mixer.time, inScene: bean.root.parent === engine.scene, onGround: below !== 0 && above === 0 }
+  })
+  const a = await read()
+  expect(a).toMatchObject({ clip: 'idle', inScene: true, onGround: true })
+  await page.waitForFunction((t) => (window as W).__elovox!.bean.mixer.time > t + 0.2, a.time)
+  await page.keyboard.press('v')
+  expect((await read()).clip).toBe('walk')
   expect(errors).toEqual([])
 })
 
