@@ -1,8 +1,11 @@
 import { BufferGeometry, Group, Line, LineBasicNodeMaterial, LineSegments, Vector3 } from 'three/webgpu'
+import type { Point3 } from '../../core/brush.ts'
 import { LIFT } from '../handles/overlay.ts'
 
 const SEGMENTS = 64
-const COLOR = { ring: 0xffffff, inner: 0xffb020, cells: 0xffffff, sphere: 0x8cc8ff, locked: 0xffb020 }
+const COLOR = { ring: 0xffffff, inner: 0xffb020, cells: 0xffffff, sphere: 0x8cc8ff, locked: 0xffb020, hit: 0xffffff }
+/** Half-length of the cross marking the ray hit, in blocks. */
+const HIT_MARK = 0.75
 
 /** The brush cursor, drawn over the terrain without depth test. Each draw replaces the previous one. */
 export class BrushCursor {
@@ -25,9 +28,10 @@ export class BrushCursor {
     if (inner !== null && inner > 0 && inner < radius) this.line(this.draped(x, z, inner), COLOR.inner, false)
   }
 
-  /** The outlines of the cells (of `cell` blocks) whose centres lie within the radius. */
+  /** The brush circle, draped, and the outlines of the cells (of `cell` blocks) whose centres lie within the radius. */
   cells(x: number, z: number, radius: number, cell: number): void {
     this.clear()
+    this.line(this.draped(x, z, radius), COLOR.ring, false)
     const pts: Vector3[] = []
     const c0 = Math.floor((x - radius) / cell), c1 = Math.floor((x + radius) / cell)
     const k0 = Math.floor((z - radius) / cell), k1 = Math.floor((z + radius) / cell)
@@ -42,8 +46,8 @@ export class BrushCursor {
     if (pts.length > 0) this.line(pts, COLOR.cells, true)
   }
 
-  /** Three great circles of a sphere; `locked` tints them (Shift keeps the depth). */
-  sphere(x: number, y: number, z: number, radius: number, locked: boolean): void {
+  /** Three great circles of a sphere; `locked` tints them (Shift keeps the depth); `hit`, the ray hit, gets a small cross. */
+  sphere(x: number, y: number, z: number, radius: number, locked: boolean, hit?: Point3 | null): void {
     this.clear()
     const color = locked ? COLOR.locked : COLOR.sphere
     for (const plane of ['xz', 'xy', 'zy'] as const) {
@@ -54,6 +58,14 @@ export class BrushCursor {
         pts.push(plane === 'xz' ? new Vector3(x + u, y, z + v) : plane === 'xy' ? new Vector3(x + u, y + v, z) : new Vector3(x, y + v, z + u))
       }
       this.line(pts, color, false)
+    }
+    if (hit) {
+      const k = HIT_MARK
+      this.line([
+        new Vector3(hit.x - k, hit.y, hit.z), new Vector3(hit.x + k, hit.y, hit.z),
+        new Vector3(hit.x, hit.y - k, hit.z), new Vector3(hit.x, hit.y + k, hit.z),
+        new Vector3(hit.x, hit.y, hit.z - k), new Vector3(hit.x, hit.y, hit.z + k),
+      ], COLOR.hit, true)
     }
   }
 

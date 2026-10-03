@@ -34,7 +34,7 @@ function numberRow(key: string, label: string, min: number, max: number, step: n
 }
 
 /** The brush settings, shown instead of the inspector in a brush mode. */
-export function createBrushPanel(parent: HTMLElement, actions: BrushPanelActions): { el: HTMLElement; render(s: BrushPanelState): void } {
+export function createBrushPanel(parent: HTMLElement, actions: BrushPanelActions): { el: HTMLElement; render(s: BrushPanelState): void; setError(message: string): void } {
   const title = h('div', { style: { fontWeight: '600' } })
   const tools = h('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap' } })
   const radius = numberRow('radius', 'radius', RADIUS_MIN, RADIUS_MAX, 1, (v) => actions.settings({ radius: v }))
@@ -45,12 +45,17 @@ export function createBrushPanel(parent: HTMLElement, actions: BrushPanelActions
   const biomeRow = h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
     h('span', { textContent: 'biome', style: { width: '70px', flex: 'none' } }), biome)
   const hint = h('div', { style: { opacity: '0.7' } })
-  const el = h('div', { id: 'editor-brush', style: { ...PANEL_STYLE, display: 'none' } }, title, tools, radius.el, strength.el, falloff.el, biomeRow, hint)
+  const error = h('div', { id: 'brush-error', style: { color: '#ff8080', display: 'none' } })
+  const el = h('div', { id: 'editor-brush', style: { ...PANEL_STYLE, display: 'none' } }, title, tools, radius.el, strength.el, falloff.el, biomeRow, hint, error)
   parent.append(el)
 
   let built = '' // the mode and biome names the buttons and options were built for
   return {
     el,
+    setError(message) {
+      error.textContent = message
+      error.style.display = message ? 'block' : 'none'
+    },
     render(s) {
       const key = `${s.mode}#${s.biomes.join('|')}`
       if (key !== built) {

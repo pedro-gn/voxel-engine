@@ -127,14 +127,14 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const cursor = new BrushCursor(ground)
   engine.scene.add(cursor.group)
   /** The last aim point under the pointer, and whether it was the Shift-locked one. */
-  let lastAim: { aim: Point3; locked: boolean } | null = null
+  let lastAim: { aim: Point3; locked: boolean; hit: Point3 | null } | null = null
 
   function drawCursor(): void {
     const c = brushes.current
     if (!c || !lastAim) { cursor.hide(); return }
-    const { aim, locked } = lastAim
+    const { aim, locked, hit } = lastAim
     const r = c.settings.radius
-    if (brushes.mode === 'density') cursor.sphere(aim.x, aim.y, aim.z, r, locked)
+    if (brushes.mode === 'density') cursor.sphere(aim.x, aim.y, aim.z, r, locked, hit)
     else if (brushes.mode === 'biome') cursor.cells(aim.x, aim.z, r, BIOME_CELL)
     else cursor.circle(aim.x, aim.z, r, c.settings.falloff > 0 ? r * (1 - c.settings.falloff) : null)
   }
@@ -199,6 +199,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     tabs.render(brushes.mode)
     const c = brushes.current
     inspector.el.style.display = c ? 'none' : 'grid' // both panels lay out as grids (PANEL_STYLE)
+    if (!c) renderInspector()
     brushPanel.el.style.display = c ? 'grid' : 'none'
     if (c) brushPanel.render({ mode: brushes.mode as BrushMode, tool: c.tool, settings: c.settings, biomes: session.doc.biomes.map((b) => b.name), biome: brushes.biome })
   }
@@ -210,6 +211,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     list.render(session.doc, session.selected, failedId)
   }
   function renderInspector(): void {
+    if (brushes.mode !== 'ops') return // hidden in a brush mode; renderBrushes brings it up to date on the way out
     const def = selectedDef()
     if (!def) {
       inspector.render('document', docFields(session.doc, height), '')
@@ -272,16 +274,25 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   /**
    * Where the brush aims: just above the voxel under the pointer (height, biome), that voxel's centre
    * (density), or with `lock` during a density stroke the point at the stroke's first distance along the ray.
+   * `hit` is the voxel centre under the pointer, if any (the density cursor marks it).
    */
-  function aimPoint(e: { clientX: number; clientY: number }, lock: boolean): Point3 | null {
+  function aimPoint(e: { clientX: number; clientY: number }, lock: boolean): { aim: Point3; hit: Point3 | null } | null {
+    const pick = engine.pickScreen(e.clientX, e.clientY)
+    const hit = pick ? { x: pick.pos[0] + 0.5, y: pick.pos[1] + 0.5, z: pick.pos[2] + 0.5 } : null
     if (brushes.mode === 'density' && lock && lockDistance !== null) {
       const ray = rayAt(camera, viewport(), local(e))
-      return { x: ray.origin.x + ray.dir.x * lockDistance, y: ray.origin.y + ray.dir.y * lockDistance, z: ray.origin.z + ray.dir.z * lockDistance }
+      return { aim: { x: ray.origin.x + ray.dir.x * lockDistance, y: ray.origin.y + ray.dir.y * lockDistance, z: ray.origin.z + ray.dir.z * lockDistance }, hit }
     }
-    const hit = engine.pickScreen(e.clientX, e.clientY)
-    if (!hit) return null
-    const [x, y, z] = hit.pos
-    return brushes.mode === 'density' ? { x: x + 0.5, y: y + 0.5, z: z + 0.5 } : { x: x + 0.5, y: y + 1, z: z + 0.5 }
+    if (!pick || !hit) return null
+    return { aim: brushes.mode === 'density' ? hit : { x: hit.x, y: pick.pos[1] + 1, z: hit.z }, hit }
+  }
+
+  /** A brush gesture failed (an op threw while sampling): release the pointer and say so. */
+  function brushFailed(err: unknown): void {
+    releaseBrush()
+    const message = `brush failed: ${err instanceof Error ? err.message : String(err)}`
+    inspector.setErrors([message])
+    brushPanel.setError(message)
   }
 
   function releaseBrush(): void {
@@ -321,10 +332,17 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     finishGesture()
     flushOverlay()
     if (brushes.mode !== 'ops') {
-      const aim = aimPoint(e, false)
-      if (!aim) return
+      const target = aimPoint(e, false)
+      if (!target) return
+      const { aim } = target
       lockDistance = new Vector3().setFromMatrixPosition(camera.matrixWorld).distanceTo(new Vector3(aim.x, aim.y, aim.z))
-      brushes.begin(aim, e.ctrlKey)
+      brushPanel.setError('')
+      try {
+        brushes.begin(aim, e.ctrlKey)
+      } catch (err) {
+        brushFailed(err)
+        return
+      }
       brushPointer = e.pointerId
       canvas.setPointerCapture(e.pointerId)
       e.preventDefault()
@@ -366,10 +384,12 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const onMove = (e: PointerEvent) => {
     if (brushes.mode !== 'ops') {
       const locked = brushPointer === e.pointerId && e.shiftKey && brushes.mode === 'density'
-      const aim = aimPoint(e, locked)
-      lastAim = aim ? { aim, locked } : null
+      const target = aimPoint(e, locked)
+      lastAim = target ? { aim: target.aim, locked, hit: target.hit } : null
       drawCursor()
-      if (brushPointer === e.pointerId && aim) brushes.move(aim, e.ctrlKey)
+      if (brushPointer === e.pointerId && target) {
+        try { brushes.move(target.aim, e.ctrlKey) } catch (err) { brushFailed(err) }
+      }
       return
     }
     if (!drag || e.pointerId !== drag.pointerId) return
@@ -443,9 +463,9 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
         if (c) brushes.setSettings({ radius: c.settings.radius * (action === 'radius-up' ? 1.25 : 0.8) })
         break
       }
-      case 'delete': if (session.selected) run(`delete ${session.selected}`, removeOp(session.selected)); break
-      case 'duplicate': e.preventDefault(); duplicate(); break
-      case 'toggle': { const d = selectedDef(); if (d) run(d.enabled ? 'disable' : 'enable', setEnabled(d.id, !d.enabled)); break }
+      case 'delete': if (brushes.mode === 'ops' && session.selected) run(`delete ${session.selected}`, removeOp(session.selected)); break
+      case 'duplicate': e.preventDefault(); if (brushes.mode === 'ops') duplicate(); break
+      case 'toggle': { const d = brushes.mode === 'ops' ? selectedDef() : null; if (d) run(d.enabled ? 'disable' : 'enable', setEnabled(d.id, !d.enabled)); break }
     }
   }
   window.addEventListener('keydown', onKey)
