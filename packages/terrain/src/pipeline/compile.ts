@@ -1,7 +1,7 @@
 import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
 import { compileBiome, compileBiomeRule, type CompiledBiome } from '../biomes/biomes.ts'
 import type { TerrainDoc } from '../doc/types.ts'
-import { BiomeLayer, DensityLayer, HeightLayer } from '../layers/raster.ts'
+import { compileLayers, type BiomeLayer, type DensityLayer, type HeightLayer } from '../layers/layers.ts'
 import { makeNoise2, type Sampler2 } from '../noise/def.ts'
 import { builtinOps } from '../ops/builtin.ts'
 import type { CompileContext, HeightOp, OpRegistry, VolumeOp } from '../ops/registry.ts'
@@ -25,9 +25,9 @@ export interface CompiledTerrain {
   readonly volumeOps: readonly VolumeOp[]
   readonly biomes: readonly CompiledBiome[]
   readonly biomeRule: (x: number, z: number, h: number) => number
-  readonly heightLayer: HeightLayer | null
-  readonly biomeLayer: BiomeLayer | null
-  readonly densityLayer: DensityLayer | null
+  readonly heightLayer: HeightLayer
+  readonly biomeLayer: BiomeLayer
+  readonly densityLayer: DensityLayer
   /** Voxel values (water already carries its level state). */
   readonly blocks: TerrainBlocks
 }
@@ -87,9 +87,7 @@ export function compileTerrain(doc: TerrainDoc, o: CompileOptions): CompiledTerr
     heightOps, volumeOps,
     biomes: doc.biomes.map((b) => compileBiome(b, id)),
     biomeRule: compileBiomeRule(doc.biomeRule, biomeIndex, o.seed),
-    heightLayer: doc.layers.height ? new HeightLayer(doc.layers.height) : null,
-    biomeLayer: doc.layers.biome ? new BiomeLayer(doc.layers.biome) : null,
-    densityLayer: doc.layers.density ? new DensityLayer(doc.layers.density) : null,
+    ...compileLayers(doc.layers),
     blocks: {
       fill: id(doc.blocks.fill), water: packVoxel(id(doc.blocks.water), WATER_STATE),
       log: id(doc.blocks.log), leaves: id(doc.blocks.leaves), pineLeaves: id(doc.blocks.pineLeaves), rock: id(doc.blocks.rock),

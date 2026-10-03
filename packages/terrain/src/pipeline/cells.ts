@@ -46,13 +46,15 @@ export function fillCells(t: CompiledTerrain, x0: number, z0: number, w: number,
   const top = new Int32Array(n)
   const biome = new Int32Array(n)
   const maxTop = t.height - 2
+  const heightLayer = t.heightLayer.empty ? null : t.heightLayer
+  const biomeLayer = t.biomeLayer.empty ? null : t.biomeLayer
   for (let lz = 0; lz < d; lz++) for (let lx = 0; lx < w; lx++) {
     const i = lx + lz * w, x = x0 + lx, z = z0 + lz
     const inWorld = x >= 0 && z >= 0 && x < t.sizeX && z < t.sizeZ
-    const hh = h[i]! + (inWorld && t.heightLayer ? t.heightLayer.at(x, z) : 0)
+    const hh = h[i]! + (inWorld && heightLayer ? heightLayer.at(x, z) : 0)
     const tp = Math.min(maxTop, Math.max(1, Math.round(hh)))
     top[i] = tp
-    const painted = inWorld && t.biomeLayer ? t.biomeLayer.at(x, z) : -1
+    const painted = inWorld && biomeLayer ? biomeLayer.at(x, z) : -1
     biome[i] = painted >= 0 ? painted : opBiome[i]! >= 0 ? opBiome[i]! : t.biomeRule(x, z, tp)
   }
   return { x0, z0, w, d, top, water, wet, biome }

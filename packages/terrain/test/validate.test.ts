@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TerrainDocError, validateTerrainDoc } from '../src/doc/validate.ts'
-import { encodeRaster } from '../src/layers/raster.ts'
+import { encodeValues } from '../src/layers/tiles.ts'
+import { toTerrainJSON } from '../src/doc/json.ts'
 import { OpRegistry, defineTerrainOp } from '../src/ops/registry.ts'
 import { minimalDoc } from './fixtures.ts'
 
@@ -95,8 +96,16 @@ describe('validateTerrainDoc', () => {
   })
 
   it('validates layers against the document size', () => {
-    const doc = { ...minimalDoc(), layers: { height: encodeRaster('i16', 32, 32, new Int16Array(1024)) } }
-    expect(errorsOf(doc)).toEqual(['layers.height: must be 64 × 64, got 32 × 32'])
+    const doc = { ...minimalDoc(), layers: { height: { tiles: [{ x: 1, z: 0, data: encodeValues(new Int16Array(4096).fill(1)) }] } } }
+    expect(errorsOf(doc)).toEqual(['layers.height.tiles[0].x: must be <= 0'])
+  })
+
+  it('toTerrainJSON writes the layers back as base64 that validates to the same document', () => {
+    const raw = { ...minimalDoc(), layers: { biome: { tiles: [{ x: 0, z: 0, data: encodeValues(new Uint8Array(256).fill(2)) }] } } }
+    const r = validateTerrainDoc(raw, { ops })
+    if (!r.ok) throw new Error(r.errors.join('\n'))
+    const again = validateTerrainDoc(JSON.parse(JSON.stringify(toTerrainJSON(r.doc))), { ops })
+    expect(again.ok && again.doc).toEqual(r.doc)
   })
 
   it('rejects unknown block keys', () => {

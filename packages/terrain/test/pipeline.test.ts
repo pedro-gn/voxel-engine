@@ -3,6 +3,7 @@ import { validateTerrainDoc } from '../src/doc/validate.ts'
 import { builtinOps } from '../src/ops/builtin.ts'
 import { defineTerrainOp } from '../src/ops/registry.ts'
 import { compileTerrain, type CompiledTerrain } from '../src/pipeline/compile.ts'
+import { HEIGHT_VALUES } from '../src/layers/tiles.ts'
 import { generateRegion } from '../src/pipeline/region.ts'
 import { IDS, idOf, minimalDoc } from './fixtures.ts'
 
@@ -29,6 +30,13 @@ describe('generateRegion: height, water and surface', () => {
     expect(col.slice(16, 19)).toEqual([IDS.dirt, IDS.dirt, IDS.dirt])
     expect(col[19]).toBe(IDS.grass)
     expect(col.slice(20).every((v) => v === 0)).toBe(true)
+  })
+
+  it('adds the height layer in 1/16 block before rounding the ground', () => {
+    const values = new Int16Array(HEIGHT_VALUES).fill(8) // +0.5 block: 20.5 rounds to 21
+    const get = region(compileDoc({ ...minimalDoc(), layers: { height: { tiles: [{ x: 0, z: 0, values }] } } }), 0, 0)
+    expect(get(5, 20, 5)).toBe(IDS.grass)
+    expect(get(5, 21, 5)).toBe(0)
   })
 
   it('fills everything below sea level with water', () => {

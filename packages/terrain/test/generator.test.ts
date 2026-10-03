@@ -3,7 +3,7 @@ import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
 import { describe, expect, it } from 'vitest'
 import { createTerrainGenerator, terrainGenerator } from '../src/generator.ts'
-import { encodeRaster } from '../src/layers/raster.ts'
+import { encodeValues } from '../src/layers/tiles.ts'
 import { builtinOps } from '../src/ops/builtin.ts'
 import { defineTerrainOp } from '../src/ops/registry.ts'
 import { minimalDoc } from './fixtures.ts'
@@ -66,8 +66,8 @@ describe('terrainGenerator', () => {
   })
 
   it('round-trips a document with layers through JSON', () => {
-    const height = new Int16Array(64 * 64).fill(3)
-    const doc = { ...minimalDoc(), layers: { height: encodeRaster('i16', 64, 64, height) } }
+    const height = new Int16Array(64 * 64).fill(48) // +3 blocks
+    const doc = { ...minimalDoc(), layers: { height: { tiles: [{ x: 0, z: 0, data: encodeValues(height) }] } } }
     const s = sim()
     s.configure(terrainGenerator, JSON.parse(JSON.stringify(doc)))
     s.generate(terrainGenerator)

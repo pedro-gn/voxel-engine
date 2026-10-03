@@ -1,4 +1,4 @@
-import { checkLayers } from '../layers/raster.ts'
+import { checkLayers } from '../layers/tiles.ts'
 import { builtinOps } from '../ops/builtin.ts'
 import type { OpRegistry } from '../ops/registry.ts'
 import { checkShape } from '../shapes/shape.ts'
@@ -132,7 +132,9 @@ export function validateTerrainDoc(json: unknown, o: ValidateOptions = {}): Vali
   }
 
   const size = Array.isArray(d.size) ? d.size : null
-  if (size && size.length === 2) checkLayers(c, 'layers', d.layers, Number(size[0]), Number(size[1]), biomeNames.length)
+  const layers = size && size.length === 2
+    ? checkLayers(c, 'layers', d.layers, { sizeX: Number(size[0]), sizeZ: Number(size[1]), height, biomeCount: biomeNames.length })
+    : {}
 
   if (c.errors.length > 0) return { ok: false, errors: c.errors }
   const doc: TerrainDoc = {
@@ -144,7 +146,7 @@ export function validateTerrainDoc(json: unknown, o: ValidateOptions = {}): Vali
     biomes: d.biomes as TerrainDoc['biomes'],
     biomeRule: d.biomeRule as unknown as TerrainDoc['biomeRule'],
     ops: outOps,
-    layers: (d.layers ?? {}) as TerrainDoc['layers'],
+    layers,
   }
   return { ok: true, doc }
 }

@@ -1,8 +1,8 @@
 export { createTerrainGenerator, terrainGenerator, type TerrainGeneratorOptions } from './generator.ts'
 export { TERRAIN_FORMAT, TERRAIN_VERSION, TerrainDocError, validateTerrainDoc, type ValidateOptions, type ValidateResult } from './doc/validate.ts'
 export type {
-  BaseDef, BiomeDef, BiomeRule, BiomeRuleEntry, BlendMode, BlockNames, BrickRef, BrickSetRef, OpDef, PathPoint,
-  RasterRef, ShapeDef, ShapeKind, SurfaceRule, TerrainDoc, TerrainLayers, TreeKind, Vec2,
+  BaseDef, BiomeDef, BiomeRule, BiomeRuleEntry, BiomeTile, BlendMode, BlockNames, BrickRef, DensityBrick, HeightTile, OpDef, PathPoint,
+  ShapeDef, ShapeKind, SurfaceRule, TerrainDoc, TerrainLayers, TerrainLayersJSON, TileRef, TreeKind, Vec2,
 } from './doc/types.ts'
 export { BLEND_MODES } from './doc/types.ts'
 export { NOISE_TYPES } from './noise/def.ts'
@@ -22,7 +22,13 @@ export {
 export { compileShape, newSample, weight, type Shape, type ShapeSample } from './shapes/shape.ts'
 export { PROFILES, profile, smoothstep01, type Profile } from './shapes/profile.ts'
 export { blend } from './shapes/blend.ts'
-export { encodeBrick, encodeRaster, decodeRaster } from './layers/raster.ts'
+export {
+  BIOME_CELL, BIOME_TILE, BIOME_VALUES, BRICK_SAMPLES, BRICK_SPACING, BRICK_SPAN, BRICK_VALUES, DENSITY_SCALE, HEIGHT_SCALE, HEIGHT_VALUES, TILE,
+  brickKey, checkLayers, decodeValues, encodeValues, layersToJSON, tileKey,
+  type LayerLimits, type LayerValues,
+} from './layers/tiles.ts'
+export { BiomeLayer, DensityLayer, HeightLayer, compileLayers, type CompiledLayers } from './layers/layers.ts'
+export { toTerrainJSON } from './doc/json.ts'
 export { makeNoise2, makeNoise3, type NoiseDef, type NoiseType, type Sampler2, type Sampler3 } from './noise/def.ts'
 export { compileTerrain, TerrainOpError, type CompiledTerrain } from './pipeline/compile.ts'
 export { generateRegion } from './pipeline/region.ts'

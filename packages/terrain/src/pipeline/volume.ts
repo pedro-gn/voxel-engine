@@ -28,7 +28,7 @@ export class VolumeField {
     this.t = t
     this.height = t.height
     this.density = new Float64Array(t.height)
-    this.useLayer = t.densityLayer !== null && t.densityLayer.touches(x0, z0, x0 + w - 1, z0 + d - 1)
+    this.useLayer = !t.densityLayer.empty && t.densityLayer.touches(x0, z0, x0 + w - 1, z0 + d - 1)
     for (const op of t.volumeOps) {
       const b = op.bounds
       const xa = Math.max(x0, Math.ceil(b.x0)), xb = Math.min(x0 + w - 1, Math.floor(b.x1))
@@ -85,7 +85,7 @@ export class VolumeField {
       }
     }
     if (this.useLayer) {
-      const layer = this.t.densityLayer!
+      const layer = this.t.densityLayer
       for (let y = 0; y < H; y++) dens[y] = dens[y]! + layer.sample(x, y, z)
     }
     for (let y = 0; y < H; y++) solid[y] = dens[y]! > 0 ? 1 : 0

@@ -80,19 +80,37 @@ export interface BiomeRule {
 export interface BlockNames { fill: string; water: string; log: string; leaves: string; pineLeaves: string; rock: string }
 export const DEFAULT_BLOCKS: BlockNames = { fill: 'stone', water: 'water', log: 'log', leaves: 'leaves', pineLeaves: 'pine_leaves', rock: 'rock' }
 
-/** A 2D raster stored as little-endian bytes in base64. */
-export interface RasterRef { width: number; height: number; type: 'i16' | 'u8'; data: string }
-/** One 8³ brick of signed density samples (Int8, 1/8 block per unit) spaced 2 blocks apart. x, y, z in bricks. */
+/** A tile of a 2D layer in the file. x and z count tiles; data holds the values as little-endian base64. */
+export interface TileRef { x: number; z: number; data: string }
+/** An 8³ brick of density samples in the file. x, y and z count bricks. */
 export interface BrickRef { x: number; y: number; z: number; data: string }
-export interface BrickSetRef { bricks: BrickRef[] }
 
+/** The layers as a .terrain.json file stores them: only painted tiles. */
+export interface TerrainLayersJSON {
+  height?: { tiles: TileRef[] }
+  biome?: { tiles: TileRef[] }
+  density?: { bricks: BrickRef[] }
+}
+
+/** 64 × 64 columns of height delta in 1/16 block; index lx + lz * 64. */
+export interface HeightTile { x: number; z: number; values: Int16Array }
+/** 16 × 16 biome cells of 4 × 4 columns (0 = unpainted, k = biomes[k - 1]); index cx + cz * 16. */
+export interface BiomeTile { x: number; z: number; values: Uint8Array }
+/** 8³ density samples 2 blocks apart, in 1/8 block; index lx + lz * 8 + ly * 64. */
+export interface DensityBrick { x: number; y: number; z: number; values: Int8Array }
+
+/**
+ * The decoded brush layers. Lists are sorted (tiles by z then x; bricks by y, z, x), hold no all-zero
+ * tile, and are absent when empty. A tile is never mutated once it is in a document: edits replace
+ * it, so documents share the tiles they have in common.
+ */
 export interface TerrainLayers {
-  /** Int16 height delta per column (width = world x, height = world z). */
-  height?: RasterRef
-  /** Uint8 per 4 × 4 columns: 0 = none, k = biomes[k - 1]. */
-  biome?: RasterRef
-  /** Sparse 3D density added after every op. */
-  density?: BrickSetRef
+  /** Added to the height after every height op. */
+  height?: { tiles: HeightTile[] }
+  /** Overrides the biome rule and biome ops. */
+  biome?: { tiles: BiomeTile[] }
+  /** Added to the density after every volume op. */
+  density?: { bricks: DensityBrick[] }
 }
 
 /** A validated, normalized terrain document (every default filled in). */
