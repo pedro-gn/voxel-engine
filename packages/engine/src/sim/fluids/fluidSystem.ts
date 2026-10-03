@@ -10,6 +10,7 @@ import { ChunkBits } from './chunkBits.ts'
 import { ContactTable } from './contacts.ts'
 import { PoolTable, type Pool } from './pools.ts'
 import { FLUID_JOBS, PoolScan, sortSeeds, type ScanComponent } from './scan.ts'
+import { Resurface } from './resurface.ts'
 import { SurfaceIndex } from './surfaceIndex.ts'
 
 /** Who wrote a voxel: a command or rule ('external'), the fluid system itself, or gravity. */
@@ -152,6 +153,7 @@ export class FluidSystem {
       this.pools.capped.set(below, p.id)
       p.capped.add(below)
     }
+    if (p.area === 0 && !p.frozen) this.rescan(p)
   }
 
   /** A cell became air: each pool touching it at y ≤ its surface gains an outlet there. */
@@ -415,6 +417,194 @@ export class FluidSystem {
     this.install(fresh)
   }
 
+  // ---- resurfacing ----
+
+  /** Every pool whose balance reached a whole level gets a resurface job (a sealed full pool cannot rise). */
+  protected queueResurfaces(): void {
+    for (const p of this.pools.all()) {
+      if (p.frozen || p.area === 0) continue
+      const up = p.balance >= p.area
+      if (!up && p.balance > -p.area) continue
+      if (up && p.level === 7 && p.sealed) continue
+      this.resurface(p)
+    }
+  }
+
+  protected resurface(p: Pool): void {
+    p.frozen = true
+    this.port.jobs.start(new Resurface({
+      poolId: p.id, pools: this.pools, index: this.index, layout: this.layout,
+      apply: (id, cells) => this.applyResurface(id, cells),
+    }))
+  }
+
+  private get stride(): number { return this.layout.size[0] * this.layout.size[2] }
+
+  private isSurfaceOf(p: Pool, pos: number): boolean {
+    const [x, y, z] = this.layout.voxelCoords(pos)
+    return y === p.surfaceY && this.members.has(x, y, z) && this.pools.resolve(this.index.get(x, y, z)) === p.id &&
+      flowGroup(this.reg, this.port.get(x, y, z)) === p.liquid
+  }
+
+  /** Rewrites a pool's surface: normalise levels, then whole levels and layers while the balance allows. */
+  applyResurface(id: number, cells: number[]): void {
+    const p = this.pools.get(id)
+    if (!p) return
+    p.frozen = false
+    let live = cells.filter((pos) => this.isSurfaceOf(p, pos))
+    for (const pos of live) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      const u = volumeOf(this.reg, this.port.get(x, y, z))
+      if (u === p.level + 1) continue
+      this.port.write(x, y, z, liquidVoxel(p.liquid, p.level + 1))
+      p.grid += p.level + 1 - u
+      p.balance -= p.level + 1 - u
+    }
+    p.area = live.length
+    while (p.area > 0) {
+      if (p.balance >= p.area) {
+        if (p.level < 7) { this.setLevel(p, live, p.level + Math.min(7 - p.level, Math.floor(p.balance / p.area))); continue }
+        const above = this.layerAbove(live)
+        if (above.length === 0) { p.sealed = true; break }
+        live = this.raiseLayer(p, live, above)
+        continue
+      }
+      if (p.balance <= -p.area) {
+        if (p.level > 0) { this.setLevel(p, live, p.level - Math.min(p.level, Math.floor(-p.balance / p.area))); continue }
+        this.dropLayer(p, live)
+        return
+      }
+      break
+    }
+    if (p.area === 0) this.rescan(p)
+  }
+
+  private setLevel(p: Pool, live: readonly number[], level: number): void {
+    const d = level - p.level
+    p.level = level
+    for (const pos of live) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      this.port.write(x, y, z, liquidVoxel(p.liquid, level + 1))
+    }
+    p.grid += d * live.length
+    p.balance -= d * live.length
+    if (d > 0) this.surfaceOutlets(p, live)
+  }
+
+  private layerAbove(live: readonly number[]): number[] {
+    const H = this.layout.size[1]
+    return live.map((pos) => pos + this.stride).filter((a) => {
+      const [x, y, z] = this.layout.voxelCoords(a)
+      return y < H && this.port.get(x, y, z) === AIR
+    })
+  }
+
+  /** A full pool rises: level-0 cells on the air above its surface; old surface cells under a ceiling become capped tops. */
+  private raiseLayer(p: Pool, old: readonly number[], above: number[]): number[] {
+    const up = new Set(above)
+    for (const pos of old) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      this.index.delete(x, y, z)
+      if (!up.has(pos + this.stride)) { this.pools.capped.set(pos, p.id); p.capped.add(pos) }
+    }
+    p.tiles.clear()
+    p.surfaceY++
+    p.level = 0
+    p.area = above.length
+    for (const pos of above) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      this.members.add(x, y, z)
+      p.tiles.add(this.index.set(x, y, z, p.id))
+      this.port.write(x, y, z, liquidVoxel(p.liquid, 1))
+    }
+    p.grid += above.length
+    p.balance -= above.length
+    this.surfaceOutlets(p, above)
+    return above
+  }
+
+  /** Air or moving water beside surface cells: outlets. Another pool's member: a contact. */
+  private surfaceOutlets(p: Pool, cells: readonly number[]): void {
+    for (const pos of cells) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      for (const [dx, dz] of SIDES) {
+        const nx = x + dx, nz = z + dz
+        if (!this.inside(nx, y, nz)) continue
+        const npos = this.layout.voxelIndex(nx, y, nz)
+        if (this.members.has(nx, y, nz)) {
+          const q = this.pools.ownerOf(nx, y, nz)
+          if (q && q !== p) this.contacts.add(p.id, pos, q.id, npos)
+          continue
+        }
+        const v = this.port.get(nx, y, nz)
+        if (v === AIR || flowGroup(this.reg, v) === p.liquid) p.outlets.add(npos)
+      }
+    }
+  }
+
+  /** A level-0 surface empties: remove it (one unit per cell goes to the balance) and rescan what is left below. */
+  private dropLayer(p: Pool, live: readonly number[]): void {
+    const seeds: number[] = []
+    for (const pos of live) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      this.members.delete(x, y, z)
+      this.index.delete(x, y, z)
+      this.port.write(x, y, z, AIR)
+      if (y > 0 && this.members.has(x, y - 1, z)) seeds.push(pos - this.stride)
+    }
+    p.grid -= live.length
+    p.balance += live.length
+    p.area = 0
+    p.tiles.clear()
+    this.split(p, seeds)
+  }
+
+  /** Rescans what is left of p from `extra` seeds and its capped tops. p stays frozen until finishSplit replaces it. */
+  protected split(p: Pool, extra: readonly number[]): void {
+    p.frozen = true
+    this.port.jobs.start(new PoolScan({
+      kind: 'split', registry: this.reg, layout: this.layout, seeds: sortSeeds(this.layout, [...extra, ...p.capped]),
+      claimable: (x, y, z) => {
+        if (!this.members.has(x, y, z)) return false
+        const o = this.pools.ownerOf(x, y, z)
+        return o === undefined || o === p
+      },
+      onFinish: (cs) => this.finishSplit(p.id, cs),
+    }))
+  }
+
+  /** A pool that lost its whole surface (commands) is rescanned like a layer drop. */
+  protected rescan(p: Pool): void { this.split(p, []) }
+
+  /** Replaces the old pool with the scan's parts; its balance is shared by grid volume (the remainder to the largest). */
+  protected finishSplit(id: number, cs: readonly ScanComponent[]): void {
+    const p = this.pools.get(id)
+    if (!p) return
+    for (const c of p.capped) this.pools.capped.delete(c)
+    this.pools.remove(p)
+    const made = this.install(cs)
+    if (made.length === 0) {
+      if (p.balance !== 0) this.port.log(`fluids: pool ${p.id} emptied with ${p.balance} units unplaced`)
+      this.lost += p.balance
+      if (p.cycle) this.cycleId = 0
+      return
+    }
+    const total = made.reduce((s, q) => s + q.grid, 0)
+    const byGrid = [...made].sort((a, b) => b.grid - a.grid || a.id - b.id)
+    let given = 0
+    for (const q of byGrid) {
+      const share = total === 0 ? 0 : Math.trunc((p.balance * q.grid) / total)
+      q.balance += share
+      given += share
+    }
+    byGrid[0]!.balance += p.balance - given
+    if (p.cycle) {
+      const big = [...made].sort((a, b) => b.area - a.area || a.id - b.id)[0]!
+      big.cycle = true
+      this.cycleId = big.id
+    }
+  }
+
   /** Every pool-invariant violation (design notes: Members and ownership). Whole-world: tests and debug builds only. */
   checkInvariants(): string[] {
     const out: string[] = []
@@ -548,7 +738,8 @@ export class FluidSystem {
     this.steps++
     this.flowCells()
     this.runOutlets()
-    // runContacts, runSprings, queueResurfaces (Tasks 7–8)
+    // runContacts, runSprings (Task 8)
+    this.queueResurfaces()
     this.queueSettles()
   }
 

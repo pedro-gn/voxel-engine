@@ -53,11 +53,16 @@ export function run(sim: Simulation, ticks: number): void {
   for (let i = 0; i < ticks; i++) sim.step()
 }
 
-/** Steps until no cell is active and no region job is queued; returns the ticks it took. Throws after `max`. */
+/** A pool whose balance already calls for a resurface job (so the next step will start one). */
+function resurfacePending(sim: Simulation): boolean {
+  return sim.fluids.pools.all().some((p) => p.area > 0 && !p.frozen && (p.balance <= -p.area || (p.balance >= p.area && !(p.level === 7 && p.sealed))))
+}
+
+/** Steps (at least once, so a just-submitted command is applied) until no cell is active and no region job is queued; returns the ticks it took. Throws after `max`. */
 export function settle(sim: Simulation, max = 3000): number {
   for (let i = 0; i < max; i++) {
-    if (sim.fluids.activeCount === 0 && sim.jobs.size === 0) return i
     sim.step()
+    if (sim.fluids.activeCount === 0 && sim.jobs.size === 0 && !resurfacePending(sim)) return i + 1
   }
   throw new Error(`fluids still moving after ${max} ticks (${sim.fluids.activeCount} active, ${sim.jobs.size} jobs)`)
 }
