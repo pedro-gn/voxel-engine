@@ -1,8 +1,8 @@
 import type { PreviewStatus } from '../../core/preview.ts'
 import { PANEL_STYLE, h } from './dom.ts'
 
-export interface ToolbarState { fileName: string; dirty: boolean; canUndo: boolean; canRedo: boolean; status: PreviewStatus; showAll: boolean }
-export interface ToolbarActions { open(): void; save(): void; saveAs(): void; undo(): void; redo(): void; showAll(on: boolean): void }
+export interface ToolbarState { fileName: string; dirty: boolean; canUndo: boolean; canRedo: boolean; status: PreviewStatus; showAll: boolean; showLayers: boolean }
+export interface ToolbarActions { open(): void; save(): void; saveAs(): void; undo(): void; redo(): void; showAll(on: boolean): void; showLayers(on: boolean): void }
 
 export function statusText(s: PreviewStatus): string {
   switch (s.state) {
@@ -27,6 +27,8 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
   const status = h('div', { id: 'editor-status', style: { whiteSpace: 'pre-wrap' } })
   const all = h('input', { type: 'checkbox', id: 'editor-showall' })
   all.addEventListener('change', () => actions.showAll(all.checked))
+  const layers = h('input', { type: 'checkbox', id: 'editor-showlayers' })
+  layers.addEventListener('change', () => actions.showLayers(layers.checked))
   const el = h('div', { id: 'editor-toolbar', style: PANEL_STYLE },
     h('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap' } },
       button('editor-open', 'Open', 'Open a .terrain.json file', actions.open),
@@ -34,7 +36,8 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
       button('editor-saveas', 'Save as', 'Save to a new file', actions.saveAs),
       undo, redo),
     file, status,
-    h('label', {}, all, ' show all ops'))
+    h('label', {}, all, ' show all ops'),
+    h('label', {}, layers, ' show layers'))
   parent.append(el)
   return {
     el,
@@ -46,6 +49,7 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
       status.textContent = statusText(s.status)
       status.style.color = s.status.state === 'error' ? '#c62828' : 'inherit'
       all.checked = s.showAll
+      layers.checked = s.showLayers
     },
   }
 }

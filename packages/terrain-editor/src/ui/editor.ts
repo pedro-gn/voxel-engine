@@ -4,6 +4,7 @@ import { Vector3 } from 'three/webgpu'
 import { parseTerrainText, serializeTerrain } from '../core/docio.ts'
 import type { Point3 } from '../core/brush.ts'
 import { BrushCursor } from './brushes/cursor.ts'
+import { LayerOverlay } from './brushes/layerOverlay.ts'
 import { BrushController, type BrushMode, type EditorMode } from '../core/brushes.ts'
 import { addOp, removeOp, removeVertex, reorderOp, replaceOp, setEnabled, type Edit } from '../core/edits.ts'
 import { newOp, nextOpId } from '../core/newOp.ts'
@@ -117,6 +118,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   let fileHandle: FileHandle | null = null
   let fileName = o.fileName
   let showAll = false
+  let showLayers = false
 
   const skip = treeIds(engine, parsed.doc)
   const ground = groundSampler(engine.world.get, skip, height, size)
@@ -135,6 +137,17 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     if (brushes.mode === 'density') cursor.sphere(aim.x, aim.y, aim.z, r, locked)
     else if (brushes.mode === 'biome') cursor.cells(aim.x, aim.z, r, BIOME_CELL)
     else cursor.circle(aim.x, aim.z, r, c.settings.falloff > 0 ? r * (1 - c.settings.falloff) : null)
+  }
+
+  const layerOverlay = new LayerOverlay(ground)
+  engine.scene.add(layerOverlay.group)
+  let layersDirty = true
+  const invalidateLayers = () => { layersDirty = true }
+  const flushLayers = () => {
+    if (!layersDirty) return
+    layersDirty = false
+    const mode = brushes.mode === 'height' || brushes.mode === 'biome' ? brushes.mode : null
+    layerOverlay.draw(session.doc.layers, showLayers ? mode : null)
   }
 
   // ---- panels
@@ -159,6 +172,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     undo: () => { endDrag(); session.undo() },
     redo: () => { endDrag(); session.redo() },
     showAll: (on) => { showAll = on; invalidate(); renderToolbar() },
+    showLayers: (on) => { showLayers = on; invalidateLayers(); renderToolbar() },
   })
   const list = createOpList(left, registry, {
     select: (id) => session.select(id),
@@ -190,7 +204,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   function renderToolbar(): void {
-    toolbar.render({ fileName, dirty: session.dirty, canUndo: session.canUndo, canRedo: session.canRedo, status: preview.status, showAll })
+    toolbar.render({ fileName, dirty: session.dirty, canUndo: session.canUndo, canRedo: session.canRedo, status: preview.status, showAll, showLayers })
   }
   function renderList(): void {
     list.render(session.doc, session.selected, failedId)
@@ -217,6 +231,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   let raf = 0
   const frame = () => {
     flushOverlay()
+    flushLayers()
     overlay.scaleMarkers(camera, canvas.clientHeight)
     raf = requestAnimationFrame(frame)
   }
@@ -224,7 +239,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
 
   const offChange = session.on('change', (e) => {
     preview.onChange(e)
-    renderToolbar(); renderList(); renderInspector(); invalidate(); renderBrushes()
+    renderToolbar(); renderList(); renderInspector(); invalidate(); invalidateLayers(); renderBrushes()
   })
   const offSelect = session.on('select', () => {
     inspector.setErrors([])
@@ -232,7 +247,8 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   })
   const offGenerated = engine.on('generated', invalidate) // the ground under the outlines changed
   const offCursorGenerated = engine.on('generated', drawCursor) // the ground under the cursor moved
-  const offBrushes = brushes.onChange(() => { invalidate(); renderBrushes(); drawCursor() })
+  const offLayersGenerated = engine.on('generated', invalidateLayers)
+  const offBrushes = brushes.onChange(() => { invalidate(); invalidateLayers(); renderBrushes(); drawCursor() })
 
   function setMode(m: EditorMode): void {
     if (brushes.stroking) return
@@ -512,7 +528,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
       endDrag()
       releaseBrush(); brushes.cancel()
       if (session.inGesture) session.cancel()
-      offChange(); offSelect(); offGenerated(); offCursorGenerated()
+      offChange(); offSelect(); offGenerated(); offCursorGenerated(); offLayersGenerated()
       offBrushes()
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
@@ -523,6 +539,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
       window.removeEventListener('beforeunload', onUnload)
       overlay.dispose()
       cursor.dispose()
+      layerOverlay.dispose()
       left.remove()
       right.remove()
     },
