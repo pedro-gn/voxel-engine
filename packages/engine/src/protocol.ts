@@ -13,14 +13,16 @@ export interface SimInitOptions {
 }
 
 export type ToSim =
-  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions }
+  /** `terrain`: the document handed to the generator's configure() before generation. */
+  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions; terrain?: unknown }
   | { type: 'submit'; clientId: number; seq: number; cmd: Command }
   | { type: 'start' }
   | { type: 'stop' }
 
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
-  | { type: 'ready'; chunks: number[]; slotsUsed: number }
+  /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
+  | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
   | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   /** `slots` is set when the world ran out of slot pages: the slot count in use at that point. */

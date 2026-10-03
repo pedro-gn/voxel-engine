@@ -56,8 +56,11 @@ export class SimHost {
             onNewPage: (index, page) => this.post({ type: 'page', index, page }),
             log: (message) => this.post({ type: 'log', message }),
           })
+          if (msg.terrain !== undefined) this.sim.configure(this.modules.generator, msg.terrain)
+          const t0 = this.clock.now()
           const chunks = this.sim.generate(this.modules.generator)
-          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed() })
+          const L = this.sim.layout
+          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
         } catch (e) {
           this.fail(e)
         }

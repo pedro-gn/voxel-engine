@@ -38,6 +38,8 @@ export interface EngineOptions {
   tileSize?: number
   /** Texture name → how many blocks one repeat of it spans (default 1). Use > 1 for large painted textures that would otherwise repeat on every block. */
   textureScale?: Record<string, number>
+  /** A terrain document for the generator (structured-cloneable, e.g. parsed JSON). Passed to its configure(). */
+  terrain?: unknown
 }
 
 export interface EngineEvents {
@@ -298,7 +300,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     e.preventDefault()
     fail(`sim worker crashed: ${e.message || 'the worker failed to load or crashed'}`)
   }
-  sim.postMessage({ type: 'init', buffers, blocks: o.blocks, seed: o.seed, options: o.sim ?? {} } satisfies ToSim)
+  sim.postMessage({ type: 'init', buffers, blocks: o.blocks, seed: o.seed, options: o.sim ?? {}, terrain: o.terrain } satisfies ToSim)
 
   // ---- frame loop ----
   const distanceTo = (ci: number) => {
