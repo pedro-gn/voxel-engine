@@ -1,14 +1,15 @@
 import { BlockRegistry, type BlockDef } from '../blocks/registry.ts'
 import type { WorldBuffers } from '../world/buffers.ts'
 import { ChunkStore, WorldFullError } from '../world/chunkStore.ts'
-import type { Layout } from '../world/layout.ts'
+import { CHUNK_VOLUME, type Layout } from '../world/layout.ts'
 import { AIR, voxelId, voxelState, withState } from '../world/voxel.ts'
 import {
   compareStamped, validateCommand,
   type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
 } from './commands.ts'
+import { diffMask, forNeighbours } from './chunkDiff.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
-import { LightEngine } from './light.ts'
+import { LightEngine, RELIGHT_MARGIN } from './light.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
 import { Scheduler } from './scheduler.ts'
@@ -19,6 +20,8 @@ export interface SimulationOptions {
   rules?: RulesModule
   seed: number
   workCap?: number
+  /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
+  regenLightDiffLimit?: number
   randomTicksPerChunk?: number
   maxPages?: number
   commandLogLimit?: number
@@ -54,6 +57,7 @@ export class Simulation {
   private readonly ctx: RuleContext
   private readonly seed: number
   private readonly workCap: number
+  private readonly regenLightDiffLimit: number
   private readonly randomTicks: number
   private readonly logLimit: number
   private readonly logTrimAt: number
@@ -66,6 +70,7 @@ export class Simulation {
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
+    this.regenLightDiffLimit = o.regenLightDiffLimit ?? 1024
     this.randomTicks = o.randomTicksPerChunk ?? 3
     this.logLimit = o.commandLogLimit ?? 100_000
     this.logTrimAt = this.logLimit + Math.floor(this.logLimit / 10) // trim in batches past 1.1 × the limit
@@ -115,29 +120,59 @@ export class Simulation {
   }
 
   /**
-   * Swaps in freshly generated columns between ticks, relights around them and commits.
-   * Returns the chunks to remesh.
+   * Swaps in freshly generated columns between ticks. Only chunks whose voxels differ are written;
+   * light is recomputed around them, and the result lists only the chunks whose voxels or light
+   * changed plus the neighbours that see a changed border (see forNeighbours). Unchanged columns
+   * cost a compare and nothing else.
    */
   replaceColumns(cols: readonly { cx: number; cz: number; data: Uint16Array }[]): number[] {
-    if (cols.length === 0) return []
-    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity
+    const L = this.layout, store = this.store
+    // 1. Find the changed chunks. Nothing is written yet: the light snapshot needs the old world.
+    const vox = new Uint16Array(CHUNK_VOLUME)
+    const writes: { ci: number; data: Uint16Array }[] = []
+    const masks = new Map<number, number>()
+    let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
     for (const c of cols) {
-      this.applyColumn(c.cx, c.cz, c.data)
-      x0 = Math.min(x0, c.cx * 32); z0 = Math.min(z0, c.cz * 32)
-      x1 = Math.max(x1, c.cx * 32 + 32); z1 = Math.max(z1, c.cz * 32 + 32)
-    }
-    this.light.relightRegion(x0, z0, x1, z1)
-    // Replaced voxels at the border change the neighbours' face culling and AO even when their light is
-    // unchanged, and writeChunkDense does not mark borders: remesh the 1-chunk ring around the columns too.
-    const L = this.layout
-    for (const c of cols) {
-      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-        for (let cy = 0; cy < L.cy; cy++) {
-          if (L.chunkInBounds(c.cx + dx, cy, c.cz + dz)) this.store.markDirty(L.chunkIndex(c.cx + dx, cy, c.cz + dz))
-        }
+      if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
+      for (let cy = 0; cy < L.cy; cy++) {
+        const ci = L.chunkIndex(c.cx, cy, c.cz)
+        const data = c.data.subarray(cy * CHUNK_VOLUME, (cy + 1) * CHUNK_VOLUME)
+        const m = diffMask(store.readVoxels(ci, vox), data)
+        if (m === 0) continue
+        masks.set(ci, m)
+        writes.push({ ci, data })
+        cx0 = Math.min(cx0, c.cx); cz0 = Math.min(cz0, c.cz); cx1 = Math.max(cx1, c.cx); cz1 = Math.max(cz1, c.cz)
       }
     }
-    return this.store.commit()
+    if (writes.length === 0) return [] // identical voxels give identical light
+    // 2. Light before, wherever the relight can reach.
+    const x0 = cx0 * 32, z0 = cz0 * 32, x1 = cx1 * 32 + 32, z1 = cz1 * 32 + 32
+    const reach: number[] = []
+    const rx0 = Math.max(0, x0 - RELIGHT_MARGIN) >> 5, rz0 = Math.max(0, z0 - RELIGHT_MARGIN) >> 5
+    const rx1 = (Math.min(L.size[0], x1 + RELIGHT_MARGIN) - 1) >> 5, rz1 = (Math.min(L.size[2], z1 + RELIGHT_MARGIN) - 1) >> 5
+    for (let cy = 0; cy < L.cy; cy++) for (let cz = rz0; cz <= rz1; cz++) for (let cx = rx0; cx <= rx1; cx++) reach.push(L.chunkIndex(cx, cy, cz))
+    const before = reach.length <= this.regenLightDiffLimit ? new Map(reach.map((ci) => [ci, store.lightSnapshot(ci)])) : null
+    // 3. Write, relight, commit. commit() closes every written or relit chunk; its list over-marks and is only the fallback.
+    for (const w of writes) store.writeChunkDense(w.ci, w.data)
+    this.light.relightRegion(x0, z0, x1, z1)
+    const relit = store.commit()
+    // 4. What changed, and who sees it.
+    const out = new Set<number>(before ? [] : relit)
+    if (before) {
+      const now = new Uint8Array(CHUNK_VOLUME), was = new Uint8Array(CHUNK_VOLUME)
+      for (const [ci, old] of before) {
+        const m = diffMask(typeof old === 'number' ? was.fill(old) : old, store.readLight(ci, now))
+        if (m !== 0) masks.set(ci, (masks.get(ci) ?? 0) | m)
+      }
+    }
+    for (const [ci, m] of masks) {
+      out.add(ci)
+      const [cx, cy, cz] = L.chunkCoords(ci)
+      forNeighbours(m, (dx, dy, dz) => {
+        if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) out.add(L.chunkIndex(cx + dx, cy + dy, cz + dz))
+      })
+    }
+    return [...out].sort((a, b) => a - b)
   }
 
   /** Runs once before tick 0, serially. Returns every chunk index; the mesher skips trivial ones. */

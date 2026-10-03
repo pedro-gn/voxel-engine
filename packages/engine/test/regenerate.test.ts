@@ -79,18 +79,22 @@ describe('SimHost regeneration (serial)', () => {
     expect(groundAt(host.simulation!, 5, 5)).toBe(20)
   })
 
-  it('marks the one-chunk ring around the replaced columns dirty', () => {
+  it('marks the changed chunks and the neighbours that see their borders dirty, nothing else', () => {
     const { host, out } = makeHost(levelGenerator(), { terrain: { level: 20 } })
     host.handle({ type: 'setTerrain', id: 1, doc: { level: 30 } })
     host.handle({ type: 'regenerate', id: 2, rect: { x0: 32, z0: 0, x1: 64, z1: 32 } })
     const r = answer(out, 'regenerated', 2)
     if (!r || r.type !== 'regenerated' || !r.ok) throw new Error('regeneration failed')
     const L = host.simulation!.layout
-    const expected: number[] = []
-    for (let cy = 0; cy < L.cy; cy++) for (let cz = 0; cz < 2; cz++) for (let cx = 0; cx < 3; cx++) {
-      if (L.chunkInBounds(cx, cy, cz)) expected.push(L.chunkIndex(cx, cy, cz))
-    }
-    for (const ci of expected) expect(r.dirtyChunks).toContain(ci)
+    // Ground 20 → 30 in column (1, 0) stays inside chunk row cy 0; the row above does not change.
+    const expected = [[1, 0], [0, 0], [2, 0], [0, 1], [1, 1], [2, 1]].map(([cx, cz]) => L.chunkIndex(cx!, 0, cz!))
+    expect(r.dirtyChunks).toEqual(expected.sort((a, b) => a - b))
+  })
+
+  it('reports no dirty chunks when the area did not change', () => {
+    const { host, out } = makeHost(levelGenerator(), { terrain: { level: 20 } })
+    host.handle({ type: 'regenerate', id: 1, rect: { x0: 0, z0: 0, x1: 96, z1: 64 } })
+    expect(answer(out, 'regenerated', 1)).toMatchObject({ ok: true, dirtyChunks: [] })
   })
 
   it('rejects a rectangle outside the world', () => {
