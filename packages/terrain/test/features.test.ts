@@ -143,4 +143,4 @@ describe('stampFeatures', () => {
   })
 })
 
-const GOLDEN = 84444143
+const GOLDEN = 2694289451

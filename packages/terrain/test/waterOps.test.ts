@@ -41,13 +41,13 @@ describe('river', () => {
     expect(edge.h).toBe(24) // level - 1 at the channel edge: one block of water
     expect(edge.water).toBe(25)
     const bank = run(river, def, 50, 8)
-    expect(bank.h).toBe(26) // 4 blocks out at slope 0.5
+    expect(bank.h).toBe(27) // the bank starts at the water level, then climbs 4 blocks at slope 0.5
     expect(bank.water).toBe(-1)
     expect(bank.wet).toBe(25)
   })
   it('fades the banks back into high ground instead of leaving a step', () => {
     const at = (z: number) => run(river, def, 50, z, 60).h
-    expect(at(8)).toBe(26) // inner half of the bank: full cut
+    expect(at(8)).toBe(27) // inner half of the bank: full cut
     expect(at(11.5)).toBeGreaterThan(at(10))
     expect(at(14)).toBe(60) // bank edge: back to the ground
     for (let z = 9; z < 14; z += 0.5) expect(at(z + 0.5) - at(z)).toBeLessThan(12) // no cliff
@@ -75,7 +75,7 @@ describe('lake', () => {
   })
   it('shapes a shore that rises outside the shape', () => {
     const shore = run(lake, def, 24, 0)
-    expect(shore.h).toBe(31)
+    expect(shore.h).toBe(32) // the shore starts at the water level
     expect(shore.water).toBe(-1)
     expect(shore.wet).toBe(30)
     expect(run(lake, def, 31, 0).wet).toBe(-Infinity)

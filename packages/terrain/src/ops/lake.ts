@@ -32,7 +32,7 @@ export const lake = defineTerrainOp({
         if (s.dist > shore) return
         const target = s.dist <= 0
           ? level - 1 - Math.min(depth, 1 + -s.dist * 0.5)
-          : level - 1 + s.dist * slope
+          : level + s.dist * slope
         const fade = s.dist <= shore * 0.5 ? 1 : smoothstep01((shore - s.dist) / (shore * 0.5))
         cell.h = blend(mode, cell.h, target, fade)
         if (s.dist <= 0 && level > cell.water) cell.water = level

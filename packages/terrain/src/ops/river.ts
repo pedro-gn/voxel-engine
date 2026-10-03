@@ -37,7 +37,7 @@ export const river = defineTerrainOp({
         const level = Math.floor(start + (end - start) * s.along)
         const target = d <= hw
           ? level - 1 - depth * Math.sqrt(1 - (d / hw) * (d / hw))
-          : level - 1 + (d - hw) * slope
+          : level + (d - hw) * slope
         const out = d - hw
         const fade = out <= bank * 0.5 ? 1 : smoothstep01((bank - out) / (bank * 0.5))
         cell.h = blend(mode, cell.h, target, fade)

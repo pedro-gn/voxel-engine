@@ -59,8 +59,32 @@ describe('generateRegion: height, water and surface', () => {
     const mid = column(get, 10, 16)
     expect(mid[18]).toBe(WATER)
     expect(mid[19]).toBe(0)
-    expect(column(get, 10, 20)[18]).toBe(IDS.sand) // bank, 1 block above water level - 1
+    expect(column(get, 10, 20).slice(18, 21)).toEqual([IDS.sand, IDS.sand, 0]) // bank top is at the water level (19), no wall beside the water
     expect(column(get, 10, 30)[19]).toBe(IDS.grass) // far from the river
+  })
+
+  it('leaves no water wall: water never has air beside it at the same height', () => {
+    const cases = {
+      river: { id: 'r', type: 'river', shape: { kind: 'path', width: 6, points: [{ x: 4, z: 16 }, { x: 60, z: 16 }] }, params: { start: 19, end: 19, depth: 2, bank: 8, bankSlope: 0.5 } },
+      lake: { id: 'l', type: 'lake', shape: { kind: 'circle', center: [32, 32], radius: 14 }, params: { level: 19, depth: 4, shore: 10, shoreSlope: 0.5 } },
+    }
+    for (const [name, op] of Object.entries(cases)) {
+      const w = 64, d = 64
+      const out = new Uint16Array(w * d * H)
+      generateRegion(compileDoc({ ...minimalDoc(), ops: [op] }), 0, 0, w, d, out, { features: false })
+      const at = (x: number, y: number, z: number) => out[x + z * w + y * w * d]!
+      let water = 0, walls = 0
+      for (let y = 0; y < H; y++) for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) {
+        if (at(x, y, z) !== WATER) continue
+        water++
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = x + dx, nz = z + dz
+          if (nx >= 0 && nx < w && nz >= 0 && nz < d && at(nx, y, nz) === 0) walls++
+        }
+      }
+      expect(water, name).toBeGreaterThan(0)
+      expect(walls, name).toBe(0)
+    }
   })
 
   it('carves volume ops through the ground and marks cave roofs as ceilings', () => {
