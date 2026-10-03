@@ -2,8 +2,16 @@ import { expandRect } from '../geom.ts'
 import { blend } from '../shapes/blend.ts'
 import { smoothstep01 } from '../shapes/profile.ts'
 import { compileShape, newSample } from '../shapes/shape.ts'
-import { checkParamNum, param } from './common.ts'
 import { defineTerrainOp } from './registry.ts'
+import { BELOW_TOP, paramsOf, type ParamSchema } from './schema.ts'
+
+const PARAMS = {
+  start: { type: 'number', required: true, default: 0, min: 1, max: BELOW_TOP, anchor: 'ground' },
+  end: { type: 'number', required: true, default: -6, min: 1, max: BELOW_TOP, anchor: 'ground' },
+  depth: { type: 'number', default: 3, min: 0, range: [0, 12] },
+  bank: { type: 'number', default: 16, min: 0, range: [0, 64] },
+  bankSlope: { type: 'number', default: 0.5, gt: 0, step: 0.05, range: [0.05, 2] },
+} as const satisfies ParamSchema
 
 /**
  * A river along a path. The water level goes from `start` (first point) to `end` (last point) in
@@ -12,18 +20,10 @@ import { defineTerrainOp } from './registry.ts'
  * so the river cuts a valley through high ground without leaving a step. Default blend 'min'.
  */
 export const river = defineTerrainOp({
-  type: 'river', kind: 'height', defaultBlend: 'min', shapes: ['path'],
-  validate(c, path, def, ctx) {
-    checkParamNum(c, path, def, 'start', { min: 1, max: ctx.height - 1 })
-    checkParamNum(c, path, def, 'end', { min: 1, max: ctx.height - 1 })
-    checkParamNum(c, path, def, 'depth', { min: 0, optional: true })
-    checkParamNum(c, path, def, 'bank', { min: 0, optional: true })
-    checkParamNum(c, path, def, 'bankSlope', { gt: 0, optional: true })
-  },
+  type: 'river', kind: 'height', defaultBlend: 'min', shapes: ['path'], falloff: false, params: PARAMS,
   compile(def) {
     const shape = compileShape(def.shape)
-    const start = param(def, 'start', 1), end = param(def, 'end', 1)
-    const depth = param(def, 'depth', 3), bank = param(def, 'bank', 16), slope = param(def, 'bankSlope', 0.5)
+    const { start, end, depth, bank, bankSlope: slope } = paramsOf(def, PARAMS)
     const mode = def.blend ?? 'min'
     const s = newSample()
     return {

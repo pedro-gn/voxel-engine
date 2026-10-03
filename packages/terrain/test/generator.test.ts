@@ -55,7 +55,7 @@ describe('terrainGenerator', () => {
   it('accepts custom ops', () => {
     const raise = defineTerrainOp({
       type: 'raise', kind: 'height', defaultBlend: 'add', shapes: ['circle'],
-      validate() {},
+      falloff: false, params: {},
       compile(def) { return { id: def.id, bounds: { x0: 0, z0: 0, x1: 63, z1: 63 }, apply(_x, _z, cell) { cell.h += 5 } } },
     })
     const gen = createTerrainGenerator({ ops: builtinOps.with(raise) })

@@ -2,8 +2,15 @@ import { expandRect } from '../geom.ts'
 import { blend } from '../shapes/blend.ts'
 import { smoothstep01 } from '../shapes/profile.ts'
 import { compileShape, newSample } from '../shapes/shape.ts'
-import { checkParamNum, param } from './common.ts'
 import { defineTerrainOp } from './registry.ts'
+import { BELOW_TOP, paramsOf, type ParamSchema } from './schema.ts'
+
+const PARAMS = {
+  level: { type: 'number', required: true, default: 0, min: 1, max: BELOW_TOP, anchor: 'ground' },
+  depth: { type: 'number', default: 6, min: 1, range: [1, 32] },
+  shore: { type: 'number', default: 16, min: 0, range: [0, 64] },
+  shoreSlope: { type: 'number', default: 0.4, gt: 0, step: 0.05, range: [0.05, 2] },
+} as const satisfies ParamSchema
 
 /**
  * A lake: a basin under water `level`. The floor drops half a block per block inward, down to
@@ -11,17 +18,12 @@ import { defineTerrainOp } from './registry.ts'
  * into the ground over the outer half of `shore`. Default blend 'min'.
  */
 export const lake = defineTerrainOp({
-  type: 'lake', kind: 'height', defaultBlend: 'min', shapes: ['circle', 'polygon'],
-  validate(c, path, def, ctx) {
-    checkParamNum(c, path, def, 'level', { min: 1, max: ctx.height - 1 })
-    checkParamNum(c, path, def, 'depth', { min: 1, optional: true })
-    checkParamNum(c, path, def, 'shore', { min: 0, optional: true })
-    checkParamNum(c, path, def, 'shoreSlope', { gt: 0, optional: true })
-  },
+  type: 'lake', kind: 'height', defaultBlend: 'min', shapes: ['circle', 'polygon'], falloff: false, params: PARAMS,
   compile(def) {
     const shape = compileShape(def.shape)
-    const level = Math.floor(param(def, 'level', 1))
-    const depth = param(def, 'depth', 6), shore = param(def, 'shore', 16), slope = param(def, 'shoreSlope', 0.4)
+    const p = paramsOf(def, PARAMS)
+    const level = Math.floor(p.level)
+    const { depth, shore, shoreSlope: slope } = p
     const mode = def.blend ?? 'min'
     const s = newSample()
     return {

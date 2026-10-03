@@ -1,6 +1,7 @@
 import type { Check } from '../doc/check.ts'
 import type { BlendMode, OpDef, ShapeKind } from '../doc/types.ts'
 import type { Box, Rect } from '../geom.ts'
+import { checkParams, type ParamSchema } from './schema.ts'
 
 /** The 2D state of one column while height ops run. */
 export interface Cell {
@@ -51,7 +52,11 @@ interface OpImplBase {
   readonly shapes: readonly ShapeKind[]
   /** Requires y on every path point (volume ops along paths). */
   readonly needY?: boolean
-  /** Validates `def.params` (shape and common fields are already valid). */
+  /** The op's params. Validation, defaults (paramsOf) and the editor's inspector all read it. */
+  readonly params: ParamSchema
+  /** True if the op reads `shape.falloff`; a falloff > 0 on any other op is an error. */
+  readonly falloff: boolean
+  /** Validates the falloff and `def.params` (shape and common fields are already valid). Built by defineTerrainOp. */
   validate(c: Check, path: string, def: OpDef, ctx: ValidateContext): void
 }
 export interface HeightOpImpl extends OpImplBase {
@@ -65,10 +70,28 @@ export interface VolumeOpImpl extends OpImplBase {
 }
 export type OpImpl = HeightOpImpl | VolumeOpImpl
 
-/** Identity helper that types a custom op. Register it with `builtinOps.with(myOp)`. */
-export function defineTerrainOp(impl: HeightOpImpl): HeightOpImpl
-export function defineTerrainOp(impl: VolumeOpImpl): VolumeOpImpl
-export function defineTerrainOp(impl: OpImpl): OpImpl { return impl }
+type Spec<T extends OpImpl> = Omit<T, 'validate'> & {
+  /** Rules the schema cannot express (an arch takes exactly 2 points). Runs before the params are checked. */
+  check?(c: Check, path: string, def: OpDef, ctx: ValidateContext): void
+}
+export type HeightOpSpec = Spec<HeightOpImpl>
+export type VolumeOpSpec = Spec<VolumeOpImpl>
+
+/** Builds an op from its spec; `validate` comes from `falloff`, `check` and `params`. Register it with `builtinOps.with(myOp)`. */
+export function defineTerrainOp(spec: HeightOpSpec): HeightOpImpl
+export function defineTerrainOp(spec: VolumeOpSpec): VolumeOpImpl
+export function defineTerrainOp(spec: HeightOpSpec | VolumeOpSpec): OpImpl {
+  const { check, ...impl } = spec
+  return {
+    ...impl,
+    validate(c, path, def, ctx) {
+      const f = def.shape.falloff
+      if (!impl.falloff && f !== undefined && f > 0) c.fail(`${path}.shape.falloff`, `${impl.type} does not use a falloff`)
+      check?.(c, path, def, ctx)
+      checkParams(c, path, def, impl.params, ctx)
+    },
+  } as OpImpl
+}
 
 export class OpRegistry {
   private readonly byType = new Map<string, OpImpl>()

@@ -2,14 +2,23 @@ export { createTerrainGenerator, terrainGenerator, type TerrainGeneratorOptions 
 export { TERRAIN_FORMAT, TERRAIN_VERSION, TerrainDocError, validateTerrainDoc, type ValidateOptions, type ValidateResult } from './doc/validate.ts'
 export type {
   BaseDef, BiomeDef, BiomeRule, BiomeRuleEntry, BlendMode, BlockNames, BrickRef, BrickSetRef, OpDef, PathPoint,
-  RasterRef, ShapeDef, SurfaceRule, TerrainDoc, TerrainLayers, TreeKind, Vec2,
+  RasterRef, ShapeDef, ShapeKind, SurfaceRule, TerrainDoc, TerrainLayers, TreeKind, Vec2,
 } from './doc/types.ts'
+export { BLEND_MODES } from './doc/types.ts'
+export { NOISE_TYPES } from './noise/def.ts'
+export { FEATURE_REACH } from './features/place.ts'
+export type { Rect } from './geom.ts'
 export { Check, checkNoise } from './doc/check.ts'
 export { BUILTIN_OPS, builtinOps } from './ops/builtin.ts'
 export {
   OpRegistry, defineTerrainOp,
-  type Cell, type CompileContext, type HeightOp, type HeightOpImpl, type OpImpl, type ValidateContext, type VolumeOp, type VolumeOpImpl,
+  type Cell, type CompileContext, type HeightOp, type HeightOpImpl, type HeightOpSpec, type OpImpl, type ValidateContext,
+  type VolumeOp, type VolumeOpImpl, type VolumeOpSpec,
 } from './ops/registry.ts'
+export {
+  BELOW_TOP, WORLD_TOP, checkParams, paramsOf, resolveBound,
+  type BiomeParam, type BoolParam, type Bound, type EnumParam, type NoiseParam, type NumberParam, type ParamSchema, type ParamSpec, type ParamValues,
+} from './ops/schema.ts'
 export { compileShape, newSample, weight, type Shape, type ShapeSample } from './shapes/shape.ts'
 export { PROFILES, profile, smoothstep01, type Profile } from './shapes/profile.ts'
 export { blend } from './shapes/blend.ts'

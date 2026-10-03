@@ -116,7 +116,7 @@ describe('generateRegion: height, water and surface', () => {
   it('names the op when it throws, with the columns it was working on', () => {
     const boom = defineTerrainOp({
       type: 'boom', kind: 'height', defaultBlend: 'add', shapes: ['circle'],
-      validate() {},
+      falloff: false, params: {},
       compile(def) { return { id: def.id, bounds: { x0: 0, z0: 0, x1: 100, z1: 100 }, apply() { throw new Error('kaboom') } } },
     })
     const ops = builtinOps.with(boom)

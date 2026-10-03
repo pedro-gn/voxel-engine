@@ -1,26 +1,27 @@
+import { makeNoise2 } from '../noise/def.ts'
 import { blend } from '../shapes/blend.ts'
-import { profile } from '../shapes/profile.ts'
+import { PROFILES, profile } from '../shapes/profile.ts'
 import { compileShape, newSample } from '../shapes/shape.ts'
-import { checkParamNoise, checkParamNum, checkParamProfile, noise2Of, param, paramStr, type Profile } from './common.ts'
 import { defineTerrainOp } from './registry.ts'
+import { paramsOf, type ParamSchema } from './schema.ts'
+
+const PARAMS = {
+  depth: { type: 'number', required: true, default: 12, min: 0, range: [0, 64] },
+  noiseAmount: { type: 'number', default: 0, min: 0, range: [0, 16] },
+  profile: { type: 'enum', values: PROFILES, default: 'round' },
+  noise: { type: 'noise', default: { scale: 32, octaves: 3 } },
+} as const satisfies ParamSchema
 
 /**
  * Cuts a valley (profile 'round' = U, 'linear' = V) or a canyon (profile 'box') along a path or in
  * an area: value = profile(edge) * (depth + noiseAmount * (2 * noise - 1)). Default blend 'carve'.
  */
 export const valley = defineTerrainOp({
-  type: 'valley', kind: 'height', defaultBlend: 'carve', shapes: ['path', 'circle', 'polygon'],
-  validate(c, path, def) {
-    checkParamNum(c, path, def, 'depth', { min: 0 })
-    checkParamNum(c, path, def, 'noiseAmount', { min: 0, optional: true })
-    checkParamProfile(c, path, def)
-    checkParamNoise(c, path, def)
-  },
+  type: 'valley', kind: 'height', defaultBlend: 'carve', shapes: ['path', 'circle', 'polygon'], falloff: false, params: PARAMS,
   compile(def, ctx) {
     const shape = compileShape(def.shape)
-    const depth = param(def, 'depth', 0), amount = param(def, 'noiseAmount', 0)
-    const prof = paramStr<Profile>(def, 'profile', 'round')
-    const noise = noise2Of(def, 'noise', { scale: 32, octaves: 3 }, ctx.seed)
+    const p = paramsOf(def, PARAMS)
+    const noise = makeNoise2(p.noise, ctx.seed)
     const mode = def.blend ?? 'carve'
     const s = newSample()
     return {
@@ -29,7 +30,7 @@ export const valley = defineTerrainOp({
       apply(x, z, cell) {
         shape.sample(x, z, s)
         if (s.edge >= 1) return
-        const v = profile(prof, s.edge) * (depth + (amount > 0 ? amount * (noise(x, z) * 2 - 1) : 0))
+        const v = profile(p.profile, s.edge) * (p.depth + (p.noiseAmount > 0 ? p.noiseAmount * (noise(x, z) * 2 - 1) : 0))
         cell.h = blend(mode, cell.h, v, 1)
       },
     }

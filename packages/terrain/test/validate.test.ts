@@ -6,8 +6,8 @@ import { minimalDoc } from './fixtures.ts'
 
 /** A custom op, which also proves custom ops plug into validation. */
 const bump = defineTerrainOp({
-  type: 'bump', kind: 'height', defaultBlend: 'add', shapes: ['circle'],
-  validate(c, path, def) { c.num(`${path}.params.height`, def.params.height, { min: 0 }) },
+  type: 'bump', kind: 'height', defaultBlend: 'add', shapes: ['circle'], falloff: false,
+  params: { height: { type: 'number', required: true, default: 0, min: 0 } },
   compile(def) { return { id: def.id, bounds: { x0: 0, z0: 0, x1: 0, z1: 0 }, apply() {} } },
 })
 const ops = new OpRegistry([bump])
