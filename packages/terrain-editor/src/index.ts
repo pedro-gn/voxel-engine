@@ -6,3 +6,5 @@ export { EditorSession, type Cause, type ChangeEvent, type EditResult, type Sess
 export { PreviewScheduler, type PreviewOptions, type PreviewStatus, type TerrainTarget } from './core/preview.ts'
 export { parseTerrainText, serializeTerrain, type ParseResult } from './core/docio.ts'
 export { TerrainFiles, browserFallback, type FileFallback, type FileHandle, type FileHost, type OpenedFile } from './ui/files.ts'
+export { createTerrainEditor, type TerrainEditor, type TerrainEditorOptions } from './ui/editor.ts'
+export type { Handle, HandleKind } from './ui/handles/geometry.ts'
