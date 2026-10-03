@@ -59,7 +59,7 @@ describe('brushes keep the document valid', () => {
     const s = sampler()
     let d = doc()
     for (let step = 0; step < 150; step++) {
-      const settings = { radius: 1 + rand() * 30, strength: rand(), falloff: rand() }
+      const settings = { radius: 2 + rand() * 62, strength: rand(), falloff: rand() }
       const x = -20 + rand() * (SIZE[0] + 40), z = -20 + rand() * (SIZE[1] + 40), y = -10 + rand() * (HEIGHT + 20)
       const invert = rand() < 0.5
       let layers: TerrainLayers
@@ -73,6 +73,9 @@ describe('brushes keep the document valid', () => {
       }
       d = { ...d, layers }
     }
+    expect(d.layers.height).toBeDefined() // the sequence exercised every layer
+    expect(d.layers.biome).toBeDefined()
+    expect(d.layers.density).toBeDefined()
     const r = validateTerrainDoc(d, { worldHeight: HEIGHT })
     expect(r.ok ? [] : r.errors).toEqual([])
     expect(r.ok && r.doc.layers).toEqual(d.layers) // already sorted, with no all-zero tile

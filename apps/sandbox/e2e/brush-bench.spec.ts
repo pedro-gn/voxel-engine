@@ -19,8 +19,10 @@ test('brush stroke: request → visible mesh per update, radius 16, before and a
     b.setTool('raise')
     b.setSettings({ radius: 16, strength: 0.3, falloff: 0.5 })
     const settled = async (prev: unknown) => {
+      const start = performance.now()
       for (;;) {
         await new Promise((r) => requestAnimationFrame(r))
+        if (performance.now() - start > 60_000) throw new Error(`no update became visible within 60 s; last status: ${JSON.stringify(ed.preview.status)}`)
         const s = ed.preview.status
         if (s.state === 'idle' && s.last && s.last !== prev && s.last.meshFrames !== undefined) return s.last
       }

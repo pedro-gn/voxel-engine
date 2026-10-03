@@ -163,6 +163,13 @@ test('terrain editor brushes paint height and biome live, and undo back to the o
     return out
   })
   const original = await heights()
+  /** The top solid block of a column: its height and block id. */
+  const top = (x: number, z: number) => page.evaluate(([cx, cz]) => {
+    const e = (window as W).__elovox!.engine
+    let y = 127
+    while (y > 0 && e.world.get(cx!, y, cz!) === 0) y--
+    return { y, id: e.world.get(cx!, y, cz!) }
+  }, [x, z] as const)
 
   await page.locator('#editor-mode-height').click()
   await expect(page.locator('#editor-brush')).toBeVisible()
@@ -177,6 +184,7 @@ test('terrain editor brushes paint height and biome live, and undo back to the o
   await idle()
 
   // A strong stroke through the API, back and forth along z = 128.
+  const columnBefore = await top(128, 128)
   await page.evaluate(() => {
     const b = (window as W).__elovox!.editor!.brushes
     b.setTool('raise')
@@ -187,8 +195,10 @@ test('terrain editor brushes paint height and biome live, and undo back to the o
   })
   await idle()
   expect(await heights()).not.toEqual(original)
+  expect((await top(128, 128)).y).toBeGreaterThan(columnBefore.y) // the column under the stroke rose
 
   await page.locator('#editor-mode-biome').click()
+  const paintedBefore = await top(75, 60)
   await page.evaluate(() => {
     const b = (window as W).__elovox!.editor!.brushes
     b.setBiome(2)
@@ -197,6 +207,7 @@ test('terrain editor brushes paint height and biome live, and undo back to the o
   })
   await idle()
   expect(await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.layers.biome !== undefined)).toBe(true)
+  expect((await top(75, 60)).id).not.toBe(paintedBefore.id) // a column inside the painted cells got the other biome's surface
 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
   for (let i = 0; i < 3; i++) await page.keyboard.press('Control+z') // biome, API stroke, pointer stroke

@@ -62,7 +62,7 @@ export class SimHost {
   private pool: GenPool | null = null
   private blocks: BlockDef[] = []
   private seed = 0
-  /** The generator's current document (undefined: none). */
+  /** The last full document the generator was configured with (undefined: none). Patches do not update it, so it goes stale; it is used only for the initial pooled generation. */
   private terrain: unknown = undefined
   private readonly regenQueue: RegenRequest[] = []
   /** The regeneration running on the pool, if any. */
