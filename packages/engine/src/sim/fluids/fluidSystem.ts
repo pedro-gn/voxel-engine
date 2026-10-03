@@ -5,7 +5,7 @@ import type { Layout } from '../../world/layout.ts'
 import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
 import { JobReader, type JobRunner } from '../jobs.ts'
 import { ActiveQueue } from './activeQueue.ts'
-import { FULL, flowGroup, liquidVoxel, volumeOf } from './cell.ts'
+import { FULL, SPRING_RATES, flowGroup, liquidVoxel, volumeOf } from './cell.ts'
 import { ChunkBits } from './chunkBits.ts'
 import { ContactTable } from './contacts.ts'
 import { PoolTable, type Pool } from './pools.ts'
@@ -616,6 +616,122 @@ export class FluidSystem {
     }
   }
 
+  // ---- contacts ----
+
+  protected ownedBy(pos: number, p: Pool): boolean {
+    const [x, y, z] = this.layout.voxelCoords(pos)
+    return this.members.has(x, y, z) && this.pools.ownerOf(x, y, z) === p
+  }
+
+  /**
+   * Touching pools trade water from the higher to the lower by exact heights,
+   * H = (surfaceY·8 + level)·area + balance, at most outletRate per live face. Equal pools on one layer merge.
+   */
+  protected runContacts(): void {
+    for (const c of this.contacts.all()) {
+      const a = this.pools.get(c.a), b = this.pools.get(c.b)
+      if (!a || !b || a === b) { this.contacts.delete(c); continue }
+      if (a.frozen || b.frozen || a.area === 0 || b.area === 0) continue
+      let faces = 0
+      for (const [fa, fb] of c.faces) if (this.ownedBy(fa, a) && this.ownedBy(fb, b)) faces++
+      if (faces === 0) { this.contacts.delete(c); continue }
+      const ha = (a.surfaceY * 8 + a.level) * a.area + a.balance
+      const hb = (b.surfaceY * 8 + b.level) * b.area + b.balance
+      const d = ha * b.area - hb * a.area
+      const [hi, lo] = d >= 0 ? [a, b] : [b, a]
+      const tMax = Math.floor(Math.abs(d) / (a.area + b.area))
+      if (tMax === 0) {
+        if (a.surfaceY === b.surfaceY) this.merge(a, b)
+        continue
+      }
+      let t = Math.min(tMax, this.o.outletRate * faces, hi.grid + hi.balance)
+      if (lo.sealed) t = Math.min(t, lo.area - 1 - lo.balance)
+      if (t <= 0) continue
+      hi.balance -= t
+      lo.balance += t
+    }
+  }
+
+  /** Folds the higher id into the lower; a resurface job evens the levels if they differed. */
+  protected merge(a: Pool, b: Pool): void {
+    const [into, from] = a.id < b.id ? [a, b] : [b, a]
+    const level = into.area >= from.area ? into.level : from.level
+    const relevel = into.level !== from.level
+    this.pools.merge(into, from)
+    into.level = level
+    if (into.cycle) this.cycleId = into.id
+    if (relevel) this.resurface(into)
+  }
+
+  // ---- springs ----
+
+  /**
+   * Each spring pushes its rate into the cells below and beside it (air, moving water, or another pool's
+   * balance), at most FULL per cell. In a world with a sea, what it gives is debited from the sea, so total
+   * volume never changes; once that sea is gone, springs give nothing.
+   */
+  protected runSprings(): void {
+    const cycle = this.cycle
+    for (const s of [...this.springs]) {
+      const [x, y, z] = this.layout.voxelCoords(s)
+      const v = this.port.get(x, y, z)
+      if (this.reg.source[voxelId(v)] !== 1) { this.springs.delete(s); continue }
+      const g = this.reg.liquidGroup[voxelId(v)]!
+      let left = SPRING_RATES[voxelState(v)]!
+      if (this.hadCycle) left = cycle ? Math.min(left, Math.max(0, cycle.grid + cycle.balance)) : 0
+      let given = 0
+      const start = (this.steps + s) & 3
+      const order: [number, number, number][] = [[0, -1, 0]]
+      for (let i = 0; i < 4; i++) { const [dx, dz] = SIDES[(start + i) & 3]!; order.push([dx, 0, dz]) }
+      for (const [dx, dy, dz] of order) {
+        if (left <= 0) break
+        const nx = x + dx, ny = y + dy, nz = z + dz
+        if (!this.inside(nx, ny, nz)) continue
+        if (this.members.has(nx, ny, nz)) {
+          const q = this.pools.ownerOf(nx, ny, nz)
+          if (!q || q === cycle || q.liquid !== g) continue
+          const t = Math.min(left, FULL)
+          if (!this.accepts(q, t)) continue
+          q.balance += t
+          left -= t
+          given += t
+          continue
+        }
+        const nv = this.port.get(nx, ny, nz)
+        if (nv === AIR) {
+          const t = Math.min(left, FULL)
+          this.port.write(nx, ny, nz, liquidVoxel(g, t))
+          left -= t
+          given += t
+        } else if (flowGroup(this.reg, nv) === g) {
+          const have = volumeOf(this.reg, nv)
+          const t = Math.min(left, FULL - have)
+          if (t > 0) {
+            this.port.write(nx, ny, nz, liquidVoxel(g, have + t))
+            left -= t
+            given += t
+          }
+        }
+      }
+      if (cycle && given > 0) cycle.balance -= given
+    }
+  }
+
+  /** True while some contact would still move water or merge on the next step (tests use it to know when the world is at rest). */
+  contactsPending(): boolean {
+    for (const c of this.contacts.all()) {
+      const a = this.pools.get(c.a), b = this.pools.get(c.b)
+      if (!a || !b || a === b) continue
+      if (a.frozen || b.frozen || a.area === 0 || b.area === 0) continue
+      const ha = (a.surfaceY * 8 + a.level) * a.area + a.balance
+      const hb = (b.surfaceY * 8 + b.level) * b.area + b.balance
+      const d = ha * b.area - hb * a.area
+      if (Math.floor(Math.abs(d) / (a.area + b.area)) > 0) return true
+      if (a.surfaceY === b.surfaceY) return true
+    }
+    return false
+  }
+
   /** Every pool-invariant violation (design notes: Members and ownership). Whole-world: tests and debug builds only. */
   checkInvariants(): string[] {
     const out: string[] = []
@@ -749,7 +865,8 @@ export class FluidSystem {
     this.steps++
     this.flowCells()
     this.runOutlets()
-    // runContacts, runSprings (Task 8)
+    this.runContacts()
+    this.runSprings()
     this.queueResurfaces()
     this.queueSettles()
   }

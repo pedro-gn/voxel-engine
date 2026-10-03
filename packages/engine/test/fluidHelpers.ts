@@ -62,7 +62,7 @@ function resurfacePending(sim: Simulation): boolean {
 export function settle(sim: Simulation, max = 3000): number {
   for (let i = 0; i < max; i++) {
     sim.step()
-    if (sim.fluids.activeCount === 0 && sim.jobs.size === 0 && !resurfacePending(sim)) return i + 1
+    if (sim.fluids.activeCount === 0 && sim.jobs.size === 0 && !resurfacePending(sim) && !sim.fluids.contactsPending()) return i + 1
   }
   throw new Error(`fluids still moving after ${max} ticks (${sim.fluids.activeCount} active, ${sim.jobs.size} jobs)`)
 }
