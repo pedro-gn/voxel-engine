@@ -5,7 +5,7 @@ import type { Layout } from '../../world/layout.ts'
 import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
 import { JobReader, type JobRunner } from '../jobs.ts'
 import { ActiveQueue } from './activeQueue.ts'
-import { flowGroup, volumeOf } from './cell.ts'
+import { FULL, flowGroup, liquidVoxel, volumeOf } from './cell.ts'
 import { ChunkBits } from './chunkBits.ts'
 import { ContactTable } from './contacts.ts'
 import { PoolTable, type Pool } from './pools.ts'
@@ -41,6 +41,12 @@ export interface FluidPort {
 export const DX = [1, -1, 0, 0, 0, 0]
 export const DY = [0, 0, 1, -1, 0, 0]
 export const DZ = [0, 0, 0, 0, 1, -1]
+/** Fluid steps without change before a moving cell sleeps (and is offered to a settle scan). */
+export const SLEEP_STEPS = 4
+/** How far along a side a cell looks for a drop before it prefers that side. */
+export const DROP_REACH = 4
+/** +x, +z, −x, −z. */
+const SIDES: readonly (readonly [number, number])[] = [[1, 0], [0, 1], [-1, 0], [0, -1]]
 
 /** Water in the world: moving cells, still pools, springs (spec §4; design notes in the 3a plan). */
 export class FluidSystem {
@@ -65,6 +71,10 @@ export class FluidSystem {
   protected readonly port: FluidPort
   protected readonly reg: BlockRegistry
   protected readonly layout: Layout
+  private readonly pFrom: number[] = []
+  private readonly pTo: number[] = []
+  private readonly pAmt: number[] = []
+  private readonly pGroup: number[] = []
 
   constructor(port: FluidPort, o: Partial<FluidOptions> = {}) {
     this.port = port
@@ -95,11 +105,100 @@ export class FluidSystem {
   }
 
   /** After a voxel changed. `owner` is what beforeWrite returned. */
-  afterWrite(x: number, y: number, z: number, old: number, v: number, _source: WriteSource, _owner: number): void {
+  afterWrite(x: number, y: number, z: number, old: number, v: number, source: WriteSource, owner: number): void {
     const pos = this.layout.voxelIndex(x, y, z)
     if (this.reg.source[voxelId(old)] === 1) this.springs.delete(pos)
     if (this.reg.source[voxelId(v)] === 1) this.springs.add(pos)
+    if (source !== 'fluid') this.external(x, y, z, pos, old, v, owner)
+    if (v === AIR) this.openNear(x, y, z, pos)
     this.wakeAround(x, y, z)
+  }
+
+  /** A command, rule or landing body replaced a liquid cell: keep the pool's books, or push loose water aside. */
+  protected external(x: number, y: number, z: number, pos: number, old: number, v: number, owner: number): void {
+    if (owner === 0 && this.members.has(x, y, z)) {
+      // An orphaned member bit (no pool owns it) must not outlive its water.
+      this.members.delete(x, y, z)
+      this.pools.capped.delete(pos)
+    }
+    const g = flowGroup(this.reg, old)
+    if (g === 0) return
+    const units = volumeOf(this.reg, old)
+    const solid = this.reg.solid[voxelId(v)] === 1
+    const p = owner !== 0 ? this.pools.get(owner) : undefined
+    if (p) {
+      this.leave(p, x, y, z, pos, units)
+      // Displaced into the pool, unless that was its last surface cell: then the water goes up like loose water.
+      if (solid) {
+        if (p.area > 0) p.balance += units
+        else this.displace(x, y + 1, z, g, units)
+      }
+      return
+    }
+    if (solid) this.displace(x, y + 1, z, g, units)
+  }
+
+  /** A member cell was overwritten: it leaves its pool, and the member below now tops its column. */
+  protected leave(p: Pool, x: number, y: number, z: number, pos: number, units: number): void {
+    this.members.delete(x, y, z)
+    p.grid -= units
+    if (y === p.surfaceY && this.pools.resolve(this.index.get(x, y, z)) === p.id) {
+      this.index.delete(x, y, z)
+      p.area--
+    }
+    if (this.pools.capped.delete(pos)) p.capped.delete(pos)
+    if (y > 0 && this.members.has(x, y - 1, z)) {
+      const below = this.layout.voxelIndex(x, y - 1, z)
+      this.pools.capped.set(below, p.id)
+      p.capped.add(below)
+    }
+  }
+
+  /** A cell became air: each pool touching it at y ≤ its surface gains an outlet there. */
+  protected openNear(x: number, y: number, z: number, pos: number): void {
+    for (let d = 0; d < 6; d++) {
+      const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
+      if (!this.members.has(nx, ny, nz)) continue
+      const p = this.pools.ownerOf(nx, ny, nz)
+      if (p && y <= p.surfaceY) p.outlets.add(pos)
+    }
+  }
+
+  /** Puts `units` of liquid g pushed out by a solid into the first room up the column (and its sides); the rest is lost. */
+  protected displace(x: number, y: number, z: number, g: number, units: number): void {
+    let left = units
+    const H = this.layout.size[1]
+    for (let k = 0; k < FULL && left > 0 && y + k < H; k++) {
+      const yy = y + k
+      left = this.pour(x, yy, z, g, left)
+      for (const [dx, dz] of SIDES) if (left > 0) left = this.pour(x + dx, yy, z + dz, g, left)
+      if (left > 0 && this.inside(x, yy, z) && this.reg.solid[voxelId(this.port.get(x, yy, z))] === 1) break // the column is closed above
+    }
+    if (left > 0) {
+      this.lost += left
+      this.port.log(`fluids: ${left} displaced units found no room above (${x}, ${y - 1}, ${z})`)
+    }
+  }
+
+  /** Adds up to `left` units of g at a cell (air, a moving cell of g, or a pool member of g); returns what is left. */
+  protected pour(x: number, y: number, z: number, g: number, left: number): number {
+    if (!this.inside(x, y, z)) return left
+    if (this.members.has(x, y, z)) {
+      const p = this.pools.ownerOf(x, y, z)
+      if (p && p.liquid === g && this.accepts(p, left)) { p.balance += left; return 0 }
+      return left
+    }
+    const v = this.port.get(x, y, z)
+    if (v === AIR) {
+      const t = Math.min(left, FULL)
+      this.port.write(x, y, z, liquidVoxel(g, t))
+      return left - t
+    }
+    if (flowGroup(this.reg, v) !== g) return left
+    const have = volumeOf(this.reg, v)
+    const t = Math.min(left, FULL - have)
+    if (t > 0) this.port.write(x, y, z, liquidVoxel(g, have + t))
+    return left - t
   }
 
   /** Activates a moving liquid cell (not a pool member) at (x, y, z), if any. */
@@ -115,14 +214,143 @@ export class FluidSystem {
     for (let d = 0; d < 6; d++) this.wake(x + DX[d]!, y + DY[d]!, z + DZ[d]!)
   }
 
+  inside(x: number, y: number, z: number): boolean {
+    const [sx, sy, sz] = this.layout.size
+    return x >= 0 && y >= 0 && z >= 0 && x < sx && y < sy && z < sz
+  }
+
+  /** A sealed pool takes water only while it stays below its next level. */
+  accepts(p: Pool, t: number): boolean {
+    return !p.sealed || p.balance + t < p.area
+  }
+
+  // ---- automaton ----
+
+  /** One step for up to fluidCap active cells: every cell proposes from the same snapshot, then proposals apply in order. */
+  protected flowCells(): void {
+    const cells = this.active.take(this.o.fluidCap)
+    this.pFrom.length = 0; this.pTo.length = 0; this.pAmt.length = 0; this.pGroup.length = 0
+    const keep: number[] = []
+    for (const pos of cells) {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      const v = this.port.get(x, y, z)
+      const g = flowGroup(this.reg, v)
+      if (g === 0 || this.members.has(x, y, z)) { this.active.drop(pos); continue }
+      this.propose(pos, x, y, z, g, volumeOf(this.reg, v))
+      keep.push(pos)
+    }
+    const touched = this.applyProposals()
+    for (const pos of keep) {
+      if (!this.active.has(pos)) continue
+      if (touched.has(pos)) { this.active.requeue(pos); continue }
+      if (this.active.rest(pos) >= SLEEP_STEPS) { this.active.drop(pos); this.settleQueue.add(pos) }
+      else this.active.requeue(pos)
+    }
+  }
+
+  /** Down first, then sideways by halving differences of 2 or more; sides that lead to a drop win. */
+  protected propose(pos: number, x: number, y: number, z: number, g: number, units: number): void {
+    let v = units
+    if (y > 0) {
+      const room = this.room(x, y - 1, z, g)
+      if (room > 0) {
+        const t = Math.min(v, room)
+        this.offer(pos, this.layout.voxelIndex(x, y - 1, z), t, g)
+        v -= t
+      }
+    }
+    if (v < 2) return
+    const start = (this.steps + pos) & 3
+    const cand: number[] = [], vols: number[] = [], drops: boolean[] = []
+    for (let i = 0; i < 4; i++) {
+      const s = (start + i) & 3
+      const [dx, dz] = SIDES[s]!
+      const vn = this.sideVolume(x + dx, y, z + dz, g)
+      if (vn < 0 || v - vn < 2) continue
+      cand.push(s); vols.push(vn); drops.push(this.leadsToDrop(x, y, z, dx, dz))
+    }
+    const anyDrop = drops.includes(true)
+    for (let k = 0; k < cand.length; k++) {
+      if (anyDrop && !drops[k]) continue
+      const t = (v - vols[k]!) >> 1
+      if (t <= 0) continue
+      const [dx, dz] = SIDES[cand[k]!]!
+      this.offer(pos, this.layout.voxelIndex(x + dx, y, z + dz), t, g)
+      v -= t
+    }
+  }
+
+  private offer(from: number, to: number, amount: number, g: number): void {
+    this.pFrom.push(from); this.pTo.push(to); this.pAmt.push(amount); this.pGroup.push(g)
+  }
+
+  /** Room for liquid g: air takes FULL, a moving cell of g what it lacks; members, solids and other liquids none. */
+  protected room(x: number, y: number, z: number, g: number): number {
+    if (!this.inside(x, y, z) || this.members.has(x, y, z)) return 0
+    const v = this.port.get(x, y, z)
+    if (v === AIR) return FULL
+    return flowGroup(this.reg, v) === g ? FULL - volumeOf(this.reg, v) : 0
+  }
+
+  /** A side's current units (air = 0), or −1 when water cannot go there. */
+  protected sideVolume(x: number, y: number, z: number, g: number): number {
+    if (!this.inside(x, y, z) || this.members.has(x, y, z)) return -1
+    const v = this.port.get(x, y, z)
+    if (v === AIR) return 0
+    return flowGroup(this.reg, v) === g ? volumeOf(this.reg, v) : -1
+  }
+
+  /** True if walking up to DROP_REACH cells of air along (dx, dz) reaches a cell with air below. */
+  protected leadsToDrop(x: number, y: number, z: number, dx: number, dz: number): boolean {
+    if (y === 0) return false
+    for (let k = 1; k <= DROP_REACH; k++) {
+      const nx = x + dx * k, nz = z + dz * k
+      if (!this.inside(nx, y, nz) || this.port.get(nx, y, nz) !== AIR) return false
+      if (this.port.get(nx, y - 1, nz) === AIR) return true
+    }
+    return false
+  }
+
+  /** Applies proposals in order, capped by what the sender still has and the receiver's room; writes each changed cell once. */
+  protected applyProposals(): Set<number> {
+    const delta = new Map<number, number>()
+    const group = new Map<number, number>()
+    const units = (pos: number): number => {
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      return volumeOf(this.reg, this.port.get(x, y, z)) + (delta.get(pos) ?? 0)
+    }
+    for (let k = 0; k < this.pFrom.length; k++) {
+      const f = this.pFrom[k]!, t = this.pTo[k]!, g = this.pGroup[k]!
+      const [tx, ty, tz] = this.layout.voxelCoords(t)
+      if (this.members.has(tx, ty, tz)) continue
+      const tv = this.port.get(tx, ty, tz)
+      if (tv !== AIR && flowGroup(this.reg, tv) !== g) continue
+      const a = Math.min(this.pAmt[k]!, units(f), FULL - units(t))
+      if (a <= 0) continue
+      delta.set(f, (delta.get(f) ?? 0) - a)
+      delta.set(t, (delta.get(t) ?? 0) + a)
+      group.set(f, g)
+      group.set(t, g)
+    }
+    const touched = new Set<number>()
+    for (const [pos, d] of delta) {
+      if (d === 0) continue
+      const [x, y, z] = this.layout.voxelCoords(pos)
+      this.port.write(x, y, z, liquidVoxel(group.get(pos)!, volumeOf(this.reg, this.port.get(x, y, z)) + d))
+      touched.add(pos)
+    }
+    return touched
+  }
+
   // ---- step ----
 
   step(tick: number): void {
     if (this.needsRebuild) this.rebuild()
     if (tick % this.o.fluidEvery !== 0) return
     this.steps++
-    // Fluid-step phases (Tasks 5–8 add them here, in this order):
-    // flowCells, runOutlets, runContacts, runSprings, queueResurfaces, queueSettles
+    this.flowCells()
+    // Fluid-step phases added by Tasks 6–8, in this order:
+    // runOutlets, runContacts, runSprings, queueResurfaces, queueSettles
   }
 
   // ---- rebuild ----
@@ -237,5 +465,3 @@ export class FluidSystem {
     mix(this.settleQueue.size)
   }
 }
-
-export { AIR, volumeOf }

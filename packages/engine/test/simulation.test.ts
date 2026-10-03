@@ -272,10 +272,13 @@ describe('rule context reads and write trimming', () => {
   })
   it('does not relight when only a block state changes', () => {
     const sim = makeSim()
-    sim.submit(1, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.water })
+    // Walled in below and on the sides, so the water automaton leaves the cell alone.
+    const walls = [[5, 4, 5], [4, 5, 5], [6, 5, 5], [5, 5, 4], [5, 5, 6]] as const
+    walls.forEach(([x, y, z], i) => sim.submit(1, i, { type: 'setBlock', pos: [x, y, z], voxel: ID.stone }))
+    sim.submit(1, 5, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.water })
     sim.step()
     const spy = vi.spyOn(sim.light, 'onVoxelChanged')
-    sim.submit(1, 1, { type: 'setBlock', pos: [5, 5, 5], voxel: (3 << 12) | ID.water })
+    sim.submit(1, 6, { type: 'setBlock', pos: [5, 5, 5], voxel: (3 << 12) | ID.water })
     sim.step()
     expect(spy).not.toHaveBeenCalled()
     expect(sim.store.getVoxel(5, 5, 5)).toBe((3 << 12) | ID.water)
