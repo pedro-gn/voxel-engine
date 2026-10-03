@@ -68,9 +68,20 @@ describe('blob', () => {
   it('wobbles with noise and pads its bounds by the wobble', () => {
     const w = compile(blob, { id: 'b', shape: { kind: 'circle', center: [100, 100], radius: 10 }, params: { y: 90, height: 4, mode: 'carve' } })
     expect(w.mode).toBe('carve')
-    expect(w.bounds.x0).toBe(88)
+    expect(w.bounds.x0).toBe(85) // wobble 2 * r 10 / min(r, height) 4 = 5
     let differs = false
     for (let i = 0; i < 10; i++) if (w.density(95 + i, 90, 100) !== op.density(95 + i, 90, 100)) differs = true
     expect(differs).toBe(true)
+  })
+  it('keeps every solid voxel of a flat, wobbly blob inside its bounds', () => {
+    const f = compile(blob, { id: 'b', shape: { kind: 'circle', center: [100, 100], radius: 20 }, params: { y: 90, height: 2, wobble: 6 } })
+    const b = f.bounds
+    let solid = 0
+    for (let y = 70; y <= 110; y += 0.5) for (let z = 60; z <= 140; z += 0.5) for (let x = 60; x <= 140; x += 0.5) {
+      if (f.density(x, y, z) <= 0) continue
+      solid++
+      if (x < b.x0 || x > b.x1 || y < b.y0 || y > b.y1 || z < b.z0 || z > b.z1) throw new Error(`solid at (${x}, ${y}, ${z}) is outside the bounds`)
+    }
+    expect(solid).toBeGreaterThan(0)
   })
 })

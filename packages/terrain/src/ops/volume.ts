@@ -13,14 +13,18 @@ function tubePoints(shape: PathShape, height: (width: number) => number): TubePo
   })
 }
 
-/** Wraps a tube or blob field with noise wobble into a VolumeOp. */
-function volumeOp(def: OpDef, ctx: CompileContext, bounds: Box, field: (x: number, y: number, z: number) => number, defaultMode: 'add' | 'carve', defaultWobble: number): VolumeOp {
+/**
+ * Wraps a tube or blob field with noise wobble into a VolumeOp. `reach` scales the bounds padding per
+ * axis for fields whose gradient is below 1 block per block (a flattened blob).
+ */
+function volumeOp(def: OpDef, ctx: CompileContext, bounds: Box, field: (x: number, y: number, z: number) => number, defaultMode: 'add' | 'carve', defaultWobble: number, reach = { xz: 1, y: 1 }): VolumeOp {
   const wobble = param(def, 'wobble', defaultWobble)
+  const padXZ = wobble * reach.xz, padY = wobble * reach.y
   const noise = noise3Of(def, 'noise', { scale: 12, octaves: 2 }, ctx.seed)
   const mode = paramStr(def, 'mode', defaultMode)
   return {
     id: def.id, mode,
-    bounds: { x0: bounds.x0 - wobble, x1: bounds.x1 + wobble, y0: bounds.y0 - wobble, y1: bounds.y1 + wobble, z0: bounds.z0 - wobble, z1: bounds.z1 + wobble },
+    bounds: { x0: bounds.x0 - padXZ, x1: bounds.x1 + padXZ, y0: bounds.y0 - padY, y1: bounds.y1 + padY, z0: bounds.z0 - padXZ, z1: bounds.z1 + padXZ },
     density: wobble > 0 ? (x, y, z) => field(x, y, z) + wobble * (noise(x, y, z) * 2 - 1) : field,
   }
 }
@@ -99,6 +103,6 @@ export const blob = defineTerrainOp({
       const q = Math.sqrt(((x - cx) / r) ** 2 + ((y - cy) / hy) ** 2 + ((z - cz) / r) ** 2)
       return (1 - q) * k
     }
-    return volumeOp(def, ctx, { x0: cx - r, x1: cx + r, y0: cy - hy, y1: cy + hy, z0: cz - r, z1: cz + r }, field, 'add', 2)
+    return volumeOp(def, ctx, { x0: cx - r, x1: cx + r, y0: cy - hy, y1: cy + hy, z0: cz - r, z1: cz + r }, field, 'add', 2, { xz: r / k, y: hy / k })
   },
 })
