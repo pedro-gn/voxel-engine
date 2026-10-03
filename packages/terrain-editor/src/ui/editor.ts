@@ -121,7 +121,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     return r.ok
   }
   const run = (label: string, edit: Edit): boolean => {
-    if (session.inGesture) session.commit()
+    finishGesture()
     return report(session.apply(label, edit))
   }
   const selectedDef = (): OpDef | null => session.doc.ops.find((op) => op.id === session.selected) ?? null
@@ -202,13 +202,16 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   let click: ScreenPoint | null = null
 
   function startDrag(e: PointerEvent, def: OpDef, handle: Handle | 'body', pos: Vector3, mode: 'xz' | 'y', at: ScreenPoint): void {
+    // let a pending field change land, and settle any open gesture, before this one begins
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    if (session.inGesture) session.commit()
     const forward = new Vector3()
     camera.getWorldDirection(forward)
     const grab: DragPoint = mode === 'y'
       ? { x: pos.x, z: pos.z, y: pos.y - LIFT }
       : hitHorizontal(rayAt(camera, viewport(), at), pos.y) ?? { x: pos.x, z: pos.z }
-    drag = { handle, start: def, grab, mode, planeY: pos.y, normal: { x: forward.x, z: forward.z }, anchor: { x: pos.x, z: pos.z }, pointerId: e.pointerId }
     session.begin(handle === 'body' ? `move ${def.id}` : `${handle.kind} ${def.id}`)
+    drag = { handle, start: def, grab, mode, planeY: pos.y, normal: { x: forward.x, z: forward.z }, anchor: { x: pos.x, z: pos.z }, pointerId: e.pointerId }
     canvas.setPointerCapture(e.pointerId)
     e.preventDefault()
   }
@@ -219,8 +222,14 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     drag = null
   }
 
+  /** Ends a drag (if any) and commits whatever gesture is open. */
+  function finishGesture(): void {
+    endDrag()
+    if (session.inGesture) session.commit()
+  }
+
   const onDown = (e: PointerEvent) => {
-    if (e.button !== 0) return
+    if (e.button !== 0 || drag) return
     flushOverlay()
     const at = local(e)
     const def = selectedDef()
@@ -272,8 +281,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
 
   const onUp = (e: PointerEvent) => {
     if (drag && e.pointerId === drag.pointerId) {
-      endDrag()
-      session.commit()
+      finishGesture()
       return
     }
     if (e.button === 0 && click) {
@@ -286,7 +294,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
   canvas.addEventListener('pointerup', onUp)
-  const onLost = () => { if (drag) { endDrag(); session.commit() } }
+  const onLost = (e: PointerEvent) => { if (drag && e.pointerId === drag.pointerId) finishGesture() }
   canvas.addEventListener('lostpointercapture', onLost)
 
   // ---- keyboard
@@ -348,7 +356,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   async function save(as: boolean): Promise<void> {
-    if (session.inGesture) session.commit()
+    finishGesture()
     try {
       const r = await files.save(serializeTerrain(session.doc), as ? null : fileHandle, fileName)
       if (!r) return
