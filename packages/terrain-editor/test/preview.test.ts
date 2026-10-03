@@ -1,24 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import type { TerrainDoc } from '@elovox/terrain'
+import { HEIGHT_VALUES, type TerrainDoc, type TerrainPatch } from '@elovox/terrain'
 import type { AreaRect } from '../src/core/area.ts'
 import { setParam, setSeaLevel } from '../src/core/edits.ts'
 import { PreviewScheduler, type PreviewStatus, type TerrainTarget } from '../src/core/preview.ts'
 import type { ChangeEvent } from '../src/core/session.ts'
 import { SIZE, doc } from './fixtures.ts'
 
-type Call = ['set', TerrainDoc] | ['regen', AreaRect]
+type Call = ['set', TerrainDoc] | ['patch', TerrainPatch] | ['regen', AreaRect]
 
 function fake() {
   const calls: Call[] = []
   const waiting: { resolve: () => void; reject: (e: Error) => void }[] = []
+  /** Errors the next patch calls reject with, in order. */
+  const failPatch: Error[] = []
   const target: TerrainTarget = {
     setDocument(d) { calls.push(['set', d as TerrainDoc]); return Promise.resolve() },
+    patch(p) {
+      calls.push(['patch', p as TerrainPatch])
+      const e = failPatch.shift()
+      return e ? Promise.reject(e) : Promise.resolve()
+    },
     regenerate(rect) {
       calls.push(['regen', rect])
       return new Promise((res, rej) => waiting.push({ resolve: () => res({ ms: 5, chunks: 3 }), reject: rej }))
     },
   }
-  return { target, calls, waiting }
+  return { target, calls, waiting, failPatch }
 }
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const A: AreaRect = { x0: 0, z0: 0, x1: 32, z1: 32 }
@@ -175,5 +182,48 @@ describe('PreviewScheduler', () => {
     waiting[0]!.resolve()
     await tick()
     expect(calls.slice(2)).toEqual([['set', d2], ['regen', B]])
+  })
+})
+
+describe('PreviewScheduler with layers', () => {
+  const tile = (x = 0, v = 16) => ({ x, z: 0, values: new Int16Array(HEIGHT_VALUES).fill(v) })
+
+  it('patches the changed tiles when only the layers changed', async () => {
+    const { p, start, calls, waiting } = setup()
+    const t = tile()
+    const d1 = { ...start, layers: { height: { tiles: [t] } } }
+    p.onChange(ev(d1, A, 'gesture'))
+    await tick()
+    expect(calls).toEqual([['patch', { height: [{ x: 0, z: 0, values: t.values }] }], ['regen', A]])
+    waiting[0]!.resolve()
+    await p.idle()
+  })
+
+  it('sends the whole document, layers included, when anything else changed too', async () => {
+    const { p, start, calls, waiting } = setup()
+    const d1 = setParam('hill', 'amplitude', 3)({ ...start, layers: { height: { tiles: [tile()] } } })
+    p.onChange(ev(d1, A, 'edit'))
+    await tick()
+    expect(calls).toEqual([['set', d1], ['regen', A]])
+    expect(d1.layers.height).toBeDefined()
+    waiting[0]!.resolve()
+    await p.idle()
+  })
+
+  it('retries a refused patch with the next change, from what the engine really has', async () => {
+    const { p, start, calls, waiting, failPatch } = setup()
+    failPatch.push(new Error('invalid terrain patch'))
+    const t1 = tile(0), t2 = tile(1, 8)
+    p.onChange(ev({ ...start, layers: { height: { tiles: [t1] } } }, A, 'gesture'))
+    await p.idle()
+    expect(p.status).toMatchObject({ state: 'error', message: 'invalid terrain patch' })
+    p.onChange(ev({ ...start, layers: { height: { tiles: [t1, t2] } } }, B, 'gesture'))
+    await tick()
+    expect(calls.slice(-2)).toEqual([
+      ['patch', { height: [{ x: 0, z: 0, values: t1.values }, { x: 1, z: 0, values: t2.values }] }],
+      ['regen', { x0: 0, z0: 0, x1: 96, z1: 96 }],
+    ])
+    waiting[0]!.resolve()
+    await p.idle()
   })
 })

@@ -1,10 +1,12 @@
-import type { TerrainDoc, Vec2 } from '@elovox/terrain'
-import { unionArea, type Area, type AreaRect } from './area.ts'
+import { diffLayers, type TerrainDoc, type Vec2 } from '@elovox/terrain'
+import { onlyLayersDiffer, unionArea, type Area, type AreaRect } from './area.ts'
 import type { ChangeEvent } from './session.ts'
 
 /** What the preview drives; `engine.terrain` fits it. */
 export interface TerrainTarget {
   setDocument(doc: unknown): Promise<void>
+  /** Applies a layer patch (a TerrainPatch) to the document the engine has. */
+  patch(patch: unknown): Promise<void>
   regenerate(rect: AreaRect): Promise<{ ms: number; chunks: number }>
 }
 
@@ -107,7 +109,9 @@ export class PreviewScheduler {
       this.setStatus({ state: 'busy' })
       try {
         if (doc !== this.sent) {
-          await this.target.setDocument(doc)
+          // A brush stroke changes only the layers: send the changed tiles, not the whole document.
+          if (onlyLayersDiffer(doc, this.sent)) await this.target.patch(diffLayers(this.sent.layers, doc.layers))
+          else await this.target.setDocument(doc)
           this.sent = doc
         }
         const r = await this.target.regenerate(this.rectOf(area))
