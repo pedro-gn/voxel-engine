@@ -93,6 +93,66 @@ describe('BrushController', () => {
     expect(b.stroking).toBe(false)
   })
 
+  it('spaces 2D dabs by distance in x and z only, whatever the height under the aim', () => {
+    const { session, b } = setup()
+    b.setMode('height')
+    b.setSettings({ radius: 4, strength: 1, falloff: 0 })
+    b.begin({ x: 100.5, y: 31, z: 100.5 }, false)
+    const afterFirst = session.doc
+    b.move({ x: 100.5, y: 40, z: 100.5 }, false) // same column, 9 blocks higher: no dab
+    b.move({ x: 100.5, y: 20, z: 100.5 }, false)
+    expect(session.doc).toBe(afterFirst)
+    b.end()
+
+    // a climbing aim along x paints exactly what a level aim does
+    const tall = setup()
+    const level = setup()
+    for (const t of [tall, level]) { t.b.setMode('height'); t.b.setSettings({ radius: 4, strength: 1, falloff: 0 }) }
+    const along = (y: (i: number) => number): Point3[] => Array.from({ length: 9 }, (_, i) => ({ x: 100.5 + i, y: y(i), z: 100.5 }))
+    tall.b.strokeThrough(along((i) => 31 + i * 20))
+    level.b.strokeThrough(along(() => 31))
+    expect(tall.session.doc.layers).toEqual(level.session.doc.layers)
+  })
+
+  it('remembers radius, strength and falloff per tool', () => {
+    const { b } = setup()
+    b.setMode('height')
+    b.setSettings({ radius: 30 })
+    b.setTool('smooth')
+    expect(b.current!.settings.radius).toBe(12)
+    b.setSettings({ radius: 5, strength: 0.1 })
+    b.setTool('raise')
+    expect(b.current!.settings).toMatchObject({ radius: 30, strength: 0.5 })
+    b.setTool('smooth')
+    expect(b.current!.settings).toMatchObject({ radius: 5, strength: 0.1 })
+  })
+
+  it('leaves no gesture open when the sampler throws in begin or in a move', () => {
+    class Throwing extends TerrainSampler {
+      armed = true
+      override heights(...a: Parameters<TerrainSampler['heights']>): Float64Array {
+        if (this.armed) throw new Error('op failed')
+        return super.heights(...a)
+      }
+    }
+    const session = new EditorSession(flatDoc(), { worldHeight: HEIGHT })
+    const sampler = new Throwing({ seed: 1, height: HEIGHT })
+    const b = new BrushController(session, sampler)
+    b.setMode('height')
+    expect(() => b.begin({ x: 100, y: 0, z: 100 }, false)).toThrow('op failed')
+    expect(session.inGesture).toBe(false)
+    expect(b.stroking).toBe(false)
+
+    sampler.armed = false
+    b.begin({ x: 100, y: 0, z: 100 }, false)
+    expect(b.stroking).toBe(true)
+    sampler.armed = true
+    expect(() => b.move({ x: 120, y: 0, z: 100 }, false)).toThrow('op failed')
+    expect(session.inGesture).toBe(false)
+    expect(b.stroking).toBe(false)
+    expect(session.canUndo).toBe(false)
+  })
+
   it('clamps settings, ignores unknown tools, keeps the biome in range and reports changes', () => {
     const { b } = setup()
     let changes = 0

@@ -17,14 +17,24 @@ export const BRUSH_TOOLS: { readonly height: readonly HeightTool[]; readonly bio
 }
 
 export interface ToolState<T extends string> { tool: T; settings: BrushSettings }
-interface Tools { height: ToolState<HeightTool>; biome: ToolState<BiomeTool>; density: ToolState<DensityTool> }
+/** A brush's current tool, and the settings each of its tools remembers (spec section 5: settings are per tool). */
+interface Brush<T extends string> { tool: T; settings: Record<T, BrushSettings> }
+interface Tools { height: Brush<HeightTool>; biome: Brush<BiomeTool>; density: Brush<DensityTool> }
 
 function defaultTools(): Tools {
+  const height: BrushSettings = { radius: 12, strength: 0.5, falloff: 0.6 }
+  const biome: BrushSettings = { radius: 12, strength: 1, falloff: 0 }
+  const density: BrushSettings = { radius: 6, strength: 0.5, falloff: 0.5 }
   return {
-    height: { tool: 'raise', settings: { radius: 12, strength: 0.5, falloff: 0.6 } },
-    biome: { tool: 'paint', settings: { radius: 12, strength: 1, falloff: 0 } },
-    density: { tool: 'add', settings: { radius: 6, strength: 0.5, falloff: 0.5 } },
+    height: { tool: 'raise', settings: { raise: { ...height }, smooth: { ...height }, flatten: { ...height } } },
+    biome: { tool: 'paint', settings: { paint: { ...biome }, erase: { ...biome } } },
+    density: { tool: 'add', settings: { add: { ...density }, smooth: { ...density } } },
   }
+}
+
+/** The 2D brushes act on columns: their dabs are spaced by distance in x and z only. */
+function planar(mode: BrushMode, p: Point3): Point3 {
+  return mode === 'density' ? p : { x: p.x, y: 0, z: p.z }
 }
 
 /**
@@ -48,7 +58,10 @@ export class BrushController {
   get mode(): EditorMode { return this.modeValue }
   get stroking(): boolean { return this.stroke !== null }
   /** The current brush's tool and settings; null in ops mode. */
-  get current(): ToolState<string> | null { return this.modeValue === 'ops' ? null : this.tools[this.modeValue] }
+  get current(): ToolState<string> | null {
+    const m = this.modeValue
+    return m === 'ops' ? null : this.stateOf(m)
+  }
   /** The biome `paint` writes: k paints biomes[k - 1]. */
   get biome(): number { return this.biomeValue }
 
@@ -69,15 +82,15 @@ export class BrushController {
   setTool(tool: string): void {
     const m = this.modeValue
     if (m === 'ops' || !(BRUSH_TOOLS[m] as readonly string[]).includes(tool)) return
-    ;(this.tools[m] as ToolState<string>).tool = tool
+    ;(this.tools[m] as Brush<string>).tool = tool
     this.emit()
   }
 
   setSettings(s: Partial<BrushSettings>): void {
     const m = this.modeValue
     if (m === 'ops') return
-    const t = this.tools[m]
-    t.settings = clampSettings({ ...t.settings, ...s })
+    const t = this.stateOf(m)
+    ;(this.tools[m].settings as Record<string, BrushSettings>)[t.tool] = clampSettings({ ...t.settings, ...s })
     this.emit()
   }
 
@@ -88,25 +101,37 @@ export class BrushController {
 
   /** Starts a stroke at `p` (and dabs there). Does nothing in ops mode or while another gesture is open. */
   begin(p: Point3, invert: boolean): void {
-    if (this.modeValue === 'ops' || this.stroke || this.session.inGesture) return
-    const t = this.tools[this.modeValue]
-    this.session.begin(`${this.modeValue} ${t.tool}`)
-    const target = this.modeValue === 'height' ? heightAt(this.session.doc, this.sampler, p.x, p.z) : 0
+    const mode = this.modeValue
+    if (mode === 'ops' || this.stroke || this.session.inGesture) return
+    const t = this.stateOf(mode)
+    const q = planar(mode, p)
+    const target = mode === 'height' ? heightAt(this.session.doc, this.sampler, p.x, p.z) : 0 // can throw: before the gesture opens
+    this.session.begin(`${mode} ${t.tool}`)
     this.stroke = { spacer: new DabSpacer(dabSpacing(t.settings.radius)), target }
-    this.move(p, invert)
+    this.dabAlong(q, invert)
   }
 
   /** Continues the stroke to `p`. */
   move(p: Point3, invert: boolean): void {
-    const s = this.stroke
-    if (!s) return
+    if (!this.stroke) return
     if (!this.session.inGesture) { this.stroke = null; return } // Esc or Ctrl+Z cancelled the gesture
-    let doc = this.session.doc
-    for (const q of s.spacer.to(p)) {
-      const layers = this.dab(doc, q, invert, s.target)
-      if (layers !== doc.layers) doc = { ...doc, layers }
+    this.dabAlong(planar(this.modeValue as BrushMode, p), invert)
+  }
+
+  /** Places the dabs from the last point to `q`; if one throws, the stroke is abandoned and the error rethrown. */
+  private dabAlong(q: Point3, invert: boolean): void {
+    const s = this.stroke!
+    try {
+      let doc = this.session.doc
+      for (const d of s.spacer.to(q)) {
+        const layers = this.dab(doc, d, invert, s.target)
+        if (layers !== doc.layers) doc = { ...doc, layers }
+      }
+      if (doc !== this.session.doc) this.session.update(() => doc)
+    } catch (err) {
+      this.cancel()
+      throw err
     }
-    if (doc !== this.session.doc) this.session.update(() => doc)
   }
 
   /** Ends the stroke: one undo step. */
@@ -135,20 +160,25 @@ export class BrushController {
   private dab(doc: TerrainDoc, q: Point3, invert: boolean, target: number): TerrainLayers {
     switch (this.modeValue) {
       case 'height': {
-        const t = this.tools.height
-        return heightDab(doc, this.sampler, { tool: t.tool, x: q.x, z: q.z, settings: t.settings, invert, target })
+        const t = this.stateOf('height')
+        return heightDab(doc, this.sampler, { tool: t.tool as HeightTool, x: q.x, z: q.z, settings: t.settings, invert, target })
       }
       case 'biome': {
-        const t = this.tools.biome
+        const t = this.stateOf('biome')
         return biomeDab(doc, { x: q.x, z: q.z, radius: t.settings.radius, value: t.tool === 'erase' ? 0 : Math.min(this.biomeValue, doc.biomes.length) })
       }
       case 'density': {
-        const t = this.tools.density
-        return densityDab(doc, this.sampler, { tool: t.tool, x: q.x, y: q.y, z: q.z, settings: t.settings, invert })
+        const t = this.stateOf('density')
+        return densityDab(doc, this.sampler, { tool: t.tool as DensityTool, x: q.x, y: q.y, z: q.z, settings: t.settings, invert })
       }
       default:
         return doc.layers
     }
+  }
+
+  private stateOf(m: BrushMode): ToolState<string> {
+    const b = this.tools[m] as Brush<string>
+    return { tool: b.tool, settings: b.settings[b.tool]! }
   }
 
   private emit(): void { for (const fn of this.changeFns) fn() }
