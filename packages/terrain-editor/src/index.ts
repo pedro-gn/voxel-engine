@@ -4,3 +4,5 @@ export { AREA_PAD, diffArea, toArea, unionArea, type Area, type AreaOptions, typ
 export { History, type Step } from './core/history.ts'
 export { EditorSession, type Cause, type ChangeEvent, type EditResult, type SessionOptions } from './core/session.ts'
 export { PreviewScheduler, type PreviewOptions, type PreviewStatus, type TerrainTarget } from './core/preview.ts'
+export { parseTerrainText, serializeTerrain, type ParseResult } from './core/docio.ts'
+export { TerrainFiles, browserFallback, type FileFallback, type FileHandle, type FileHost, type OpenedFile } from './ui/files.ts'
