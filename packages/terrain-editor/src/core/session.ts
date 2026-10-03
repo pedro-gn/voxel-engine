@@ -1,4 +1,4 @@
-import { validateTerrainDoc, type OpRegistry, type TerrainDoc } from '@elovox/terrain'
+import { checkPatch, diffLayers, validateTerrainDoc, type OpRegistry, type TerrainDoc } from '@elovox/terrain'
 import { diffArea, onlyLayersDiffer, type Area } from './area.ts'
 import type { Edit } from './edits.ts'
 import { History } from './history.ts'
@@ -144,9 +144,15 @@ export class EditorSession {
 
   private attempt(doc: TerrainDoc): { ok: true; doc: TerrainDoc } | { ok: false; errors: string[] } {
     if (doc === this.current) return { ok: true, doc }
-    // Brushes clamp every value they write, so a document that differs only in its layers is valid by
-    // construction; validating it would cost time proportional to everything painted.
-    if (onlyLayersDiffer(doc, this.current)) return { ok: true, doc }
+    // A document that differs only in its layers is checked on the tiles that changed (by identity), not
+    // everything painted: tile keys inside the world, array types and lengths, biome values in range.
+    // Height and density values are any Int16 / Int8, so they need no check.
+    if (onlyLayersDiffer(doc, this.current)) {
+      const errors = checkPatch(diffLayers(this.current.layers, doc.layers), {
+        sizeX: doc.size[0], sizeZ: doc.size[1], height: this.o.worldHeight, biomeCount: doc.biomes.length,
+      })
+      return errors.length === 0 ? { ok: true, doc } : { ok: false, errors: errors.map((e) => e.replace(/^patch\./, 'layers.')) }
+    }
     const r = validateTerrainDoc(doc, { ops: this.o.ops, worldHeight: this.o.worldHeight })
     // Keep the candidate, not r.doc: validation rebuilds every op, and the candidate shares the unchanged ones.
     return r.ok ? { ok: true, doc } : r

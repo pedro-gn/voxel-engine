@@ -1,4 +1,4 @@
-import { HEIGHT_VALUES } from '@elovox/terrain'
+import { BIOME_VALUES, HEIGHT_VALUES } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { removeOp, setParam, setSeaLevel, setShape } from '../src/core/edits.ts'
 import { EditorSession, type ChangeEvent } from '../src/core/session.ts'
@@ -203,9 +203,24 @@ describe('EditorSession layers', () => {
     expect(s.doc.layers).toEqual({})
   })
 
-  it('trusts a layers-only change without validating it (brushes clamp what they write)', () => {
+  it('refuses a layers-only change with a tile outside the world, a wrong array or a biome beyond the count', () => {
     const { s } = session()
-    const outside = { ...s.doc, layers: { height: { tiles: [{ x: 99, z: 0, values: new Int16Array(HEIGHT_VALUES).fill(1) }] } } }
-    expect(s.apply('paint', () => outside)).toEqual({ ok: true })
+    const tile = (x: number, values: Int16Array = new Int16Array(HEIGHT_VALUES).fill(1)) => ({ ...s.doc, layers: { height: { tiles: [{ x, z: 0, values }] } } })
+    const outside = s.apply('paint', () => tile(99))
+    expect(outside.ok).toBe(false)
+    if (!outside.ok) expect(outside.errors[0]).toMatch(/^layers\.height\[0\]\.x/)
+    expect(s.apply('paint', () => tile(0, new Int16Array(10))).ok).toBe(false)
+    const biome = { ...s.doc, layers: { biome: { tiles: [{ x: 0, z: 0, values: new Uint8Array(BIOME_VALUES).fill(9) }] } } }
+    expect(s.apply('paint', () => biome).ok).toBe(false)
+    expect(s.doc.layers).toEqual({})
+    expect(s.canUndo).toBe(false)
+  })
+
+  it('accepts a valid layers-only change as the very object it was given, without validating the document', () => {
+    const { s } = session()
+    const painted = { ...s.doc, layers: { height: { tiles: [{ x: 1, z: 1, values: new Int16Array(HEIGHT_VALUES).fill(5) }] } } }
+    expect(s.apply('paint', () => painted)).toEqual({ ok: true })
+    expect(s.doc).toBe(painted) // validateTerrainDoc would have rebuilt the layers
+    expect(s.doc.layers.height!.tiles[0]).toBe(painted.layers.height.tiles[0])
   })
 })
