@@ -32,8 +32,9 @@ export function createOpList(parent: HTMLElement, registry: OpRegistry, actions:
     render(doc, selected, failed) {
       list.replaceChildren(...doc.ops.map((op, i) => {
         const box = h('input', { type: 'checkbox', checked: op.enabled, title: 'enabled (H)' })
-        box.addEventListener('click', (e) => { actions.select(op.id); e.stopPropagation() })
-        box.addEventListener('change', () => actions.toggle(op.id, box.checked))
+        // Selecting re-renders the list; doing it on click would detach the box before its change fires.
+        box.addEventListener('click', (e) => e.stopPropagation())
+        box.addEventListener('change', () => { actions.toggle(op.id, box.checked); actions.select(op.id) })
         const row = h('div', {
           dataset: { op: op.id },
           style: {
