@@ -155,12 +155,14 @@ export class Simulation {
     // 3. Write, relight, commit. commit() closes every written or relit chunk; its list over-marks and is only the fallback.
     for (const w of writes) store.writeChunkDense(w.ci, w.data)
     this.light.relightRegion(x0, z0, x1, z1)
+    // Light can only differ in a chunk that is open: every write opens one.
+    const touched = before ? [...before].filter(([ci]) => store.isOpen(ci)) : []
     const relit = store.commit()
     // 4. What changed, and who sees it.
     const out = new Set<number>(before ? [] : relit)
     if (before) {
       const now = new Uint8Array(CHUNK_VOLUME), was = new Uint8Array(CHUNK_VOLUME)
-      for (const [ci, old] of before) {
+      for (const [ci, old] of touched) {
         const m = diffMask(typeof old === 'number' ? was.fill(old) : old, store.readLight(ci, now))
         if (m !== 0) masks.set(ci, (masks.get(ci) ?? 0) | m)
       }

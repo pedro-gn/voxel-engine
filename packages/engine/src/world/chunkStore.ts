@@ -93,6 +93,9 @@ export class ChunkStore {
    */
   writableSlot(ci: number): number { return this.writable(ci) }
 
+  /** True while chunk `ci` is open for writing. Every voxel or light write opens its chunk, so a closed one is unchanged since the last commit(). */
+  isOpen(ci: number): boolean { return this.open.has(ci) }
+
   /** Marks chunk `ci` for remeshing at the next commit() without opening it (its data is unchanged but a neighbour's is). */
   markDirty(ci: number): void { this.dirty.add(ci) }
 

@@ -36,6 +36,16 @@ describe('ChunkStore', () => {
     expect(store.versions[0]).toBe(2)
   })
 
+  it('reports a chunk open from its first write until commit, and a dirty-marked one as closed', () => {
+    const { store } = makeStore([64, 64, 64])
+    store.setLight(1, 1, 1, 3)
+    store.markDirty(1)
+    expect(store.isOpen(0)).toBe(true)
+    expect(store.isOpen(1)).toBe(false)
+    store.commit()
+    expect(store.isOpen(0)).toBe(false)
+  })
+
   it('ignores writes that change nothing and writes out of bounds', () => {
     const { store } = makeStore([64, 64, 64])
     expect(store.setVoxel(1, 1, 1, AIR)).toBe(false)
