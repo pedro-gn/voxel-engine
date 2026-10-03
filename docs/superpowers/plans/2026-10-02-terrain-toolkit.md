@@ -7123,3 +7123,11 @@ git commit -m "docs(plan): terrain toolkit performance results"
   - Sea water is column-local: everything below `seaLevel` is water. The spec now says this in `TerrainDoc.seaLevel`.
   - `biome` ops and `blocks` names are document fields the spec did not list.
   - The initial generation time is `engine.terrain.initial` rather than a `generated` event, because `createEngine` resolves only after generation; `generated` fires for regenerations.
+
+## Results
+
+Measured by the user on their laptop (real GPU), 2026-10-02, at `?scene=terrain` after the merge into feat/grass-textures (d66905e).
+
+- Visual checkpoints 1–3 (relief; surface, biomes and textures; trees and rocks): approved as is, no showcase changes.
+- Full 1024² generation: **1642 ms** (budget ≤ 6 s) — met.
+- Regenerate 128² around the view: **92 ms** in the sim, **713 ms** until the mesh queue drained, **217 chunks** remeshed (budget ≤ 300 ms request → visible mesh) — **missed**. The sim side is well inside budget; the time goes to remeshing 217 chunks (the 4 × 4 regenerated columns plus the one-chunk ring and the 26-neighbour marks added by the relight fix). Next step per Task 25 step 2: profile the remesh before changing anything.
