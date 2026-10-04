@@ -164,7 +164,8 @@ export class WaterSystem {
   /** Rewrites the mirror of every dirty tile (every tick, paused or not); returns those tiles in index order and clears them. */
   flush(): number[] {
     const out: number[] = []
-    if (this.water === 0) return out
+    // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
+    if (this.water === 0 || this.needsRebuild) return out
     const cols = this.cols, T = cols.tiles
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
