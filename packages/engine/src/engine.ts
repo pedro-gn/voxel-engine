@@ -497,7 +497,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     })
   }
 
-  let physicsPaused = false
+  let physicsPaused = o.sim?.paused === true
   const physics = {
     get paused() { return physicsPaused },
     setPaused(paused: boolean) {

@@ -14,6 +14,8 @@ export interface SimInitOptions {
   tickHz?: number
   /** Check every pool invariant after each fluid step (slow; for debugging). */
   debugFluids?: boolean
+  /** Start with physics (gravity, fluids, region jobs) paused. */
+  paused?: boolean
 }
 
 /** World blocks [x0, x1) × [z0, z1), full height. */

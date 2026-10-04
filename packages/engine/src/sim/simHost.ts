@@ -94,6 +94,7 @@ export class SimHost {
             onNewPage: (index, page) => this.post({ type: 'page', index, page }),
             log: (message) => this.post({ type: 'log', message }),
           })
+          this.sim.setPaused(msg.options.paused === true)
           this.blocks = msg.blocks
           this.seed = msg.seed
           this.terrain = msg.terrain

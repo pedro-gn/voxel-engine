@@ -74,9 +74,10 @@ for (const scene of ['world', 'diorama'] as const) {
   })
 }
 
+// `still` freezes physics and random ticks: the world must stay exactly as generated for the chunk-diff check.
 test('terrain scene generates on workers and regenerates an area', async ({ page }) => {
   const errors = watchErrors(page)
-  await boot(page, '/?scene=terrain&size=256')
+  await boot(page, '/?scene=terrain&size=256&still')
   const r = await page.evaluate(async () => {
     const e = (window as W).__elovox!.engine
     const initial = e.terrain.initial

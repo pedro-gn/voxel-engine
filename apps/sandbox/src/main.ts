@@ -51,7 +51,10 @@ const engine = await createEngine({
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   terrain: sceneName === 'flood' ? { scene: 'flood' } : terrainDoc,
   genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
-  sim: { randomTicksPerChunk: 24, debugFluids: params.has('debugFluids') },
+  // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
+  sim: params.has('still')
+    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true }
+    : { randomTicksPerChunk: 24, debugFluids: params.has('debugFluids') },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they

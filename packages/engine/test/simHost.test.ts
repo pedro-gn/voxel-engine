@@ -139,4 +139,8 @@ describe('SimHost', () => {
     host.handle({ type: 'setPaused', paused: false })
     expect(host.simulation!.paused).toBe(false)
   })
+  it('starts paused when init options say so, running otherwise', () => {
+    expect(setup({ paused: true }).host.simulation!.paused).toBe(true)
+    expect(setup().host.simulation!.paused).toBe(false)
+  })
 })
