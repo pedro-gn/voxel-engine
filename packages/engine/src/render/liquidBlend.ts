@@ -39,7 +39,9 @@ const shown = new Map<number, number>()
 /**
  * Per-vertex blend start for a newly applied liquid mesh. A top-row vertex glides from the height `prev` displays at
  * its position now (first prev vertex there wins), or rises from the cell bottom (NEW_DROP) where prev had none.
- * Bottom-row vertices do not move.
+ * Bottom-row vertices do not move, and neither do full-height top-row vertices (drop 0): a full corner is one a stacked
+ * cell's side faces may stand on, and their bottom row is pinned there, so a gliding corner would open a gap under
+ * them that looks straight into the water (faces between liquid cells are culled).
  */
 export function blendFrom(prev: LiquidBlendState | null, vertices: Uint32Array, now: number): { prevDrop: Float32Array; t0: Float32Array } {
   shown.clear()
@@ -57,7 +59,8 @@ export function blendFrom(prev: LiquidBlendState | null, vertices: Uint32Array, 
   const t0 = new Float32Array(n).fill(now)
   for (let i = 0; i < n; i++) {
     const a = vertices[i * 2]!
-    prevDrop[i] = isTopRow(a) ? (shown.get(a & POS_MASK) ?? NEW_DROP) : (a >>> 25) & 31
+    const drop = (a >>> 25) & 31
+    prevDrop[i] = isTopRow(a) && drop !== 0 ? (shown.get(a & POS_MASK) ?? NEW_DROP) : drop
   }
   shown.clear()
   return { prevDrop, t0 }

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { FACE, LIQUID_DEEP, packA } from '../src/mesh/vertexFormat.ts'
+import { meshTranslucent } from '../src/mesh/liquid.ts'
+import { QuadBuilder, type LayerMesh } from '../src/mesh/quadBuilder.ts'
+import { FACE, LIQUID_DEEP, packA, unpackA } from '../src/mesh/vertexFormat.ts'
 import { BLEND_SECONDS, NEW_DROP, blendFrom, blendedDrop, isTopRow, type LiquidBlendState } from '../src/render/liquidBlend.ts'
+import type { ChunkSnapshot } from '../src/world/reader.ts'
+import { packVoxel } from '../src/world/voxel.ts'
+import { ID } from './helpers.ts'
+import { emptySnap, meshTables, put } from './meshHelpers.ts'
 
 /** Packs word-A/word-B pairs (word B is irrelevant to blending: 0). */
 function verts(...as: number[]): Uint32Array {
@@ -50,7 +56,7 @@ describe('blendFrom', () => {
   it('retargets mid-blend from the in-between displayed drop', () => {
     const prev = state(verts(packA(4, 6, 4, FACE.PY, 0, 2, 4)), [12], [1])
     const now = 1 + BLEND_SECONDS / 4
-    const r = blendFrom(prev, verts(packA(4, 6, 4, FACE.PY, 0, 2, 0)), now)
+    const r = blendFrom(prev, verts(packA(4, 6, 4, FACE.PY, 0, 2, 1)), now)
     expect(r.prevDrop[0]).toBeCloseTo(10) // 12 + (4 − 12) · 0.25, neither 4 (target) nor 12 (prevDrop)
   })
 
@@ -89,5 +95,55 @@ describe('blendFrom', () => {
   it('stamps t0 = now on every vertex', () => {
     const next = verts(packA(1, 2, 1, FACE.PY, 0, 0, 1), packA(1, 1, 1, FACE.NY, 0, 0))
     expect([...blendFrom(null, next, 2.5).t0]).toEqual([2.5, 2.5])
+  })
+
+  it('starts a full-height top-row vertex (drop 0) at 0, whatever prev displayed there', () => {
+    const prev = state(verts(packA(4, 6, 4, FACE.PY, 0, 0, 7)), [7], [0])
+    const next = verts(packA(4, 6, 4, FACE.PY, 0, 0, 0), packA(5, 6, 4, FACE.PX, 0, 3, 0))
+    expect([...blendFrom(prev, next, 5).prevDrop]).toEqual([0, 0]) // not 7 (prev) nor NEW_DROP (absent)
+  })
+})
+
+describe('blended liquid mesh', () => {
+  const tables = meshTables()
+  function liquidMesh(s: ChunkSnapshot): LayerMesh {
+    const t = new QuadBuilder(), l = new QuadBuilder()
+    meshTranslucent(s, tables, t, l)
+    return l.build()!
+  }
+  /** Edges used by an odd number of displayed triangles (open), as "x,y,z|x,y,z" with heights at `now`. */
+  function openEdges(m: LayerMesh, b: { prevDrop: Float32Array; t0: Float32Array }, now: number): string[] {
+    const pos = (vi: number) => {
+      const a = unpackA(m.vertices[vi * 2]!)
+      return `${a.x},${(a.y - blendedDrop(b.prevDrop[vi]!, a.drop, b.t0[vi]!, now) / 16).toFixed(4)},${a.z}`
+    }
+    const count = new Map<string, number>()
+    for (let i = 0; i < m.indices.length; i += 3) {
+      for (let e = 0; e < 3; e++) {
+        const k = [pos(m.indices[i + e]!), pos(m.indices[i + (e + 1) % 3]!)].sort().join('|')
+        count.set(k, (count.get(k) ?? 0) + 1)
+      }
+    }
+    return [...count].filter(([, n]) => n % 2 === 1).map(([k]) => k)
+  }
+
+  // Distilled from the flood's plunge pool: a full cell in a level-2 film gets a cell stacked on it. The film's corners
+  // beside it become full (drop 0) and must meet the new cell's side faces, whose bottom row is pinned at the film top.
+  it('stays closed while a stacked cell appears on a film', () => {
+    const s = emptySnap()
+    for (let x = 0; x < 10; x++) for (let z = 0; z < 10; z++) put(s, x, 3, z, packVoxel(ID.stone))
+    for (let x = 3; x <= 5; x++) for (let z = 3; z <= 5; z++) put(s, x, 4, z, packVoxel(ID.water, 2))
+    put(s, 4, 4, 4, packVoxel(ID.water, 7))
+    const before = liquidMesh(s)
+    const settled = blendFrom(null, before.vertices, 0)
+    put(s, 4, 5, 4, packVoxel(ID.water, 5))
+    const after = liquidMesh(s)
+    const now = 1
+    const b = blendFrom({ vertices: before.vertices, prevDrop: settled.prevDrop, t0: settled.t0 }, after.vertices, now)
+    // The only open edges are the film's outline on the stone floor (y = 4): water faces against stone are culled.
+    const onFloor = (k: string) => k.split('|').every((p) => p.split(',')[1] === '4.0000')
+    for (const at of [now, now + BLEND_SECONDS / 2, now + BLEND_SECONDS]) {
+      expect(openEdges(after, b, at).filter((k) => !onFloor(k)), `t = ${at}`).toEqual([])
+    }
   })
 })
