@@ -7,7 +7,7 @@ type W = Window & { __elovox?: { engine: Engine; flood: Flood | null; ready: boo
 test.skip(!process.env.BENCH, 'set BENCH=1 to run the dam-break benchmarks')
 
 /**
- * Stops the river's spring (otherwise its water keeps ~85 cells moving forever), runs `start`, then samples
+ * Stops the river's spring (otherwise its river tiles never sleep), runs `start`, then samples
  * every 500 ms until settled: no physics work and no falling bodies for 3 samples in a row. Quiet samples
  * count only once the lake's surface (read at 60, 60) has dropped at least one level, so the time before the
  * breach takes effect is never mistaken for a settled scene.
@@ -37,7 +37,7 @@ async function run(page: Page, start: 'breach' | 'stress', limitMs: number) {
       await new Promise((res) => setTimeout(res, 500))
       const s = e.stats()
       fps.push(s.fps)
-      peak = Math.max(peak, s.fluidActive)
+      peak = Math.max(peak, s.waterColumns)
       if (droppedS < 0 && lakeHeight() < h0) droppedS = (performance.now() - t0) / 1000
       quiet = droppedS >= 0 && !s.physicsBusy && s.fallingBodies === 0 ? quiet + 1 : 0
       if (quiet >= 3) break
@@ -47,7 +47,7 @@ async function run(page: Page, start: 'breach' | 'stress', limitMs: number) {
     return {
       settled: quiet >= 3, settleS: (performance.now() - t0) / 1000, lakeDroppedS: droppedS, ticks: ticks.length,
       tickP95: sorted[Math.floor(sorted.length * 0.95)] ?? 0, tickMax: sorted[sorted.length - 1] ?? 0,
-      fpsMin: fs[0] ?? 0, fpsMedian: fs[Math.floor(fs.length / 2)] ?? 0, peakActive: peak,
+      fpsMin: fs[0] ?? 0, fpsMedian: fs[Math.floor(fs.length / 2)] ?? 0, peakColumns: peak,
     }
   }, { start, limitMs })
 }

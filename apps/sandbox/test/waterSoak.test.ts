@@ -7,24 +7,19 @@ import rules from '../src/rules.ts'
 import e2eDoc from '../src/terrain/e2e.terrain.json'
 
 describe('natural water soak', () => {
-  it('the e2e document\'s river and lakes run 3000 ticks without losing a unit', () => {
-    // Its stepped river pools drop layers in the same fluid step as their neighbours: each split must keep
-    // to its own pool's cells (before the fix, two pools emptied with −4 and −17 units unplaced by tick 20).
+  it('the e2e document\'s river and lakes run 3000 ticks with Σ depth + sea exact and the debug check quiet', () => {
     const logs: string[] = []
     const sim = new Simulation({
       buffers: createWorldBuffers([e2eDoc.size[0]!, 128, e2eDoc.size[1]!]), blocks: BLOCKS, rules, seed: 1234,
-      randomTicksPerChunk: 0, log: (m) => logs.push(m),
+      randomTicksPerChunk: 0, log: (m) => logs.push(m), water: { debug: true },
     })
     sim.configure(terrainGenerator, e2eDoc)
     sim.generate(terrainGenerator)
-    expect(sim.fluids.pools.count).toBeGreaterThan(1)
-    // seaLevel 24 with no sea at 23: its river-head spring has no sea to draw from and gives nothing, so volume is exact
-    expect(sim.fluids.springs.size).toBe(1)
-    const v0 = sim.fluids.totalVolume()
+    expect(sim.water.cycle.springs.size).toBe(1) // the river-head spring, under its water
+    const v0 = sim.water.total()
     for (let t = 0; t < 3000; t++) sim.step()
     expect(logs).toEqual([])
-    expect(sim.fluids.lost).toBe(0)
-    expect(sim.fluids.totalVolume()).toBe(v0)
-    expect(sim.fluids.checkInvariants()).toEqual([])
-  }, 20_000)
+    expect(sim.water.total()).toBe(v0)
+    expect(sim.water.check()).toEqual([])
+  }, 60_000)
 })

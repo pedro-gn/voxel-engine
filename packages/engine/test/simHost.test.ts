@@ -31,19 +31,13 @@ describe('SimHost', () => {
     clock.t = 170; host.pump()
     expect(ticks()).toHaveLength(3)
   })
-  it('passes fluidEvery from the init options to the fluid system (default: every 2nd tick)', () => {
-    const steps = (options = {}) => {
-      const { host, clock } = setup(options)
-      host.handle({ type: 'start' })
-      clock.t = 100; host.pump() // two ticks
-      return host.simulation!.fluids.stepCount
-    }
-    expect(steps()).toBe(1)
-    expect(steps({ fluidEvery: 1 })).toBe(2)
+  it('passes debugFluids and waterTileCap to the water system', () => {
+    const { host } = setup({ debugFluids: true, waterTileCap: 7 })
+    expect(host.simulation!.water.o).toMatchObject({ debug: true, tileCap: 7 })
   })
-  it('validates fluidCap from the init options through the fluid system', () => {
-    const { out } = setup({ fluidCap: 0 })
-    expect(out.some((m) => m.type === 'fatal' && /fluidCap/.test(m.message))).toBe(true)
+  it('validates waterTileCap from the init options through the water system', () => {
+    const { out } = setup({ waterTileCap: 0 })
+    expect(out.some((m) => m.type === 'fatal' && /tileCap/.test(m.message))).toBe(true)
   })
   it('runs at most 4 catch-up ticks and logs the dropped backlog', () => {
     const { host, clock, ticks, out } = setup()

@@ -53,7 +53,11 @@ function script(sim: Simulation, t: number): void {
   if (t % 25 === 0) sim.submit(2, t, { type: 'fillRegion', min: [(t * 3) % 60, 20, 10], max: [(t * 3) % 60 + 3, 40, 13], voxel: AIR })
   if (t % 15 === 5) sim.submit(4, t, { type: 'setBlock', pos: [(t * 11) % 64, 58, (t * 5) % 64], voxel: (7 << 12) | 5 }) // full water
   if (t % 20 === 7) sim.submit(5, t, { type: 'fillRegion', min: [(t * 17) % 60, 50, 30], max: [(t * 17) % 60, 52, 30], voxel: GRAVEL })
-  if (t === 30) sim.submit(6, t, { type: 'setBlock', pos: [32, 62, 32], voxel: (5 << 12) | SPRING })
+  if (t === 30) {
+    let y = 63
+    while (y > 0 && sim.store.getVoxel(32, y - 1, 32) === AIR) y--
+    sim.submit(6, t, { type: 'setBlock', pos: [32, y, 32], voxel: (5 << 12) | SPRING }) // on the ground: its column's floor block
+  }
   if (t === 50) sim.submit(3, t, { type: 'setThenThrow' })
   if (t === 100) sim.submit(1, 9999, { type: 'setBlock', pos: [0, 99, 0], voxel: 1 }) // rejected: out of bounds
 }
@@ -81,7 +85,8 @@ describe('determinism', () => {
     const ha = run(a, 500)
     const hb = run(b, 500)
     expect(ha).toBe(hb)
-    expect(a.fluids.totalVolume()).toBeGreaterThan(0) // water and the spring really ran
+    expect(a.water.sea).toBeLessThan(0) // no sea level: the spring ran unbounded
+    expect(a.water.total()).toBe(a.water.expected)
     expect(ca.n).toBeGreaterThan(20) // the random-tick rule really changed the world
     expect(a.commandLog.some((c) => c.cmd.type === 'setThenThrow')).toBe(true)
     expect(a.store.getVoxel(5, 1, 5)).toBe(4) // the failing handler's partial effect (glass) stuck

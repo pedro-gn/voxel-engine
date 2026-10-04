@@ -8,7 +8,6 @@ import {
   type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
 } from './commands.ts'
 import { diffMask, forNeighbours } from './chunkDiff.ts'
-import { FluidSystem, type FluidOptions, type WriteSource } from './fluids/fluidSystem.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
 import { GravitySystem, type FallingBodyState, type Landing } from './gravity.ts'
 import { LightEngine, RELIGHT_MARGIN } from './light.ts'
@@ -16,6 +15,7 @@ import { JobRunner } from './jobs.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
 import { Scheduler } from './scheduler.ts'
+import { WaterSystem, type WaterOptions } from './water/waterSystem.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -25,7 +25,8 @@ export interface SimulationOptions {
   workCap?: number
   /** Region-job budget: visited cells per tick. Default 50 000. */
   jobCap?: number
-  fluids?: Partial<FluidOptions>
+  /** Heightfield water options (tile cap, debug check). */
+  water?: Partial<WaterOptions>
   /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
   regenLightDiffLimit?: number
   randomTicksPerChunk?: number
@@ -42,8 +43,8 @@ export interface TickResult {
   falling: FallingBodyState[]
   /** Bodies that landed this tick, with their chunk's version after commit. */
   landed: Landing[]
-  /** Moving fluid cells, live pools and queued region jobs after this tick; busy: any physics work is pending. */
-  physics: { active: number; pools: number; jobs: number; busy: boolean }
+  /** Awake water tiles, the wet columns in them and queued region jobs after this tick; busy: a tile is awake, a job is queued or a body falls. */
+  physics: { waterTiles: number; waterColumns: number; jobs: number; busy: boolean }
 }
 
 const DX = [1, -1, 0, 0, 0, 0]
@@ -60,7 +61,7 @@ export class Simulation {
   /** Per chunk: bumped on every voxel write. Region jobs compare it to notice a world that changed under them. */
   readonly epochs: Uint32Array
   readonly jobs: JobRunner
-  readonly fluids: FluidSystem
+  readonly water: WaterSystem
   readonly gravity: GravitySystem
   private isPaused = false
   private readonly jobCap: number
@@ -96,16 +97,17 @@ export class Simulation {
     this.jobs = new JobRunner(this.layout, this.epochs, (x, y, z) => this.store.getVoxel(x, y, z))
     this.jobCap = o.jobCap ?? 50_000
     const sim = this
-    this.fluids = new FluidSystem({
-      layout: this.layout, registry: this.registry, store: this.store, jobs: this.jobs, epochs: this.epochs,
+    this.water = new WaterSystem({
+      layout: this.layout, registry: this.registry, store: this.store, buffers: o.buffers.water,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
-      write: (x, y, z, v) => sim.applySet(x, y, z, v, true, 'fluid'),
+      setQuiet: (x, y, z, v) => { if (sim.store.setVoxelQuiet(x, y, z, v)) sim.epochs[sim.layout.chunkOf(x, y, z)]!++ },
+      remesh: (ci) => sim.store.markDirty(ci),
       log: (m) => sim.log(m),
-    }, o.fluids)
+    }, o.water)
     this.gravity = new GravitySystem({
       layout: this.layout, registry: this.registry,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
-      write: (x, y, z, v) => sim.applySet(x, y, z, v, true, 'gravity'),
+      write: (x, y, z, v) => sim.applySet(x, y, z, v, true),
     })
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
@@ -128,7 +130,7 @@ export class Simulation {
 
   get pendingWork(): number { return this.neighbors.length - this.neighborHead + this.scheduler.size }
 
-  /** True while physics (gravity, fluids, region jobs) is stopped. Rules, random ticks and light still run. */
+  /** True while physics (gravity, water, region jobs) is stopped. Rules, random ticks, light and the water mirror still run. */
   get paused(): boolean { return this.isPaused }
   setPaused(paused: boolean): void { this.isPaused = paused }
 
@@ -140,7 +142,7 @@ export class Simulation {
   configure(gen: GeneratorModule, doc: unknown): void {
     const r = gen.configure?.(doc, { size: this.layout.size, seed: this.seed, id: (name) => this.registry.id(name) })
     const sea = r && typeof r === 'object' ? r.seaLevel : undefined
-    this.fluids.seaLevel = Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0
+    this.water.seaLevel = Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0
   }
 
   /** Runs the generator for chunk column (cx, cz) into `column` (32 × 32 × height voxels, cleared to air first). */
@@ -164,7 +166,7 @@ export class Simulation {
     // relies on generation having left those chunks open. Commit after, so every version is even.
     this.light.initialize()
     this.store.commit()
-    this.fluids.rebuild()
+    this.water.rebuild()
     return Array.from({ length: this.layout.chunkCount }, (_, i) => i)
   }
 
@@ -181,7 +183,6 @@ export class Simulation {
     const writes: { ci: number; data: Uint16Array }[] = []
     const masks = new Map<number, number>()
     let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
-    let wet = false // a written chunk can touch fluid state: rescan the fluids (a whole-world pass) only then
     for (const c of cols) {
       if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
       for (let cy = 0; cy < L.cy; cy++) {
@@ -190,14 +191,12 @@ export class Simulation {
         const old = store.readVoxels(ci, vox)
         const m = diffMask(old, data)
         if (m === 0) continue
-        if (!wet) wet = this.fluids.regenTouches(ci, old, data)
         masks.set(ci, m)
         writes.push({ ci, data })
         cx0 = Math.min(cx0, c.cx); cz0 = Math.min(cz0, c.cz); cx1 = Math.max(cx1, c.cx); cz1 = Math.max(cz1, c.cz)
       }
     }
     if (writes.length === 0) return [] // identical voxels give identical light
-    if (wet) this.fluids.needsRebuild = true
     // 2. Light before, wherever the relight can reach.
     const x0 = cx0 * 32, z0 = cz0 * 32, x1 = cx1 * 32 + 32, z1 = cz1 * 32 + 32
     const reach: number[] = []
@@ -227,6 +226,8 @@ export class Simulation {
         if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) out.add(L.chunkIndex(cx + dx, cy + dy, cz + dz))
       })
     }
+    // The water of the regenerated columns, rebuilt now even while paused; chunks whose static water changed hands remesh.
+    for (const ci of this.water.rebuildRegion(x0, z0, x1, z1)) out.add(ci)
     return [...out].sort((a, b) => a - b)
   }
 
@@ -282,7 +283,7 @@ export class Simulation {
       }
       if (!this.isPaused) {
         this.physics('gravity', () => this.gravity.step()) // 3
-        this.physics('fluids', () => this.fluids.step(t)) // 4
+        this.physics('water', () => this.water.step()) // 4
         this.physics('region jobs', () => this.jobs.run(this.jobCap)) // 5
       }
       // 3. random ticks
@@ -292,15 +293,17 @@ export class Simulation {
       }
       // 4. light
       this.light.propagate()
+      // 5. the water mirror follows the heightfield every tick, paused or not, so edits made while paused show
+      this.physics('water mirror', () => { this.water.flush() })
     } finally {
-      // 5. always close seqlocks, even if something above threw
+      // 6. always close seqlocks, even if something above threw
       dirtyChunks = this.store.commit()
       this.tick = t + 1
     }
     const landed = this.gravity.landed
     for (const l of landed) l.version = this.store.versions[l.chunk]!
-    const active = this.fluids.activeCount, jobs = this.jobs.size
-    const physics = { active, pools: this.fluids.pools.count, jobs, busy: active > 0 || jobs > 0 || this.fluids.contactsPending() }
+    const ws = this.water.stats(), jobs = this.jobs.size
+    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 }
     const events = this.events
     this.events = []
     return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics }
@@ -322,19 +325,19 @@ export class Simulation {
     }
     mix(this.isPaused ? 1 : 0)
     this.gravity.mixState(mix)
-    this.fluids.mixState(mix)
+    this.water.mixState(mix)
     this.jobs.mixState(mix)
     return h >>> 0
   }
 
-  /** Spec §9: a physics exception is a bug, not content. Log it, finish the tick, heal fluids through a rescan. */
+  /** Spec §9: a physics exception is a bug, not content. Log it, finish the tick, heal the water through a rebuild. */
   private physics(name: string, fn: () => void): void {
     try {
       fn()
     } catch (e) {
       if (e instanceof WorldFullError) throw e
       this.log(`${name} error tick=${this.tick}: ${e instanceof Error ? e.message : String(e)}`)
-      if (name !== 'gravity') this.fluids.needsRebuild = true
+      if (name !== 'gravity') this.water.needsRebuild = true
     }
   }
 
@@ -356,15 +359,14 @@ export class Simulation {
     this.handlers.get(cmd.type)!(this.ctx, cmd)
   }
 
-  private applySet(x: number, y: number, z: number, v: number, notify: boolean, source: WriteSource = 'external'): void {
+  private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
     const old = this.store.getVoxel(x, y, z)
     if (old === v || !this.layout.inBounds(x, y, z)) return
-    const owner = this.fluids.beforeWrite(x, y, z, old, source)
     if (!this.store.setVoxel(x, y, z, v)) return
     this.epochs[this.layout.chunkOf(x, y, z)]!++
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
-    this.fluids.afterWrite(x, y, z, old, v, source, owner)
+    this.water.onWrite(x, y, z, old, v)
     this.gravity.afterWrite(x, y, z, v)
     if (!notify || !this.hasNeighborRules) return
     this.neighbors.push(this.layout.voxelIndex(x, y, z))

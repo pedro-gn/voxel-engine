@@ -77,6 +77,6 @@ describe('terrainGenerator', () => {
   it('hands the sea level to the simulation', () => {
     const s = sim()
     s.configure(terrainGenerator, minimalDoc())
-    expect(s.fluids.seaLevel).toBe(10)
+    expect(s.water.seaLevel).toBe(10)
   })
 })

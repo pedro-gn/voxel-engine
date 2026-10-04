@@ -1,5 +1,6 @@
 import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { SUB } from '@elovox/engine/src/world/waterBuffers.ts'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
@@ -55,51 +56,48 @@ describe('flood scene layout', () => {
 })
 
 describe('flood scene simulation', () => {
-  it('makes the lake and the sea pools, and a breach pours the lake into the valley', () => {
-    const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, log: () => {}, fluids: { fluidEvery: 1 } })
+  it('rebuilds the lake, the sea and the spring from the voxels, and a breach pours the lake into the valley', () => {
+    const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, log: () => {} })
     sim.configure(floodGenerator, {})
     sim.generate(floodGenerator)
-    const lake = sim.fluids.poolAt(60, LAKE.floor, 60)!
-    expect(lake).toMatchObject({ surfaceY: LAKE.top, area: 100 * 100 })
-    expect(sim.fluids.cycle).toMatchObject({ surfaceY: SEA_LEVEL - 1 })
+    expect(sim.water.column(60, 60)).toMatchObject({ floor: LAKE.floor, depth: (LAKE.top + 1 - LAKE.floor) * SUB })
+    expect(sim.water.column(70, 70)).toMatchObject({ floor: LAKE.floor }) // the sand pillar on planks floats over the lake
+    expect(sim.water.cycle.mask[50 + 230 * FLOOD_SIZE[0]]).toBe(1)
+    expect(sim.water.cycle.springs.size).toBe(1)
+    const lake0 = sim.water.column(LAKE.x1, 75).depth
     breachCommands().forEach((c, i) => sim.submit(0, i, c))
     for (let t = 0; t < 80; t++) sim.step()
-    const water = sim.registry.id('water')
     let valley = 0
-    for (let x = VALLEY.x0; x < VALLEY.x0 + 24; x++) for (let z = BREACH.z0 - 12; z <= BREACH.z1 + 12; z++) {
-      for (let y = VALLEY.ground; y < VALLEY.ground + 3; y++) if ((sim.store.getVoxel(x, y, z) & 0xfff) === water) valley++
-    }
+    for (let x = VALLEY.x0; x < VALLEY.x0 + 24; x++) for (let z = BREACH.z0 - 12; z <= BREACH.z1 + 12; z++) valley += sim.water.column(x, z).depth
     expect(valley).toBeGreaterThan(0)
-    expect((lake.level - 7) * lake.area + lake.balance).toBeLessThan(0) // the lake gave water
+    expect(sim.water.column(LAKE.x1, 75).depth).toBeLessThan(lake0)
   }, 180_000)
-  it('with the spring stopped, a breached lake drains into the valley and the scene settles without losing water', () => {
+  it('with the spring stopped, a breached lake drains into the valley, keeping Σ depth + sea exact every tick', () => {
+    // Bounded: the whole dam break settles only after ~18 000 ticks (about 9 minutes in Node); the benchmark and the e2e
+    // cover settling. Here the lake must go down, the valley fill, and no tick may lose or make water.
     const logs: string[] = []
-    const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0, log: (m) => logs.push(m) })
+    const sim = new Simulation({
+      buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0,
+      log: (m) => logs.push(m), water: { debug: true },
+    })
     sim.configure(floodGenerator, {})
     sim.generate(floodGenerator)
-    const v0 = sim.fluids.totalVolume()
-    const water = sim.registry.id('water')
-    const lakeHeight = () => {
-      for (let y = LAKE.top + 2; y >= LAKE.floor - 1; y--) {
-        const v = sim.store.getVoxel(60, y, 60)
-        if ((v & 0xfff) === water) return y * 8 + ((v >>> 12) & 7)
-      }
-      return 0
-    }
-    const h0 = lakeHeight()
+    const v0 = sim.water.total()
+    const lake0 = sim.water.column(60, 60).surface
     ;[...stopSpringCommands(sim.registry.id('stone')), ...breachCommands()].forEach((c, i) => sim.submit(0, i, c))
-    // settled: no physics work and nothing falling for 3 ticks in a row, counted only once the lake has dropped
-    let quiet = 0, t = 0
-    for (; t < 30_000 && quiet < 3; t++) {
-      const r = sim.step()
-      quiet = lakeHeight() < h0 && !r.physics.busy && r.falling.length === 0 ? quiet + 1 : 0
+    let off = 0
+    for (let t = 0; t < 3000; t++) {
+      sim.step()
+      if (sim.water.total() !== v0) off++
     }
-    expect(quiet).toBe(3)
-    expect(lakeHeight()).toBeLessThan(h0 - 8) // at least one whole layer lower
-    expect(sim.fluids.springs.size).toBe(0)
+    expect(off).toBe(0)
+    expect(sim.water.column(60, 60).surface).toBeLessThan(lake0)
+    let valley = 0
+    for (let x = VALLEY.x0; x <= VALLEY.x1; x++) for (let z = VALLEY.z0; z <= VALLEY.z1; z++) valley += sim.water.column(x, z).depth
+    expect(valley).toBeGreaterThan(100 * SUB)
+    expect(sim.water.cycle.springs.size).toBe(0)
     expect(logs).toEqual([])
-    expect(sim.fluids.lost).toBe(0)
-    expect(sim.fluids.totalVolume()).toBe(v0)
-    expect(sim.fluids.checkInvariants()).toEqual([])
-  }, 120_000)
+    expect(sim.water.expected).toBe(v0)
+    expect(sim.water.check()).toEqual([])
+  }, 300_000)
 })

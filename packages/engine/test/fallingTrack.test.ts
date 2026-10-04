@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { FallingTrack, MARGIN, RUSH_CAP, RUSH_MS, cubeLight } from '../src/render/fallingTrack.ts'
 import { AIR } from '../src/world/voxel.ts'
-import { B, fluidSim } from './fluidHelpers.ts'
+import { B, waterSim } from './waterHelpers.ts'
 
 const body = (id: number, y256: number, vy256 = 24) => ({ id, voxel: 8, x: 3, z: 4, y256, vy256 })
 /** With messages on time, tick t is drawn from (t + 1) × 50 ms + LAG on. */
@@ -142,7 +142,7 @@ describe('FallingTrack', () => {
   })
   it('keeps a landed cube lit while it waits for its chunk mesh (the landed block makes its own cell dark)', () => {
     // A sand pillar on planks in open sky, as in ?scene=flood: drop it and draw the tick it lands, before the remesh.
-    const sim = fluidSim((x, y, z) => (y < 5 ? B.stone : x === 10 && z === 10 && y >= 20 && y <= 24 ? (y === 20 ? B.dirt : B.sand) : AIR))
+    const sim = waterSim((x, y, z) => (y < 5 ? B.stone : x === 10 && z === 10 && y >= 20 && y <= 24 ? (y === 20 ? B.dirt : B.sand) : AIR))
     sim.submit(0, 0, { type: 'setBlock', pos: [10, 20, 10], voxel: AIR })
     const t = new FallingTrack(50)
     for (let tick = 0; tick < 40; tick++) {

@@ -17,7 +17,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
       `decorations ${s.decorationInstances} instances   ${s.decorationDraws} draws   shadow casters ${s.shadowCasters}`,
-      `physics  fluid cells ${s.fluidActive}   pools ${s.fluidPools}   jobs ${s.regionJobs}   falling ${s.fallingBodies}   ${s.physicsBusy ? 'busy' : 'settled'}`,
+      `physics  water tiles ${s.waterTiles}   columns ${s.waterColumns}   jobs ${s.regionJobs}   falling ${s.fallingBodies}   ${s.physicsBusy ? 'busy' : 'settled'}`,
       o.hint ?? `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom · V bean walk`,
     ].join('\n')
   }

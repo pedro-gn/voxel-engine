@@ -12,13 +12,11 @@ export interface SimInitOptions {
   randomTicksPerChunk?: number
   maxPages?: number
   tickHz?: number
-  /** Check every pool invariant after each fluid step (slow; for debugging). */
+  /** After every water step, check Σ depth + sea against the running total and that no depth is negative (slow; for debugging). On failure: log and rebuild from the voxels. */
   debugFluids?: boolean
-  /** Ticks between fluid steps (integer ≥ 1). Default 2: fluids at half the tick rate (10 Hz at 20 Hz ticks). */
-  fluidEvery?: number
-  /** Active fluid cells processed per fluid step (integer ≥ 1); the rest wait for the next step. Default 4000. */
-  fluidCap?: number
-  /** Start with physics (gravity, fluids, region jobs) paused. */
+  /** Awake water tiles (16 × 16 columns) stepped per tick, in tile order, round robin (integer ≥ 1). Default 1024. */
+  waterTileCap?: number
+  /** Start with physics (gravity, water, region jobs) paused. */
   paused?: boolean
 }
 
@@ -40,7 +38,7 @@ export type ToSim =
   | { type: 'patchTerrain'; id: number; patch: unknown }
   /** Regenerates the chunk columns overlapping `rect` between two ticks; answered by 'regenerated'. */
   | { type: 'regenerate'; id: number; rect: TerrainRect }
-  /** Stops or resumes physics (gravity, fluids, region jobs). Rules, random ticks and light keep running. */
+  /** Stops or resumes physics (gravity, water, region jobs). Rules, random ticks, light and the water mirror keep running. */
   | { type: 'setPaused'; paused: boolean }
   /** Main thread: generation worker `index` died. */
   | { type: 'genLost'; index: number }
@@ -49,7 +47,7 @@ export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
   | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
-  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; physics: { active: number; pools: number; jobs: number; busy: boolean }; slotsUsed: number; tickMs: number }
+  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; physics: { waterTiles: number; waterColumns: number; jobs: number; busy: boolean }; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
   | { type: 'terrain'; id: number; ok: false; message: string }

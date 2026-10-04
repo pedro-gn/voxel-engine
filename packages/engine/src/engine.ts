@@ -72,9 +72,9 @@ export interface EngineStats {
   decorationInstances: number; decorationDraws: number
   /** Falling blocks being drawn (in the air or waiting for their chunk mesh). */
   fallingBodies: number
-  /** Moving fluid cells, live pools and queued region jobs, as of the last tick. */
-  fluidActive: number; fluidPools: number; regionJobs: number
-  /** True while any physics work (moving fluid, region jobs, pending contacts) was left after the last tick. */
+  /** Awake water tiles (16 × 16 columns), wet columns in them, and queued region jobs, as of the last tick. */
+  waterTiles: number; waterColumns: number; regionJobs: number
+  /** True while a water tile was awake, a region job queued or a block falling after the last tick. */
   physicsBusy: boolean
   /** GPU render time in ms; null when not tracked or unsupported. */
   gpuMs: number | null
@@ -105,7 +105,7 @@ export interface Engine {
     /** Regenerates the chunk columns overlapping `rect`; resolves once the new voxels and light are in the world. */
     regenerate(rect: TerrainRect): Promise<{ ms: number; chunks: number }>
   }
-  /** Physics (falling blocks, fluids, region jobs). Paused, the world only changes through commands, rules and regeneration. */
+  /** Physics (falling blocks, water, region jobs). Paused, the world only changes through commands, rules and regeneration. */
   readonly physics: {
     readonly paused: boolean
     setPaused(paused: boolean): void
@@ -349,7 +349,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
-  let physicsStats = { active: 0, pools: 0, jobs: 0, busy: false }
+  let physicsStats = { waterTiles: 0, waterColumns: 0, jobs: 0, busy: false }
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
     switch (m.type) {
@@ -556,7 +556,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         meshQueue: queue.size, meshInFlight: queue.inFlightCount + results.length, failedChunks: failed.size,
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
-        fallingBodies: falling.size, fluidActive: physicsStats.active, fluidPools: physicsStats.pools, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
+        fallingBodies: falling.size, waterTiles: physicsStats.waterTiles, waterColumns: physicsStats.waterColumns, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
       }
     },
     dispose,

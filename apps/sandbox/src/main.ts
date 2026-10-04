@@ -55,7 +55,7 @@ const engine = await createEngine({
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
     ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true }
-    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), fluidEvery: 1, fluidCap: 500 }, // fluids at 20 Hz; with cap 500 the stress flood's whole sim tick is ~8 ms p95 (Node bench)
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids') },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
