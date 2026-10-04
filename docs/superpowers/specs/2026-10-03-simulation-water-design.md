@@ -309,10 +309,11 @@ layers' buffers. Changing only a liquid's level does not change opacity or emiss
 - **River op.** It gains `flow` (a flow index, 0–15, default 8). With `flow > 0`, the op
   places a spring at the start of its path, at the bed's lowest cell under the axis. It
   replaces that water voxel; the bank is untouched.
-- The river's water is still generated as today. When the sim starts, its stepped surface
-  becomes neighbouring pools that drain into each other, the spring refills them, and
-  the river reaches a steady state. The steady state may differ slightly from the
-  drawn one.
+- The river's water is still generated as today. When the sim starts, each step of its
+  surface becomes a pool in contact with the next. Connected water seeks one level, so the
+  river drains toward the sea. The steady state is a spring-fed stream along the carved
+  bed, plus whatever the bed holds in its hollows. The carved channel keeps the editor's
+  shape; the water in it is the shape the sim gives.
 - **Initial pools.** `finishGenerate` runs the settle pass over all water synchronously,
   outside the per-tick budget. Lakes and the sea become pools, and their outlets are found
   at once. A leaky lake (a basin open on one side) starts draining on the first fluid

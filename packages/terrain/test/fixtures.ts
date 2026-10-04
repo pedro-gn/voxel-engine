@@ -18,7 +18,7 @@ export function minimalDoc(): Record<string, unknown> {
 /** Block ids used by pipeline tests (any stable mapping works; ids must be < 4096). */
 export const IDS: Record<string, number> = {
   stone: 1, dirt: 2, grass: 3, sand: 4, water: 5, log: 6, leaves: 7, pine_leaves: 8, rock: 9, snow: 10, gravel: 11,
-  sandstone: 12, sandstone_red: 13,
+  sandstone: 12, sandstone_red: 13, spring: 14,
 }
 
 export function idOf(name: string): number {

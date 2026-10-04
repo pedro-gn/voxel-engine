@@ -18,6 +18,8 @@ export const BLOCKS = [
   defineBlock({ name: 'sandstone', textures: 'sandstone' }),
   defineBlock({ name: 'sandstone_red', textures: 'sandstone_red' }),
   defineBlock({ name: 'pine_leaves', textures: 'pine_leaves', layer: 'cutout' }),
+  // simulation water (sub-project 3a): appended so existing block ids, and the terrain golden hashes, keep their values
+  defineBlock({ name: 'spring', textures: 'water', liquid: true, source: 'water', solid: false }),
 ]
 
 export const DECORATIONS = [

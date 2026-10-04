@@ -32,6 +32,7 @@ export function createTerrainGenerator(o: TerrainGeneratorOptions = {}): Generat
       // Compile before replacing: a document that fails here leaves the previous one in force.
       terrain = compileTerrain(r.doc, { seed: info.seed, height: sy, id: (name) => info.id(name), ops })
       limits = { sizeX: sx, sizeZ: sz, height: sy, biomeCount: r.doc.biomes.length }
+      return { seaLevel: r.doc.seaLevel }
     },
     patch(p: unknown) {
       if (!terrain || !limits) throw new Error('the terrain generator has no document to patch')

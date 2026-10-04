@@ -24,7 +24,7 @@ describe('validateTerrainDoc', () => {
     const r = validateTerrainDoc(minimalDoc(), { ops })
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    expect(r.doc.blocks).toEqual({ fill: 'stone', water: 'water', log: 'log', leaves: 'leaves', pineLeaves: 'pine_leaves', rock: 'rock' })
+    expect(r.doc.blocks).toEqual({ fill: 'stone', water: 'water', log: 'log', leaves: 'leaves', pineLeaves: 'pine_leaves', rock: 'rock', spring: 'spring' })
     expect(r.doc.layers).toEqual({})
     expect(r.doc.ops).toEqual([])
   })
@@ -109,7 +109,7 @@ describe('validateTerrainDoc', () => {
   })
 
   it('rejects unknown block keys', () => {
-    expect(errorsOf({ ...minimalDoc(), blocks: { fill: 'stone', lava: 'x' } })).toEqual(['blocks.lava: unknown key (known: fill, water, log, leaves, pineLeaves, rock)'])
+    expect(errorsOf({ ...minimalDoc(), blocks: { fill: 'stone', lava: 'x' } })).toEqual(['blocks.lava: unknown key (known: fill, water, log, leaves, pineLeaves, rock, spring)'])
   })
 })
 

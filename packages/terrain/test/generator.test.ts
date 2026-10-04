@@ -73,4 +73,10 @@ describe('terrainGenerator', () => {
     s.generate(terrainGenerator)
     expect(s.store.getVoxel(10, 22, 10)).toBe(s.registry.id('grass'))
   })
+
+  it('hands the sea level to the simulation', () => {
+    const s = sim()
+    s.configure(terrainGenerator, minimalDoc())
+    expect(s.fluids.seaLevel).toBe(10)
+  })
 })

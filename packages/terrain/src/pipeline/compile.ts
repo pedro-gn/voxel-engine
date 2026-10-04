@@ -9,7 +9,10 @@ import type { CompileContext, HeightOp, OpRegistry, VolumeOp } from '../ops/regi
 /** Voxel value of placed water: full level (state 7), like the sandbox diorama. */
 export const WATER_STATE = 7
 
-export interface TerrainBlocks { fill: number; water: number; log: number; leaves: number; pineLeaves: number; rock: number }
+export interface TerrainBlocks { fill: number; water: number; log: number; leaves: number; pineLeaves: number; rock: number
+  /** The spring voxel id, or −1 when no op places one. */
+  spring: number
+}
 
 export interface CompiledTerrain {
   readonly doc: TerrainDoc
@@ -91,6 +94,8 @@ export function compileTerrain(doc: TerrainDoc, o: CompileOptions): CompiledTerr
     blocks: {
       fill: id(doc.blocks.fill), water: packVoxel(id(doc.blocks.water), WATER_STATE),
       log: id(doc.blocks.log), leaves: id(doc.blocks.leaves), pineLeaves: id(doc.blocks.pineLeaves), rock: id(doc.blocks.rock),
+      // Resolved only when needed: a document without flowing rivers works with registries that lack a spring block.
+      spring: heightOps.some((op) => op.spring !== undefined) ? id(doc.blocks.spring) : -1,
     },
   }
 }

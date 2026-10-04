@@ -34,6 +34,8 @@ export interface HeightOp {
   /** Columns outside these bounds are never touched by `apply`. */
   readonly bounds: Rect
   apply(x: number, z: number, cell: Cell): void
+  /** A spring this op places: in the lowest water cell of column (x, z), with this flow index (0–15). */
+  readonly spring?: { readonly x: number; readonly z: number; readonly flow: number }
 }
 
 export interface VolumeOp {

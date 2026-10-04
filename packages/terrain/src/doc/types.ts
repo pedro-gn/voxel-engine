@@ -77,8 +77,8 @@ export interface BiomeRule {
 }
 
 /** Block names the pipeline places by itself. */
-export interface BlockNames { fill: string; water: string; log: string; leaves: string; pineLeaves: string; rock: string }
-export const DEFAULT_BLOCKS: BlockNames = { fill: 'stone', water: 'water', log: 'log', leaves: 'leaves', pineLeaves: 'pine_leaves', rock: 'rock' }
+export interface BlockNames { fill: string; water: string; log: string; leaves: string; pineLeaves: string; rock: string; spring: string }
+export const DEFAULT_BLOCKS: BlockNames = { fill: 'stone', water: 'water', log: 'log', leaves: 'leaves', pineLeaves: 'pine_leaves', rock: 'rock', spring: 'spring' }
 
 /** A tile of a 2D layer in the file. x and z count tiles; data holds the values as little-endian base64. */
 export interface TileRef { x: number; z: number; data: string }

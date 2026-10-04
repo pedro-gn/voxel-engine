@@ -62,6 +62,17 @@ describe('river', () => {
     river.validate(c, 'ops[0]', { id: 'r', type: 'river', enabled: true, shape: straight(4), params: { start: 0 } }, { biomes: [], height: 128 })
     expect(c.errors).toEqual(['ops[0].params.start: must be >= 1', 'ops[0].params.end: is required'])
   })
+  it('puts a spring at the head of the path unless flow is 0', () => {
+    const op = river.compile({ ...def, type: 'river', enabled: true, params: { ...def.params, flow: 5 } }, ctx)
+    expect(op.spring).toEqual({ x: 0, z: 0, flow: 5 })
+    expect(river.compile({ ...def, type: 'river', enabled: true }, ctx).spring).toEqual({ x: 0, z: 0, flow: 8 })
+    expect(river.compile({ ...def, type: 'river', enabled: true, params: { ...def.params, flow: 0 } }, ctx).spring).toBeUndefined()
+  })
+  it('validates flow', () => {
+    const c = new Check()
+    river.validate(c, 'ops[0]', { ...def, type: 'river', enabled: true, params: { ...def.params, flow: 16 } }, { biomes: [], height: 128 })
+    expect(c.errors.join('\n')).toMatch(/flow/)
+  })
 })
 
 describe('lake', () => {

@@ -1,3 +1,4 @@
+import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
 import { surfaceBlock, type SurfaceInput } from '../biomes/biomes.ts'
 import { fillCells, slopeAt } from './cells.ts'
 import type { CompiledTerrain } from './compile.ts'
@@ -46,6 +47,18 @@ export function generateRegion(t: CompiledTerrain, x0: number, z0: number, w: nu
       input.underwater = aboveWater
       input.ceiling = y > 0 && !solid[y - 1] && y - 1 >= water
       out[i] = surfaceBlock(biome, t.blocks.fill, input)
+    }
+  }
+  if (t.blocks.spring >= 0) {
+    const waterId = t.blocks.water & 0xfff
+    for (const op of t.heightOps) {
+      const s = op.spring
+      if (!s || s.x < x0 || s.x >= x0 + w || s.z < z0 || s.z >= z0 + d) continue
+      const lx = s.x - x0, lz = s.z - z0
+      for (let y = 0; y < H; y++) {
+        const i = lx + lz * w + y * layer
+        if ((out[i]! & 0xfff) === waterId) { out[i] = packVoxel(t.blocks.spring, s.flow); break }
+      }
     }
   }
   if (o.features !== false) stampFeatures(t, x0, z0, w, d, out)

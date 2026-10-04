@@ -140,3 +140,24 @@ describe('generateRegion: height, water and surface', () => {
     expect(() => generateRegion(compileDoc(minimalDoc()), 0, 0, 32, 32, new Uint16Array(10))).toThrow(RangeError)
   })
 })
+
+describe('generateRegion: springs', () => {
+  it('places a river spring in the lowest water cell of its head column', () => {
+    const doc = {
+      ...minimalDoc(),
+      ops: [{ id: 'r', type: 'river', shape: { kind: 'path', width: 6, points: [{ x: 10, z: 32 }, { x: 54, z: 32 }] }, params: { start: 18, end: 14, flow: 3 } }],
+    }
+    const get = region(compileDoc(doc), 0, 0, 64, 64)
+    const col = column(get, 10, 32)
+    const springs = col.map((v, y) => [v, y] as const).filter(([v]) => (v & 0xfff) === IDS.spring)
+    expect(springs).toHaveLength(1)
+    const [v, y] = springs[0]!
+    expect(v).toBe(IDS.spring! | (3 << 12))
+    expect(col[y - 1]! & 0xfff).not.toBe(IDS.water) // nothing liquid below it: it sits on the bed
+    expect(col[y + 1]).toBe(WATER)
+  })
+  it('needs no spring block when no river flows', () => {
+    const t = compileDoc({ ...minimalDoc(), ops: [{ id: 'r', type: 'river', shape: { kind: 'path', width: 6, points: [{ x: 10, z: 32 }, { x: 54, z: 32 }] }, params: { start: 18, end: 14, flow: 0 } }] })
+    expect(t.blocks.spring).toBe(-1)
+  })
+})
