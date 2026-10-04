@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu'
 import { attribute, float, normalLocal, positionLocal, select, texture, varying, vec4 } from 'three/tsl'
-import type { FallingCube } from './fallingTrack.ts'
+import { cubeLight, type FallingCube } from './fallingTrack.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
 /** Falling blocks as instanced unit cubes: per instance a min corner and (top, side, bottom layer, packed light). */
@@ -50,7 +50,7 @@ export class FallingCubes {
     if (cubes.length > this.capacity) this.grow(cubes.length)
     cubes.forEach((c, i) => {
       const id = c.voxel & 0xfff
-      const l = light(c.x, Math.floor(c.y + 0.5), c.z)
+      const l = cubeLight(light, c.x, c.y, c.z)
       this.pos.setXYZ(i, c.x, c.y, c.z)
       this.info.setXYZW(i, this.faceLayers[id * 6 + 2]!, this.faceLayers[id * 6]!, this.faceLayers[id * 6 + 3]!, (l & 15) * 16 + (l >> 4))
     })

@@ -2,6 +2,27 @@ import type { FallingBodyState, Landing } from '../sim/gravity.ts'
 
 export interface FallingCube { voxel: number; x: number; y: number; z: number }
 
+const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const
+
+/**
+ * The packed light (sky | block << 4) a cube whose bottom is at height `y` (blocks) is drawn with: its cell's.
+ * A dark cell is the landed block itself (an opaque cell holds no light) while the cube waits for the chunk mesh,
+ * so then each channel comes from the brightest face neighbour, as the mesh will light the block's faces;
+ * otherwise the whole landed pillar flashes black at the hand-over.
+ */
+export function cubeLight(light: (x: number, y: number, z: number) => number, x: number, y: number, z: number): number {
+  const cy = Math.floor(y + 0.5)
+  const own = light(x, cy, z)
+  if (own !== 0) return own
+  let sky = 0, blk = 0
+  for (const [dx, dy, dz] of FACES) {
+    const l = light(x + dx, cy + dy, z + dz)
+    sky = Math.max(sky, l & 15)
+    blk = Math.max(blk, l >> 4)
+  }
+  return sky | (blk << 4)
+}
+
 interface Tracked { voxel: number; x: number; z: number; prevY: number; curY: number; landing: { chunk: number; version: number } | null }
 
 /**
