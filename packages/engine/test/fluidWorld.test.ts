@@ -64,18 +64,49 @@ function script(sim: Simulation, seed: number, ticks: number, check?: (t: number
 }
 
 describe('fluid world', () => {
+  const reached = { pools: 0, resurfaced: 0, contacts: 0 }
   it.each([1, 2, 3])('conserves volume through random digging, filling and pouring (seed %i)', (seed) => {
     const sim = fluidSim(terrain(seed), { seed })
     const rng = new Pcg32(seed * 7919)
     let expected = volume(sim)
+    let pools = 0, resurfaced = 0, contacts = 0
+    const fl = sim.fluids as unknown as { resurface: (p: unknown) => void }
+    const resurface = fl.resurface.bind(fl)
+    fl.resurface = (p) => { resurfaced++; resurface(p) }
     for (let t = 0; t < 300; t++) {
       const cmd = t % 3 === 0 ? command(rng) : null
       if (cmd) { expected += commandDelta(sim, cmd); sim.submit(1, t, cmd) }
       sim.step()
       expect(volume(sim)).toBe(expected)
+      expect(sim.fluids.lost, `water destroyed by tick ${t}`).toBe(0)
+      pools = Math.max(pools, sim.fluids.pools.all().length)
+      contacts = Math.max(contacts, sim.fluids.contacts.size)
       if (t % 50 === 49) expect(poolProblems(sim)).toEqual([])
     }
+    expect(poolProblems(sim)).toEqual([])
+    expect(pools).toBeGreaterThan(0)
+    expect(resurfaced).toBeGreaterThan(0)
+    reached.pools += pools; reached.resurfaced += resurfaced; reached.contacts += contacts
   }, 120_000)
+
+  it('the fuzz reached pools, resurfaces and contacts', () => {
+    expect(reached.pools).toBeGreaterThan(0)
+    expect(reached.resurfaced).toBeGreaterThan(0)
+    expect(reached.contacts).toBeGreaterThan(0)
+  })
+
+  it('a rebuild keeps the volume identity when pools hold balances', () => {
+    const logs: string[] = []
+    const sim = fluidSim(lake(4), { log: (m) => logs.push(m) })
+    const p = sim.fluids.pools.all()[0]!
+    p.balance += 5
+    const before = volume(sim)
+    sim.fluids.needsRebuild = true
+    sim.step()
+    expect(volume(sim)).toBe(before)
+    expect(sim.fluids.lost).toBe(5)
+    expect(logs.some((m) => /rebuild dropped 5/.test(m))).toBe(true)
+  })
 
   it('is deterministic and replays from the command log', () => {
     const a = fluidSim(terrain(5), { seed: 5 }), b = fluidSim(terrain(5), { seed: 5 })
@@ -91,7 +122,7 @@ describe('fluid world', () => {
     expect(c.hash()).toBe(a.hash())
   }, 60_000)
 
-  it('rebuilds cleanly after a regeneration while paused (review focus 4)', () => {
+  it('rebuilds cleanly after a regeneration while paused', () => {
     const sim = fluidSim(terrain(9), { seed: 9 })
     sim.submit(0, 0, { type: 'setBlock', pos: [5, 9, 5], voxel: w(7) })
     sim.step()

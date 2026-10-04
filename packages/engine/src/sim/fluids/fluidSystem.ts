@@ -879,6 +879,12 @@ export class FluidSystem {
   /** Drops all fluid state and rescans the world: every still body becomes a pool, everything else moves. */
   rebuild(): void {
     this.needsRebuild = false
+    let unplaced = 0
+    for (const p of this.pools.all()) unplaced += p.balance
+    if (unplaced !== 0) {
+      this.port.log(`fluids: rebuild dropped ${unplaced} unplaced balance units`)
+      this.lost += unplaced
+    }
     this.pools.clear(); this.index.clear(); this.members.clear(); this.contacts.clear()
     this.active.clear(); this.springs.clear(); this.settleQueue.clear()
     this.port.jobs.cancel((j) => FLUID_JOBS.has(j.kind))
