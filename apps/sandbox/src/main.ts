@@ -5,6 +5,7 @@ import { createControls } from './controls.ts'
 import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
+import { FLOOD_SIZE, breachCommands, dropCommands } from './scenes/flood.ts'
 import { paintTextures } from './textures.ts'
 import e2eDoc from './terrain/e2e.terrain.json'
 import showcaseDoc from './terrain/showcase.terrain.json'
@@ -13,7 +14,7 @@ import { createTerrainPanel } from './terrainPanel.ts'
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' ? sceneParam : 'world'
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' ? sceneParam : 'world'
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
   const v = Number(raw ?? 1024)
@@ -28,7 +29,8 @@ const n = worldSide(params.get('size'))
 const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
-const size: [number, number, number] = sceneName === 'diorama' ? [...DIORAMA_SIZE]
+const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
+  : sceneName === 'diorama' ? [...DIORAMA_SIZE]
   : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
   : [n, 128, n]
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
@@ -42,10 +44,12 @@ const engine = await createEngine({
   textures: paintTextures(),
   simWorker: sceneName === 'diorama'
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
+    : sceneName === 'flood'
+      ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'terrain'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
-  terrain: terrainDoc,
+  terrain: sceneName === 'flood' ? { scene: 'flood' } : terrainDoc,
   genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   sim: { randomTicksPerChunk: 24, debugFluids: params.has('debugFluids') },
   forceWebGL: params.has('webgl'),
@@ -72,6 +76,13 @@ if (sceneName === 'terrain') {
     s.pitch = 0.75
   }
   if (!editing) createTerrainPanel(engine, terrainDoc!)
+}
+if (sceneName === 'flood') {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = 128; s.target[1] = 20; s.target[2] = 128
+    s.distance = 320
+    s.pitch = 0.8
+  }
 }
 createControls(engine, { collapsed: editing })
 const editor = editing
@@ -112,4 +123,7 @@ canvas.addEventListener('pointerup', (e) => {
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
 
-Object.assign(window, { __elovox: { engine, bean, editor, ready: true } })
+const flood = sceneName === 'flood'
+  ? { breach: () => breachCommands().forEach((c) => engine.submit(c)), drop: () => dropCommands().forEach((c) => engine.submit(c)) }
+  : null
+Object.assign(window, { __elovox: { engine, bean, editor, flood, ready: true } })
