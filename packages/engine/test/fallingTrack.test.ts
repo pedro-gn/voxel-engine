@@ -121,6 +121,19 @@ describe('FallingTrack', () => {
     const excess = (f: { now: number; y: number }) => (f.now - 1003) / 50 + 100 - 1 - MARGIN - drawnTick(f.y)
     for (const f of frames.filter((f) => f.now > 1000 + 20 * 50 + 300 + 1500)) expect(Math.abs(excess(f))).toBeLessThan(FRAME / 50) // arrivals are seen up to a frame late
   })
+  it('keeps a bounded height history while no frame runs (a background tab), and draws the right height after', () => {
+    const t = new FallingTrack(50)
+    const heights = () => (t as unknown as { bodies: Map<number, { samples: unknown[] }> }).bodies.get(1)!.samples.length
+    t.update(100, [body(1, TOP, V)], [], 1000 + 3)
+    t.frame(1010, () => -1)
+    const N = 20 * 60 * 10 // ten minutes of tick messages, not one frame
+    for (let n = 1; n <= N; n++) t.update(100 + n, [body(1, TOP - V * n, V)], [], 1000 + n * 50 + 3)
+    expect(heights()).toBeLessThanOrEqual(8)
+    const now = 1000 + N * 50 + 3 + 1 // the first frame back
+    const c = t.frame(now, () => -1)
+    expect(drawnTick(c[0]!.y)).toBeCloseTo((now - 1003) / 50 + 100 - 1 - MARGIN, 6)
+    expect(heights()).toBeLessThanOrEqual(3)
+  })
   it('forgets a body that disappears without landing', () => {
     const t = new FallingTrack(50)
     t.update(0, [body(1, 300)], [], 0)

@@ -33,6 +33,11 @@ const FAST_SLEW = 0.5
 const WINDOW = 500
 /** A latency change beyond this many ticks restarts the estimate from the new arrival. */
 const RESYNC = 4
+/**
+ * Heights kept per body while no frame has run for WINDOW ms (a background tab). The first frame back slews the
+ * clock straight to the estimate, at most 1 + MARGIN + RESYNC ticks behind the newest, so older ones are never drawn.
+ */
+const IDLE_KEEP = RESYNC + 3
 /** Once its chunk mesh is in, a landed cube still gliding reaches its cell within this many ms... */
 export const RUSH_MS = 30
 /** ...but never faster than this many times terminal speed (2 blocks per tick). */
@@ -94,18 +99,19 @@ export class FallingTrack {
     while (this.arrivals[0]!.at < now - WINDOW) this.arrivals.shift()
     this.latency = Math.max(...this.arrivals.map((a) => a.s))
     this.newest = Math.max(this.newest, tick)
+    const idle = now - this.frameAt > WINDOW
     const seen = new Set<number>()
     for (const st of falling) {
       seen.add(st.id)
       const b = this.bodies.get(st.id)
-      if (b) push(b, tick, st.y256)
+      if (b) push(b, tick, st.y256, idle)
       else this.bodies.set(st.id, { voxel: st.voxel, x: st.x, z: st.z, samples: [{ tick: tick - 1, y: st.y256 + st.vy256 }, { tick, y: st.y256 }], landing: null, rush: null })
     }
     for (const l of landed) {
       const b = this.bodies.get(l.id)
       if (!b) continue // started and landed within one tick: the chunk mesh covers it
       seen.add(l.id)
-      push(b, tick, l.y * 256)
+      push(b, tick, l.y * 256, idle)
       b.landing = { chunk: l.chunk, version: l.version }
     }
     for (const [id, b] of this.bodies) if (!seen.has(id) && !b.landing) this.bodies.delete(id)
@@ -130,7 +136,10 @@ export class FallingTrack {
     }
     const out: FallingCube[] = []
     for (const [id, b] of this.bodies) {
-      while (b.samples.length > 2 && b.samples[1]!.tick <= at) b.samples.shift() // heights already drawn past
+      // Drop the heights already drawn past, keeping the one at or before `at` and at least two.
+      let cut = 0
+      while (cut < b.samples.length - 2 && b.samples[cut + 1]!.tick <= at) cut++
+      if (cut > 0) b.samples.splice(0, cut)
       let y = heightAt(b.samples, at)
       if (b.landing) {
         const land = b.samples[b.samples.length - 1]!.y
@@ -148,8 +157,9 @@ export class FallingTrack {
     return out
   }
 }
-function push(b: Tracked, tick: number, y: number): void {
+function push(b: Tracked, tick: number, y: number, idle: boolean): void {
   b.samples.push({ tick, y })
+  if (idle && b.samples.length > IDLE_KEEP) b.samples.splice(0, b.samples.length - IDLE_KEEP)
 }
 
 /** The height at fractional sim tick `at`, held at the oldest and newest samples. */
