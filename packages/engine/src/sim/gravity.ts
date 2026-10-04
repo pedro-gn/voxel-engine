@@ -67,7 +67,9 @@ export class GravitySystem {
       let land = -1
       for (let k = Math.ceil(b.y256 / 256) - 1; k >= Math.floor(target / 256); k--) {
         if (k < 0) { land = 0; break }
-        if (reg.solid[voxelId(this.port.get(b.x, k, b.z))] === 1) { land = k + 1; break }
+        const id = voxelId(this.port.get(b.x, k, b.z))
+        // A spring is a landing surface like a solid: a body never overwrites it.
+        if (reg.solid[id] === 1 || (reg.liquid[id] === 1 && reg.source[id] === 1)) { land = k + 1; break }
       }
       if (land < 0 && target < 0) land = 0
       if (land >= 0) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_FALL_256 } from '../src/sim/gravity.ts'
 import { AIR } from '../src/world/voxel.ts'
-import { B, fluidSim, lake, poolProblems, run, volume, w } from './fluidHelpers.ts'
+import { B, fluidSim, lake, poolProblems, run, spring, volume, w } from './fluidHelpers.ts'
 
 const floor = (_x: number, y: number) => (y === 0 ? B.stone : AIR)
 
@@ -41,6 +41,14 @@ describe('gravity', () => {
     run(sim, 40)
     expect(sim.store.getVoxel(7, 5, 7)).toBe(B.torch)
     expect(sim.store.getVoxel(7, 1, 7)).toBe(B.sand)
+  })
+  it('lands on a spring without overwriting it', () => {
+    const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 7 && z === 7 && y === 1 ? spring() : AIR))
+    sim.submit(0, 0, { type: 'setBlock', pos: [7, 9, 7], voxel: B.sand })
+    run(sim, 40)
+    expect(sim.store.getVoxel(7, 1, 7)).toBe(spring())
+    expect(sim.store.getVoxel(7, 2, 7)).toBe(B.sand)
+    expect(sim.gravity.count).toBe(0)
   })
   it('sinks through a pool and displaces its volume into the balance', () => {
     const sim = fluidSim(lake(4))
