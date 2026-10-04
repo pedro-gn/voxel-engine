@@ -1,0 +1,64 @@
+import { AIR } from '../../world/voxel.ts'
+import { KIND, SUB } from './constants.ts'
+
+/** A surface (1/SUB block) in eighths of a block, rounded: the cell holding it gets level round(frac × 8) − 1, air below 1/16 block. */
+export function quantize(s: number): number { return (s + SUB / 16) >> 5 }
+
+/**
+ * Water voxels as a mirror of the heightfield (spec §4 The voxel mirror). Per column it remembers what the voxels hold, so a
+ * flush writes only columns whose quantized water changed, and only the cells that differ.
+ */
+export class WaterMirror {
+  /** Per column: the floor its cells were last written from. */
+  readonly lo: Int16Array
+  /** Per column: the quantized surface (eighths) its cells hold; ~e (negative) when they must be rewritten up to e eighths. */
+  readonly q: Int32Array
+
+  constructor(n: number) {
+    this.lo = new Int16Array(n)
+    this.q = new Int32Array(n)
+  }
+
+  /** An edit touched cell y of column c: rewrite the column at the next flush, up to that cell at least. */
+  touch(c: number, y: number): void {
+    const q = this.q[c]!, extent = q < 0 ? ~q : q
+    this.q[c] = ~Math.max(extent, (y + 1) * 8)
+  }
+
+  /**
+   * Makes column c's cells match its water: full cells under the quantized surface, a partial cell at it, air above where
+   * water was, and air in cells a risen floor left under it. Walls and springs are never written; static water under the
+   * old floor is never touched. `set` is a quiet write. Returns whether it wrote anything.
+   */
+  flush(c: number, x: number, z: number, floor: number, depth: number, water: number, kind: Uint8Array, height: number,
+    get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void): boolean {
+    const nq = depth > 0 ? quantize(floor * SUB + depth) : floor * 8
+    const oq = this.q[c]!, force = oq < 0, extent = force ? ~oq : oq
+    const ol = this.lo[c]!
+    if (!force && nq === oq && floor === ol) return false
+    const from = Math.min(ol, floor)
+    const to = Math.min(height, Math.max((extent + 7) >> 3, (nq + 7) >> 3))
+    const full = nq >> 3, part = nq & 7
+    let wrote = false
+    for (let y = from; y < to; y++) {
+      const v = get(x, y, z), k = kind[v & 0xfff]!
+      if (k === KIND.WALL) continue
+      let want = AIR
+      if (y >= floor) {
+        if (y < full) want = water | (7 << 12)
+        else if (y === full && part > 0) want = water | ((part - 1) << 12)
+      }
+      if (want === AIR ? k === KIND.WATER : v !== want) {
+        set(x, y, z, want)
+        wrote = true
+      }
+    }
+    this.lo[c] = floor
+    this.q[c] = nq
+    return wrote
+  }
+
+  mixState(mix: (v: number) => void): void {
+    for (let c = 0; c < this.q.length; c++) { mix(this.lo[c]!); mix(this.q[c]!) }
+  }
+}
