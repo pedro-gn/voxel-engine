@@ -26,6 +26,38 @@ describe('FallingTrack', () => {
     expect(t.frame(140, 50, () => applied)).toEqual([])
     expect(t.size).toBe(0)
   })
+  it('glides a landed cube down to its landing cell before handing it to the chunk mesh, even when the mesh is already applied', () => {
+    const t = new FallingTrack()
+    t.update([body(1, 6 * 256 + 100, 400)], [], 0)
+    t.update([body(1, 5 * 256 + 180, 432)], [], 50)
+    t.update([], [{ id: 1, x: 3, y: 4, z: 4, chunk: 7, version: 12 }], 100) // lands 436/256 blocks below the shown cube
+    const FRAME = 1000 / 180, applied = () => 12 // the remesh is already in: only the glide holds the cube
+    let last = t.frame(100, 50, applied)[0]!.y, now = 100, held = 0, ticked = false
+    expect(last).toBeCloseTo((5 * 256 + 180) / 256, 6)
+    for (;;) {
+      now += FRAME
+      if (now > 140 && !ticked) { t.update([], [], now); ticked = true } // the next tick may arrive mid-glide: no jump either
+      const cubes = t.frame(now, 50, applied)
+      if (cubes.length === 0) break
+      const y = cubes[0]!.y
+      expect(last - y).toBeGreaterThanOrEqual(0)
+      expect(last - y).toBeLessThanOrEqual(((436 / 256) * FRAME) / 50 + 1e-9) // never more than one frame of the last segment's motion
+      last = y
+      if (++held > 100) throw new Error('never handed over')
+    }
+    expect(last).toBeCloseTo(4, 9) // hidden only once it has reached its landing cell
+    expect(t.size).toBe(0)
+  })
+  it('holds a landed cube at its landing cell until the mesh at the landing version is applied', () => {
+    const t = new FallingTrack()
+    t.update([body(1, 300)], [], 0)
+    t.update([], [{ id: 1, x: 3, y: 1, z: 4, chunk: 7, version: 12 }], 50)
+    expect(t.frame(75, 50, () => 12)).toHaveLength(1) // mid-glide: still drawn although the mesh is applied
+    expect(t.frame(100, 50, () => 11)).toEqual([{ voxel: 8, x: 3, y: 1, z: 4 }]) // at the cell, waiting for the mesh
+    t.update([], [], 100)
+    expect(t.frame(130, 50, () => 11)).toEqual([{ voxel: 8, x: 3, y: 1, z: 4 }])
+    expect(t.frame(135, 50, () => 12)).toEqual([])
+  })
   it('forgets a body that disappears without landing', () => {
     const t = new FallingTrack()
     t.update([body(1, 300)], [], 0)
