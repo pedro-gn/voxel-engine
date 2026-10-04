@@ -90,6 +90,7 @@ export class SimHost {
           this.sim = new Simulation({
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
+            fluids: { debug: msg.options.debugFluids === true },
             onNewPage: (index, page) => this.post({ type: 'page', index, page }),
             log: (message) => this.post({ type: 'log', message }),
           })

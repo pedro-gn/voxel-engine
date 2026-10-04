@@ -11,6 +11,8 @@ export interface SimInitOptions {
   randomTicksPerChunk?: number
   maxPages?: number
   tickHz?: number
+  /** Check every pool invariant after each fluid step (slow; for debugging). */
+  debugFluids?: boolean
 }
 
 /** World blocks [x0, x1) × [z0, z1), full height. */

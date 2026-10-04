@@ -23,8 +23,10 @@ export interface FluidOptions {
   fluidCap: number
   /** Units a pool pushes through one outlet or contact face per fluid step. Default 8. */
   outletRate: number
+  /** After every fluid step, check every pool invariant (whole world: slow). A violation is logged and the world rescanned. */
+  debug: boolean
 }
-export const DEFAULT_FLUID_OPTIONS: FluidOptions = { fluidEvery: 2, fluidCap: 20_000, outletRate: 8 }
+export const DEFAULT_FLUID_OPTIONS: FluidOptions = { fluidEvery: 2, fluidCap: 20_000, outletRate: 8, debug: false }
 
 /** What the fluid system needs from the Simulation. */
 export interface FluidPort {
@@ -82,7 +84,8 @@ export class FluidSystem {
     this.reg = port.registry
     this.layout = port.layout
     this.o = { ...DEFAULT_FLUID_OPTIONS, ...o }
-    for (const [k, v] of Object.entries(this.o)) {
+    for (const k of ['fluidEvery', 'fluidCap', 'outletRate'] as const) {
+      const v = this.o[k]
       if (!Number.isInteger(v) || v < 1) throw new RangeError(`fluid option ${k} must be an integer ≥ 1, got ${v}`)
     }
     this.index = new SurfaceIndex(this.layout)
@@ -862,6 +865,13 @@ export class FluidSystem {
     this.runSprings()
     this.queueResurfaces()
     this.queueSettles()
+    if (this.o.debug) {
+      const bad = this.checkInvariants()
+      if (bad.length > 0) {
+        this.port.log(`fluids: invariant check failed (${bad.length}): ${bad.slice(0, 3).join('; ')}; rescanning`)
+        this.needsRebuild = true
+      }
+    }
   }
 
   // ---- rebuild ----

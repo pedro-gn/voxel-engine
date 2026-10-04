@@ -26,13 +26,14 @@ export interface FluidSimOptions {
   jobCap?: number
   /** Replaces FLUID_BLOCKS (extend it to add liquids). */
   blocks?: BlockDef[]
+  log?: (message: string) => void
 }
 
 /** A Simulation generated from `fill`. Fluids step every tick unless `fluids.fluidEvery` says otherwise. */
 export function fluidSim(fill: Fill, o: FluidSimOptions = {}): Simulation {
   const size = o.size ?? [32, 32, 32]
   const sim = new Simulation({
-    buffers: createWorldBuffers(size), blocks: o.blocks ?? FLUID_BLOCKS, seed: o.seed ?? 1, log: () => {},
+    buffers: createWorldBuffers(size), blocks: o.blocks ?? FLUID_BLOCKS, seed: o.seed ?? 1, log: o.log ?? (() => {}),
     fluids: { fluidEvery: 1, ...o.fluids }, jobCap: o.jobCap,
   })
   const gen = defineGenerator({
