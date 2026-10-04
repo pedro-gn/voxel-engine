@@ -68,7 +68,6 @@ export class FluidSystem {
   /** From the generator's configure(). The cycle pool's surface is seaLevel − 1; 0 means no sea. */
   seaLevel = 0
   protected steps = 0
-  protected hadCycle = false
   protected cycleId = 0
   protected readonly settleQueue = new Set<number>()
   protected readonly port: FluidPort
@@ -680,8 +679,9 @@ export class FluidSystem {
 
   /**
    * Each spring pushes its rate into the cells below and beside it (air, moving water, or another pool's
-   * balance), at most FULL per cell. In a world with a sea, what it gives is debited from the sea, so total
-   * volume never changes; once that sea is gone, springs give nothing.
+   * balance), at most FULL per cell. In a world with a sea level, what it gives is debited from the sea, so total
+   * volume never changes; with no sea pool (gone, or never generated) springs give nothing. Only a world
+   * with no sea level (seaLevel 0) has infinite springs.
    */
   protected runSprings(): void {
     const cycle = this.cycle
@@ -691,7 +691,7 @@ export class FluidSystem {
       if (this.reg.source[voxelId(v)] !== 1) { this.springs.delete(s); continue }
       const g = this.reg.liquidGroup[voxelId(v)]!
       let left = SPRING_RATES[voxelState(v)]!
-      if (this.hadCycle) left = cycle ? Math.min(left, Math.max(0, cycle.grid + cycle.balance)) : 0
+      if (this.seaLevel > 0) left = cycle ? Math.min(left, Math.max(0, cycle.grid + cycle.balance)) : 0
       let given = 0
       const start = (this.steps + s) & 3
       const order: [number, number, number][] = [[0, -1, 0]]
@@ -957,7 +957,6 @@ export class FluidSystem {
       for (const p of this.pools.all()) if (p.surfaceY === this.seaLevel - 1 && (!best || p.area > best.area)) best = p
     }
     if (best) { best.cycle = true; this.cycleId = best.id }
-    this.hadCycle = best !== undefined
   }
 
   /** Every liquid voxel (springs included), chunk by chunk in index order. Reads the store directly: fast enough for a whole-world pass. */
@@ -990,7 +989,7 @@ export class FluidSystem {
 
   mixState(mix: (v: number) => void): void {
     mix(this.steps); mix(this.lost); mix(this.seaLevel); mix(this.cycleId)
-    mix((this.hadCycle ? 1 : 0) | (this.needsRebuild ? 2 : 0))
+    mix(this.needsRebuild ? 2 : 0)
     this.pools.mixState(mix)
     this.contacts.mixState(mix)
     this.active.mixState(mix)

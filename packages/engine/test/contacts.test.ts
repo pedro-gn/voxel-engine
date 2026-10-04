@@ -81,6 +81,24 @@ describe('springs', () => {
     sim.step()
     expect(volume(sim)).toBe(SPRING_RATES[5])
   })
+  it('never makes water in a world with a sea level: not once the sea is gone, not after a rebuild, not without a sea at all', () => {
+    const hillSpring = (x: number, y: number, z: number) => (x === 50 && y === 11 && z === 16 ? spring(5) : coast(x, y))
+    const sim = fluidSim(hillSpring, { size: [64, 32, 32], seaLevel: 4 })
+    sim.submit(0, 0, { type: 'fillRegion', min: [0, 1, 0], max: [39, 3, 31], voxel: AIR }) // the sea is pumped away
+    run(sim, 5)
+    expect(sim.fluids.cycle).toBeUndefined()
+    const v0 = volume(sim)
+    run(sim, 5)
+    expect(volume(sim)).toBe(v0)
+    sim.fluids.needsRebuild = true // an editor regeneration rescans the world
+    run(sim, 5)
+    expect(volume(sim)).toBe(v0)
+    // configured with a sea level, generated without a pool at seaLevel − 1
+    const dry = fluidSim((x, y, z) => (x === 50 && y === 11 && z === 16 ? spring(5) : x < 40 && y >= 1 ? AIR : coast(x, y)), { size: [64, 32, 32], seaLevel: 4 })
+    expect(dry.fluids.cycle).toBeUndefined()
+    run(dry, 5)
+    expect(volume(dry)).toBe(0)
+  })
   it('gives nothing next to the sea, stops when removed, and stays shut when walled in (review focus 5)', () => {
     const sim = fluidSim((x, y, z) => {
       if (x === 5 && y === 2 && z === 5) return spring(9)

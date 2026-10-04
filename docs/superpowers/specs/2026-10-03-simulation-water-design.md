@@ -298,9 +298,10 @@ layers' buffers. Changing only a liquid's level does not change opacity or emiss
     `seaLevel − 1`. When it splits, the largest part keeps `cycle`.
   - A spring never drives the cycle pool's true volume below zero. When the sea has no
     volume left, springs inject nothing.
-  - A world with no sea (`seaLevel` 0, or no pool at `seaLevel − 1` after generation)
-    has no cycle pool, and its springs are infinite sources. This is the one documented
-    exception to conservation.
+  - A world with no sea (`seaLevel` 0) has no cycle pool, and its springs are infinite
+    sources. This is the one documented exception to conservation. A world with a sea
+    level never has infinite springs: with no pool at `seaLevel − 1` (none generated, or
+    the sea is gone, even after a rescan) its springs inject nothing.
 - The sim learns `seaLevel` from the generator: `GeneratorModule.configure` may return
   `{ seaLevel }`, and the terrain generator returns the document's.
 
@@ -484,8 +485,8 @@ already disappear when the grass is submerged, because extraction needs air abov
 - **Conservation (property test with fuzz).** Random scenarios: dig, fill, breach, sand
   into water, springs with a sea. At every tick, total volume (cells + pool balances)
   equals the previous total plus the volume explicit commands added or removed.
-- **Springs:** the debit comes from the cycle pool; a spring with no sea is infinite; a
-  spring with an empty sea injects nothing.
+- **Springs:** the debit comes from the cycle pool; a spring with no sea level is infinite; a
+  spring with an empty or missing sea injects nothing, also after a rebuild.
 - **Region jobs:** the budget is respected, the result is atomic, the job resumes next
   tick, and a stale job restarts.
 - **Gravity:** a column falls together, the velocity cap holds, landing works on solids

@@ -18,9 +18,13 @@ describe('natural water soak', () => {
     sim.configure(terrainGenerator, e2eDoc)
     sim.generate(terrainGenerator)
     expect(sim.fluids.pools.count).toBeGreaterThan(1)
+    // seaLevel 24 with no sea at 23: its river-head spring has no sea to draw from and gives nothing, so volume is exact
+    expect(sim.fluids.springs.size).toBe(1)
+    const v0 = sim.fluids.totalVolume()
     for (let t = 0; t < 3000; t++) sim.step()
     expect(logs).toEqual([])
     expect(sim.fluids.lost).toBe(0)
+    expect(sim.fluids.totalVolume()).toBe(v0)
     expect(sim.fluids.checkInvariants()).toEqual([])
   }, 20_000)
 })
