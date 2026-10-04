@@ -102,6 +102,10 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   const root = o.root ?? document.body
 
   const session = new EditorSession(parsed.doc, { worldHeight: height, ops: registry })
+  // Editing regenerates terrain under the water; physics waits (spec §4 Editor) unless the toggle runs it.
+  const physicsWasPaused = engine.physics.paused
+  engine.physics.setPaused(true)
+  let physics = false
   const brushes = new BrushController(session, new TerrainSampler({ seed: o.seed, height, ops: registry }))
   let failedId: string | null = null
   const preview = new PreviewScheduler(engine.terrain, parsed.doc, {
@@ -173,6 +177,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
     redo: () => { endDrag(); session.redo() },
     showAll: (on) => { showAll = on; invalidate(); renderToolbar() },
     showLayers: (on) => { showLayers = on; invalidateLayers(); renderToolbar() },
+    physics: (on) => { physics = on; engine.physics.setPaused(!on); renderToolbar() },
   })
   const list = createOpList(left, registry, {
     select: (id) => session.select(id),
@@ -205,7 +210,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
   }
 
   function renderToolbar(): void {
-    toolbar.render({ fileName, dirty: session.dirty, canUndo: session.canUndo, canRedo: session.canRedo, status: preview.status, showAll, showLayers })
+    toolbar.render({ fileName, dirty: session.dirty, canUndo: session.canUndo, canRedo: session.canRedo, status: preview.status, showAll, showLayers, physics })
   }
   function renderList(): void {
     list.render(session.doc, session.selected, failedId)
@@ -562,6 +567,7 @@ export function createTerrainEditor(engine: Engine, o: TerrainEditorOptions): Te
       layerOverlay.dispose()
       left.remove()
       right.remove()
+      engine.physics.setPaused(physicsWasPaused)
     },
   }
 }

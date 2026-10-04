@@ -1,8 +1,8 @@
 import type { PreviewStatus } from '../../core/preview.ts'
 import { PANEL_STYLE, h } from './dom.ts'
 
-export interface ToolbarState { fileName: string; dirty: boolean; canUndo: boolean; canRedo: boolean; status: PreviewStatus; showAll: boolean; showLayers: boolean }
-export interface ToolbarActions { open(): void; save(): void; saveAs(): void; undo(): void; redo(): void; showAll(on: boolean): void; showLayers(on: boolean): void }
+export interface ToolbarState { fileName: string; dirty: boolean; canUndo: boolean; canRedo: boolean; status: PreviewStatus; showAll: boolean; showLayers: boolean; physics: boolean }
+export interface ToolbarActions { open(): void; save(): void; saveAs(): void; undo(): void; redo(): void; showAll(on: boolean): void; showLayers(on: boolean): void; physics(on: boolean): void }
 
 export function statusText(s: PreviewStatus): string {
   switch (s.state) {
@@ -29,6 +29,8 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
   all.addEventListener('change', () => actions.showAll(all.checked))
   const layers = h('input', { type: 'checkbox', id: 'editor-showlayers' })
   layers.addEventListener('change', () => actions.showLayers(layers.checked))
+  const physics = h('input', { type: 'checkbox', id: 'editor-physics' })
+  physics.addEventListener('change', () => actions.physics(physics.checked))
   const el = h('div', { id: 'editor-toolbar', style: PANEL_STYLE },
     h('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap' } },
       button('editor-open', 'Open', 'Open a .terrain.json file', actions.open),
@@ -37,7 +39,8 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
       undo, redo),
     file, status,
     h('label', {}, all, ' show all ops'),
-    h('label', {}, layers, ' show layers'))
+    h('label', {}, layers, ' show layers'),
+    h('label', { title: 'Run falling blocks and water while editing (regeneration rescans the water)' }, physics, ' simulate physics'))
   parent.append(el)
   return {
     el,
@@ -50,6 +53,7 @@ export function createToolbar(parent: HTMLElement, actions: ToolbarActions): { e
       status.style.color = s.status.state === 'error' ? '#c62828' : 'inherit'
       all.checked = s.showAll
       layers.checked = s.showLayers
+      physics.checked = s.physics
     },
   }
 }
