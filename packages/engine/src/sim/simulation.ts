@@ -10,6 +10,7 @@ import {
 import { diffMask, forNeighbours } from './chunkDiff.ts'
 import { FluidSystem, type FluidOptions, type WriteSource } from './fluids/fluidSystem.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
+import { GravitySystem, type FallingBodyState, type Landing } from './gravity.ts'
 import { LightEngine, RELIGHT_MARGIN } from './light.ts'
 import { JobRunner } from './jobs.ts'
 import { Pcg32, hash32 } from './rng.ts'
@@ -35,7 +36,13 @@ export interface SimulationOptions {
 }
 
 export interface SimEvent { tick: number; type: string; payload?: unknown }
-export interface TickResult { tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[] }
+export interface TickResult {
+  tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]
+  /** Bodies still falling after this tick. */
+  falling: FallingBodyState[]
+  /** Bodies that landed this tick, with their chunk's version after commit. */
+  landed: Landing[]
+}
 
 const DX = [1, -1, 0, 0, 0, 0]
 const DY = [0, 0, 1, -1, 0, 0]
@@ -52,6 +59,7 @@ export class Simulation {
   readonly epochs: Uint32Array
   readonly jobs: JobRunner
   readonly fluids: FluidSystem
+  readonly gravity: GravitySystem
   private isPaused = false
   private readonly jobCap: number
 
@@ -90,6 +98,11 @@ export class Simulation {
       write: (x, y, z, v) => sim.applySet(x, y, z, v, true, 'fluid'),
       log: (m) => sim.log(m),
     }, o.fluids)
+    this.gravity = new GravitySystem({
+      layout: this.layout, registry: this.registry,
+      get: (x, y, z) => sim.store.getVoxel(x, y, z),
+      write: (x, y, z, v) => sim.applySet(x, y, z, v, true, 'gravity'),
+    })
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
@@ -222,6 +235,7 @@ export class Simulation {
 
   step(): TickResult {
     const t = this.tick
+    this.gravity.landed = []
     const acks: Ack[] = []
     let dirtyChunks: number[] = []
     try {
@@ -259,10 +273,9 @@ export class Simulation {
         budget = this.processNeighbors(budget)
       }
       if (!this.isPaused) {
-        // 4. fluids
-        this.fluids.step(t)
-        // 5. region jobs (phase 3, gravity, is added by a later task above this line)
-        this.jobs.run(this.jobCap)
+        this.physics('gravity', () => this.gravity.step()) // 3
+        this.physics('fluids', () => this.fluids.step(t)) // 4
+        this.physics('region jobs', () => this.jobs.run(this.jobCap)) // 5
       }
       // 3. random ticks
       if (this.hasRandom) {
@@ -284,9 +297,11 @@ export class Simulation {
       dirtyChunks = this.store.commit()
       this.tick = t + 1
     }
+    const landed = this.gravity.landed
+    for (const l of landed) l.version = this.store.versions[l.chunk]!
     const events = this.events
     this.events = []
-    return { tick: t, dirtyChunks, events, acks }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed }
   }
 
   hash(): number {
@@ -304,9 +319,21 @@ export class Simulation {
       for (let i = 0; i < l32.length; i++) mix(l32[i]!)
     }
     mix(this.isPaused ? 1 : 0)
+    this.gravity.mixState(mix)
     this.fluids.mixState(mix)
     this.jobs.mixState(mix)
     return h >>> 0
+  }
+
+  /** Spec §9: a physics exception is a bug, not content. Log it, finish the tick, heal fluids through a rescan. */
+  private physics(name: string, fn: () => void): void {
+    try {
+      fn()
+    } catch (e) {
+      if (e instanceof WorldFullError) throw e
+      this.log(`${name} error tick=${this.tick}: ${e instanceof Error ? e.message : String(e)}`)
+      if (name !== 'gravity') this.fluids.needsRebuild = true
+    }
   }
 
   private applyCommand(cmd: Command): void {
@@ -336,6 +363,7 @@ export class Simulation {
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
     this.fluids.afterWrite(x, y, z, old, v, source, owner)
+    this.gravity.afterWrite(x, y, z, v)
     if (!notify || !this.hasNeighborRules) return
     this.neighbors.push(this.layout.voxelIndex(x, y, z))
     for (let d = 0; d < 6; d++) {

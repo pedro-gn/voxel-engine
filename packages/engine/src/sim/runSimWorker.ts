@@ -19,4 +19,5 @@ export type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModul
 export { defineGenerator } from './generator.ts'
 export type { GeneratorConfig, GeneratorContext, GeneratorInfo, GeneratorModule } from './generator.ts'
 export type { FluidOptions, WriteSource } from './fluids/fluidSystem.ts'
+export type { FallingBodyState, Landing } from './gravity.ts'
 export { testGenerator } from './testGenerator.ts'

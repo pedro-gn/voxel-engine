@@ -82,13 +82,18 @@ export class JobRunner {
       if (e.reader.stale()) { e.job.reset(); e.reader.reset(); e.restarts++ }
       const unbounded = e.restarts >= MAX_RESTARTS
       if (!unbounded && budget <= 0) return
-      budget -= e.job.step(e.reader, unbounded ? Infinity : budget)
-      if (!e.job.done) {
+      let finished = false
+      try {
+        budget -= e.job.step(e.reader, unbounded ? Infinity : budget)
+        if (e.job.done) { this.queue.shift(); finished = true; e.job.finish() }
+      } catch (err) {
+        if (!finished) this.queue.shift() // a job that throws is dropped, so it cannot fail every tick
+        throw err
+      }
+      if (!finished) {
         if (unbounded) throw new Error(`region job "${e.job.kind}" did not finish with an unbounded budget`)
         return
       }
-      this.queue.shift()
-      e.job.finish()
     }
   }
 
