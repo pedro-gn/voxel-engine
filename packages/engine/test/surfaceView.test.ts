@@ -287,6 +287,62 @@ describe('SurfaceView, displayed alpha', () => {
     step(3 * SUB)
     expect(at(view, 10, 10, 'hPrev')).toEqual([4, 4, 4, 4])
   })
+
+  /**
+   * Tile 0's lake rises by a block and settles (its re-send) while drawn at alpha 0.6; then only `far` tiles publish, each
+   * applied at alpha 0.5 (the alpha drawn just before). Returns, per later apply, how far `drawnAt` moved (`jumps`) and moved
+   * back (`back`; the lake rises) between the frame before it (alpha 0.5) and right after it (alpha 0, as the engine draws).
+   */
+  function settleThenFar(sx: number, floor: (x: number) => number, far: number[], drawnAt: (view: SurfaceView, a: number) => number[]) {
+    const s = scene(sx, 32, floor, () => SUB)
+    s.publish()
+    s.publish([]) // loaded and settled
+    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) if (floor(x) === 2) s.cols.depth[x + z * sx] = 2 * SUB
+    expect(s.view.apply(s.pub.publish([0], s.cols)!, 0.9)).toBe(true)
+    expect(s.view.apply(s.pub.publish([], s.cols)!, 0.6)).toBe(true) // the settling re-send
+    const jumps: number[] = [], back: number[] = []
+    for (let n = 0; n < 12; n++) {
+      const before = drawnAt(s.view, 0.5)
+      // The far tiles change every time, so each apply refreshes them (and, around them, nothing near tile 0).
+      for (const t of far) {
+        const x0 = (t % (sx / 16)) * 16, z0 = Math.floor(t / (sx / 16)) * 16
+        for (let z = z0; z < z0 + 16; z++) for (let x = x0; x < x0 + 16; x++) s.cols.depth[x + z * sx] = SUB + (n % 2) * 16
+      }
+      expect(s.view.apply(s.pub.publish(far, s.cols)!, 0.5)).toBe(true)
+      const after = drawnAt(s.view, 0)
+      jumps.push(Math.max(...before.map((v, k) => Math.abs(Math.fround(v) - after[k]!))))
+      back.push(Math.max(...before.map((v, k) => Math.fround(v) - after[k]!)))
+    }
+    return { ...s, jumps, back }
+  }
+
+  it('moves a quad that settled before it was drawn to its end on to its end at the next applies, never back', () => {
+    const { view, jumps, back } = settleThenFar(32, () => 2, [3], (v, a) => drawn(v, 5, 5, a))
+    // Each apply starts it where it was drawn; the last one snaps it the rest of the way (under 1/256 block) to its end.
+    expect(Math.max(...back)).toBeLessThanOrEqual(0)
+    expect(Math.max(...jumps)).toBeLessThan(1 / 256)
+    expect(at(view, 5, 5, 'hCur')).toEqual([4, 4, 4, 4])
+    expect(at(view, 5, 5, 'hPrev')).toEqual([4, 4, 4, 4]) // and it reached its end
+  })
+
+  it('moves a curtain of a chunk column no later apply touches on to its end too', () => {
+    const curtain = (view: SurfaceView) => {
+      const cs = view.column(0)!.curtains
+      for (let k = 0; k < cs.count; k++) if (cs.info[k * 4] === 10 && cs.info[k * 4 + 1] === 5 && cs.info[k * 4 + 2]! % 4 === 0) return k
+      throw new Error('no curtain at (10, 5) +x')
+    }
+    const drawnCurtain = (view: SurfaceView, a: number) => {
+      const cs = view.column(0)!.curtains, o = curtain(view) * 4
+      return [0, 1, 2, 3].map((k) => cs.prev[o + k]! + (cs.cur[o + k]! - cs.prev[o + k]!) * a)
+    }
+    // Chunk column 0 holds the ledge and tile 0; tiles 3 and 7 lie in chunk column 1.
+    const { view, jumps, back } = settleThenFar(64, (x) => (x <= 10 ? 6 : 2), [3, 7], drawnCurtain)
+    expect(Math.max(...back)).toBeLessThanOrEqual(0)
+    expect(Math.max(...jumps)).toBeLessThan(1 / 256)
+    const cs = view.column(0)!.curtains, o = curtain(view) * 4
+    expect(cs.cur[o + 2]).toBe(4) // its bottom: the risen lake
+    expect([...cs.prev.subarray(o, o + 4)]).toEqual([...cs.cur.subarray(o, o + 4)])
+  })
 })
 
 /** Where the columns' corners or the chunk columns' curtains differ from cornerHeights and curtainAt on view.prev / cur. */

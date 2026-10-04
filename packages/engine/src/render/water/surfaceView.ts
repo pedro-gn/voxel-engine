@@ -124,6 +124,16 @@ export class SurfaceView {
   private readonly carryTag = new Int32Array(4096)
   private readonly carryVal = new Float32Array(4096 * 4)
   private carryToken = 0
+  /**
+   * Alpha mode (apply given `shown`): the columns the last apply left drawn with hPrev ≠ hCur, and the chunk columns with
+   * such a curtain. Their tiles may never be listed again, so each apply carries them on to where they are drawn
+   * (settleRest) until they reach their end; otherwise every later apply, resetting alpha, would draw them back.
+   */
+  private moving: number[] = []
+  private nextMoving: number[] = []
+  /** Per column: the epoch of the apply that put it in nextMoving. */
+  private readonly movingMark: Uint16Array
+  private curtainsMoving: number[] = []
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -150,6 +160,7 @@ export class SurfaceView {
     this.tileChanged = new Uint16Array(this.seen.length)
     this.tileListed = new Uint16Array(this.seen.length)
     this.tileFresh = new Uint16Array(this.seen.length)
+    this.movingMark = new Uint16Array(this.n)
     this.tileSettled = new Uint8Array(this.seen.length).fill(1)
     this.touchedFlag = new Uint8Array(this.cx * this.cz)
     this.dirtyFlag = new Uint8Array(this.cx * this.cz)
@@ -237,10 +248,15 @@ export class SurfaceView {
     this.lastCc = -1
     this.shown = shown ?? -1
     for (const tile of tiles) if (this.tileChanged[tile] === e) this.refreshTile(tile, e)
+    const carrying = this.shown >= 0
+    if (carrying) this.settleRest(e)
     for (const cc of this.touched) {
       this.touchedFlag[cc] = 0
       const d = this.data[cc]
-      if (d) { this.buildCurtains(cc, d, this.shown); this.markDirty(cc) }
+      if (!d) continue
+      this.buildCurtains(cc, d, this.shown)
+      this.markDirty(cc)
+      if (carrying && settleCurtains(d.curtains)) this.curtainsMoving.push(cc)
     }
     this.touched.length = 0
     this.shown = -1
@@ -273,6 +289,55 @@ export class SurfaceView {
     if (any) this.markDirty(cc)
   }
 
+  /**
+   * Alpha mode, after the refresh: carries every column the last apply left moving that this one did not refresh to where
+   * it is drawn (hPrev ← mix(hPrev, hCur, shown)), snaps the moving columns within SETTLED of their end and keeps the rest
+   * for the next apply. The chunk columns of moved quads and of moving curtains are touched: their curtains are rebuilt
+   * with the carry.
+   */
+  private settleRest(e: number): void {
+    const a = this.shown, sx = this.sx
+    for (const c of this.moving) {
+      if (this.refreshed[c] === e) continue // refreshed: carried already, and listed again if still moving
+      const x = c % sx, z = (c - x) / sx, cc = (x >> 5) + (z >> 5) * this.cx, d = this.data[cc]
+      const o = ((x & 31) + (z & 31) * 32) * 4
+      if (!d || d.info[o + 3]! < 0) continue
+      const hp = d.hPrev, hc = d.hCur
+      for (let k = o; k < o + 4; k++) hp[k] = hp[k]! + (hc[k]! - hp[k]!) * a
+      d.mark(z & 31)
+      this.markDirty(cc)
+      this.touch(cc)
+      this.track(c)
+    }
+    const next = this.nextMoving
+    let w = 0
+    for (const c of next) {
+      const x = c % sx, z = (c - x) / sx, cc = (x >> 5) + (z >> 5) * this.cx, d = this.data[cc]!
+      const o = ((x & 31) + (z & 31) * 32) * 4, hp = d.hPrev, hc = d.hCur
+      let far = false, apart = false
+      for (let k = o; k < o + 4; k++) {
+        const g = Math.abs(hc[k]! - hp[k]!)
+        if (g >= SETTLED) far = true
+        else if (g > 0) apart = true
+      }
+      if (far) { next[w++] = c; continue }
+      if (apart) { hp.set(hc.subarray(o, o + 4), o); d.mark(z & 31); this.markDirty(cc) }
+    }
+    next.length = w
+    this.nextMoving = this.moving
+    this.nextMoving.length = 0
+    this.moving = next
+    for (const cc of this.curtainsMoving) this.touch(cc)
+    this.curtainsMoving.length = 0
+  }
+
+  /** Alpha mode: lists column c (just refreshed or carried, drawn) for the end of this apply's settleRest. */
+  private track(c: number): void {
+    if (this.movingMark[c] === this.epoch) return
+    this.movingMark[c] = this.epoch
+    this.nextMoving.push(c)
+  }
+
   private defer(tiles: readonly number[]): false {
     this.pending = tiles
     this.again = []
@@ -286,6 +351,7 @@ export class SurfaceView {
       this.tileChanged.fill(0)
       this.tileListed.fill(0)
       this.tileFresh.fill(0)
+      this.movingMark.fill(0)
       this.epoch = 1
     }
     return this.epoch
@@ -420,6 +486,7 @@ export class SurfaceView {
     d.info[o + 2] = depth * PER_SUB
     d.info[o + 3] = (l & 15) * 16 + (l >> 4) + 256 * white
     d.curtainMask[i] = prevBits | (curBits << 4)
+    if (a >= 0) this.track(c)
   }
 
   /** White water (0–15) at the foot of a curtain from halo cell j onto a column at effective value ec, carrying `into`. */
@@ -486,6 +553,21 @@ export class SurfaceView {
       default: return -this.fluxZ[c - this.sx]!
     }
   }
+}
+
+/** Heights (blocks) closer than this to their end are snapped to it in alpha mode (SurfaceView.settleRest). */
+const SETTLED = 1 / 256
+
+/** Snaps the curtains within SETTLED of their end (prev ← cur); returns whether any is still farther. */
+function settleCurtains(cs: Curtains): boolean {
+  let moving = false
+  for (let o = 0; o < cs.count * 4; o += 4) {
+    let far = false
+    for (let k = o; k < o + 4; k++) if (Math.abs(cs.cur[k]! - cs.prev[k]!) >= SETTLED) far = true
+    if (far) moving = true
+    else for (let k = o; k < o + 4; k++) cs.prev[k] = cs.cur[k]!
+  }
+  return moving
 }
 
 /** vertexShares for the vertex whose columns are halo cells a, a + 1, b, b + 1 of the effective values e. */
