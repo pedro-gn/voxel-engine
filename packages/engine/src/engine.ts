@@ -15,6 +15,7 @@ import { Visuals } from './render/visuals.ts'
 import { FallingTrack } from './render/fallingTrack.ts'
 import { SimClock, stepAlpha } from './render/simClock.ts'
 import { SurfaceView } from './render/water/surfaceView.ts'
+import { CostMeter } from './render/costMeter.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
@@ -78,6 +79,8 @@ export interface EngineStats {
   waterTiles: number; waterColumns: number; regionJobs: number
   /** True while a water tile was awake, a region job queued or a block falling after the last tick. */
   physicsBusy: boolean
+  /** Main-thread cost (ms) of reading a water publish into the surface view: the last one and the p95 of the last 200. */
+  waterApplyMs: number; waterApplyP95: number
   /** GPU render time in ms; null when not tracked or unsupported. */
   gpuMs: number | null
 }
@@ -374,6 +377,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
   let physicsStats = { waterTiles: 0, waterColumns: 0, jobs: 0, busy: false }
+  const waterApply = new CostMeter(200)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
     switch (m.type) {
@@ -399,7 +403,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         falling.update(m.tick, m.falling, m.landed, performance.now())
         if (m.water) {
           // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
-          if (waterView.apply(m.water, waterShown)) { waterTick = m.tick; waterShown = 0; clock.hold(waterView, m.tick + 1) }
+          const t0 = performance.now(), applied = waterView.apply(m.water, waterShown)
+          waterApply.record(performance.now() - t0)
+          if (applied) { waterTick = m.tick; waterShown = 0; clock.hold(waterView, m.tick + 1) }
         } else clock.hold(waterView, null) // every tile settled (prev = cur): nothing to time
         relightWater(m.dirtyChunks)
         physicsStats = m.physics
@@ -590,6 +596,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
         fallingBodies: falling.size, waterTiles: physicsStats.waterTiles, waterColumns: physicsStats.waterColumns, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
+        waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
       }
     },
     dispose,

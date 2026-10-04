@@ -28,5 +28,10 @@ test('the flood scene draws its lake and sea as heightfield water, with no conso
   expect(lake!.packed).toBeGreaterThanOrEqual(0)
   for (const h of lake!.h) expect(Math.abs(h - 25)).toBeLessThan(0.5)
   await page.waitForTimeout(3000) // a few frames with the water shaders compiled and drawing
+  // The main thread's water apply cost is measured (the first publish was applied above) and shown on the HUD.
+  const stats = await page.evaluate(() => (window as W).__elovox!.engine.stats())
+  expect(stats.waterApplyMs).toBeGreaterThanOrEqual(0)
+  expect(stats.waterApplyP95).toBeGreaterThan(0)
+  expect(await page.locator('#hud').textContent()).toMatch(/water apply \d+\.\d\d ms \(p95 \d+\.\d\d\)/)
   expect(errors).toEqual([])
 })
