@@ -15,6 +15,7 @@ import { JobRunner } from './jobs.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModule } from './rules.ts'
 import { Scheduler } from './scheduler.ts'
+import type { WaterTick } from './water/publish.ts'
 import { WaterSystem, type WaterOptions } from './water/waterSystem.ts'
 
 export interface SimulationOptions {
@@ -45,6 +46,8 @@ export interface TickResult {
   landed: Landing[]
   /** Awake water tiles, the wet columns in them and queued region jobs after this tick; busy: a tile is awake, a job is queued or a body falls. */
   physics: { waterTiles: number; waterColumns: number; jobs: number; busy: boolean }
+  /** The heightfield tiles published this tick (null: none changed); the main thread reads them from shared memory. */
+  water: WaterTick | null
 }
 
 const DX = [1, -1, 0, 0, 0, 0]
@@ -306,7 +309,7 @@ export class Simulation {
     const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 }
     const events = this.events
     this.events = []
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published }
   }
 
   hash(): number {

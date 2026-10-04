@@ -8,6 +8,7 @@ import { KIND, MIN_FLOW, SUB, TILE } from './constants.ts'
 import { WaterCycle } from './cycle.ts'
 import { applyEdit, type ColumnCells, type EditColumn } from './edits.ts'
 import { WaterMirror } from './mirror.ts'
+import { WaterPublisher, type WaterTick } from './publish.ts'
 import { rebuildColumns, waterKinds } from './rebuild.ts'
 
 export interface WaterOptions {
@@ -46,6 +47,9 @@ export class WaterSystem {
   needsRebuild = false
   /** Σ depth + sea as physics must keep it; only edits and rebuilds move it. The debug check compares against it. */
   expected = 0
+  /** The last flush's publish, or null when nothing changed: the tick message carries it to the main thread. */
+  published: WaterTick | null = null
+  private readonly publisher: WaterPublisher
   private steps = 0
   private readonly port: WaterPort
   private readonly layout: Layout
@@ -75,6 +79,7 @@ export class WaterSystem {
     this.cols.floor.fill(0) // an empty world: every column dry on the world floor
     this.cycle = new WaterCycle(sx * sz)
     this.mirror = new WaterMirror(sx * sz)
+    this.publisher = new WaterPublisher(port.buffers)
     this.get = (x, y, z) => port.get(x, y, z)
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
     const sys = this
@@ -163,6 +168,7 @@ export class WaterSystem {
 
   /** Rewrites the mirror of every dirty tile (every tick, paused or not); returns those tiles in index order and clears them. */
   flush(): number[] {
+    this.published = null
     const out: number[] = []
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
@@ -175,6 +181,7 @@ export class WaterSystem {
         this.mirror.flush(c, x, z, cols.floor[c]!, cols.depth[c]!, this.water, this.kind, this.height, this.get, this.set)
       })
     }
+    this.published = this.publisher.publish(out, cols)
     return out
   }
 
