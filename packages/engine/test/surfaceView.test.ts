@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SINK, quantizeFlow } from '../src/render/water/surfaceMesh.ts'
+import {
+  CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, SINK, cornerHeights, curtainAt, level, quantizeFlow, shows,
+} from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB } from '../src/sim/water/constants.ts'
@@ -138,8 +140,169 @@ describe('SurfaceView', () => {
     publish()
     expect(view.takeDirty()).toEqual([0, 1])
     expect(view.takeDirty()).toEqual([])
+    expect(view.takeDirty()).toBe(view.takeDirty()) // nothing new: no fresh array per frame
+  })
+
+  it('settles a tile first applied through recovery on the next successful apply', () => {
+    const s = scene(32, 32, () => 2, () => SUB)
+    s.publish()
+    s.cols.depth[5 + 5 * 32] = 3 * SUB // tile 0 changes at publish k
+    const k = s.pub.publish([0], s.cols)!
+    s.cols.depth[20 + 5 * 32] = 3 * SUB
+    const k1 = s.pub.publish([1], s.cols)!
+    s.cols.depth[5 + 20 * 32] = 3 * SUB
+    const k2 = s.pub.publish([2], s.cols)! // reuses k's buffer; lists tiles 1 and 2 only
+    expect(s.view.apply(k)).toBe(false)
+    expect(s.view.apply(k1)).toBe(true)
+    expect(s.view.apply(k2)).toBe(true)
+    expect(at(s.view, 5, 5, 'hPrev')).toEqual([5, 5, 5, 5])
+    expect(at(s.view, 5, 5, 'hCur')).toEqual([5, 5, 5, 5])
+    expect(at(s.view, 20, 5, 'hPrev')).toEqual([5, 5, 5, 5])
+  })
+
+  it('gives neighbouring quads the same corners on a diagonal slope (no crack without a curtain)', () => {
+    const s = scene(32, 32, () => 2, (x, z) => SUB + Math.round(0.8 * SUB * (x + z)))
+    s.publish()
+    expect(cracks(s.view, s.cols.floor)).toEqual([])
+    expect(s.view.column(0)!.curtains.count).toBe(0)
+  })
+
+  it('gives neighbouring quads the same corners along a sloped shoreline', () => {
+    // The film rises 7/8 block per column along x; the dry ground beside it (z > 10) lies within JOIN of the low end only.
+    const s = scene(32, 32, () => 2, (x, z) => (z <= 10 && x < 4 ? SUB / 4 + 224 * x : 0))
+    s.publish()
+    expect(cracks(s.view, s.cols.floor)).toEqual([])
+  })
+
+  it('takes only the columns inside the world at its border', () => {
+    const { view, publish } = scene(32, 32, () => 2, (x) => (x === 0 ? SUB / 4 : 0))
+    publish()
+    expect(at(view, 0, 5, 'hCur')).toEqual([2.25, 2.125, 2.125, 2.25])
+    expect(at(view, 0, 0, 'hCur')).toEqual([2.25, 2.125, 2.125, 2.25])
+    expect(at(view, 0, 31, 'hCur')).toEqual([2.25, 2.125, 2.125, 2.25])
+  })
+
+  it('writes the quantized flow, depth and white water from speed into info', () => {
+    const s = scene(32, 32, () => 2, () => SUB)
+    const fx = (x: number, z: number, v: number) => { s.cols.flux[2 * (x + z * 32)] = v * 16 }
+    const fz = (x: number, z: number, v: number) => { s.cols.flux[2 * (x + z * 32) + 1] = v * 16 }
+    fx(9, 5, 64); fx(10, 5, 64) // 64 sub per step through both x edges: 5 blocks/s, steep
+    fz(20, 19, -4); fz(20, 20, -4) // 0.3125 blocks/s toward −z: gentle
+    fx(24, 10, 64); fx(25, 10, 64); fz(25, 9, 64); fz(25, 10, 64) // diagonal, 7.07 blocks/s
+    s.publish()
+    expect(at(s.view, 10, 5, 'info')).toEqual([2.5, 0, 1, LIT + 256 * 14]) // white round((5 − 1.5) × 4)
+    const g = at(s.view, 20, 20, 'info')
+    expect(g[0]).toBeCloseTo(0)
+    expect(g[1]).toBeCloseTo(-1)
+    expect(g.slice(2)).toEqual([1, LIT])
+    const d = at(s.view, 25, 10, 'info')
+    expect(d[0]).toBeCloseTo(2.5 * Math.SQRT1_2)
+    expect(d[1]).toBeCloseTo(2.5 * Math.SQRT1_2)
+    expect(d.slice(2)).toEqual([1, LIT + 256 * 15])
   })
 })
+
+describe('SurfaceView, incremental', () => {
+  it('matches corners and curtains computed from scratch, through random changes, ledges and falling behind', () => {
+    let seed = 7
+    const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32 }
+    const S = 64, T = S / 16
+    const s = scene(S, S, (x, z) => 2 + (((x >> 3) + (z >> 2)) % 3) * ((x + z) % 7 === 0 ? 2 : 1), () => 0)
+    const { cols, pub, view } = s
+    for (let c = 0; c < S * S; c++) cols.depth[c] = rand() < 0.6 ? Math.floor(rand() * 3 * SUB) : 0
+    // Half the tiles come in later, through random changes: their first apply refreshes around them from scratch.
+    view.apply(pub.publish(Array.from({ length: T * T / 2 }, (_, t) => 2 * t), cols)!)
+    const queue: ReturnType<typeof pub.publish>[] = []
+    let checks = 0
+    for (let tick = 0; tick < 80; tick++) {
+      const changed = new Set<number>()
+      const n = 1 + Math.floor(rand() * 4)
+      for (let m = 0; m < n; m++) {
+        const tile = Math.floor(rand() * T * T), x0 = (tile % T) * 16, z0 = Math.floor(tile / T) * 16
+        changed.add(tile)
+        for (let z = z0; z < z0 + 16; z++) for (let x = x0; x < x0 + 16; x++) {
+          const c = x + z * S, r = rand()
+          cols.depth[c] = r < 0.1 ? 0 : r < 0.2 ? 2 * SUB : Math.max(0, cols.depth[c]! + Math.floor((rand() - 0.5) * 160))
+          cols.flux[2 * c] = Math.floor((rand() - 0.5) * 1000)
+          cols.flux[2 * c + 1] = Math.floor((rand() - 0.5) * 1000)
+        }
+      }
+      queue.push(pub.publish([...changed].sort((a, b) => a - b), cols))
+      if (rand() < 0.15) continue // fall behind: the next apply may find this buffer reused
+      for (const t of queue.splice(0)) if (t && view.apply(t)) { expect(fromScratch(view, cols.floor)).toEqual([]); checks++ }
+    }
+    expect(checks).toBeGreaterThan(50)
+  })
+})
+
+/** Where the columns' corners or the chunk columns' curtains differ from cornerHeights and curtainAt on view.prev / cur. */
+function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
+  const { sx, sz, prev, cur } = view
+  const bad: string[] = []
+  const same = (a: ArrayLike<number>, b: ArrayLike<number>) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]
+  const k = new Float32Array(16)
+  for (let cc = 0; cc < view.cx * view.cz; cc++) {
+    const d = view.column(cc)
+    const x0 = (cc % view.cx) * 32, z0 = Math.floor(cc / view.cx) * 32
+    const want: string[] = []
+    for (let lz = 0; lz < 32; lz++) for (let lx = 0; lx < 32; lx++) {
+      const x = x0 + lx, z = z0 + lz, c = x + z * sx, o = (lx + lz * 32) * 4
+      const drawn = shows(prev[c]!, floor[c]!) || shows(cur[c]!, floor[c]!)
+      if (!drawn) { if (d && d.info[o + 3] !== -1) bad.push(`${x},${z} shown`); continue }
+      if (!d || d.info[o + 3]! < 0) { bad.push(`${x},${z} hidden`); continue }
+      cornerHeights(prev, floor, sx, sz, x, z, k, 0)
+      cornerHeights(cur, floor, sx, sz, x, z, k, 4)
+      if (!same(d.hPrev.subarray(o, o + 4), k.subarray(0, 4))) bad.push(`${x},${z} hPrev ${d.hPrev.subarray(o, o + 4)} vs ${k.subarray(0, 4)}`)
+      if (!same(d.hCur.subarray(o, o + 4), k.subarray(4, 8))) bad.push(`${x},${z} hCur ${d.hCur.subarray(o, o + 4)} vs ${k.subarray(4, 8)}`)
+      for (let dir = 0; dir < 4; dir++) {
+        const jx = x + DIR_X[dir]!, jz = z + DIR_Z[dir]!
+        if (jx < 0 || jz < 0 || jx >= sx || jz >= sz) continue
+        const j = jx + jz * sx, was = curtainAt(prev, floor, c, j), now = curtainAt(cur, floor, c, j)
+        if (!was && !now) continue
+        // Expected (top A, top B, bottom A, bottom B) per step; an absent curtain rolls up to its top.
+        const jp = cornerHeights(prev, floor, sx, sz, jx, jz, k, 8), jc = cornerHeights(cur, floor, sx, sz, jx, jz, k, 12)
+        const [ta, tb] = CURTAIN_TOP[dir]!, [ba, bb] = CURTAIN_BOTTOM[dir]!
+        const gp = Math.fround(level(prev[j]!) / SUB), gc = Math.fround(level(cur[j]!) / SUB)
+        const p = was ? [k[ta]!, k[tb]!, jp ? k[8 + ba]! : gp, jp ? k[8 + bb]! : gp] : [k[ta]!, k[tb]!, k[ta]!, k[tb]!]
+        const q = now ? [k[4 + ta]!, k[4 + tb]!, jc ? k[12 + ba]! : gc, jc ? k[12 + bb]! : gc] : [k[4 + ta]!, k[4 + tb]!, k[4 + ta]!, k[4 + tb]!]
+        want.push(`${lx},${lz},${dir}: ${p.join(' ')} | ${q.join(' ')}`)
+      }
+    }
+    const got: string[] = []
+    if (d) {
+      const cs = d.curtains
+      for (let n = 0; n < cs.count; n++) {
+        const o = n * 4
+        got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${[...cs.prev.subarray(o, o + 4)].join(' ')} | ${[...cs.cur.subarray(o, o + 4)].join(' ')}`)
+      }
+    }
+    if (got.join('/') !== want.join('/')) bad.push(`curtains of ${cc}: ${got.join('/')} vs ${want.join('/')}`)
+  }
+  return bad
+}
+
+/** Edge-adjacent drawn columns within JOIN of each other whose shared corners differ: "x,z +x|+z: a vs b". */
+function cracks(view: SurfaceView, floor: Int16Array): string[] {
+  const out: string[] = []
+  const h = (x: number, z: number, k: number) => at(view, x, z, 'hCur')[k]!
+  for (let z = 0; z < view.sz; z++) for (let x = 0; x < view.sx; x++) {
+    const c = x + z * view.sx
+    if (!shows(view.cur[c]!, floor[c]!)) continue
+    const pairs: [number, number, number, number, number, number][] = [
+      [x + 1, z, 1, 0, 2, 3], // +x neighbour: my (+x,−z) = its (−x,−z), my (+x,+z) = its (−x,+z)
+      [x, z + 1, 3, 0, 2, 1], // +z neighbour: my (−x,+z) = its (−x,−z), my (+x,+z) = its (+x,−z)
+    ]
+    for (const [jx, jz, a1, b1, a2, b2] of pairs) {
+      if (jx >= view.sx || jz >= view.sz) continue
+      const j = jx + jz * view.sx
+      if (!shows(view.cur[j]!, floor[j]!) || Math.abs(view.cur[j]! - view.cur[c]!) > JOIN) continue
+      if (h(x, z, a1) !== h(jx, jz, b1) || h(x, z, a2) !== h(jx, jz, b2)) {
+        out.push(`${x},${z} ${jx > x ? '+x' : '+z'}: ${h(x, z, a1)},${h(x, z, a2)} vs ${h(jx, jz, b1)},${h(jx, jz, b2)}`)
+      }
+    }
+  }
+  return out
+}
 
 describe('quantizeFlow', () => {
   it('quantizes the ripple flow to 8 directions and still / gentle / steep', () => {
