@@ -13,8 +13,8 @@ export interface ChunkMaterials {
 /** `layerScales`: blocks spanned by one repeat of each texture-array layer (see `layerScales` in tiles.ts); omit for 1 everywhere. */
 export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightUniforms, layerScales?: Float32Array): ChunkMaterials {
   const scales = layerScales && layerScales.some((s) => s !== 1) ? uniformArray(Array.from(layerScales), 'float') : undefined
-  function build(mode: 'opaque' | 'cutout' | 'translucent'): VoxelNodeMaterial {
-    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0])
+  function build(mode: 'opaque' | 'cutout' | 'translucent', liquid = false): VoxelNodeMaterial {
+    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid)
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
     const albedo = texture(tex, v.uv).depth(v.layer.add(0.5).toInt())
@@ -32,5 +32,5 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     }
     return m
   }
-  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent'), liquid: build('translucent') }
+  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent'), liquid: build('translucent', true) }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AO_CURVE, flipDiagonal, vertexAO } from '../src/mesh/ao.ts'
-import { packA, packB, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { FLOW, flowCode, packA, packB, packFlow, unpackA, unpackB, unpackFlow } from '../src/mesh/vertexFormat.ts'
 
 describe('vertex format', () => {
   it('round-trips word A at its limits', () => {
@@ -27,5 +27,22 @@ describe('ambient occlusion', () => {
     expect(flipDiagonal(3, 0, 0, 0)).toBe(true)
     expect(flipDiagonal(0, 3, 0, 0)).toBe(false)
     expect(flipDiagonal(1, 1, 1, 1)).toBe(false)
+  })
+})
+
+describe('flow bits', () => {
+  it('round-trips every flow code through a liquid vertex without touching its other fields', () => {
+    for (let code = 0; code < 32; code++) {
+      const a0 = packA(31, 32, 7, 2, 1, 3, 17), b0 = packB(511, 9, 4, 1, 1)
+      const [a, b] = packFlow(a0, b0, code)
+      expect(unpackFlow(a, b)).toBe(code)
+      expect(unpackA(a)).toEqual(unpackA(a0))
+      expect(unpackB(b).layer & 511).toBe(511)
+      expect(unpackB(b).sky).toBe(9)
+    }
+  })
+  it('builds moving codes', () => {
+    expect(flowCode(3, false)).toBe(FLOW.MOVING | 3)
+    expect(flowCode(10, true)).toBe(FLOW.MOVING | FLOW.STEEP | 2)
   })
 })

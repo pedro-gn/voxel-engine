@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { liquidHeight, meshTranslucent } from '../src/mesh/liquid.ts'
 import { Mesher, meshChunk } from '../src/mesh/mesher.ts'
 import { QuadBuilder } from '../src/mesh/quadBuilder.ts'
-import { FACE, unpackA } from '../src/mesh/vertexFormat.ts'
+import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
+import { meshTablesFrom } from '../src/mesh/tables.ts'
+import { FACE, FLOW, unpackA, unpackFlow } from '../src/mesh/vertexFormat.ts'
 import type { ChunkSnapshot } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
-import { ID } from './helpers.ts'
+import { ID, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
 
 const tables = meshTables()
@@ -108,5 +110,59 @@ describe('Mesher', () => {
     put(s, 2, 1, 1, ID.stone)
     put(s, 5, 1, 1, water(7))
     expect(meshChunk(s, tables)).toEqual(new Mesher().mesh(s, tables))
+  })
+})
+
+describe('liquid groups, springs and flow', () => {
+  const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
+  const SPRING_ID = 8
+  const t2 = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
+  const liquidOf = (s: ChunkSnapshot) => { const t = new QuadBuilder(), l = new QuadBuilder(); meshTranslucent(s, t2, t, l); return l.build() }
+  const faces = (m: ReturnType<typeof liquidOf>, normal: number) => {
+    const out: { a: number; b: number }[] = []
+    if (m) for (let i = 0; i < m.vertices.length; i += 8) if (unpackA(m.vertices[i]!).normal === normal) out.push({ a: m.vertices[i]!, b: m.vertices[i + 1]! })
+    return out
+  }
+
+  it('draws no face between water and its spring', () => {
+    const s = emptySnap()
+    put(s, 5, 5, 5, water(0))
+    put(s, 6, 5, 5, packVoxel(SPRING_ID, 3))
+    const m = liquidOf(s)
+    expect(faces(m, FACE.PX).length + faces(m, FACE.NX).length).toBe(2) // only the outer -x of the water and +x of the spring
+  })
+  it('draws a spring at full level whatever its state', () => {
+    const s = emptySnap()
+    put(s, 6, 5, 5, packVoxel(SPRING_ID, 3))
+    const tops = faces(liquidOf(s), FACE.PY)
+    expect(tops).toHaveLength(1)
+    expect(unpackA(tops[0]!.a).drop).toBe(Math.round((1 - liquidHeight(7)) * 16))
+  })
+  it('points the top-face flow downhill and leaves flat water still', () => {
+    const s = emptySnap()
+    for (let x = 4; x <= 6; x++) put(s, x, 5, 5, water(x === 4 ? 7 : x === 5 ? 3 : 0))
+    const tops = faces(liquidOf(s), FACE.PY)
+    const mid = tops.find((f) => unpackA(f.a).x === 5)! // the first vertex of the x = 5 cell's top quad
+    const code = unpackFlow(mid.a, mid.b)
+    expect(code & FLOW.MOVING).toBeTruthy()
+    expect(code & 7).toBe(0) // toward +x
+    const flat = emptySnap()
+    for (let x = 4; x <= 6; x++) put(flat, x, 5, 5, water(5))
+    for (const f of faces(liquidOf(flat), FACE.PY)) expect(unpackFlow(f.a, f.b)).toBe(FLOW.STILL)
+  })
+  it('marks the sides of falling water steep and leaves the top cell still', () => {
+    const s = emptySnap()
+    put(s, 5, 5, 5, water(7))
+    put(s, 5, 6, 5, water(7))
+    const side = faces(liquidOf(s), FACE.PX) // first vertex of each quad sits at the cell's own y
+    const lower = side.filter((f) => unpackA(f.a).y === 5)
+    const upper = side.filter((f) => unpackA(f.a).y === 6)
+    expect([lower.length, upper.length]).toEqual([1, 1])
+    expect(unpackFlow(lower[0]!.a, lower[0]!.b) & FLOW.STEEP).toBeTruthy()
+    expect(unpackFlow(upper[0]!.a, upper[0]!.b)).toBe(FLOW.STILL)
+  })
+  it('refuses a liquid texture layer at or above 512', () => {
+    const fl = reg.faceLayers(new Map(reg.textureNames().map((n) => [n, n === 'water' ? 600 : 1])))
+    expect(() => meshTablesFrom(reg, fl)).toThrow(/below layer 512/)
   })
 })

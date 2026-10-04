@@ -4,35 +4,55 @@ import { voxelId, voxelState } from '../world/voxel.ts'
 import { AXES, REVERSE, STRIDE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
-import { packA, packB } from './vertexFormat.ts'
+import { FACE, FLOW, flowCode, packA, packB, packFlow } from './vertexFormat.ts'
 
 export function liquidHeight(level: number): number { return (level + 1) / 9 }
+
+/** Below this corner-height slope (blocks per block) a surface reads as still. */
+const FLOW_EPS = 0.05
+/** Above it, as steep. */
+const FLOW_STEEP = 0.5
 
 const UP = STRIDE[1]
 const qa = new Uint32Array(4)
 const qb = new Uint32Array(4)
-const corners = [0, 0, 0, 0] // top-corner heights in order (−x,−z) (+x,−z) (+x,+z) (−x,+z)
+const corners = [0, 0, 0, 0] // top-corner heights in order (-x,-z) (+x,-z) (+x,+z) (-x,+z)
 const SX = [-1, 1, 1, -1]
 const SZ = [-1, -1, 1, 1]
 
-function cellHeight(s: ChunkSnapshot, pi: number, id: number): number {
-  if (voxelId(s.voxels[pi + UP]!) === id) return 1
-  return liquidHeight(voxelState(s.voxels[pi]!) & 7)
+function level(s: ChunkSnapshot, t: MeshTables, pi: number): number {
+  const v = s.voxels[pi]!
+  return t.source[voxelId(v)] === 1 ? 7 : voxelState(v) & 7
 }
 
-function cornerHeights(s: ChunkSnapshot, pi: number, id: number): void {
+function cellHeight(s: ChunkSnapshot, t: MeshTables, pi: number, group: number): number {
+  if (t.liquidGroup[voxelId(s.voxels[pi + UP]!)] === group) return 1
+  return liquidHeight(level(s, t, pi))
+}
+
+function cornerHeights(s: ChunkSnapshot, t: MeshTables, pi: number, group: number): void {
   for (let c = 0; c < 4; c++) {
     const cells = [pi, pi + SX[c]!, pi + SZ[c]! * STRIDE[2], pi + SX[c]! + SZ[c]! * STRIDE[2]]
     let sum = 0, n = 0, full = false
     for (const ci of cells) {
-      if (voxelId(s.voxels[ci]!) !== id) continue
-      const hgt = cellHeight(s, ci, id)
+      if (t.liquidGroup[voxelId(s.voxels[ci]!)] !== group) continue
+      const hgt = cellHeight(s, t, ci, group)
       if (hgt === 1) { full = true; break }
       sum += hgt
       n++
     }
     corners[c] = full ? 1 : sum / n
   }
+}
+
+/** Downhill direction of the current top face from its corner heights, as a flow code. */
+function topFlow(): number {
+  const fx = (corners[0]! + corners[3]!) - (corners[1]! + corners[2]!) // -gradient along x
+  const fz = (corners[0]! + corners[1]!) - (corners[2]! + corners[3]!) // -gradient along z
+  const m = Math.hypot(fx, fz)
+  if (m < FLOW_EPS) return FLOW.STILL
+  const dir = ((Math.round(Math.atan2(fz, fx) / (Math.PI / 4)) % 8) + 8) % 8
+  return flowCode(dir, m > FLOW_STEEP)
 }
 
 function cornerIndex(sx: number, sz: number): number {
@@ -48,15 +68,18 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     if (layer !== LAYER.TRANSLUCENT && layer !== LAYER.LIQUID) continue
     const out = layer === LAYER.LIQUID ? liquidOut : translucent
     const liquid = t.liquid[id] === 1
-    if (liquid) cornerHeights(s, pi, id)
+    const group = liquid ? t.liquidGroup[id]! : 0
+    if (liquid) cornerHeights(s, t, pi, group)
+    const falling = liquid && t.liquidGroup[voxelId(s.voxels[pi + UP]!)] === group
     for (let f = 0; f < 6; f++) {
       const [d, u, v] = AXES[f]!
       const ni = pi + ((f & 1) === 0 ? 1 : -1) * STRIDE[d as 0 | 1 | 2]
       const nid = voxelId(s.voxels[ni]!)
-      if (t.opaque[nid] || nid === id) continue
+      if (t.opaque[nid] || (liquid ? t.liquidGroup[nid] === group : nid === id)) continue
       const l = s.light[ni]!
       const b = packB(t.faceLayers[id * 6 + f]!, l & 15, l >> 4, 1, 1)
       const plane = (f & 1) === 0 ? 1 : 0
+      const flow = !liquid ? FLOW.STILL : f === FACE.PY ? topFlow() : f !== FACE.NY && falling ? flowCode(0, true) : FLOW.STILL
       for (let c = 0; c < 4; c++) {
         const cu = c === 1 || c === 2 ? 1 : 0
         const cv = c >= 2 ? 1 : 0
@@ -71,6 +94,7 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
         }
         qa[c] = packA(vx, vy, vz, f, 0, c, drop)
         qb[c] = b
+        if (flow !== FLOW.STILL) [qa[c], qb[c]] = packFlow(qa[c]!, qb[c]!, flow)
       }
       out.push(qa, qb, false, REVERSE[f]!)
     }

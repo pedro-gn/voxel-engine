@@ -13,6 +13,8 @@ type N = ReturnType<typeof float>
 type V2 = THREE.Node<'vec2'>
 const EPS = 0.08
 const RIPPLE = 0.15
+/** Blocks per second the ripples travel along the flow at speed 1. */
+const FLOW_SPEED = 1.2
 
 /** The liquid layer's material: ripples, depth colour, shore foam, sun glint and sky fresnel. */
 export class WaterMaterial {
@@ -33,7 +35,7 @@ export class WaterMaterial {
 
   constructor(lights: LightUniforms, depthEffects: boolean) {
     const u = this.u
-    const v = chunkVertex()
+    const v = chunkVertex(undefined, true)
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
     m.transparent = true
@@ -43,7 +45,9 @@ export class WaterMaterial {
     const speed = time.mul(u.waveSpeed)
     const h = (p: V2) => mx_noise_float(vec3(p.mul(u.waveScale).add(vec2(speed, speed.mul(0.6))), time.mul(0.25)))
       .add(mx_noise_float(vec3(p.mul(u.waveScale.mul(2.3)).sub(vec2(speed.mul(0.7), 0)), time.mul(0.4))).mul(0.5))
-    const h0 = h(wp.xz), hx = h(wp.xz.add(vec2(EPS, 0))), hz = h(wp.xz.add(vec2(0, EPS)))
+    const flowDrift = vec2(v.flow.x, v.flow.y).mul(time.mul(v.flow.z).mul(FLOW_SPEED))
+    const q = wp.xz.sub(flowDrift)
+    const h0 = h(q), hx = h(q.add(vec2(EPS, 0))), hz = h(q.add(vec2(0, EPS)))
     const ripple = normalize(vec3(h0.sub(hx).mul(RIPPLE / EPS), 1, h0.sub(hz).mul(RIPPLE / EPS)))
     const n = select(isTop, ripple, v.normal)
 
@@ -63,7 +67,8 @@ export class WaterMaterial {
     const lap = smoothstep(0.75, 1.0, fract(thickness.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
       .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
     const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)) : float(0)
-    const streak = select(isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3)), 0)).mul(0.12))
+    const fall = float(1).add(v.flow.z.mul(2))
+    const streak = select(isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(fall)), 0)).mul(0.12))
     const albedo = mix(mix(u.shallow, u.deep, depthT).add(streak), vec3(1), foam)
     m.colorNode = vec4(albedo, mix(mix(float(0.66), float(0.94), depthT), float(1), foam))
     voxelLit(m, { normal: n, sky: v.sky, blk: v.blk, ao: float(1), albedo }, lights)
