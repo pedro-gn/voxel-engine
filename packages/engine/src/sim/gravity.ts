@@ -56,32 +56,43 @@ export class GravitySystem {
     }
     this.pending.length = 0
     // 2. Advance in id order. A later body never passes an earlier one still falling in its column.
+    // If something throws mid-loop, `bodies` still reflects progress: bodies that landed are gone, a body whose
+    // landing write threw is dropped (the write may have gone through), and the rest wait for the next tick.
+    const bodies = this.bodies
     const keep: FallingBodyState[] = []
     const floorOf = new Map<number, number>()
-    for (const b of this.bodies) {
-      b.vy256 = Math.min(b.vy256 + GRAVITY_256, MAX_FALL_256)
-      const col = b.x + b.z * L.size[0]
-      let target = b.y256 - b.vy256
-      const limit = floorOf.get(col)
-      if (limit !== undefined && limit <= b.y256) target = Math.max(target, limit)
-      let land = -1
-      for (let k = Math.ceil(b.y256 / 256) - 1; k >= Math.floor(target / 256); k--) {
-        if (k < 0) { land = 0; break }
-        const id = voxelId(this.port.get(b.x, k, b.z))
-        // A spring is a landing surface like a solid: a body never overwrites it.
-        if (reg.solid[id] === 1 || (reg.liquid[id] === 1 && reg.source[id] === 1)) { land = k + 1; break }
+    let i = 0, landing = false
+    try {
+      for (; i < bodies.length; i++) {
+        const b = bodies[i]!
+        b.vy256 = Math.min(b.vy256 + GRAVITY_256, MAX_FALL_256)
+        const col = b.x + b.z * L.size[0]
+        let target = b.y256 - b.vy256
+        const limit = floorOf.get(col)
+        if (limit !== undefined && limit <= b.y256) target = Math.max(target, limit)
+        let land = -1
+        for (let k = Math.ceil(b.y256 / 256) - 1; k >= Math.floor(target / 256); k--) {
+          if (k < 0) { land = 0; break }
+          const id = voxelId(this.port.get(b.x, k, b.z))
+          // A spring is a landing surface like a solid: a body never overwrites it.
+          if (reg.solid[id] === 1 || (reg.liquid[id] === 1 && reg.source[id] === 1)) { land = k + 1; break }
+        }
+        if (land < 0 && target < 0) land = 0
+        if (land >= 0) {
+          landing = true
+          this.port.write(b.x, land, b.z, b.voxel)
+          landing = false
+          this.landed.push({ id: b.id, x: b.x, y: land, z: b.z, chunk: L.chunkOf(b.x, land, b.z), version: 0 })
+          continue
+        }
+        b.y256 = target
+        floorOf.set(col, b.y256 + 256)
+        keep.push(b)
       }
-      if (land < 0 && target < 0) land = 0
-      if (land >= 0) {
-        this.port.write(b.x, land, b.z, b.voxel)
-        this.landed.push({ id: b.id, x: b.x, y: land, z: b.z, chunk: L.chunkOf(b.x, land, b.z), version: 0 })
-        continue
-      }
-      b.y256 = target
-      floorOf.set(col, b.y256 + 256)
-      keep.push(b)
+    } finally {
+      if (i < bodies.length) for (let j = landing ? i + 1 : i; j < bodies.length; j++) keep.push(bodies[j]!)
+      this.bodies = keep
     }
-    this.bodies = keep
   }
 
   /** Copies of the bodies still falling, for the tick message. */

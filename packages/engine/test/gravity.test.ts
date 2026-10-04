@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_FALL_256 } from '../src/sim/gravity.ts'
+import { BlockRegistry } from '../src/blocks/registry.ts'
+import { GravitySystem, MAX_FALL_256 } from '../src/sim/gravity.ts'
+import { Layout } from '../src/world/layout.ts'
 import { AIR } from '../src/world/voxel.ts'
-import { B, fluidSim, lake, poolProblems, run, spring, volume, w } from './fluidHelpers.ts'
+import { B, FLUID_BLOCKS, fluidSim, lake, poolProblems, run, spring, volume, w } from './fluidHelpers.ts'
 
 const floor = (_x: number, y: number) => (y === 0 ? B.stone : AIR)
 
@@ -79,6 +81,27 @@ describe('gravity', () => {
     expect(logs.some((m) => /region jobs error tick=0: boom/.test(m))).toBe(true)
     expect(sim.jobs.size).toBe(0)
     expect(sim.fluids.needsRebuild).toBe(true)
+  })
+  it('keeps its bodies consistent when a landing write throws: no body lands twice', () => {
+    const layout = new Layout([32, 32, 32])
+    const world = new Map<number, number>()
+    const writes: string[] = []
+    let landings = 0
+    const g = new GravitySystem({
+      layout, registry: new BlockRegistry(FLUID_BLOCKS),
+      get: (x, y, z) => (y === 0 ? B.stone : world.get(layout.voxelIndex(x, y, z)) ?? AIR),
+      write(x, y, z, v) {
+        if (v !== AIR && ++landings === 2) throw new Error('write failed')
+        world.set(layout.voxelIndex(x, y, z), v)
+        if (v !== AIR) writes.push(`${x},${y},${z}`)
+      },
+    })
+    for (const x of [3, 6]) { world.set(layout.voxelIndex(x, 5, 3), B.sand); g.afterWrite(x, 5, 3, B.sand) }
+    let threw = 0
+    for (let t = 0; t < 40; t++) { try { g.step() } catch { threw++ } }
+    expect(threw).toBe(1) // both land in the same step; the second landing's write throws
+    expect(writes).toEqual(['3,1,3']) // the first body landed once and was not landed again
+    expect(g.count).toBe(0) // the body whose landing threw is dropped, not retried on top of a half-written cell
   })
   it('holds still while physics is paused', () => {
     const sim = fluidSim(floor)
