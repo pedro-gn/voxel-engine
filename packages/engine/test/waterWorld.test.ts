@@ -100,12 +100,15 @@ describe('water in the world', () => {
       if (y <= 4) return B.stone
       return x === 5 && z === 5 && y === 5 ? spring(5) : AIR
     }
-    const sim = waterSim(coast, { seaLevel: 3 })
+    const logs: string[] = []
+    const sim = waterSim(coast, { seaLevel: 3, water: { debug: true }, log: (m) => logs.push(m) })
     expect(sim.water.cycle.springs.size).toBe(1)
     expect(sim.water.sea).toBe(8 * 32 * 2 * SUB)
     const t0 = sim.water.total()
-    run(sim, 200)
-    expect(sim.water.total()).toBe(t0)
+    let off = 0
+    for (let t = 0; t < 200; t++) { sim.step(); if (sim.water.total() !== t0) off++ }
+    expect(off).toBe(0)
+    expect(logs).toEqual([])
     expect(sim.water.sea).toBeLessThan(8 * 32 * 2 * SUB)
     expect(depthSum(sim, 0, 0, 31, 23)).toBeGreaterThan(0)
   })
@@ -220,10 +223,11 @@ describe('water in the world: edits and rebuilds', () => {
     const sim = waterSim(roofed, { size: [32, 64, 32] })
     const data = new Uint16Array(32 * 32 * 64)
     sim.generateColumnData(fillGenerator(open), 0, 0, data)
+    expect(sim.water.expected).toBe(0) // the cave water is static: not the heightfield's
     const out = sim.replaceColumns([{ cx: 0, cz: 0, data }])
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 25, depth: 7 * SUB })
     expect(out).toContain(sim.layout.chunkIndex(0, 0, 0))
-    expect(sim.water.total()).toBe(sim.water.expected)
+    expect(sim.water.expected).toBe(7 * SUB) // it joined the heightfield's running total
   })
 
   it('a region rebuild adds the depth of columns that join the sea to the sea account, and removes it when they leave', () => {
@@ -237,16 +241,17 @@ describe('water in the world: edits and rebuilds', () => {
     const half = 32 * 32 * 2 * SUB
     expect(sim.water.sea).toBe(half)
     const data = new Uint16Array(32 * 32 * 32)
+    const e0 = sim.water.expected
     sim.generateColumnData(fillGenerator(coast(true)), 0, 0, data)
     sim.replaceColumns([{ cx: 0, cz: 0, data }])
     expect(sim.water.cycle.mask[5 + 5 * 64]).toBe(1)
     expect(sim.water.sea).toBe(2 * half)
-    expect(sim.water.total()).toBe(sim.water.expected)
+    expect(sim.water.expected - e0).toBe(2 * half) // the new sea's water, in the columns and in the account
     sim.generateColumnData(fillGenerator(coast(false)), 0, 0, data)
     sim.replaceColumns([{ cx: 0, cz: 0, data }])
     expect(sim.water.cycle.mask[5 + 5 * 64]).toBe(0)
     expect(sim.water.sea).toBe(half)
-    expect(sim.water.total()).toBe(sim.water.expected)
+    expect(sim.water.expected).toBe(e0)
     run(sim, 20)
     expect(sim.water.total()).toBe(sim.water.expected)
   })
@@ -312,6 +317,62 @@ describe('water in the world: edits and rebuilds', () => {
     sim.submit(0, 4, { type: 'setBlock', pos: [3, 31, 3], voxel: w(7) })
     expect(() => settle(sim)).not.toThrow()
     expect(sim.water.total()).toBe(sim.water.expected)
+    expect(sim.water.check()).toEqual([])
+  })
+
+  it('filling the gap under a floating block merges them into the floor: water never crosses the dam', () => {
+    // A lake (x 1–8, z 1–10, surface 3.5) dammed on the east at x = 9 by stone at y = 1, 3 and 4 with a gap at y = 2.
+    const dammed: Fill = (x, y, z) => {
+      if (y === 0) return B.stone
+      if (x <= 9 && (x === 0 || z === 0 || z === 11) && z <= 11) return y <= 8 ? B.stone : AIR
+      if (x === 9 && z <= 10) return y === 1 || y === 3 || y === 4 ? B.stone : AIR
+      if (x >= 1 && x <= 8 && z >= 1 && z <= 10) return y <= 2 ? w(7) : y === 3 ? w(3) : AIR
+      return AIR
+    }
+    const sim = waterSim(dammed, { water: { debug: true } })
+    expect(sim.water.column(9, 5)).toMatchObject({ floor: 2, depth: 0 }) // the gap: the block over it floats
+    const lake0 = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [9, 2, 1], max: [9, 2, 10], voxel: B.stone }) // filled before any step
+    sim.step()
+    for (let z = 1; z <= 10; z++) expect(sim.water.column(9, z).floor).toBe(5)
+    run(sim, 600)
+    expect(depthSum(sim, 9, 0, 31, 31)).toBe(0)
+    for (let y = 1; y < 8; y++) for (let z = 0; z < 32; z++) for (let x = 10; x < 32; x++) expect(sim.store.getVoxel(x, y, z)).toBe(AIR)
+    expect(sim.water.total()).toBe(lake0)
+    // The edited floors are what a rebuild from the same voxels finds.
+    const floors = Array.from({ length: 10 }, (_, i) => sim.water.column(9, i + 1).floor)
+    sim.water.rebuild()
+    expect(Array.from({ length: 10 }, (_, i) => sim.water.column(9, i + 1).floor)).toEqual(floors)
+    expect(sim.water.total()).toBe(lake0)
+  })
+
+  it('while paused, edits change the columns exactly and show through the mirror; nothing flows, and resuming loses no water', () => {
+    const sim = waterSim(lake(4), { water: { debug: true } })
+    sim.setPaused(true)
+    sim.submit(0, 0, { type: 'setBlock', pos: [5, 2, 5], voxel: B.stone }) // a wall in the water
+    sim.submit(0, 1, { type: 'setBlock', pos: [25, 10, 25], voxel: w(7) }) // water in the air over dry ground
+    sim.submit(0, 2, { type: 'setBlock', pos: [3, 4, 3], voxel: AIR }) // a water cell taken out
+    sim.step()
+    expect(sim.water.column(5, 5)).toMatchObject({ floor: 3, depth: 4 * SUB })
+    expect(sim.water.column(25, 25)).toMatchObject({ floor: 1, depth: SUB })
+    expect(sim.water.column(3, 3)).toMatchObject({ floor: 1, depth: 3 * SUB })
+    expect(sim.water.expected).toBe(LAKE)
+    // The mirror follows while paused: the pocket under the wall is empty, the column over it stands 4 blocks deep, the
+    // placed cell lies on the ground, and the cell taken out stays out.
+    expect(sim.store.getVoxel(5, 1, 5)).toBe(AIR)
+    expect(sim.store.getVoxel(5, 6, 5) & 0xfff).toBe(B.water)
+    expect(sim.store.getVoxel(25, 10, 25)).toBe(AIR)
+    expect(sim.store.getVoxel(25, 1, 25) & 0xfff).toBe(B.water)
+    expect(sim.store.getVoxel(3, 4, 3)).toBe(AIR)
+    const steps = sim.water.stepCount
+    run(sim, 20)
+    expect(sim.water.stepCount).toBe(steps)
+    expect(sim.water.column(25, 25).depth).toBe(SUB)
+    expect(sim.water.column(26, 25).depth).toBe(0)
+    sim.setPaused(false)
+    settle(sim)
+    expect(sim.water.needsRebuild).toBe(false)
+    expect(sim.water.total()).toBe(LAKE)
     expect(sim.water.check()).toEqual([])
   })
 })

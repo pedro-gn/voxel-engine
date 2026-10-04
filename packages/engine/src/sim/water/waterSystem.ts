@@ -79,6 +79,7 @@ export class WaterSystem {
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
     const sys = this
     this.cells = {
+      height: this.height,
       kind: (y) => sys.kind[voxelId(port.get(sys.ex, y, sys.ez))]!,
       units: (y) => {
         const v = port.get(sys.ex, y, sys.ez)

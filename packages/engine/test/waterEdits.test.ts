@@ -4,9 +4,9 @@ import { applyEdit, type ColumnCells, type EditColumn } from '../src/sim/water/e
 
 const { AIR: A, WATER: W, WALL: L } = KIND
 
-/** The column's cells after the write: kinds by y (missing: air) and water units by y. */
-function cells(kinds: number[], units: number[] = []): ColumnCells {
-  return { kind: (y) => kinds[y] ?? A, units: (y) => units[y] ?? 0 }
+/** The column's cells after the write: kinds by y (missing: air), water units by y, and the world height. */
+function cells(kinds: number[], units: number[] = [], height = 64): ColumnCells {
+  return { height, kind: (y) => kinds[y] ?? A, units: (y) => units[y] ?? 0 }
 }
 
 function edit(col: EditColumn, y: number, from: number, to: [number, number], c: ColumnCells = cells([])): EditColumn {
@@ -31,6 +31,15 @@ describe('applyEdit', () => {
   it('raises a dry column\'s floor for a wall on it, and ignores a floating one', () => {
     expect(edit({ floor: 4, depth: 0 }, 4, A, [L, 0])).toEqual({ floor: 5, depth: 0 })
     expect(edit({ floor: 4, depth: 0 }, 7, A, [L, 0])).toEqual({ floor: 4, depth: 0 })
+  })
+  it('a raised floor climbs the wall run it now touches: a gap filled under a floating block merges them, as rebuild does', () => {
+    // y: 0–1 stone, 2 the new wall (the gap), 3–4 the floating block, 5 air
+    expect(edit({ floor: 2, depth: 0 }, 2, A, [L, 0], cells([L, L, L, L, L]))).toEqual({ floor: 5, depth: 0 })
+    // in the water: a wall placed right under a block that sits in the water pushes the water over both
+    expect(edit({ floor: 2, depth: 3 * SUB }, 3, W, [L, 0], cells([L, L, A, L, L]))).toEqual({ floor: 5, depth: 3 * SUB })
+  })
+  it('a raised floor climbing a wall run up to the world\'s top row stops at the world height', () => {
+    expect(edit({ floor: 2, depth: 0 }, 2, A, [L, 0], cells(Array<number>(32).fill(L), [], 32))).toEqual({ floor: 32, depth: 0 })
   })
   it('ignores a wall below the floor', () => {
     expect(edit({ floor: 4, depth: SUB }, 1, A, [L, 0])).toEqual({ floor: 4, depth: SUB })
