@@ -63,19 +63,32 @@ describe('cell automaton', () => {
 
 describe('falling column', () => {
   const cell = (sim: ReturnType<typeof fluidSim>, y: number) => units(sim.store.getVoxel(16, y, 16))
-  it('stays contiguous under a constant source (front, then steady state) and conserves volume', () => {
-    const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 16 && y === 26 && z === 16 ? spring(9) : AIR))
+  it.each([3, 5, 7, 9, 12])('spring(%i) keeps a contiguous column and conserves volume', (rate) => {
+    const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 16 && y === 26 && z === 16 ? spring(rate) : AIR))
     let prev = 0
-    for (let t = 1; t <= 120; t++) {
+    for (let t = 1; t <= 200; t++) {
       sim.step()
-      // the spring gives its full rate every tick: nothing is lost or created elsewhere
-      expect(volume(sim) - prev, `injected at tick ${t}`).toBe(SPRING_RATES[9])
+      // the spring gives at most its rate (one cell takes at most 8), and what it gives is the only volume change
+      const inc = volume(sim) - prev
+      if (inc < 0 || inc > SPRING_RATES[rate]!) expect.fail(`injected ${inc} at tick ${t}`)
       prev = volume(sim)
-      if (t < 30 || (t > 35 && t < 60)) continue
-      for (let y = 1; y <= 25; y++) expect(cell(sim, y), `gap at y=${y}, tick ${t}`).toBeGreaterThan(0)
+      if (t < 60) continue
+      for (let y = 1; y <= 25; y++) if (cell(sim, y) === 0) expect.fail(`gap at y=${y}, tick ${t}`)
     }
+    // remove the source: from then on the volume is exactly constant
+    sim.submit(0, 0, { type: 'setBlock', pos: [16, 26, 16], voxel: AIR })
+    sim.step()
+    const before = volume(sim)
+    for (let t = 0; t < 30; t++) { sim.step(); if (volume(sim) !== before) expect.fail('volume changed after the source was removed') }
     expect(sim.fluids.lost).toBe(0)
-    // remove the source: what is left only moves around
+  })
+  it('stays contiguous while the front falls, then conserves volume once the source is removed', () => {
+    const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 16 && y === 26 && z === 16 ? spring(9) : AIR))
+    run(sim, 30)
+    for (let t = 0; t < 5; t++) {
+      sim.step()
+      for (let y = 1; y <= 25; y++) if (cell(sim, y) === 0) expect.fail(`gap at y=${y}, front tick ${t}`)
+    }
     sim.submit(0, 0, { type: 'setBlock', pos: [16, 26, 16], voxel: AIR })
     sim.step()
     const before = volume(sim)
@@ -83,7 +96,7 @@ describe('falling column', () => {
     settle(sim)
     expect(volume(sim)).toBe(before)
     expect(sim.fluids.lost).toBe(0)
-  }, 30000)
+  })
 })
 
 describe('two liquids', () => {

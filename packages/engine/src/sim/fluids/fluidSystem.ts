@@ -289,7 +289,7 @@ export class FluidSystem {
     for (let i = 0; i < keep.length; i++) {
       const pos = keep[i]!
       if (!this.active.has(pos)) continue
-      if (touched.has(pos)) { this.active.requeue(pos); continue }
+      if (touched.has(pos) || this.slotOf.has(pos)) { this.active.requeue(pos); continue } // moved water (even net 0) is awake
       if (this.active.rest(pos) >= SLEEP_STEPS) { this.active.drop(pos); this.settleQueue.add(pos) }
       else this.active.requeue(pos)
     }
@@ -808,6 +808,10 @@ export class FluidSystem {
       const below = this.sideVolume(x, y - 1, z, g)
       if (below >= 0) {
         this.dFrom.push(pos); this.dAmt.push(units); this.dGroup.push(g)
+        // Water below that took part in a move last step is still falling: wait for the column to move on instead of shedding
+        // sideways mid-air (which punches holes that the whole-column move then carries down). `slotOf` still holds
+        // the previous step's moved cells here (senders and receivers, also those whose net change is 0). A column that stays blocked stops changing and spreads as before.
+        if (below > 0 && this.slotOf.has(pos - this.stride)) return
         v -= Math.min(v, FULL - below)
       }
     }
@@ -866,7 +870,7 @@ export class FluidSystem {
     return false
   }
 
-  /** Applies one move, capped by the sender's and receiver's current units (per-step deltas included). */
+  /** Applies one move, capped by the sender's send budget (snapshot units minus units already sent this step) and the receiver's room (per-step deltas included). */
   private applyMove(f: number, t: number, g: number, amount: number, sx: number, layer: number): void {
     const slot = this.slotOf, delta = this.deltas, group = this.groups, sent = this.sent
     const ty = Math.floor(t / layer), tr = t - ty * layer, tz = Math.floor(tr / sx), tx = tr - tz * sx
@@ -878,10 +882,9 @@ export class FluidSystem {
     if ((st !== undefined && group[st] !== g) || (sf !== undefined && group[sf] !== g)) return
     const fy = Math.floor(f / layer), fr = f - fy * layer, fz = Math.floor(fr / sx), fx = fr - fz * sx
     const snap = volumeOf(this.reg, this.port.get(fx, fy, fz))
-    const uf = snap + (sf === undefined ? 0 : delta[sf]!)
     const budget = snap - (sf === undefined ? 0 : sent[sf]!) // water received this step is never re-sent
     const ut = volumeOf(this.reg, tv) + (st === undefined ? 0 : delta[st]!)
-    const a = Math.min(amount, budget, uf, FULL - ut)
+    const a = Math.min(amount, budget, FULL - ut) // budget <= current units, so the sender cannot go negative
     if (a <= 0) return
     if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g); sent.push(a) } else { delta[sf] = delta[sf]! - a; sent[sf] = sent[sf]! + a }
     if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g); sent.push(0) } else delta[st] = delta[st]! + a
@@ -889,7 +892,7 @@ export class FluidSystem {
 
   /**
    * Applies every down proposal first (lowest sender first, ties by proposal order), then the side proposals in
-   * order, each capped by what the sender still has and the receiver's room; writes each changed cell once, in the
+   * order, each capped by the sender's send budget (its snapshot water, never what it received this step) and the receiver's room; writes each changed cell once, in the
    * order cells were first touched. Returns the written cells (a set reused by the next call).
    */
   protected applyProposals(): Set<number> {
