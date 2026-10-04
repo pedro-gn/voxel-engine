@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
 import {
-  BREACH, CHANNEL, DAM_X, FLOOD_SIZE, LAKE, PILLARS, SEA_LEVEL, SPRING, VALLEY,
+  BREACH, CHANNEL, DAM_X, FLOOD_SIZE, GROUND, LAKE, PILLARS, SEA_LEVEL, SPRING, VALLEY,
   breachCommands, digCommands, dropCommands, floodColumn, floodGenerator, stopSpringCommands, stressCommands,
 } from '../src/scenes/flood.ts'
 
@@ -42,9 +42,14 @@ describe('flood scene layout', () => {
     expect(stopSpringCommands(7)).toEqual([{ type: 'setBlock', pos: [SPRING.x, y, SPRING.z], voxel: 7 }])
   })
   it('digs a channel west of the lake through the ground, down to the lake floor', () => {
-    expect(digCommands()).toEqual([{ type: 'fillRegion', min: [CHANNEL.x0, LAKE.floor, CHANNEL.z0], max: [CHANNEL.x1, 24, CHANNEL.z1], voxel: 0 }])
+    expect(digCommands()).toEqual([{ type: 'fillRegion', min: [CHANNEL.x0, LAKE.floor, CHANNEL.z0], max: [CHANNEL.x1, GROUND - 1, CHANNEL.z1], voxel: 0 }])
     expect(CHANNEL.x1).toBe(LAKE.x0 - 1) // it opens straight into the lake
     for (const x of [CHANNEL.x0, CHANNEL.x1]) expect(floodColumn(x, CHANNEL.z0)[LAKE.floor]).not.toBeNull() // ground there now
+    expect(floodColumn(CHANNEL.x0, CHANNEL.z0)[GROUND - 1]).not.toBeNull() // the dig's top layer is ground too
+    for (const [x, z] of [[CHANNEL.x0, CHANNEL.z0 - 1], [CHANNEL.x0, CHANNEL.z1 + 1], [CHANNEL.x0 - 1, CHANNEL.z0]] as const) {
+      expect(floodColumn(x, z)[LAKE.floor]).not.toBeNull() // the walls stay solid
+      expect(floodColumn(x, z)[GROUND - 1]).not.toBeNull()
+    }
   })
   it('stress: opens the whole dam and drops a 40 × 40 × 4 block of the given water voxel over the valley', () => {
     const [dam, dump] = stressCommands(99)
@@ -116,6 +121,7 @@ describe('flood scene simulation', () => {
     }
     const lake0 = sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)
     digCommands().forEach((c, i) => sim.submit(0, i, c))
+    // 1500 ticks: the channel (20 × 4 columns) has filled by then and the lake drop equals what it holds at every tick
     for (let t = 0; t < 1500; t++) sim.step()
     const channel = sum(CHANNEL.x0, CHANNEL.z0, CHANNEL.x1, CHANNEL.z1)
     const area = (CHANNEL.x1 - CHANNEL.x0 + 1) * (CHANNEL.z1 - CHANNEL.z0 + 1)

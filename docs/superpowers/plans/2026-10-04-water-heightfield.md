@@ -5142,3 +5142,5 @@ This task is interactive. The controller drives it with the user, who runs the a
 ## Checkpoint results
 
 *(Filled in during Task 13.)*
+
+**Desktop Node baseline (Task 12), `npm run bench:dam settle`:** 151 458 ticks in 530.7 s; Σ depth + sea exact on every tick; sim tick p50 3.43 / p95 5.31 / max 41.46 ms; water step p50 2.24 / p95 3.35 ms; mirror+publish p50 0.97 / p95 1.85 ms; all tiles asleep at tick 151 458; lake surfaces spread 23 sub. The browser bench (`BENCH=1`, laptop) is pending for Task 13; headless SwiftShader runs are waived as meaningless.
