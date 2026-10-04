@@ -79,6 +79,11 @@ export class FluidSystem {
   private readonly pTo: number[] = []
   private readonly pAmt: number[] = []
   private readonly pGroup: number[] = []
+  /** Down proposals (the sender's full volume), applied before every side proposal, lowest sender first. */
+  private readonly dFrom: number[] = []
+  private readonly dAmt: number[] = []
+  private readonly dGroup: number[] = []
+  private readonly dOrder: number[] = []
   // Scratch reused by every fluid step (the automaton allocates nothing per cell).
   private readonly cellsScratch: number[] = []
   private readonly keepScratch: number[] = []
@@ -257,6 +262,7 @@ export class FluidSystem {
   protected flowCells(): void {
     const cells = this.active.take(this.o.fluidCap, this.cellsScratch)
     this.pFrom.length = 0; this.pTo.length = 0; this.pAmt.length = 0; this.pGroup.length = 0
+    this.dFrom.length = 0; this.dAmt.length = 0; this.dGroup.length = 0
     const keep = this.keepScratch
     keep.length = 0
     const sx = this.layout.size[0], layer = this.stride
@@ -793,11 +799,11 @@ export class FluidSystem {
   protected propose(pos: number, x: number, y: number, z: number, g: number, units: number): void {
     let v = units
     if (y > 0) {
-      const room = this.room(x, y - 1, z, g)
-      if (room > 0) {
-        const t = Math.min(v, room)
-        this.offer(pos, pos - this.stride, t, g)
-        v -= t
+      // A valid target below takes the whole cell: the cell below may itself be moving down this step, and down
+      // moves apply first, bottom-up, so a falling column stays contiguous. Side moves keep the snapshot room.
+      if (this.sideVolume(x, y - 1, z, g) >= 0) {
+        this.dFrom.push(pos); this.dAmt.push(units); this.dGroup.push(g)
+        v -= Math.min(v, this.room(x, y - 1, z, g))
       }
     }
     if (v < 2) return
@@ -855,32 +861,45 @@ export class FluidSystem {
     return false
   }
 
+  /** Applies one move, capped by the sender's and receiver's current units (per-step deltas included). */
+  private applyMove(f: number, t: number, g: number, amount: number, sx: number, layer: number): void {
+    const slot = this.slotOf, delta = this.deltas, group = this.groups
+    const ty = Math.floor(t / layer), tr = t - ty * layer, tz = Math.floor(tr / sx), tx = tr - tz * sx
+    if (this.members.has(tx, ty, tz)) return
+    const tv = this.port.get(tx, ty, tz)
+    if (tv !== AIR && flowGroup(this.reg, tv) !== g) return
+    // A cell already claimed this step by another liquid (or sending another liquid) keeps that liquid.
+    const st = slot.get(t), sf = slot.get(f)
+    if ((st !== undefined && group[st] !== g) || (sf !== undefined && group[sf] !== g)) return
+    const fy = Math.floor(f / layer), fr = f - fy * layer, fz = Math.floor(fr / sx), fx = fr - fz * sx
+    const uf = volumeOf(this.reg, this.port.get(fx, fy, fz)) + (sf === undefined ? 0 : delta[sf]!)
+    const ut = volumeOf(this.reg, tv) + (st === undefined ? 0 : delta[st]!)
+    const a = Math.min(amount, uf, FULL - ut)
+    if (a <= 0) return
+    if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g) } else delta[sf] = delta[sf]! - a
+    if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g) } else delta[st] = delta[st]! + a
+  }
+
   /**
-   * Applies proposals in order, capped by what the sender still has and the receiver's room; writes each changed
-   * cell once, in the order cells were first touched. Returns the written cells (a set reused by the next call).
+   * Applies every down proposal first (lowest sender first, ties by proposal order), then the side proposals in
+   * order, each capped by what the sender still has and the receiver's room; writes each changed cell once, in the
+   * order cells were first touched. Returns the written cells (a set reused by the next call).
    */
   protected applyProposals(): Set<number> {
     // Per touched cell, in first-touch order: its slot in the parallel delta/group arrays.
     const slot = this.slotOf, delta = this.deltas, group = this.groups
     slot.clear(); delta.length = 0; group.length = 0
     const sx = this.layout.size[0], layer = this.stride
-    for (let k = 0; k < this.pFrom.length; k++) {
-      const f = this.pFrom[k]!, t = this.pTo[k]!, g = this.pGroup[k]!
-      const ty = Math.floor(t / layer), tr = t - ty * layer, tz = Math.floor(tr / sx), tx = tr - tz * sx
-      if (this.members.has(tx, ty, tz)) continue
-      const tv = this.port.get(tx, ty, tz)
-      if (tv !== AIR && flowGroup(this.reg, tv) !== g) continue
-      // A cell already claimed this step by another liquid (or sending another liquid) keeps that liquid.
-      const st = slot.get(t), sf = slot.get(f)
-      if ((st !== undefined && group[st] !== g) || (sf !== undefined && group[sf] !== g)) continue
-      const fy = Math.floor(f / layer), fr = f - fy * layer, fz = Math.floor(fr / sx), fx = fr - fz * sx
-      const uf = volumeOf(this.reg, this.port.get(fx, fy, fz)) + (sf === undefined ? 0 : delta[sf]!)
-      const ut = volumeOf(this.reg, tv) + (st === undefined ? 0 : delta[st]!)
-      const a = Math.min(this.pAmt[k]!, uf, FULL - ut)
-      if (a <= 0) continue
-      if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g) } else delta[sf] = delta[sf]! - a
-      if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g) } else delta[st] = delta[st]! + a
+    // Sort key: sender y, then proposal index (so the order is total and independent of the sort algorithm).
+    const order = this.dOrder
+    order.length = 0
+    for (let k = 0; k < this.dFrom.length; k++) order.push(Math.floor(this.dFrom[k]! / layer) * 0x1000000 + k)
+    order.sort((a, b) => a - b)
+    for (let i = 0; i < order.length; i++) {
+      const k = order[i]! % 0x1000000, f = this.dFrom[k]!
+      this.applyMove(f, f - layer, this.dGroup[k]!, this.dAmt[k]!, sx, layer)
     }
+    for (let k = 0; k < this.pFrom.length; k++) this.applyMove(this.pFrom[k]!, this.pTo[k]!, this.pGroup[k]!, this.pAmt[k]!, sx, layer)
     const touched = this.touched
     touched.clear()
     for (const [pos, i] of slot) {

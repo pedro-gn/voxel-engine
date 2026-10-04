@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defineBlock } from '../src/blocks/registry.ts'
 import { AIR, packVoxel } from '../src/world/voxel.ts'
-import { B, FLUID_BLOCKS, basin, fluidSim, run, settle, volume, w } from './fluidHelpers.ts'
+import { B, FLUID_BLOCKS, basin, fluidSim, run, settle, spring, volume, w } from './fluidHelpers.ts'
 
 const level = (v: number) => (v >>> 12) & 7
 const units = (v: number) => ((v & 0xfff) === B.water ? level(v) + 1 : 0)
@@ -56,6 +56,25 @@ describe('cell automaton', () => {
     sim.step()
     settle(sim)
     expect(volume(sim)).toBe(24)
+    expect(sim.fluids.lost).toBe(0)
+  })
+})
+
+describe('falling column', () => {
+  it('stays contiguous under a constant source and conserves volume', () => {
+    const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 16 && y === 26 && z === 16 ? spring(9) : AIR))
+    run(sim, 30)
+    for (let t = 0; t < 5; t++) {
+      sim.step()
+      for (let y = 1; y <= 25; y++) expect(units(sim.store.getVoxel(16, y, 16)), `gap at y=${y}, step ${t}`).toBeGreaterThan(0)
+    }
+    // remove the source: what is left only moves around
+    sim.submit(0, 0, { type: 'setBlock', pos: [16, 26, 16], voxel: AIR })
+    sim.step()
+    const before = volume(sim)
+    for (let t = 0; t < 40; t++) { sim.step(); expect(volume(sim)).toBe(before) }
+    settle(sim)
+    expect(volume(sim)).toBe(before)
     expect(sim.fluids.lost).toBe(0)
   })
 })
