@@ -426,7 +426,9 @@ pool consistent, like commands do.
   - Mud and wet sand get painted textures from `paint/materials.ts`: darker, more
     saturated versions of dirt and sand.
 - **Rate.** The sandbox sets `randomTicksPerChunk: 24`, so a block is visited about every
-  70 s on average. Budget: ≤ 2 ms per tick.
+  70 s on average. Budget: ≤ 2 ms per tick. Worlds larger than 256² scale the rate down by
+  area, never below 3 (`randomTickRate`): every sample is a cache miss in a big world, and
+  the 1024² showcase at 24 costs ~10 ms per tick (3 there: ~2 ms p95, a visit every ~9 min).
 - The demo `sand` rule is removed: gravity replaces it.
 
 ### Decorations
