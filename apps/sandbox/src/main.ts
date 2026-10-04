@@ -9,6 +9,7 @@ import { FLOOD_SIZE, breachCommands, dropCommands } from './scenes/flood.ts'
 import { paintTextures } from './textures.ts'
 import e2eDoc from './terrain/e2e.terrain.json'
 import showcaseDoc from './terrain/showcase.terrain.json'
+import { randomTickRate } from './rules.ts'
 import { createTerrainPanel } from './terrainPanel.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
@@ -54,7 +55,7 @@ const engine = await createEngine({
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
     ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true }
-    : { randomTicksPerChunk: 24, debugFluids: params.has('debugFluids') },
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids') },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they

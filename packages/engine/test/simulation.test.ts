@@ -297,6 +297,48 @@ describe('rule context reads and write trimming', () => {
     expect(sim.step().physics).toMatchObject({ jobs: 1, busy: true })
     expect(sim.step().physics).toMatchObject({ jobs: 0, busy: false })
   })
+  it('random ticks sample every slot chunk from the tick stream and call only blocks with a rule', () => {
+    const calls: string[] = []
+    const r = defineRules({
+      blocks: {
+        grass: { onRandomTick(ctx, x, y, z, v) { calls.push(`${ctx.tick}:${x},${y},${z}:${v === ctx.get(x, y, z)}`) } },
+      },
+    })
+    const RATE = 8, SEED = 5
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: TEST_BLOCKS, rules: r, seed: SEED, randomTicksPerChunk: RATE })
+    // chunk 0: grass with one dirt cell (a slot chunk); chunk 1 (cx 1): stone with one dirt cell, no rule blocks;
+    // chunk 2 (cz 1): all grass, which collapses to a uniform chunk and is never sampled.
+    const cmds: Command[] = [
+      { type: 'fillRegion', min: [0, 0, 0], max: [31, 31, 31], voxel: ID.grass },
+      { type: 'setBlock', pos: [3, 4, 5], voxel: ID.dirt },
+      { type: 'fillRegion', min: [32, 0, 0], max: [63, 31, 31], voxel: ID.stone },
+      { type: 'setBlock', pos: [40, 4, 5], voxel: ID.dirt },
+      { type: 'fillRegion', min: [0, 0, 32], max: [31, 31, 63], voxel: ID.grass },
+    ]
+    cmds.forEach((c, i) => sim.submit(1, i, c))
+    sim.step()
+    expect([0, 1, 2].map((ci) => sim.store.slotOf(ci) >= 0)).toEqual([true, true, false])
+    calls.length = 0
+    const want: string[] = []
+    let skipped = 0
+    for (let t = 1; t <= 20; t++) {
+      const rng = new Pcg32(hash32(SEED, t))
+      for (let ci = 0; ci < sim.layout.chunkCount; ci++) {
+        if (sim.store.slotOf(ci) < 0) continue
+        const [cx, cy, cz] = sim.layout.chunkCoords(ci)
+        for (let k = 0; k < RATE; k++) {
+          const local = rng.nextInt(32768)
+          const x = cx * 32 + (local & 31), z = cz * 32 + ((local >> 5) & 31), y = cy * 32 + (local >> 10)
+          if (sim.store.getVoxel(x, y, z) === ID.grass) want.push(`${t}:${x},${y},${z}:true`)
+          else skipped++
+        }
+      }
+      sim.step()
+    }
+    expect(calls).toEqual(want)
+    expect(want.length).toBeGreaterThan(100)
+    expect(skipped).toBeGreaterThan(100) // the stone chunk's samples (and chunk 0's dirt, if hit) call nothing
+  })
   it('queues no neighbour notifications when no block listens for them', () => {
     const quiet = defineRules({ blocks: { grass: { onRandomTick() {} } } })
     const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: TEST_BLOCKS, rules: quiet, seed: 1 })

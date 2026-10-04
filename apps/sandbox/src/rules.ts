@@ -15,6 +15,15 @@ const NEAR: readonly (readonly [number, number, number])[] = (() => {
   return out
 })()
 
+/**
+ * Random ticks per slot chunk for a world of sx × sz blocks: 24 (a block about every 70 s) up to 256²,
+ * then scaled down by area, never below 3. Each sample is a cache miss in a big world, so the
+ * 1024² showcase at 24 cost ~10 ms per tick; at 3 it stays inside the 2 ms random-tick budget.
+ */
+export function randomTickRate(sx: number, sz: number): number {
+  return Math.max(3, Math.min(24, Math.floor((24 * 256 * 256) / (sx * sz))))
+}
+
 /** True if water (or a spring) is within Manhattan distance 2. */
 export function nearWater(ctx: RuleContext, x: number, y: number, z: number): boolean {
   for (const [dx, dy, dz] of NEAR) if (ctx.isLiquid(ctx.get(x + dx, y + dy, z + dz))) return true

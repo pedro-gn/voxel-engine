@@ -75,6 +75,8 @@ export class Simulation {
   private readonly handlers: Map<string, CommandHandler>
   private readonly customTypes: Set<string>
   private readonly hasRandom: boolean
+  /** Per block id: 1 if the block has an onRandomTick rule. */
+  private readonly randomRule: Uint8Array
   /** False when no block defines onNeighborChanged: writes then skip the notification queue entirely. */
   private readonly hasNeighborRules: boolean
   private readonly ctx: RuleContext
@@ -116,7 +118,8 @@ export class Simulation {
     const blockRules = o.rules?.blocks ?? {}
     for (const name of Object.keys(blockRules)) this.registry.id(name) // throws for unknown blocks
     this.byId = this.registry.defs.map((d) => blockRules[d.name])
-    this.hasRandom = this.byId.some((r) => r?.onRandomTick)
+    this.randomRule = Uint8Array.from(this.byId, (r) => (r?.onRandomTick ? 1 : 0))
+    this.hasRandom = this.randomRule.includes(1)
     this.hasNeighborRules = this.byId.some((r) => r?.onNeighborChanged)
     this.handlers = new Map(Object.entries(o.rules?.commands ?? {}))
     this.customTypes = new Set(this.handlers.keys())
@@ -281,15 +284,7 @@ export class Simulation {
       }
       // 3. random ticks
       if (this.hasRandom) {
-        for (let ci = 0; ci < this.layout.chunkCount; ci++) {
-          if (this.store.slotOf(ci) < 0) continue
-          const [cx, cy, cz] = this.layout.chunkCoords(ci)
-          for (let k = 0; k < this.randomTicks; k++) {
-            const local = this.rng.nextInt(32768)
-            const x = cx * 32 + (local & 31), z = cz * 32 + ((local >> 5) & 31), y = cy * 32 + (local >> 10)
-            this.runAt(this.layout.voxelIndex(x, y, z), 'onRandomTick')
-          }
-        }
+        this.randomTickPass()
         this.processNeighbors(budget)
       }
       // 4. light
@@ -391,11 +386,43 @@ export class Simulation {
     return budget
   }
 
+  /**
+   * randomTicksPerChunk samples in every slot chunk (uniform chunks hold one block everywhere and are
+   * skipped). Each sample reads its slot directly and only builds coordinates for a block with an
+   * onRandomTick rule; the draws (and so the rule calls) are the same as sampling through runAt.
+   */
+  private randomTickPass(): void {
+    const L = this.layout, store = this.store, rule = this.randomRule, n = this.randomTicks
+    const layer = L.cx * L.cz
+    for (let ci = 0; ci < L.chunkCount; ci++) {
+      const slot = store.slotOf(ci)
+      if (slot < 0) continue
+      // A slot keeps its array for the whole tick: rule writes may open chunks, but only commit() collapses one.
+      const vox = store.views.voxels(slot)
+      let x0 = -1, y0 = 0, z0 = 0
+      for (let k = 0; k < n; k++) {
+        const local = this.rng.nextInt(32768)
+        const v = vox[local]!
+        if (rule[voxelId(v)] !== 1) continue
+        if (x0 < 0) {
+          const cy = Math.floor(ci / layer), rest = ci - cy * layer, cz = Math.floor(rest / L.cx)
+          x0 = (rest - cz * L.cx) * 32; y0 = cy * 32; z0 = cz * 32
+        }
+        this.callRule(this.byId[voxelId(v)]!.onRandomTick!, x0 + (local & 31), y0 + (local >> 10), z0 + ((local >> 5) & 31), v)
+      }
+    }
+  }
+
   private runAt(pos: number, hook: keyof BlockRules): void {
     const [x, y, z] = this.layout.voxelCoords(pos)
     const v = this.store.getVoxel(x, y, z)
     const fn: BlockCallback | undefined = this.byId[voxelId(v)]?.[hook]
     if (!fn) return
+    this.callRule(fn, x, y, z, v)
+  }
+
+  /** Runs one rule callback; an exception is logged (WorldFullError is fatal and rethrown). */
+  private callRule(fn: BlockCallback, x: number, y: number, z: number, v: number): void {
     try {
       fn(this.ctx, x, y, z, v)
     } catch (e) {

@@ -1,7 +1,7 @@
 import type { RuleContext } from '@elovox/engine/sim-worker'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
-import rules, { nearWater } from '../src/rules.ts'
+import rules, { nearWater, randomTickRate } from '../src/rules.ts'
 
 const id = (name: string) => BLOCKS.findIndex((b) => b.name === name) + 1
 const def = (v: number) => BLOCKS[(v & 0xfff) - 1]
@@ -73,5 +73,15 @@ describe('sandbox rules', () => {
     expect(BLOCKS.find((b) => b.name === 'gravel')!.falls).toBe(true)
     expect(BLOCKS.find((b) => b.name === 'wet_sand')!.falls).toBeFalsy()
     expect(BLOCKS.find((b) => b.name === 'spring')).toMatchObject({ liquid: true, source: 'water' })
+  })
+})
+
+describe('random tick rate', () => {
+  it('is 24 up to 256², scales down by area above it, and never drops below 3', () => {
+    expect(randomTickRate(128, 128)).toBe(24)
+    expect(randomTickRate(256, 256)).toBe(24)
+    expect(randomTickRate(512, 512)).toBe(6)
+    expect(randomTickRate(1024, 1024)).toBe(3)
+    expect(randomTickRate(2048, 2048)).toBe(3)
   })
 })
