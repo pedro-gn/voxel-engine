@@ -556,21 +556,28 @@ export class FluidSystem {
     }
   }
 
-  /** A level-0 surface empties: remove it (one unit per cell goes to the balance) and rescan what is left below. */
+  /**
+   * A level-0 surface empties: remove it (one unit per cell goes to the balance) and rescan what is left below.
+   * Each member left under a removed cell becomes a capped top of p, so p (frozen) keeps owning its cells
+   * until its own split finishes: another pool's split in flight cannot claim them as ownerless.
+   */
   private dropLayer(p: Pool, live: readonly number[]): void {
-    const seeds: number[] = []
     for (const pos of live) {
       const [x, y, z] = this.layout.voxelCoords(pos)
       this.members.delete(x, y, z)
       this.index.delete(x, y, z)
       this.port.write(x, y, z, AIR)
-      if (y > 0 && this.members.has(x, y - 1, z)) seeds.push(pos - this.stride)
+      if (y > 0 && this.members.has(x, y - 1, z)) {
+        const seed = pos - this.stride
+        this.pools.capped.set(seed, p.id)
+        p.capped.add(seed)
+      }
     }
     p.grid -= live.length
     p.balance += live.length
     p.area = 0
     p.tiles.clear()
-    this.split(p, seeds)
+    this.split(p, []) // the seeds are among p's capped tops now
   }
 
   /** Rescans what is left of p from `extra` seeds and its capped tops. p stays frozen until finishSplit replaces it. */

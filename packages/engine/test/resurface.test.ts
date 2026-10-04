@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type { ScanComponent } from '../src/sim/fluids/scan.ts'
 import { AIR } from '../src/world/voxel.ts'
-import { B, fluidSim, lake, poolProblems, run, settle, volume, w } from './fluidHelpers.ts'
+import { B, basin, fluidSim, lake, poolProblems, run, settle, volume, w } from './fluidHelpers.ts'
 
 describe('resurfacing', () => {
   it('moves the whole surface when the balance passes the area', () => {
@@ -88,6 +89,42 @@ describe('resurfacing', () => {
     for (let y = 10; y <= 13; y++) for (let x = 13; x <= 22; x++) for (let z = 13; z <= 22; z++) if (sim.store.getVoxel(x, y, z) !== AIR) lakeWater++
     expect(lakeWater).toBe(0)
   }, 60_000)
+  it('two pools dropping a layer in the same step keep their own cells (no water lost)', () => {
+    // basin interior 1..8 × 1..8: full water at y = 1, a level-0 surface at y = 2
+    const b = basin(10, 4)
+    const logs: string[] = []
+    const sim = fluidSim((x, y, z) => {
+      const v = b(x, y, z)
+      if (v !== AIR || x < 1 || x > 8 || z < 1 || z > 8) return v
+      return y === 1 ? w(7) : y === 2 ? w(0) : AIR
+    }, { log: (m) => logs.push(m) })
+    // Re-cut the one pool into two halves side by side (x ≤ 4 and x ≥ 5), each without capped tops and
+    // without a contact, as two pools that have not merged yet would be.
+    const f = sim.fluids
+    f.pools.clear(); f.index.clear(); f.members.clear(); f.contacts.clear()
+    const half = (x0: number, x1: number): ScanComponent => {
+      const surface: number[] = [], deep: number[] = []
+      for (let x = x0; x <= x1; x++) for (let z = 1; z <= 8; z++) {
+        surface.push(sim.layout.voxelIndex(x, 2, z))
+        deep.push(sim.layout.voxelIndex(x, 1, z))
+      }
+      return { liquid: B.water, surfaceY: 2, level: 0, surface, deep, capped: [], grid: surface.length + deep.length * 8, outlets: [], edges: [] }
+    }
+    const [pa, pb] = f.install([half(1, 4), half(5, 8)])
+    expect(poolProblems(sim)).toEqual([])
+    // both surfaces empty in the same fluid step, with a few units owed beyond the layer
+    pa!.balance = -pa!.area - 5
+    pb!.balance = -pb!.area - 7
+    const v0 = volume(sim)
+    run(sim, 4)
+    expect(f.lost).toBe(0)
+    expect(volume(sim)).toBe(v0)
+    expect(logs.filter((m) => m.includes('unplaced'))).toEqual([])
+    const ps = f.pools.all()
+    expect(ps.reduce((s, p) => s + p.area, 0)).toBe(64) // both halves of the y = 1 layer are pools again
+    expect(ps.every((p) => p.surfaceY === 1)).toBe(true)
+    expect(poolProblems(sim)).toEqual([])
+  })
   it('rescans a pool whose whole surface a command removed', () => {
     const sim = fluidSim(lake(4))
     const v0 = volume(sim)
