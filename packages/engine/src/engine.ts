@@ -173,7 +173,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
   const queue = new MeshQueue()
-  const falling = new FallingTrack()
+  const tickMs = 1000 / (o.sim?.tickHz ?? 20)
+  const falling = new FallingTrack(tickMs)
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
 
@@ -349,7 +350,6 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
   let physicsStats = { active: 0, pools: 0, jobs: 0, busy: false }
-  const tickMs = 1000 / (o.sim?.tickHz ?? 20)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
     switch (m.type) {
@@ -372,7 +372,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         lastTickMs = m.tickMs
         slotsUsed = m.slotsUsed
         markTick(m, CLIENT_ID, ghosts, markDirty)
-        falling.update(m.falling, m.landed, performance.now())
+        falling.update(m.tick, m.falling, m.landed, performance.now())
         physicsStats = m.physics
         for (const a of m.acks) events.emit('ack', a)
         for (const ev of m.events) events.emit('event', ev)
@@ -448,7 +448,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     controls.apply(camera)
     dispatch()
     upload()
-    visuals.drawFalling(falling.frame(performance.now(), tickMs, (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
+    visuals.drawFalling(falling.frame(performance.now(), (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     visuals.frame(dt)
     if (o.gpuTiming && ++gpuFrames % 30 === 0) {
       renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})

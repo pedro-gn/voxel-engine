@@ -23,60 +23,122 @@ export function cubeLight(light: (x: number, y: number, z: number) => number, x:
   return sky | (blk << 4)
 }
 
+/** Extra drawing lag, in ticks, beyond the one tick between a body's last two heights: room for arrival jitter. */
+export const MARGIN = 0.2
+/** How much faster or slower than real time the drawn clock may run while it follows the latency filter. */
+const SLEW = 0.1
+/** How fast the latency filter forgets its slowest arrival, in ms per ms. */
+const LEAK = 0.01
+/**
+ * A latency change beyond this many ticks resets the clock at once (a rise is adopted at once anyway; after a long
+ * hitch, a drop would take LEAK ages to forget).
+ */
+const RESYNC = 4
+/** Heights kept per body: enough to cover the drawing lag, at most 1 + MARGIN + RESYNC ticks. */
+const KEEP = 8
+
+interface Sample { tick: number; y: number }
+
 interface Tracked {
-  voxel: number; x: number; z: number; prevY: number; curY: number
-  /** y256 drawn by the last frame. */
-  shownY: number
+  voxel: number; x: number; z: number
+  /** Heights (y256) by sim tick, oldest first. */
+  samples: Sample[]
   landing: { chunk: number; version: number } | null
 }
 
 /**
- * Follows falling bodies between sim ticks for drawing (no three.js, so Node tests reach it). A body is drawn
- * between its last two heights; a landed body glides on to its landing cell, then stays there until its chunk's
- * mesh at the landing version is applied, so a block never blinks out or jumps between the cube and the chunk mesh.
+ * Follows falling bodies between sim ticks for drawing (no three.js, so Node tests reach it).
+ *
+ * Bodies are drawn on a smoothed sim clock, not on message arrival: tick `t` is drawn at render time
+ * `(t + 1 + MARGIN) × tickMs + offset`, where `offset` follows a decaying maximum of the arrival latency
+ * (arrival − t × tickMs), slewed at most SLEW so the drawn speed never jumps. A late message holds the cube at
+ * the newest height (nothing is extrapolated) and delays the clock by the wait; an early one is simply buffered.
+ *
+ * A landed body glides on to its landing cell, then stays there until its chunk's mesh at the landing version is
+ * applied, so a block never blinks out or jumps between the cube and the chunk mesh.
  */
 export class FallingTrack {
   private readonly bodies = new Map<number, Tracked>()
-  private tickAt = 0
+  private readonly tickMs: number
+  /** Maximum of arrival − tick × tickMs, decaying by LEAK between arrivals; set at `latencyAt`. */
+  private latency = Number.NaN
+  private latencyAt = 0
+  /** The drawn clock's latency term; follows `latency` at most SLEW. */
+  private offset = Number.NaN
+  private frameAt = 0
+  /** The newest sim tick received. */
+  private newest = Number.NEGATIVE_INFINITY
+
+  /** `tickMs`: the sim's nominal tick length. */
+  constructor(tickMs: number) { this.tickMs = tickMs }
 
   get size(): number { return this.bodies.size }
 
-  /** A tick message arrived at `now` (ms). */
-  update(falling: readonly FallingBodyState[], landed: readonly Landing[], now: number): void {
+  /** The message of sim tick `tick` arrived at `now` (ms). */
+  update(tick: number, falling: readonly FallingBodyState[], landed: readonly Landing[], now: number): void {
+    const s = now - tick * this.tickMs
+    const kept = this.latency - LEAK * Math.max(0, now - this.latencyAt)
+    if (Number.isNaN(kept) || Math.abs(s - kept) > RESYNC * this.tickMs) this.latency = this.offset = s
+    else this.latency = Math.max(s, kept)
+    this.latencyAt = now
+    this.newest = Math.max(this.newest, tick)
     const seen = new Set<number>()
-    for (const s of falling) {
-      seen.add(s.id)
-      const b = this.bodies.get(s.id)
-      if (b) { b.prevY = b.curY; b.curY = s.y256 }
-      else this.bodies.set(s.id, { voxel: s.voxel, x: s.x, z: s.z, prevY: s.y256 + s.vy256, curY: s.y256, shownY: s.y256 + s.vy256, landing: null })
+    for (const st of falling) {
+      seen.add(st.id)
+      const b = this.bodies.get(st.id)
+      if (b) push(b, tick, st.y256)
+      else this.bodies.set(st.id, { voxel: st.voxel, x: st.x, z: st.z, samples: [{ tick: tick - 1, y: st.y256 + st.vy256 }, { tick, y: st.y256 }], landing: null })
     }
     for (const l of landed) {
       const b = this.bodies.get(l.id)
       if (!b) continue // started and landed within one tick: the chunk mesh covers it
       seen.add(l.id)
-      b.prevY = b.curY
-      b.curY = l.y * 256
+      push(b, tick, l.y * 256)
       b.landing = { chunk: l.chunk, version: l.version }
     }
-    for (const [id, b] of this.bodies) {
-      if (seen.has(id)) continue
-      if (b.landing) b.prevY = b.shownY // a landed cube still gliding goes on from where it is drawn
-      else this.bodies.delete(id)
-    }
-    this.tickAt = now
+    for (const [id, b] of this.bodies) if (!seen.has(id) && !b.landing) this.bodies.delete(id)
   }
 
   /** Cubes to draw at `now`, y in blocks. `applied(chunk)` is the chunk's applied mesh version. */
-  frame(now: number, tickMs: number, applied: (chunk: number) => number): FallingCube[] {
-    const a = Math.min(1, Math.max(0, (now - this.tickAt) / tickMs))
+  frame(now: number, applied: (chunk: number) => number): FallingCube[] {
+    const target = this.latency
+    if (this.bodies.size === 0 || Number.isNaN(this.offset)) this.offset = target
+    else {
+      const step = SLEW * Math.max(0, now - this.frameAt)
+      this.offset += Math.min(step, Math.max(-step, target - this.offset))
+    }
+    this.frameAt = now
+    let at = (now - this.offset) / this.tickMs - 1 - MARGIN // the sim tick drawn now, fractional
+    if (this.bodies.size > 0 && at > this.newest) {
+      // The next message is late: hold at the newest tick and push the clock back by the wait, so the cubes
+      // go on from here when it comes instead of catching up in a jump.
+      at = this.newest
+      this.offset = now - (at + 1 + MARGIN) * this.tickMs
+    }
     const out: FallingCube[] = []
     for (const [id, b] of this.bodies) {
-      const y = a >= 1 ? b.curY : b.prevY + (b.curY - b.prevY) * a
+      const last = b.samples[b.samples.length - 1]!
       // A landed cube is handed over only once it rests in its landing cell and that cell's mesh is in.
-      if (b.landing && y === b.curY && applied(b.landing.chunk) >= b.landing.version) { this.bodies.delete(id); continue }
-      b.shownY = y
-      out.push({ voxel: b.voxel, x: b.x, y: y / 256, z: b.z })
+      if (b.landing && at >= last.tick && applied(b.landing.chunk) >= b.landing.version) { this.bodies.delete(id); continue }
+      out.push({ voxel: b.voxel, x: b.x, y: heightAt(b.samples, at) / 256, z: b.z })
     }
     return out
   }
+}
+
+function push(b: Tracked, tick: number, y: number): void {
+  b.samples.push({ tick, y })
+  if (b.samples.length > KEEP) b.samples.shift()
+}
+
+/** The height at fractional sim tick `at`, held at the oldest and newest samples. */
+function heightAt(samples: readonly Sample[], at: number): number {
+  const first = samples[0]!, last = samples[samples.length - 1]!
+  if (at <= first.tick) return first.y
+  if (at >= last.tick) return last.y
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1]!, b = samples[i]!
+    if (at <= b.tick) return a.y + ((b.y - a.y) * (at - a.tick)) / (b.tick - a.tick)
+  }
+  return last.y
 }
