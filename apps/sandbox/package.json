@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "e2e": "playwright test",
     "test": "vitest run",
+    "bench:dam": "node bench/damBreak.node.ts",
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
