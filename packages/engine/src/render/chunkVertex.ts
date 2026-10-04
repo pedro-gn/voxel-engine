@@ -1,5 +1,6 @@
 import { attribute, bool, clamp, float, mix, modelWorldMatrix, select, uint, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { AO_CURVE } from '../mesh/ao.ts'
+import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
 import { FLIP_U } from './faceUv.ts'
 import { BLEND_SECONDS } from './liquidBlend.ts'
 
@@ -65,10 +66,14 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
     layer: varying(layer),
     sky: varying(sky),
     blk: varying(blk),
-    ao: varying(aoF),
+    // Liquid vertices carry flags in their ao bits (LIQUID_DEEP), not occlusion: their AO is always 1.
+    ao: liquid ? float(1) : varying(aoF),
     flow: varying(flow),
-    /** The vertex's surface height within its cell (1 = full); always 1 for non-liquid layers. */
-    surface: liquid ? varying(float(1).sub(drop.div(16))) : float(1),
+    /**
+     * The vertex's surface height within its cell (1 = full); 1 for deep water (a LIQUID_DEEP vertex: the same liquid
+     * lies below, so a thin top layer still reads as deep) and for non-liquid layers.
+     */
+    surface: liquid ? varying(select(ao.equal(uint(LIQUID_DEEP)), float(1), float(1).sub(drop.div(16)))) : float(1),
   }
 }
 

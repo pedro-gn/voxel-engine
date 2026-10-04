@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
-import { WorldReader, createSnapshot, padIndex } from '../src/world/reader.ts'
+import { OUTSIDE, WorldReader, createSnapshot, padIndex } from '../src/world/reader.ts'
 import { AIR, FULL_SKY } from '../src/world/voxel.ts'
 import { ID, testRegistry } from './helpers.ts'
 
@@ -49,6 +49,20 @@ describe('WorldReader', () => {
     expect(snap.voxels[padIndex(6, 7, 8)]).toBe(ID.glass)
     expect(snap.voxels[padIndex(0, 1, 1)]).toBe(AIR)      // x = -1: outside the world
     expect(snap.light[padIndex(0, 1, 1)]).toBe(FULL_SKY)
+  })
+
+  it('marks the sides of a snapshot whose border lies outside the world (x and z)', () => {
+    const { reader } = pair([96, 64, 64])
+    const L = reader.layout
+    const outside = (cx: number, cz: number) => {
+      const snap = createSnapshot()
+      snap.outside = -1 // stale value from a previous chunk
+      expect(reader.snapshot(L.chunkIndex(cx, 0, cz), snap)).not.toBeNull()
+      return snap.outside
+    }
+    expect(outside(0, 0)).toBe(OUTSIDE.NX | OUTSIDE.NZ)
+    expect(outside(1, 0)).toBe(OUTSIDE.NZ)
+    expect(outside(2, 1)).toBe(OUTSIDE.PX | OUTSIDE.PZ)
   })
 
   it('copies uniform neighbours with their implied light', () => {

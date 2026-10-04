@@ -4,8 +4,9 @@ import { Mesher, meshChunk } from '../src/mesh/mesher.ts'
 import { QuadBuilder } from '../src/mesh/quadBuilder.ts'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { meshTablesFrom } from '../src/mesh/tables.ts'
-import { FACE, FLOW, unpackA, unpackFlow } from '../src/mesh/vertexFormat.ts'
-import type { ChunkSnapshot } from '../src/world/reader.ts'
+import { FACE, FLOW, LIQUID_DEEP, unpackA, unpackFlow } from '../src/mesh/vertexFormat.ts'
+import { isTopRow } from '../src/render/liquidBlend.ts'
+import { OUTSIDE, type ChunkSnapshot } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
@@ -110,6 +111,36 @@ describe('liquid meshing', () => {
     const byX = dropsByX(s, 5) // B's top plane; A's top is hidden by the water above it
     expect([...byX.get(5)!]).toEqual([0]) // touching A
     expect([...byX.get(6)!]).toEqual([12]) // air side
+  })
+  it('flags the top-row vertices of water over water as deep (ao bits), and nothing else', () => {
+    const s = emptySnap()
+    put(s, 4, 4, 4, water(7))
+    put(s, 4, 5, 4, water(0)) // a thin surface layer over deep water
+    put(s, 8, 3, 8, ID.stone)
+    put(s, 8, 4, 8, water(0)) // a film on a stone floor
+    const { m } = mesh(s)
+    const seen = { deepTop: 0, other: 0 }
+    for (let i = 0; i < m!.vertices.length; i += 2) {
+      const a = unpackA(m!.vertices[i]!)
+      const cellY = a.normal === FACE.PY ? a.y - 1 : a.normal === FACE.NY ? a.y : a.corner >= 2 ? a.y - 1 : a.y
+      if (a.x >= 4 && a.x <= 5 && cellY === 5 && isTopRow(m!.vertices[i]!)) {
+        expect(a.ao, `deep top vertex ${JSON.stringify(a)}`).toBe(LIQUID_DEEP)
+        seen.deepTop++
+      } else {
+        expect(a.ao, `vertex ${JSON.stringify(a)}`).toBe(0)
+        seen.other++
+      }
+    }
+    expect(seen.deepTop).toBe(4 + 4 * 2) // the top face and the two top corners of each of 4 sides
+    expect(seen.other).toBeGreaterThan(0)
+  })
+  it('treats out-of-world padding as a wall: a sea at the world border keeps a full rim', () => {
+    const s = emptySnap()
+    for (let z = -1; z <= 32; z++) for (let x = 0; x < 4; x++) put(s, x, 4, z, water(7)) // x = -1 stays air (padding)
+    s.outside = OUTSIDE.NX // the chunk sits at the world's -x border
+    expect([...dropsByX(s, 5).get(0)!]).toEqual([2]) // (8/9 + 8/9) / 2: the padding is left out, like a wall
+    s.outside = 0
+    expect([...dropsByX(s, 5).get(0)!]).toEqual([9]) // in-world air at x = -1 tapers it: (8/9 + 8/9 + 0 + 0) / 4
   })
   it('culls water faces against opaque blocks', () => {
     const s = emptySnap()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FACE, packA } from '../src/mesh/vertexFormat.ts'
+import { FACE, LIQUID_DEEP, packA } from '../src/mesh/vertexFormat.ts'
 import { BLEND_SECONDS, NEW_DROP, blendFrom, blendedDrop, isTopRow, type LiquidBlendState } from '../src/render/liquidBlend.ts'
 
 /** Packs word-A/word-B pairs (word B is irrelevant to blending: 0). */
@@ -76,6 +76,14 @@ describe('blendFrom', () => {
     expect(r.prevDrop[0]).toBe(2) // first: fully blended to 2 (second would display 14)
     const swapped = state(verts(prev.vertices[2]!, prev.vertices[0]!), [14, 5], [3, 0])
     expect(blendFrom(swapped, verts(packA(4, 6, 4, FACE.PY, 0, 0, 2)), 3).prevDrop[0]).toBe(14)
+  })
+
+  it('matches positions whatever the ao bits hold (the liquid deep flag)', () => {
+    expect(isTopRow(packA(4, 6, 4, FACE.PY, LIQUID_DEEP, 0, 3))).toBe(true)
+    const prev = state(verts(packA(4, 6, 4, FACE.PY, 0, 0, 3)), [3], [0])
+    expect(blendFrom(prev, verts(packA(4, 6, 4, FACE.PY, LIQUID_DEEP, 0, 9)), 5).prevDrop[0]).toBe(3)
+    const deepPrev = state(verts(packA(4, 6, 4, FACE.PX, LIQUID_DEEP, 3, 5)), [5], [0])
+    expect(blendFrom(deepPrev, verts(packA(4, 6, 4, FACE.PY, 0, 0, 9)), 5).prevDrop[0]).toBe(5)
   })
 
   it('stamps t0 = now on every vertex', () => {

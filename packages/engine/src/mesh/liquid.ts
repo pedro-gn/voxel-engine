@@ -1,10 +1,10 @@
 import { LAYER } from '../blocks/registry.ts'
-import { padIndex, type ChunkSnapshot } from '../world/reader.ts'
+import { OUTSIDE, PAD, padIndex, type ChunkSnapshot } from '../world/reader.ts'
 import { AIR, voxelId, voxelState } from '../world/voxel.ts'
 import { AXES, REVERSE, STRIDE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
-import { FACE, FLOW, flowCode, packA, packB, packFlow } from './vertexFormat.ts'
+import { FACE, FLOW, LIQUID_DEEP, flowCode, packA, packB, packFlow } from './vertexFormat.ts'
 
 export function liquidHeight(level: number): number { return (level + 1) / 9 }
 
@@ -30,13 +30,24 @@ function cellHeight(s: ChunkSnapshot, t: MeshTables, pi: number, group: number):
   return liquidHeight(level(s, t, pi))
 }
 
+/** Whether padded index pi is a border cell outside the world (the snapshot reads it as air; the sim treats it as a wall). */
+function outsideWorld(outside: number, pi: number): boolean {
+  const px = pi % PAD, pz = Math.floor(pi / PAD) % PAD
+  return (px === 0 && (outside & OUTSIDE.NX) !== 0) || (px === PAD - 1 && (outside & OUTSIDE.PX) !== 0) ||
+    (pz === 0 && (outside & OUTSIDE.NZ) !== 0) || (pz === PAD - 1 && (outside & OUTSIDE.PZ) !== 0)
+}
+
 function cornerHeights(s: ChunkSnapshot, t: MeshTables, pi: number, group: number): void {
   for (let c = 0; c < 4; c++) {
     const cells = [pi, pi + SX[c]!, pi + SZ[c]! * STRIDE[2], pi + SX[c]! + SZ[c]! * STRIDE[2]]
     let sum = 0, n = 0, full = false
     for (const ci of cells) {
       const id = voxelId(s.voxels[ci]!)
-      if (id === AIR) { n++; continue } // open air counts as height 0, so edges and falls taper to the ground
+      if (id === AIR) {
+        if (s.outside !== 0 && outsideWorld(s.outside, ci)) continue // beyond the world's edge: a wall, left out
+        n++ // open air counts as height 0, so edges and falls taper to the ground
+        continue
+      }
       if (t.liquidGroup[id] !== group) continue // walls (solids, other liquids, plants) are left out
       const hgt = cellHeight(s, t, ci, group)
       if (hgt === 1) { full = true; break }
@@ -73,6 +84,9 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     const group = liquid ? t.liquidGroup[id]! : 0
     if (liquid) cornerHeights(s, t, pi, group)
     const falling = liquid && t.liquidGroup[voxelId(s.voxels[pi + UP]!)] === group
+    // Water over water: its top-row vertices carry LIQUID_DEEP, so foam treats the surface as full height however thin
+    // the top layer is.
+    const deep = liquid && t.liquidGroup[voxelId(s.voxels[pi - UP]!)] === group
     for (let f = 0; f < 6; f++) {
       const [d, u, v] = AXES[f]!
       const ni = pi + ((f & 1) === 0 ? 1 : -1) * STRIDE[d as 0 | 1 | 2]
@@ -88,13 +102,14 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
         p[d] = plane; p[u] = cu; p[v] = cv
         const vx = x + p[0]!, vz = z + p[2]!
         let vy = y + p[1]!
-        let drop = 0
+        let drop = 0, flags = 0
         if (liquid && p[1] === 1) {
           const hgt = corners[cornerIndex(p[0] ? 1 : -1, p[2] ? 1 : -1)]!
           drop = Math.round((1 - hgt) * 16)
           vy = y + 1
+          if (deep) flags = LIQUID_DEEP
         }
-        qa[c] = packA(vx, vy, vz, f, 0, c, drop)
+        qa[c] = packA(vx, vy, vz, f, flags, c, drop)
         qb[c] = b
         if (flow !== FLOW.STILL) [qa[c], qb[c]] = packFlow(qa[c]!, qb[c]!, flow)
       }

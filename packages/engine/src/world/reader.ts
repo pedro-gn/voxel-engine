@@ -6,9 +6,13 @@ export const PAD = 34
 export const PAD_VOLUME = PAD * PAD * PAD
 export function padIndex(px: number, py: number, pz: number): number { return px + pz * PAD + py * PAD * PAD }
 
-export interface ChunkSnapshot { voxels: Uint16Array; light: Uint8Array }
+/** Bits of ChunkSnapshot.outside: which side's 1-voxel border lies outside the world (it then reads as air). */
+export const OUTSIDE = { NX: 1, PX: 2, NZ: 4, PZ: 8 } as const
+
+/** `outside`: OUTSIDE bits for the x and z borders; the y borders are not tracked. */
+export interface ChunkSnapshot { voxels: Uint16Array; light: Uint8Array; outside: number }
 export function createSnapshot(): ChunkSnapshot {
-  return { voxels: new Uint16Array(PAD_VOLUME), light: new Uint8Array(PAD_VOLUME) }
+  return { voxels: new Uint16Array(PAD_VOLUME), light: new Uint8Array(PAD_VOLUME), outside: 0 }
 }
 
 const FACE_NEIGHBOURS: readonly (readonly [number, number, number])[] = [
@@ -105,6 +109,8 @@ export class WorldReader {
   private copy(cx: number, cy: number, cz: number, out: ChunkSnapshot): boolean {
     const [SX, SY, SZ] = this.layout.size
     const bx = cx * 32, by = cy * 32, bz = cz * 32
+    out.outside = (bx === 0 ? OUTSIDE.NX : 0) | (bx + 32 >= SX ? OUTSIDE.PX : 0) |
+      (bz === 0 ? OUTSIDE.NZ : 0) | (bz + 32 >= SZ ? OUTSIDE.PZ : 0)
     for (let py = 0; py < PAD; py++) {
       const y = by + py - 1
       for (let pz = 0; pz < PAD; pz++) {

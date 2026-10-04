@@ -7,6 +7,12 @@ export const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
 export function packA(x: number, y: number, z: number, normal: number, ao: number, corner: number, drop = 0): number {
   return (x | (y << 6) | (z << 12) | (normal << 18) | (ao << 21) | (corner << 23) | (drop << 25)) >>> 0
 }
+/**
+ * Liquid vertices have no AO: their ao bits carry flags instead. LIQUID_DEEP marks a top-row vertex of a cell whose
+ * cell below holds the same liquid (deep water: its surface counts as full height for foam).
+ */
+export const LIQUID_DEEP = 1
+
 export function unpackA(a: number) {
   return {
     x: a & 63, y: (a >>> 6) & 63, z: (a >>> 12) & 63, normal: (a >>> 18) & 7,
