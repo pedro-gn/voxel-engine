@@ -75,7 +75,8 @@ export class WaterMaterial {
     // Lapping lines: phase = thickness/w + t*0.35 is constant where thickness falls over time, so they travel shoreward.
     const lap = smoothstep(0.75, 1.0, fract(thickness.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
       .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
-    const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)) : float(0)
+    // A thin film has a low surface height (WV4's `surface` varying): it gets almost no foam, deep water keeps its shore foam.
+    const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)).mul(smoothstep(0.2, 0.6, v.surface)) : float(0)
     const fall = float(1).add(v.flow.z.mul(2))
     const streak = select(isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(fall)), 0)).mul(0.12))
     const albedo = mix(mix(u.shallow, u.deep, depthT).add(streak), vec3(1), foam)
