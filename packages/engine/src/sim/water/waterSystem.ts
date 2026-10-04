@@ -97,6 +97,8 @@ export class WaterSystem {
 
   get enabled(): boolean { return this.water !== 0 }
   get seaLevel(): number { return this.cycle.seaLevel }
+  get sea(): number { return this.cycle.sea }
+  get stepCount(): number { return this.steps }
 
   /**
    * Sets the sea level (the generator's configure()) and finds the sea again at once, so the step never pins the old sea's
@@ -112,8 +114,6 @@ export class WaterSystem {
     cy.sea += cy.seaDepth(this.cols) - before
     this.expected = this.total()
   }
-  get sea(): number { return this.cycle.sea }
-  get stepCount(): number { return this.steps }
 
   /** Σ depth + sea. */
   total(): number { return this.cols.total() + this.cycle.sea }
