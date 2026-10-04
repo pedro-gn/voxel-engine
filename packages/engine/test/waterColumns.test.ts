@@ -162,6 +162,47 @@ describe('WaterColumns', () => {
     }
   }, 60_000)
 
+  it.each([[1, 8], [1, 4], [1, 2]])('relaxes a gentle slope of %i/%i sub per column along a 256-column channel to one mirror level', (num, den) => {
+    // Gentle slopes are staircases of 1-sub heads: a tile's run ends alone would hide them.
+    const sx = 256, sz = 16
+    const g = grid(sx, sz, box(sx, sz, 0), (x, z) => (x > 0 && z > 0 && x < sx - 1 && z < sz - 1 ? 2 * SUB + Math.floor((x * num) / den) : 0))
+    const v0 = g.total()
+    settle(g, CAP, 200_000)
+    expect(g.total()).toBe(v0)
+    expect(spread(g)).toBeLessThanOrEqual(SUB / 8)
+  }, 120_000)
+
+  it('republishes a sleeping tile whose border flux stops moving water, though no water crossed', () => {
+    // Tiles 0 and 1 side by side, level; tile 0 sleeps. The edge from column 15 into tile 1 is stored in tile 0 and moved 1.
+    const g = grid(32, 16, () => 0, () => 100)
+    g.tiles.clear()
+    g.tiles.wake(1)
+    g.flux[2 * (15 + 3 * 32)] = 16
+    g.tiles.dirty.fill(0)
+    g.step(CAP, null, 0)
+    expect(moved(g.flux[2 * (15 + 3 * 32)]!)).toBe(0)
+    expect(g.tiles.dirty[0]).toBe(1)
+  })
+
+  it('lets a pond that can never be level sleep: two columns holding an odd volume swap 1/SUB forever', () => {
+    // 32 × 32 on a floor at 2, with one two-column pit at 1 holding 25 + 26.
+    const pit = (x: number, z: number) => z === 5 && (x === 5 || x === 6)
+    const g = grid(32, 32, (x, z) => (pit(x, z) ? 1 : 2), (x, z) => (pit(x, z) ? (x === 5 ? 25 : 26) : 0))
+    settle(g, CAP, 5_000)
+    expect(g.depth[5 + 5 * 32]! + g.depth[6 + 5 * 32]!).toBe(51)
+  })
+
+  it('lets every puddle of a random shallow landscape sleep', () => {
+    const rng = new Pcg32(1)
+    const floors = Array.from({ length: 64 * 64 }, () => rng.nextInt(3))
+    const depths = Array.from({ length: 64 * 64 }, () => rng.nextInt(12))
+    const g = grid(64, 64, (x, z) => floors[x + z * 64]!, (x, z) => depths[x + z * 64]!)
+    for (let t = 0; t < g.tiles.count; t++) g.tiles.wake(t)
+    const v0 = g.total()
+    settle(g, CAP, 20_000)
+    expect(g.total()).toBe(v0)
+  }, 60_000)
+
   it('drains a lake through a breach in its dam until, asleep, what is left lies flat to one mirror level', () => {
     // Lake: x 1..46 on a bed at 20, one block deep. Dam at x = 47, breached at z 12..19 down to the bed; a pit at 0 beyond.
     const sx = 64, sz = 32

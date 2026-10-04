@@ -194,7 +194,14 @@ The step runs over the **stepped tiles**: awake tiles, at most `tileCap` of them
    - Each edge moves `moved(f)` (truncated toward zero) from a to b.
    - Water crossing into a tile that does not step marks that tile dirty, and wakes it if at least `FLUX_EPS` crossed.
 5. **Pin the sea.** Every sea column among those touched is set back to `seaLevel × SUB`. The difference is credited to `sea`; a deficit is debited from it.
-6. **Settle.** A stepped tile is quiet when every edge it moved carried less than `FLUX_EPS` and no column changed by more than `DEPTH_EPS` since its last step. After `SLEEP_STEPS` quiet steps the tile sleeps, and the fluxes it processed are zeroed. Every stepped tile is marked dirty.
+6. **Settle** (rule revised in Task 8b). A stepped tile is quiet when no column changed by more than `DEPTH_EPS` since its last step and its water lies flat. The flatness test reads every edge touching the tile, its four borders included, so a world and its mirror image sleep alike:
+   - no edge moved `FLUX_EPS` or more;
+   - no run of connected water along a row or a column of the tile, extended one column past each border, spans more than `HEAD_EPS` (6). An edge connects its columns when the higher one is at least `MIN_FLOW` deep, or, level, when either is. This bounds every edge's head too.
+   - the tile's mean slope along x and along z is at most 1/2^`SLOPE_SHIFT` (1/16) sub per column, plus 1/SUB of slack in all. Each run of 8 columns or more gives its fall from the mean of the 4 surfaces at each end, so leftover 1/SUB bumps cancel while a slope adds up.
+   - Why: a still lake never comes to rest in integers (leftover bumps move on forever), and from zero flux heads of 1–2 sub move nothing for longer than `SLEEP_STEPS`. Water moved alone therefore lets a gentle slope freeze. A per-edge head bound cannot both let a lake sleep and catch a slope.
+   - After `SLEEP_STEPS` quiet steps the tile sleeps and its fluxes are zeroed, except a border edge whose other tile is still awake after the step: that tile goes on moving it.
+   - A tile that does not step and took a trickle this step (under `FLUX_EPS`) is woken if it no longer lies flat.
+   - A stepped tile is marked dirty when a depth changed or an edge moved water this step or the last one. The tile storing a border edge is marked dirty whenever that edge moved water this step or the last one.
 
 Springs run before the step, so a spring's tile is stepped in the same tick. The sea pin runs inside the step.
 

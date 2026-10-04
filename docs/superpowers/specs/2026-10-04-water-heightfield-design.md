@@ -125,6 +125,13 @@ All constants are integers chosen in the plan and tuned at the checkpoints. A st
 - The world is divided into **tiles of 16 × 16 columns**. Only awake tiles step.
 - A tile falls asleep after `SLEEP_STEPS` consecutive steps in which every |flux| is below
   `FLUX_EPS` and no depth changed by more than `DEPTH_EPS`. Its fluxes are then set to 0.
+  - *Clarified in 3c's implementation (2026-10-04, Task 8b).* The quiet test also requires the tile's water to lie flat,
+    read the same on all four borders:
+    - every edge's head is at most `HEAD_EPS` (6 sub-units), and so is every run of connected water along a row or column
+      of the tile and one column past it;
+    - the tile's mean slope is at most 1/16 sub-unit per column, with 1 sub-unit of slack.
+  - Without this, gentle slopes fall asleep before friction lets their flux build. A border edge keeps its flux while the
+    tile across it is awake. A sleeping tile that takes a trickle of water wakes if it no longer lies flat.
 - A tile wakes when a neighbouring tile sends water across their border, when an edit touches
   one of its columns or their neighbours, or when a spring in it runs.
 - A still lake costs nothing.

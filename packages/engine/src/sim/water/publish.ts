@@ -3,7 +3,7 @@ import { moved, type WaterColumns } from './columns.ts'
 import { SUB, TILE } from './constants.ts'
 
 /** One publish (plan design notes: Publishing): its sequence number, the parity buffer it wrote, and the tiles in it. */
-export interface WaterTick { seq: number; parity: number; tiles: number[] }
+export interface WaterTick { seq: number; parity: number; tiles: readonly number[] }
 
 function clamp16(v: number): number { return v > 32767 ? 32767 : v < -32768 ? -32768 : v }
 
@@ -11,7 +11,7 @@ function clamp16(v: number): number { return v > 32767 ? 32767 : v < -32768 ? -3
  * The sorted union of two sorted tile lists. When one side is empty the other comes back as is, so the result may be one of
  * the inputs: neither is modified, and callers must not modify the result.
  */
-export function mergeTiles(a: number[], b: number[]): number[] {
+export function mergeTiles(a: readonly number[], b: readonly number[]): readonly number[] {
   if (b.length === 0) return a
   if (a.length === 0) return b
   const out: number[] = []
@@ -33,7 +33,7 @@ export class WaterPublisher {
   private readonly flux: Int16Array
   private readonly stamp: Int32Array
   private seq = 0
-  private last: number[] = []
+  private last: readonly number[] = []
 
   constructor(b: WaterBuffers) {
     this.surface = new Int32Array(b.surface)
@@ -45,7 +45,7 @@ export class WaterPublisher {
    * Publishes `changed` (sorted tile indices) plus the previous publish's tiles; null when both are empty. The publisher
    * keeps `changed` (it is the next publish's previous tiles): the caller hands over a fresh array and never modifies it.
    */
-  publish(changed: number[], cols: WaterColumns): WaterTick | null {
+  publish(changed: readonly number[], cols: WaterColumns): WaterTick | null {
     const tiles = mergeTiles(changed, this.last)
     this.last = changed
     if (tiles.length === 0) return null

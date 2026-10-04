@@ -73,7 +73,7 @@ export class SurfaceView {
   private readonly fenceWord = new Int32Array(new SharedArrayBuffer(4))
   private readonly tx: number
   private readonly seen: Uint8Array
-  private pending: number[] = []
+  private pending: readonly number[] = []
   private readonly data: (ColumnData | undefined)[]
   private readonly dirty = new Set<number>()
   private readonly light: (x: number, y: number, z: number) => number

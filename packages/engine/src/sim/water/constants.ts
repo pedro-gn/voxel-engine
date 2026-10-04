@@ -33,11 +33,12 @@ export const DEPTH_EPS = 4 * (FLUX_EPS - 1)
  */
 export const HEAD_EPS = 6
 /**
- * …and the tile's mean slope along x and along z, Σ (last − first surface) over its runs per edge, stays at or under
- * 1/2^SLOPE_SHIFT sub-unit per column. Leftover bumps cancel in that sum while a slope adds up: with zero flux, heads of
- * 1–2 sub take longer than SLEEP_STEPS to move anything, so without this test a gentle slope would fall asleep as it is.
+ * …and the tile's mean slope along x and along z stays at or under 1/2^SLOPE_SHIFT sub-unit per column, with 1/SUB of slack
+ * in all. Each run of 8 columns or more gives its fall from the mean of 4 surfaces at each end, so leftover bumps cancel
+ * while a slope adds up. With zero flux, heads of 1–2 sub take longer than SLEEP_STEPS to move anything: without this test
+ * a gentle slope would fall asleep as it is. At 1/16 a 256-column channel ends within one mirror level (measured 25–29).
  */
-export const SLOPE_SHIFT = 3
+export const SLOPE_SHIFT = 4
 /** At rebuild, a wall run at most this thick that floats over air or water (a bridge, a canopy) hides no water below it. */
 export const OVERHANG = 6
 /** One liquid unit (1/8 block, a voxel level step) in 1/SUB block. */

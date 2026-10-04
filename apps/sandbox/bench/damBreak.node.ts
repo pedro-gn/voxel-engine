@@ -36,7 +36,8 @@ for (let t = 1; t <= ticks; t++) {
 }
 
 const pct = (a: number[], p: number): number => [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(a.length * p))] ?? 0
-const line = (a: number[]): string => `p50 ${pct(a, 0.5).toFixed(2)}  p95 ${pct(a, 0.95).toFixed(2)}  max ${Math.max(...a).toFixed(2)} ms`
+const most = (a: number[]): number => { let m = 0; for (const v of a) if (v > m) m = v; return m } // no spread: settle runs exceed the argument limit
+const line = (a: number[]): string => `p50 ${pct(a, 0.5).toFixed(2)}  p95 ${pct(a, 0.95).toFixed(2)}  max ${most(a).toFixed(2)} ms`
 console.log(`dam break, ${tick.length} ticks in ${((performance.now() - wall) / 1000).toFixed(1)} s; Σ depth + sea off on ${off} ticks`)
 console.log(`  sim tick        ${line(tick)}`)
 console.log(`  water step      ${line(stepMs)}`)

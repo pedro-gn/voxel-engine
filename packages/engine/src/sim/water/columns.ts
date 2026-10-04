@@ -11,6 +11,10 @@ const LOUD = FLUX_EPS << FLUX_FP
 
 /** Sides of a stepped tile whose neighbour tile exists and does not step: their border edges and columns are the tile's. */
 const WEST = 1, NORTH = 2, EAST = 4, SOUTH = 8
+/** The slope test measures runs of at least this many columns, by the mean of END surfaces at each end. */
+const RUN_MIN = 8, END = 4
+/** A column thinner than this (1/16 block) shows no water, in the mirror or the renderer: its level does not keep a tile awake. */
+const SHOWN = SUB / 16
 
 /** A stored flux after one step of friction: loses 1/2^FRICTION_SHIFT, rounded away from zero, so a lone flux always dies out. */
 export function damp(f: number): number {
@@ -118,9 +122,14 @@ export class WaterColumns {
   /** Columns outside the stepped tiles that their edges reach. */
   private readonly ring = new IntList()
   private readonly asleep = new IntList()
-  /** runLive's sums over a tile's runs along one axis: Σ (last − first surface), and Σ edges. */
+  /** Tiles that do not step and took a trickle (under FLUX_EPS) this step, once each; settle checks they still lie flat. */
+  private readonly trickled = new IntList()
+  private readonly trickledMark: Uint8Array
+  /** runLive's sums over a tile's runs along one axis (endRun): their falls and their lengths. */
   private fall = 0
   private span = 0
+  /** The surfaces of the line runLive scans. */
+  private readonly line = new Int32Array(TILE + 2)
   private cursor = 0
 
   constructor(sx: number, sz: number, floor: Int16Array) {
@@ -134,6 +143,7 @@ export class WaterColumns {
     this.last = new Int32Array(this.n)
     this.tiles = new WaterTiles(sx, sz)
     this.stepping = new Uint8Array(this.tiles.count)
+    this.trickledMark = new Uint8Array(this.tiles.count)
   }
 
   surface(c: number): number { return this.floor[c]! * SUB + this.depth[c]! }
@@ -208,6 +218,7 @@ export class WaterColumns {
 
   private accelerateAll(): void {
     const floor = this.floor, depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
+    const dirty = this.tiles.dirty
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!, o = this.open[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
@@ -217,8 +228,18 @@ export class WaterColumns {
         for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2, c, c + 1) }
         if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2 + 1, c, c + sx) }
       }
-      if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) { const c = x0 - 1 + z * sx; accelerate(floor, depth, flux, c * 2, c, c + 1) }
-      if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) { const c = x + (z0 - 1) * sx; accelerate(floor, depth, flux, c * 2 + 1, c, c + sx) }
+      // A border edge stored in a tile that does not step is that tile's to publish: it must republish when the edge's moved
+      // water changes, from any value to any other. Here it moved water at the last step; transferAll catches it moving now.
+      if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
+        const c = x0 - 1 + z * sx
+        if (moved(flux[c * 2]!) !== 0) dirty[t - 1] = 1
+        accelerate(floor, depth, flux, c * 2, c, c + 1)
+      }
+      if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
+        const c = x + (z0 - 1) * sx
+        if (moved(flux[c * 2 + 1]!) !== 0) dirty[t - tx] = 1
+        accelerate(floor, depth, flux, c * 2 + 1, c, c + sx)
+      }
     }
   }
 
@@ -278,6 +299,7 @@ export class WaterColumns {
     const T = this.tiles
     T.dirty[t] = 1
     if (amount >= FLUX_EPS) T.wake(t)
+    else if (this.trickledMark[t] === 0) { this.trickledMark[t] = 1; this.trickled.push(t) }
   }
 
   private pinAll(sea: Uint8Array, target: number): number {
@@ -294,39 +316,27 @@ export class WaterColumns {
 
   /**
    * The quiet test, the same on every side of a tile. A stepped tile is quiet when no column changed by more than
-   * DEPTH_EPS since its last step, no edge touching it (its four borders included) moved FLUX_EPS or more, and no run of
-   * connected water along a row or a column of the tile, extended one column past each border, spans more than HEAD_EPS,
-   * and the runs' mean slope along x and along z is at most 1/2^SLOPE_SHIFT per column (runLive). These see the head, not
-   * just the water moved, so a gentle slope cannot freeze, and they read every edge of the tile alike, so a world and its
-   * mirror image sleep alike. After SLEEP_STEPS quiet steps it sleeps, and its fluxes are zeroed, except a border edge whose other tile is still awake
-   * after the step: that tile goes on moving it. Then a ring column (outside, not stepping) that now stands more than
-   * HEAD_EPS above or below a neighbour wakes its tile: water that crossed in a trickle too small to wake it must not leave
-   * a slope frozen inside it.
+   * DEPTH_EPS since its last step and its water lies flat (flat). After SLEEP_STEPS quiet steps it sleeps, and its fluxes
+   * are zeroed, except a border edge whose other tile is still awake after the step: that tile goes on moving it. Then a
+   * sleeping tile that water trickled into this step (too little to wake it) is woken if it no longer lies flat: else its
+   * neighbours would each go to sleep with a step against it, and those steps would add up to a slope.
    */
   private settle(): void {
-    const T = this.tiles, sx = this.sx, sz = this.sz, depth = this.depth, last = this.last
+    const T = this.tiles, sx = this.sx, depth = this.depth, last = this.last
     const asleep = this.asleep
     asleep.clear()
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!
-      const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
+      const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       let live = false, changed = false
-      for (let z = z0; z < z1; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
+      for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
         const d = depth[c]!, dd = d - last[c]!
         if (dd === 0) continue
         changed = true
         last[c] = d
         if (dd > DEPTH_EPS || -dd > DEPTH_EPS) live = true
       }
-      if (!live) {
-        const xa = x0 > 0 ? x0 - 1 : x0, xb = x1 < sx ? x1 : x1 - 1, za = z0 > 0 ? z0 - 1 : z0, zb = z1 < sz ? z1 : z1 - 1
-        this.fall = 0; this.span = 0
-        for (let z = z0; z < z1 && !live; z++) live = this.runLive(xa + z * sx, xb - xa, 1, 0)
-        live ||= ((this.fall < 0 ? -this.fall : this.fall) << SLOPE_SHIFT) > this.span
-        this.fall = 0; this.span = 0
-        for (let x = x0; x < x1 && !live; x++) live = this.runLive(x + za * sx, zb - za, sx, 1)
-        live ||= ((this.fall < 0 ? -this.fall : this.fall) << SLOPE_SHIFT) > this.span
-      }
+      if (!live) live = !this.flat(t)
       // Publish what changed: a depth, or an edge that moves water now or did at the last step (its flux may have stopped).
       const moving = this.most[k]! > 0 ? 1 : 0
       if (changed || moving === 1 || T.moving[t] === 1) T.dirty[t] = 1
@@ -336,53 +346,86 @@ export class WaterColumns {
       if (T.quiet[t]! >= SLEEP_STEPS) { T.awake[t] = 0; T.quiet[t] = 0; asleep.push(t) }
     }
     for (let k = 0; k < asleep.length; k++) this.zeroTile(asleep.data[k]!)
-    for (let k = 0; k < this.ring.length; k++) {
-      const c = this.ring.data[k]!, x = c % sx, t = T.of(x, (c - x) / sx)
-      if (T.awake[t] === 0 && this.headAround(c, x, (c - x) / sx)) T.wake(t)
+    const trickled = this.trickled
+    for (let k = 0; k < trickled.length; k++) {
+      const t = trickled.data[k]!
+      this.trickledMark[t] = 0
+      if (T.awake[t] === 0 && !this.flat(t)) T.wake(t)
     }
+    trickled.clear()
+  }
+
+  /**
+   * Whether tile t's water lies flat: no edge touching it (its four borders included) moved FLUX_EPS or more, no run of
+   * connected water along a row or a column of the tile, extended one column past each border, spans more than HEAD_EPS,
+   * and the runs' mean slope along x and along z is at most 1/2^SLOPE_SHIFT per column, with slack (runLive, leaning).
+   * This sees the head, not just the water moved, so a gentle slope cannot freeze, and it reads every edge of the tile
+   * alike, so a world and its mirror image sleep alike.
+   */
+  private flat(t: number): boolean {
+    const T = this.tiles, sx = this.sx, sz = this.sz
+    const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
+    const xa = x0 > 0 ? x0 - 1 : x0, xb = x1 < sx ? x1 : x1 - 1, za = z0 > 0 ? z0 - 1 : z0, zb = z1 < sz ? z1 : z1 - 1
+    this.fall = 0; this.span = 0
+    for (let z = z0; z < z1; z++) if (this.runLive(xa + z * sx, xb - xa, 1, 0)) return false
+    if (this.leaning()) return false
+    this.fall = 0; this.span = 0
+    for (let x = x0; x < x1; x++) if (this.runLive(x + za * sx, zb - za, sx, 1)) return false
+    return !this.leaning()
   }
 
   /**
    * Scans `edges` edges in a line from column c (step `stride`; `axis` 0: +x edges, 1: +z edges). Live when an edge moved
    * FLUX_EPS or more, or when a run of connected water along the line spans more than HEAD_EPS: a slope that would fall
-   * asleep before friction lets its flux build up. An edge connects its columns when the higher one could send (it is at
-   * least MIN_FLOW deep; the lower one never sends up, decision 5), or, level, when either could.
+   * asleep before friction lets its flux build up. An edge connects its columns when both show water (SHOWN deep) and the
+   * higher one could send (it is at least MIN_FLOW deep; the lower one never sends up, decision 5), or, level, when either
+   * could. A film's level is never drawn, and near MIN_FLOW the integers can hold it sloped forever. Each run adds its fall
+   * to the tile's slope sums (endRun).
    */
   private runLive(c: number, edges: number, stride: number, axis: number): boolean {
-    const floor = this.floor, depth = this.depth, flux = this.flux
-    let s = floor[c]! * SUB + depth[c]!, lo = s, hi = s, start = s, run = 0
+    const floor = this.floor, depth = this.depth, flux = this.flux, line = this.line
+    let s = floor[c]! * SUB + depth[c]!, lo = s, hi = s, first = 0
+    line[0] = s
     for (let i = 0; i < edges; i++, c += stride) {
       const f = flux[c * 2 + axis]!
       if (f >= LOUD || -f >= LOUD) return true
       const b = c + stride, da = depth[c]!, db = depth[b]!, sb = floor[b]! * SUB + db
+      line[i + 1] = sb
       const up = s > sb ? da : s < sb ? db : da > db ? da : db
-      if (up >= MIN_FLOW) {
+      if (up >= MIN_FLOW && da >= SHOWN && db >= SHOWN) {
         if (sb < lo) lo = sb
         else if (sb > hi) hi = sb
         if (hi - lo > HEAD_EPS) return true
-        run++
       } else {
-        if (run > 0) { this.fall += s - start; this.span += run }
-        lo = hi = start = sb
-        run = 0
+        this.endRun(first, i)
+        first = i + 1
+        lo = hi = sb
       }
       s = sb
     }
-    if (run > 0) { this.fall += s - start; this.span += run }
+    this.endRun(first, edges)
     return false
   }
 
-  /** Whether column c (at x, z) stands more than HEAD_EPS above or below a neighbour it is connected to. */
-  private headAround(c: number, x: number, z: number): boolean {
-    const sx = this.sx
-    return (x + 1 < sx && this.head(c, c + 1)) || (z + 1 < this.sz && this.head(c, c + sx)) ||
-      (x > 0 && this.head(c - 1, c)) || (z > 0 && this.head(c - sx, c))
+  /**
+   * A run over `line` columns i0..i1 adds to the slope sums: Σ of its last END surfaces − Σ of its first END (its fall, in
+   * END × 1/SUB), and the distance between those two windows. Averaging the ends keeps a leftover bump at an end from
+   * hiding a slope. A run shorter than RUN_MIN columns (a puddle, a channel's width) is not measured: an odd volume in a
+   * two-column pit swaps 1/SUB back and forth forever and must still sleep.
+   */
+  private endRun(i0: number, i1: number): void {
+    if (i1 - i0 + 1 < RUN_MIN) return
+    const line = this.line
+    let d = 0
+    for (let j = 0; j < END; j++) d += line[i1 - j]! - line[i0 + j]!
+    this.fall += d
+    this.span += i1 - i0 + 1 - END
   }
 
-  /** Whether the edge a → b carries a head above HEAD_EPS that its higher side is deep enough to send down. */
-  private head(a: number, b: number): boolean {
-    const h = this.floor[a]! * SUB + this.depth[a]! - this.floor[b]! * SUB - this.depth[b]!
-    return (h > HEAD_EPS && this.depth[a]! >= MIN_FLOW) || (h < -HEAD_EPS && this.depth[b]! >= MIN_FLOW)
+  /** Whether the slope sums say the tile leans: a mean fall above 1/2^SLOPE_SHIFT per column, plus 1/SUB of slack in all. */
+  private leaning(): boolean {
+    const f = this.fall < 0 ? -this.fall : this.fall
+    return (f << SLOPE_SHIFT) > END * (this.span + (1 << SLOPE_SHIFT))
   }
 
   /** Zeroes the fluxes of a tile that fell asleep, leaving a border edge to a tile that is awake (it moves it from now on). */
