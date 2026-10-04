@@ -7,8 +7,13 @@ export interface WaterTick { seq: number; parity: number; tiles: number[] }
 
 function clamp16(v: number): number { return v > 32767 ? 32767 : v < -32768 ? -32768 : v }
 
-/** The sorted union of two sorted tile lists. */
-export function mergeTiles(a: readonly number[], b: readonly number[]): number[] {
+/**
+ * The sorted union of two sorted tile lists. When one side is empty the other comes back as is, so the result may be one of
+ * the inputs: neither is modified, and callers must not modify the result.
+ */
+export function mergeTiles(a: number[], b: number[]): number[] {
+  if (b.length === 0) return a
+  if (a.length === 0) return b
   const out: number[] = []
   let i = 0, j = 0
   while (i < a.length || j < b.length) {
@@ -36,13 +41,17 @@ export class WaterPublisher {
     this.stamp = new Int32Array(b.stamp)
   }
 
-  /** Publishes `changed` (sorted tile indices) plus the previous publish's tiles; null when both are empty. */
-  publish(changed: readonly number[], cols: WaterColumns): WaterTick | null {
+  /**
+   * Publishes `changed` (sorted tile indices) plus the previous publish's tiles; null when both are empty. The publisher
+   * keeps `changed` (it is the next publish's previous tiles): the caller hands over a fresh array and never modifies it.
+   */
+  publish(changed: number[], cols: WaterColumns): WaterTick | null {
     const tiles = mergeTiles(changed, this.last)
-    this.last = [...changed]
+    this.last = changed
     if (tiles.length === 0) return null
     const seq = ++this.seq, p = seq & 1, base = p * cols.n, T = cols.tiles, sx = cols.sx
-    Atomics.store(this.stamp, p, -1)
+    // A full barrier, not just a release store: no data store below may become visible before the stamp reads −1.
+    Atomics.exchange(this.stamp, p, -1)
     for (const t of tiles) {
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {

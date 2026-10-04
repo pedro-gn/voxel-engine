@@ -5,7 +5,7 @@ import { SUB } from '../src/sim/water/constants.ts'
 import { WaterPublisher, mergeTiles } from '../src/sim/water/publish.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { createWaterBuffers } from '../src/world/waterBuffers.ts'
-import { WATER_BLOCKS, fillGenerator, lake, w } from './waterHelpers.ts'
+import { WATER_BLOCKS, fillGenerator, lake, run, w, waterSim } from './waterHelpers.ts'
 
 describe('WaterPublisher', () => {
   it('writes the changed tiles plus the previous publish\'s into alternating parities, stamped', () => {
@@ -38,6 +38,36 @@ describe('WaterPublisher', () => {
   it('merges sorted tile lists without duplicates', () => {
     expect(mergeTiles([1, 4, 9], [0, 4, 10])).toEqual([0, 1, 4, 9, 10])
     expect(mergeTiles([], [])).toEqual([])
+  })
+
+  it('merges with an empty side without allocating: the other side comes back as is', () => {
+    const a = [2, 5]
+    expect(mergeTiles(a, [])).toBe(a)
+    expect(mergeTiles([], a)).toBe(a)
+  })
+
+  it('leaves both parities holding the latest value of a tile changed on consecutive publishes', () => {
+    const b = createWaterBuffers([32, 32, 32])
+    const cols = new WaterColumns(32, 32, new Int16Array(b.floor))
+    cols.floor.fill(0)
+    const p = new WaterPublisher(b)
+    const surface = new Int32Array(b.surface)
+    cols.depth[0] = 100 // A
+    p.publish([0], cols)
+    cols.depth[0] = 200 // B
+    p.publish([0], cols)
+    expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [0] })
+    expect([surface[0], surface[1024]]).toEqual([200, 200])
+  })
+
+  it('publishes nothing on a tick that leaves a rebuild pending, and every dirty tile on the next', () => {
+    const sim = waterSim(lake(4), { water: { debug: true } })
+    run(sim, 3) // the generation's publishes are out
+    expect(sim.step().water).toBeNull()
+    sim.water.cols.depth[5 + 5 * 32] += 100 // water from nowhere: the check fails and a rebuild is pending
+    expect(sim.step().water).toBeNull()
+    expect(sim.water.needsRebuild).toBe(true)
+    expect(sim.step().water!.tiles).toEqual([0, 1, 2, 3])
   })
 
   it('publishes from the Simulation: every tile after generation, twice, then an edit\'s tiles, and nothing once quiet', () => {
