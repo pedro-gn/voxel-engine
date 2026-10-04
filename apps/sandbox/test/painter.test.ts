@@ -3,7 +3,7 @@ import { SEAMLESS_X, SEAMLESS_Y, paintTiles } from '../src/paint/index.ts'
 import { SIZE } from '../src/paint/raster.ts'
 
 const tiles = paintTiles()
-const NAMES = ['stone', 'dirt', 'grass_top', 'grass_side', 'sand', 'log_side', 'log_top', 'planks', 'leaves', 'rock', 'glass', 'torch', 'water', 'snow', 'gravel', 'sandstone', 'sandstone_red', 'pine_leaves']
+const NAMES = ['stone', 'dirt', 'grass_top', 'grass_side', 'sand', 'log_side', 'log_top', 'planks', 'leaves', 'rock', 'glass', 'torch', 'water', 'snow', 'gravel', 'sandstone', 'sandstone_red', 'pine_leaves', 'mud', 'wet_sand']
 
 function pairDiffs(px: Uint8ClampedArray, axis: 'x' | 'y'): number[] {
   const at = (x: number, y: number, c: number) => px[(y * SIZE + x) * 4 + c]!
@@ -36,7 +36,7 @@ describe('paintTiles', () => {
   it.each(SEAMLESS_X)('%s tiles horizontally', (n) => expect(seamOk(tiles[n]!, 'x')).toBe(true))
   it.each(SEAMLESS_Y)('%s tiles vertically', (n) => expect(seamOk(tiles[n]!, 'y')).toBe(true))
   it('keeps solid tiles opaque and gives leaves holes', () => {
-    for (const n of ['stone', 'dirt', 'grass_top', 'grass_side', 'sand', 'log_side', 'log_top', 'planks', 'rock', 'snow', 'gravel', 'sandstone', 'sandstone_red']) {
+    for (const n of ['stone', 'dirt', 'grass_top', 'grass_side', 'sand', 'log_side', 'log_top', 'planks', 'rock', 'snow', 'gravel', 'sandstone', 'sandstone_red', 'mud', 'wet_sand']) {
       const px = tiles[n]!
       for (let i = 3; i < px.length; i += 4) expect(px[i]).toBe(255)
     }

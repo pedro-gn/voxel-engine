@@ -2,7 +2,7 @@ import { TILES } from './materials.ts'
 import { rng } from './raster.ts'
 import { shade } from './shade.ts'
 
-const TERRAIN_TILES = ['snow', 'gravel', 'sandstone', 'sandstone_red', 'pine_leaves']
+const TERRAIN_TILES = ['snow', 'gravel', 'sandstone', 'sandstone_red', 'pine_leaves', 'mud', 'wet_sand']
 export const SEAMLESS_X: readonly string[] = ['stone', 'dirt', 'grass_top', 'grass_side', 'sand', 'log_side', 'planks', 'leaves', 'rock', 'glass', 'water', ...TERRAIN_TILES]
 export const SEAMLESS_Y: readonly string[] = ['stone', 'dirt', 'grass_top', 'sand', 'log_side', 'planks', 'leaves', 'rock', 'glass', 'water', ...TERRAIN_TILES]
 

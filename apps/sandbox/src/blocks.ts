@@ -4,7 +4,7 @@ export const BLOCKS = [
   defineBlock({ name: 'stone', textures: 'stone' }),
   defineBlock({ name: 'dirt', textures: 'dirt' }),
   defineBlock({ name: 'grass', textures: { top: 'grass_top', side: 'grass_side', bottom: 'dirt' }, decoration: 'meadow' }),
-  defineBlock({ name: 'sand', textures: 'sand' }),
+  defineBlock({ name: 'sand', textures: 'sand', falls: true }),
   defineBlock({ name: 'log', textures: { top: 'log_top', side: 'log_side', bottom: 'log_top' } }),
   defineBlock({ name: 'planks', textures: 'planks' }),
   defineBlock({ name: 'leaves', textures: 'leaves', layer: 'cutout' }),
@@ -14,12 +14,14 @@ export const BLOCKS = [
   defineBlock({ name: 'rock', textures: 'rock' }),
   // terrain toolkit (sub-project 2b)
   defineBlock({ name: 'snow', textures: 'snow' }),
-  defineBlock({ name: 'gravel', textures: 'gravel' }),
+  defineBlock({ name: 'gravel', textures: 'gravel', falls: true }),
   defineBlock({ name: 'sandstone', textures: 'sandstone' }),
   defineBlock({ name: 'sandstone_red', textures: 'sandstone_red' }),
   defineBlock({ name: 'pine_leaves', textures: 'pine_leaves', layer: 'cutout' }),
-  // simulation water (sub-project 3a): appended so existing block ids, and the terrain golden hashes, keep their values
+  // simulation (sub-project 3a): appended so existing block ids, and the terrain golden hashes, keep their values
   defineBlock({ name: 'spring', textures: 'water', liquid: true, source: 'water', solid: false }),
+  defineBlock({ name: 'mud', textures: 'mud' }),
+  defineBlock({ name: 'wet_sand', textures: 'wet_sand' }),
 ]
 
 export const DECORATIONS = [
@@ -27,5 +29,7 @@ export const DECORATIONS = [
     name: 'meadow',
     grass: { blades: 20, height: [0.25, 0.55], base: '#4f8a2e', tip: '#a9d65a', overhang: 0.32 },
     flowers: { chance: 0.06, patchScale: 12, colors: ['#e94b4b', '#f5d142', '#ffffff', '#f08ac0', '#6f8cf0'] },
+    // Grass youth (state bits 0–1): new grass is bare and fills in as it matures.
+    stateDensity: [1, 2 / 3, 1 / 3, 0],
   }),
 ]

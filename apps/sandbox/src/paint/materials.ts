@@ -260,6 +260,28 @@ export function water(_r: Rand): Layer {
   return l
 }
 
+/** Dirt, darker and wetter, with glossy puddle spots. */
+export function mud(r: Rand): Layer {
+  const l = dirt(r)
+  for (let i = 0; i < l.height.length; i++) {
+    l.color[i * 3]! *= 0.62; l.color[i * 3 + 1]! *= 0.56; l.color[i * 3 + 2]! *= 0.52
+    l.height[i]! *= 0.7
+  }
+  for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+    if (tileFbm(61, x, y, 8, 3) > 0.62) paint(l, wrap(x, y), hex('#3a2a20'), 0.2)
+  }
+  return l
+}
+
+/** Sand, darker and a touch more saturated. */
+export function wetSand(r: Rand): Layer {
+  const l = sand(r)
+  for (let i = 0; i < l.height.length; i++) {
+    l.color[i * 3]! *= 0.74; l.color[i * 3 + 1]! *= 0.68; l.color[i * 3 + 2]! *= 0.58
+  }
+  return l
+}
+
 export const TILES: readonly (readonly [string, (r: Rand) => Layer, ShadeOptions])[] = [
   ['stone', stone, {}],
   ['dirt', dirt, {}],
@@ -279,4 +301,6 @@ export const TILES: readonly (readonly [string, (r: Rand) => Layer, ShadeOptions
   ['sandstone', sandstone, {}],
   ['sandstone_red', sandstoneRed, {}],
   ['pine_leaves', pineLeaves, {}],
+  ['mud', mud, {}],
+  ['wet_sand', wetSand, {}],
 ]

@@ -1,4 +1,4 @@
-import { AIR, createEngine } from '@elovox/engine'
+import { AIR, createEngine, packVoxel } from '@elovox/engine'
 import { BLOCKS, DECORATIONS } from './blocks.ts'
 import { spawnCharacter } from './character.ts'
 import { createControls } from './controls.ts'
@@ -10,7 +10,7 @@ import e2eDoc from './terrain/e2e.terrain.json'
 import showcaseDoc from './terrain/showcase.terrain.json'
 import { createTerrainPanel } from './terrainPanel.ts'
 
-const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'rock', 'torch', 'glass']
+const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
 const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' ? sceneParam : 'world'
@@ -47,6 +47,7 @@ const engine = await createEngine({
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   terrain: terrainDoc,
   genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
+  sim: { randomTicksPerChunk: 24, debugFluids: params.has('debugFluids') },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
@@ -105,7 +106,8 @@ canvas.addEventListener('pointerup', (e) => {
     if (nx === 0 && ny === 0 && nz === 0) return
     const p = [hit.pos[0] + nx, hit.pos[1] + ny, hit.pos[2] + nz] as const
     if (!engine.layout.inBounds(p[0], p[1], p[2])) return
-    engine.submit({ type: 'setBlock', pos: p, voxel: engine.blocks.id(HOTBAR[selected]!) })
+    const id = engine.blocks.id(HOTBAR[selected]!)
+    engine.submit({ type: 'setBlock', pos: p, voxel: engine.blocks.liquid[id] ? packVoxel(id, 7) : id })
   }
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
