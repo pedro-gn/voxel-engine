@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu'
-import { attribute, float, normalLocal, positionLocal, select, texture, vec4 } from 'three/tsl'
+import { attribute, float, normalLocal, positionLocal, select, texture, varying, vec4 } from 'three/tsl'
 import type { FallingCube } from './fallingTrack.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
@@ -25,9 +25,11 @@ export class FallingCubes {
     const fpos = attribute('fallPos', 'vec3')
     const info = attribute('fallInfo', 'vec4')
     const n = normalLocal
-    const layer = select(n.y.greaterThan(0.5), info.x, select(n.y.lessThan(-0.5), info.z, info.y))
-    const sky = info.w.div(16).floor().div(15)
-    const blk = info.w.mod(16).div(15)
+    // Decoded in the vertex stage and passed as varyings, like the chunk and decoration materials: decoding the
+    // packed light in the fragment stage would floor an interpolated value (48 -> 47.9999) and flip the nibbles.
+    const layer = varying(select(n.y.greaterThan(0.5), info.x, select(n.y.lessThan(-0.5), info.z, info.y)))
+    const sky = varying(info.w.div(16).floor().div(15))
+    const blk = varying(info.w.mod(16).div(15))
     const m = new VoxelNodeMaterial(sky)
     m.positionNode = positionLocal.add(fpos)
     const albedo = texture(tex, attribute('uv', 'vec2')).depth(layer.add(0.5).toInt())
