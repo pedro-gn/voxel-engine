@@ -24,7 +24,8 @@ function cell(chunks: readonly (Uint16Array | number)[], local: number, y: numbe
 /**
  * Rebuilds columns [x0, x1) × [z0, z1) from the voxels (spec §4; plan decision 4). Each column is read from the top. The
  * first block that is not air decides:
- * - water: the run of water down from it is the column's water, and the block under the run its floor;
+ * - water: the water down from it to the next wall is the column's water (a run over air is not a floating column: air
+ *   cells under it are skipped, and water further down joins it), and that wall its floor;
  * - a wall run at most OVERHANG thick over air or water (a bridge, a canopy): skipped, the scan goes on below it;
  * - any other wall: the column is dry, its floor on that wall.
  * An all-air column is dry on the world floor (0). Water under a wall that decided is static. The rebuilt columns' fluxes,
@@ -60,8 +61,10 @@ export function rebuildColumns(store: ChunkStore, kind: Uint8Array, cols: WaterC
       let depth = 0, canonical = true
       if (top >= 0) {
         for (y = top; y >= 0; y--) {
-          const v = cell(chunks, local, y)
-          if (kind[v & 0xfff] !== KIND.WATER) break
+          const v = cell(chunks, local, y), k = kind[v & 0xfff]!
+          if (k === KIND.WALL) break
+          // Water over air (placed or generated hovering) is no floating column: it rests on the next wall below.
+          if (k === KIND.AIR) { canonical = false; continue }
           const units = ((v >>> 12) & 7) + 1
           if (units !== 8 && y !== top) canonical = false
           depth += units * UNIT

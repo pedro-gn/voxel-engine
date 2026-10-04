@@ -69,6 +69,20 @@ describe('rebuildColumns', () => {
     expect(mirror.q[1 + 32]).toBe(~(5 * 8))
   })
 
+  it('rests water hovering over air on the next wall below: its volume is the depth, and the run is rewritten', () => {
+    const { at, mirror } = world((x, y, z) => {
+      if (y < 3) return ID.stone
+      if (x === 2 && z === 2) return y === 10 || y === 11 ? water(7) : AIR // two cells over air
+      if (x === 4 && z === 2) return y === 12 ? water(3) : y === 8 || y === 6 ? water(7) : AIR // runs split by air
+      if (x === 6 && z === 2) return y === 9 ? water(7) : y === 7 ? ID.stone : AIR // over air, onto a one-block slab
+      return AIR
+    })
+    expect(at(2, 2)).toEqual({ floor: 3, depth: 2 * SUB })
+    expect(mirror.q[2 + 2 * 32]).toBe(~(12 * 8))
+    expect(at(4, 2)).toEqual({ floor: 3, depth: 2 * SUB + 4 * UNIT })
+    expect(at(6, 2)).toEqual({ floor: 8, depth: SUB })
+  })
+
   it('rests water on a spring: the spring is its column\'s floor block', () => {
     const { at } = world((x, y, z) => (y < 3 ? ID.stone : x === 5 && z === 5 && y === 3 ? packVoxel(8, 4) : y <= 5 ? water(7) : AIR))
     expect(at(5, 5)).toEqual({ floor: 4, depth: 2 * SUB })
