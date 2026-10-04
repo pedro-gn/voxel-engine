@@ -19,14 +19,14 @@ export type WriteSource = 'external' | 'fluid' | 'gravity'
 export interface FluidOptions {
   /** Ticks between fluid steps. Default 2 (10 Hz at 20 Hz). */
   fluidEvery: number
-  /** Active cells processed per fluid step; the rest wait their turn. Default 20 000. */
+  /** Active cells processed per fluid step; the rest wait their turn. Default 4000 (~1.2–1.4 µs per cell in Node: ~5 ms per capped step). */
   fluidCap: number
   /** Units a pool pushes through one outlet or contact face per fluid step. Default 8. */
   outletRate: number
   /** After every fluid step, check every pool invariant (whole world: slow). A violation is logged and the world rescanned. */
   debug: boolean
 }
-export const DEFAULT_FLUID_OPTIONS: FluidOptions = { fluidEvery: 2, fluidCap: 20_000, outletRate: 8, debug: false }
+export const DEFAULT_FLUID_OPTIONS: FluidOptions = { fluidEvery: 2, fluidCap: 4000, outletRate: 8, debug: false }
 
 /** What the fluid system needs from the Simulation. */
 export interface FluidPort {
@@ -50,6 +50,8 @@ export const SLEEP_STEPS = 4
 export const DROP_REACH = 4
 /** +x, +z, −x, −z. */
 const SIDES: readonly (readonly [number, number])[] = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+const SIDE_DX = [1, 0, -1, 0]
+const SIDE_DZ = [0, 1, 0, -1]
 
 /** Water in the world: moving cells, still pools, springs (spec §4; design notes in the 3a plan). */
 export class FluidSystem {
@@ -77,6 +79,17 @@ export class FluidSystem {
   private readonly pTo: number[] = []
   private readonly pAmt: number[] = []
   private readonly pGroup: number[] = []
+  // Scratch reused by every fluid step (the automaton allocates nothing per cell).
+  private readonly cellsScratch: number[] = []
+  private readonly keepScratch: number[] = []
+  private readonly adjScratch: Pool[] = []
+  private readonly candScratch = new Int32Array(4)
+  private readonly volsScratch = new Int32Array(4)
+  private readonly dropsScratch = new Uint8Array(4)
+  private readonly slotOf = new Map<number, number>()
+  private readonly deltas: number[] = []
+  private readonly groups: number[] = []
+  private readonly touched = new Set<number>()
 
   constructor(port: FluidPort, o: Partial<FluidOptions> = {}) {
     this.port = port
@@ -242,11 +255,14 @@ export class FluidSystem {
 
   /** One step for up to fluidCap active cells: every cell proposes from the same snapshot, then proposals apply in order. */
   protected flowCells(): void {
-    const cells = this.active.take(this.o.fluidCap)
+    const cells = this.active.take(this.o.fluidCap, this.cellsScratch)
     this.pFrom.length = 0; this.pTo.length = 0; this.pAmt.length = 0; this.pGroup.length = 0
-    const keep: number[] = []
-    for (const pos of cells) {
-      const [x, y, z] = this.layout.voxelCoords(pos)
+    const keep = this.keepScratch
+    keep.length = 0
+    const sx = this.layout.size[0], layer = this.stride
+    for (let i = 0; i < cells.length; i++) {
+      const pos = cells[i]!
+      const y = Math.floor(pos / layer), rest = pos - y * layer, z = Math.floor(rest / sx), x = rest - z * sx
       const v = this.port.get(x, y, z)
       const g = flowGroup(this.reg, v)
       if (g === 0 || this.members.has(x, y, z)) { this.active.drop(pos); continue }
@@ -260,7 +276,8 @@ export class FluidSystem {
       keep.push(pos)
     }
     const touched = this.applyProposals()
-    for (const pos of keep) {
+    for (let i = 0; i < keep.length; i++) {
+      const pos = keep[i]!
       if (!this.active.has(pos)) continue
       if (touched.has(pos)) { this.active.requeue(pos); continue }
       if (this.active.rest(pos) >= SLEEP_STEPS) { this.active.drop(pos); this.settleQueue.add(pos) }
@@ -268,16 +285,25 @@ export class FluidSystem {
     }
   }
 
-  /** Pools owning a face neighbour of (x, y, z), by id. */
-  protected adjacentPools(x: number, y: number, z: number): Pool[] {
-    const out: Pool[] = []
+  /**
+   * Pools owning a face neighbour of (x, y, z), by id. The array is reused by the next call: read it before
+   * calling again (inlet does; nothing it calls asks for adjacent pools).
+   */
+  protected adjacentPools(x: number, y: number, z: number): readonly Pool[] {
+    const out = this.adjScratch
+    out.length = 0
     for (let d = 0; d < 6; d++) {
       const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
       if (!this.members.has(nx, ny, nz)) continue
       const p = this.pools.ownerOf(nx, ny, nz)
-      if (p && !out.includes(p)) out.push(p)
+      if (!p || out.includes(p)) continue
+      // insertion by id (at most 6 entries)
+      let k = out.length
+      out.push(p)
+      while (k > 0 && out[k - 1]!.id > p.id) { out[k] = out[k - 1]!; k-- }
+      out[k] = p
     }
-    return out.sort((a, b) => a.id - b.id)
+    return out
   }
 
   /** Resting: the world floor, a pool member, or any block that is neither air nor flowing liquid. */
@@ -770,27 +796,30 @@ export class FluidSystem {
       const room = this.room(x, y - 1, z, g)
       if (room > 0) {
         const t = Math.min(v, room)
-        this.offer(pos, this.layout.voxelIndex(x, y - 1, z), t, g)
+        this.offer(pos, pos - this.stride, t, g)
         v -= t
       }
     }
     if (v < 2) return
     const start = (this.steps + pos) & 3
-    const cand: number[] = [], vols: number[] = [], drops: boolean[] = []
+    const cand = this.candScratch, vols = this.volsScratch, drops = this.dropsScratch
+    let n = 0, anyDrop = false
     for (let i = 0; i < 4; i++) {
       const s = (start + i) & 3
-      const [dx, dz] = SIDES[s]!
+      const dx = SIDE_DX[s]!, dz = SIDE_DZ[s]!
       const vn = this.sideVolume(x + dx, y, z + dz, g)
       if (vn < 0 || v - vn < 2) continue
-      cand.push(s); vols.push(vn); drops.push(this.leadsToDrop(x, y, z, dx, dz))
+      const drop = this.leadsToDrop(x, y, z, dx, dz)
+      cand[n] = s; vols[n] = vn; drops[n] = drop ? 1 : 0
+      anyDrop ||= drop
+      n++
     }
-    const anyDrop = drops.includes(true)
-    for (let k = 0; k < cand.length; k++) {
-      if (anyDrop && !drops[k]) continue
+    for (let k = 0; k < n; k++) {
+      if (anyDrop && drops[k] === 0) continue
       const t = (v - vols[k]!) >> 1
       if (t <= 0) continue
-      const [dx, dz] = SIDES[cand[k]!]!
-      this.offer(pos, this.layout.voxelIndex(x + dx, y, z + dz), t, g)
+      const s = cand[k]!
+      this.offer(pos, this.layout.voxelIndex(x + SIDE_DX[s]!, y, z + SIDE_DZ[s]!), t, g)
       v -= t
     }
   }
@@ -826,35 +855,39 @@ export class FluidSystem {
     return false
   }
 
-  /** Applies proposals in order, capped by what the sender still has and the receiver's room; writes each changed cell once. */
+  /**
+   * Applies proposals in order, capped by what the sender still has and the receiver's room; writes each changed
+   * cell once, in the order cells were first touched. Returns the written cells (a set reused by the next call).
+   */
   protected applyProposals(): Set<number> {
-    const delta = new Map<number, number>()
-    const group = new Map<number, number>()
-    const units = (pos: number): number => {
-      const [x, y, z] = this.layout.voxelCoords(pos)
-      return volumeOf(this.reg, this.port.get(x, y, z)) + (delta.get(pos) ?? 0)
-    }
+    // Per touched cell, in first-touch order: its slot in the parallel delta/group arrays.
+    const slot = this.slotOf, delta = this.deltas, group = this.groups
+    slot.clear(); delta.length = 0; group.length = 0
+    const sx = this.layout.size[0], layer = this.stride
     for (let k = 0; k < this.pFrom.length; k++) {
       const f = this.pFrom[k]!, t = this.pTo[k]!, g = this.pGroup[k]!
-      const [tx, ty, tz] = this.layout.voxelCoords(t)
+      const ty = Math.floor(t / layer), tr = t - ty * layer, tz = Math.floor(tr / sx), tx = tr - tz * sx
       if (this.members.has(tx, ty, tz)) continue
       const tv = this.port.get(tx, ty, tz)
       if (tv !== AIR && flowGroup(this.reg, tv) !== g) continue
       // A cell already claimed this step by another liquid (or sending another liquid) keeps that liquid.
-      const gt = group.get(t), gf = group.get(f)
-      if ((gt !== undefined && gt !== g) || (gf !== undefined && gf !== g)) continue
-      const a = Math.min(this.pAmt[k]!, units(f), FULL - units(t))
+      const st = slot.get(t), sf = slot.get(f)
+      if ((st !== undefined && group[st] !== g) || (sf !== undefined && group[sf] !== g)) continue
+      const fy = Math.floor(f / layer), fr = f - fy * layer, fz = Math.floor(fr / sx), fx = fr - fz * sx
+      const uf = volumeOf(this.reg, this.port.get(fx, fy, fz)) + (sf === undefined ? 0 : delta[sf]!)
+      const ut = volumeOf(this.reg, tv) + (st === undefined ? 0 : delta[st]!)
+      const a = Math.min(this.pAmt[k]!, uf, FULL - ut)
       if (a <= 0) continue
-      delta.set(f, (delta.get(f) ?? 0) - a)
-      delta.set(t, (delta.get(t) ?? 0) + a)
-      group.set(f, g)
-      group.set(t, g)
+      if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g) } else delta[sf] = delta[sf]! - a
+      if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g) } else delta[st] = delta[st]! + a
     }
-    const touched = new Set<number>()
-    for (const [pos, d] of delta) {
+    const touched = this.touched
+    touched.clear()
+    for (const [pos, i] of slot) {
+      const d = delta[i]!
       if (d === 0) continue
-      const [x, y, z] = this.layout.voxelCoords(pos)
-      this.port.write(x, y, z, liquidVoxel(group.get(pos)!, volumeOf(this.reg, this.port.get(x, y, z)) + d))
+      const y = Math.floor(pos / layer), r = pos - y * layer, z = Math.floor(r / sx), x = r - z * sx
+      this.port.write(x, y, z, liquidVoxel(group[i]!, volumeOf(this.reg, this.port.get(x, y, z)) + d))
       touched.add(pos)
     }
     return touched

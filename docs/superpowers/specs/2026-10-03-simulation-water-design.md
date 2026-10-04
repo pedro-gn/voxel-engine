@@ -125,7 +125,7 @@ Spreading stays a content rule on the rule API, because it is game-specific.
 2. Neighbour notifications and scheduled updates (rules), under `workCap`.
 3. **Gravity**: start new falls, advance bodies, land them.
 4. **Fluids**: every `fluidEvery` ticks (default 2, so 10 Hz). This runs active cells,
-   pool outlets and inlets, and springs, under `fluidCap` (default 20 000 cell updates).
+   pool outlets and inlets, and springs, under `fluidCap` (default 4000 cell updates, ~5 ms in Node).
    Leftovers carry to the next fluid step in order.
 5. **Region jobs**, under `jobCap` (default 50 000 visited cells per tick).
 6. Random ticks.

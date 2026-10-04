@@ -21,9 +21,9 @@ export class ActiveQueue {
     this.order.push(pos)
   }
 
-  /** Takes up to n cells from the front, in order. They stay active: requeue() or drop() each one. */
-  take(n: number): number[] {
-    const out: number[] = []
+  /** Takes up to n cells from the front, in order, into `out` (cleared first). They stay active: requeue() or drop() each one. */
+  take(n: number, out: number[] = []): number[] {
+    out.length = 0
     while (out.length < n && this.head < this.order.length) {
       const pos = this.order[this.head++]!
       const s = this.state.get(pos)
