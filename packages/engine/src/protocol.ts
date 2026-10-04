@@ -14,6 +14,10 @@ export interface SimInitOptions {
   tickHz?: number
   /** Check every pool invariant after each fluid step (slow; for debugging). */
   debugFluids?: boolean
+  /** Ticks between fluid steps (integer ≥ 1). Default 2: fluids at half the tick rate (10 Hz at 20 Hz ticks). */
+  fluidEvery?: number
+  /** Active fluid cells processed per fluid step (integer ≥ 1); the rest wait for the next step. Default 4000. */
+  fluidCap?: number
   /** Start with physics (gravity, fluids, region jobs) paused. */
   paused?: boolean
 }

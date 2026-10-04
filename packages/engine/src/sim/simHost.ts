@@ -90,7 +90,12 @@ export class SimHost {
           this.sim = new Simulation({
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
-            fluids: { debug: msg.options.debugFluids === true },
+            // only defined keys: an undefined one would override FluidSystem's default
+            fluids: {
+              debug: msg.options.debugFluids === true,
+              ...(msg.options.fluidEvery !== undefined && { fluidEvery: msg.options.fluidEvery }),
+              ...(msg.options.fluidCap !== undefined && { fluidCap: msg.options.fluidCap }),
+            },
             onNewPage: (index, page) => this.post({ type: 'page', index, page }),
             log: (message) => this.post({ type: 'log', message }),
           })

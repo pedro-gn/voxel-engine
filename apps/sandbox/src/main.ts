@@ -55,7 +55,7 @@ const engine = await createEngine({
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
     ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true }
-    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids') },
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), fluidEvery: 1 }, // fluids at 20 Hz
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
