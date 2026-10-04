@@ -13,7 +13,7 @@ const LOUD = FLUX_EPS << FLUX_FP
 const WEST = 1, NORTH = 2, EAST = 4, SOUTH = 8
 /** The slope test measures runs of at least this many columns, by the mean of END surfaces at each end. */
 const RUN_MIN = 8, END = 4
-/** A column thinner than this (1/16 block) shows no water, in the mirror or the renderer: its level does not keep a tile awake. */
+/** A column thinner than this (1/16 block) shows no water, in the mirror or the renderer: an edge between two such films does not keep a tile awake. */
 const SHOWN = SUB / 16
 
 /** A stored flux after one step of friction: loses 1/2^FRICTION_SHIFT, rounded away from zero, so a lone flux always dies out. */
@@ -377,10 +377,11 @@ export class WaterColumns {
   /**
    * Scans `edges` edges in a line from column c (step `stride`; `axis` 0: +x edges, 1: +z edges). Live when an edge moved
    * FLUX_EPS or more, or when a run of connected water along the line spans more than HEAD_EPS: a slope that would fall
-   * asleep before friction lets its flux build up. An edge connects its columns when both show water (SHOWN deep) and the
-   * higher one could send (it is at least MIN_FLOW deep; the lower one never sends up, decision 5), or, level, when either
-   * could. A film's level is never drawn, and near MIN_FLOW the integers can hold it sloped forever. Each run adds its fall
-   * to the tile's slope sums (endRun).
+   * asleep before friction lets its flux build up. An edge connects its columns when the higher one could send (it is at
+   * least MIN_FLOW deep; the lower one never sends up, decision 5), or, level, when either could, unless both are films
+   * (under SHOWN): a film's level is never drawn, and near MIN_FLOW the integers can hold a film sloped forever. Visible
+   * water beside a film still counts, so it cannot stand frozen above it. Each run adds its fall to the tile's slope sums
+   * (endRun).
    */
   private runLive(c: number, edges: number, stride: number, axis: number): boolean {
     const floor = this.floor, depth = this.depth, flux = this.flux, line = this.line
@@ -392,7 +393,7 @@ export class WaterColumns {
       const b = c + stride, da = depth[c]!, db = depth[b]!, sb = floor[b]! * SUB + db
       line[i + 1] = sb
       const up = s > sb ? da : s < sb ? db : da > db ? da : db
-      if (up >= MIN_FLOW && da >= SHOWN && db >= SHOWN) {
+      if (up >= MIN_FLOW && (da >= SHOWN || db >= SHOWN)) {
         if (sb < lo) lo = sb
         else if (sb > hi) hi = sb
         if (hi - lo > HEAD_EPS) return true

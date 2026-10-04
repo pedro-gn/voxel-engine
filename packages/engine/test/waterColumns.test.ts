@@ -184,6 +184,25 @@ describe('WaterColumns', () => {
     expect(g.tiles.dirty[0]).toBe(1)
   })
 
+  it('drains a sheet into a trench until no visible water stands above a neighbour, even over a film', () => {
+    // 128 × 32 walled sheet on a floor at 10, 40 sub deep; a trench on the floor at 0 along x = 126.
+    const sx = 128, sz = 32
+    const wall = (x: number, z: number) => x === 0 || z === 0 || x === sx - 1 || z === sz - 1
+    const g = grid(sx, sz, (x, z) => (wall(x, z) ? 100 : x === 126 ? 0 : 10), (x, z) => (wall(x, z) || x === 126 ? 0 : 40))
+    const v0 = g.total()
+    settle(g, CAP, 200_000, () => expect(g.total()).toBe(v0))
+    let trench = 0
+    for (let z = 1; z < sz - 1; z++) trench += g.depth[126 + z * sx]!
+    expect(trench).toBeGreaterThanOrEqual(55_230) // what reached it before films were left out of the quiet test
+    for (let z = 0; z < sz; z++) for (let x = 0; x < sx; x++) {
+      const c = x + z * sx
+      if (g.depth[c]! < SUB / 16) continue
+      for (const b of [x > 0 ? c - 1 : -1, x + 1 < sx ? c + 1 : -1, z > 0 ? c - sx : -1, z + 1 < sz ? c + sx : -1]) {
+        if (b >= 0 && g.surface(c) - g.surface(b) > HEAD_EPS) throw new Error(`(${x}, ${z}) stands ${g.surface(c) - g.surface(b)} above a neighbour`)
+      }
+    }
+  }, 60_000)
+
   it('lets a pond that can never be level sleep: two columns holding an odd volume swap 1/SUB forever', () => {
     // 32 × 32 on a floor at 2, with one two-column pit at 1 holding 25 + 26.
     const pit = (x: number, z: number) => z === 5 && (x === 5 || x === 6)
