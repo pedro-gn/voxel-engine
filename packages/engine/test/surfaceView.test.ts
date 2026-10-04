@@ -316,3 +316,47 @@ describe('quantizeFlow', () => {
     expect(out[1]).toBeCloseTo(Math.SQRT1_2)
   })
 })
+
+describe('SurfaceView.relight', () => {
+  /** A ledge (floor 6, x ≤ 10) over a lake (floor 2), both a block deep, lit by `light`. */
+  function ledge(light: (x: number, y: number, z: number) => number) {
+    const b = createWaterBuffers([32, 32, 32])
+    const cols = new WaterColumns(32, 32, new Int16Array(b.floor))
+    for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) { cols.floor[x + z * 32] = x <= 10 ? 6 : 2; cols.depth[x + z * 32] = SUB }
+    const view = new SurfaceView([32, 32, 32], b, light)
+    view.apply(new WaterPublisher(b).publish(Array.from({ length: cols.tiles.count }, (_, t) => t), cols)!)
+    view.takeDirty()
+    const d = view.column(0)!
+    d.rowLo = 32
+    d.rowHi = -1
+    return { view, d }
+  }
+
+  it('re-reads the light of the drawn columns whose light cell lies in the given layers, keeping their white water', () => {
+    let torch = 0
+    const { view, d } = ledge((x, _y, z) => SKY15 | ((x === 20 && z === 7 ? torch : 0) << 4))
+    view.relight(0, 0, 32)
+    expect(view.takeDirty()).toEqual([]) // nothing changed
+    torch = 12
+    d.info[(20 + 7 * 32) * 4 + 3] = 3 * 256 + LIT // white water 3
+    view.relight(0, 8, 32) // the lake's light cell (y 3) is not in these layers
+    expect(view.takeDirty()).toEqual([])
+    view.relight(0, 0, 8)
+    expect(view.takeDirty()).toEqual([0])
+    expect(at(view, 20, 7, 'info')[3]).toBe(3 * 256 + LIT + 12)
+    expect(at(view, 21, 7, 'info')[3]).toBe(LIT)
+    expect([d.rowLo, d.rowHi]).toEqual([7, 7])
+  })
+
+  it('re-lights the curtains hanging from a re-lit column', () => {
+    let torch = 0
+    const { view, d } = ledge((x) => SKY15 | ((x === 10 ? torch : 0) << 4))
+    const curtainLight = () => [...d.curtains.info.subarray(2, 4 * d.curtains.count)].filter((_, i) => i % 4 === 0)
+    expect(d.curtains.count).toBe(32)
+    expect(curtainLight().every((v) => v === 4 * LIT)).toBe(true) // dir 0 (+x) + 4 × light
+    torch = 9
+    view.relight(0, 0, 32)
+    expect(curtainLight().every((v) => v === 4 * (LIT + 9))).toBe(true)
+    expect(view.takeDirty()).toEqual([0])
+  })
+})

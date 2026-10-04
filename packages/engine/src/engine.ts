@@ -13,6 +13,8 @@ import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
 import { FallingTrack } from './render/fallingTrack.ts'
+import { SimClock, stepAlpha } from './render/simClock.ts'
+import { SurfaceView } from './render/water/surfaceView.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
@@ -174,7 +176,20 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const ghosts = new GhostEdits(layout)
   const queue = new MeshQueue()
   const tickMs = 1000 / (o.sim?.tickHz ?? 20)
-  const falling = new FallingTrack(tickMs)
+  /** The smoothed sim clock falling cubes and the water surface are drawn on (spec §5). */
+  const clock = new SimClock(tickMs)
+  const falling = new FallingTrack(tickMs, clock)
+  // Made before the sim starts, so it reads the first publish after generation, which lists every tile once.
+  const waterView = new SurfaceView(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs)
+  /** The sim tick of the last water publish applied: the surface moves from the step before it to it (stepAlpha). */
+  let waterTick: number | null = null
+  /** Re-reads the water's light where the sim changed voxel light (dirty chunks): still water is not republished. */
+  const relightWater = (chunks: readonly number[]) => {
+    for (const ci of chunks) {
+      const [cx, cy, cz] = layout.chunkCoords(ci)
+      waterView.relight(cx + cz * waterView.cx, cy * 32, cy * 32 + 32)
+    }
+  }
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
 
@@ -222,6 +237,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     viewDistance: () => controls.current.distance,
     decorations,
     faceLayers,
+    water: waterView,
   })
 
   // ---- lifecycle ----
@@ -373,6 +389,11 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         slotsUsed = m.slotsUsed
         markTick(m, CLIENT_ID, ghosts, markDirty)
         falling.update(m.tick, m.falling, m.landed, performance.now())
+        if (m.water) {
+          // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
+          if (waterView.apply(m.water)) { waterTick = m.tick; clock.hold(waterView, m.tick + 1) }
+        } else clock.hold(waterView, null) // every tile settled (prev = cur): nothing to time
+        relightWater(m.dirtyChunks)
         physicsStats = m.physics
         for (const a of m.acks) events.emit('ack', a)
         for (const ev of m.events) events.emit('event', ev)
@@ -391,6 +412,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         if (!m.ok) { w?.reject(new EngineError('terrain', m.message)); break }
         slotsUsed = m.slotsUsed
         for (const ci of m.dirtyChunks) markDirty(ci, PRIORITY.DIRTY)
+        relightWater(m.dirtyChunks)
         events.emit('generated', { ms: m.ms, columns: w?.columns ?? 0 })
         w?.resolve({ ms: m.ms, chunks: m.dirtyChunks.length } as never)
         break
@@ -448,7 +470,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     controls.apply(camera)
     dispatch()
     upload()
+    // FallingTrack.frame advances the shared clock for this frame; the water reads it after.
     visuals.drawFalling(falling.frame(performance.now(), (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
+    visuals.setWaterAlpha(waterTick === null ? 1 : stepAlpha(clock.due, waterTick))
     visuals.frame(dt)
     if (o.gpuTiming && ++gpuFrames % 30 === 0) {
       renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})

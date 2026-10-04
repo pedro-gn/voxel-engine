@@ -235,6 +235,32 @@ export class SurfaceView {
     return true
   }
 
+  /**
+   * Re-reads the voxel light of chunk column `cc`'s drawn columns whose light cell (the one apply reads) lies in layers
+   * [y0, y1), keeping their white water: for a light change there (a chunk the sim marked dirty), which apply alone would
+   * miss on still water. Marks what changed for upload and rebuilds the chunk column's curtains when one changed.
+   */
+  relight(cc: number, y0: number, y1: number): void {
+    const d = this.data[cc]
+    if (!d) return
+    const x0 = (cc % this.cx) * 32, z0 = Math.floor(cc / this.cx) * 32, info = d.info
+    let any = false, curtains = false
+    for (let i = 0; i < 1024; i++) {
+      const o = i * 4 + 3, packed = info[o]!
+      if (packed < 0) continue
+      const x = x0 + (i & 31), z = z0 + (i >> 5), y = Math.ceil(level(this.cur[x + z * this.sx]!) * PER_SUB)
+      if (y < y0 || y >= y1) continue
+      const l = this.light(x, y, z), lit = packed - (packed % 256) + (l & 15) * 16 + (l >> 4)
+      if (lit === packed) continue
+      info[o] = lit
+      d.mark(i >> 5)
+      any = true
+      if (d.curtainMask[i] !== 0) curtains = true
+    }
+    if (curtains) this.buildCurtains(cc, d)
+    if (any) this.markDirty(cc)
+  }
+
   private defer(tiles: readonly number[]): false {
     this.pending = tiles
     this.again = []

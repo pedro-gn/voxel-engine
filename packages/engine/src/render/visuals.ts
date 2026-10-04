@@ -20,6 +20,9 @@ import { shadowDistance } from './shadowFit.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
+import type { SurfaceView } from './water/surfaceView.ts'
+import { WaterSurface } from './water/waterSurface.ts'
+import { waterAlpha } from './water/waterVertex.ts'
 
 export interface VisualsOptions {
   renderer: THREE.WebGPURenderer
@@ -35,9 +38,11 @@ export interface VisualsOptions {
   decorations: DecorationRegistry
   /** Per block id × 6 faces (+X −X +Y −Y +Z −Z): texture-array layer (BlockRegistry.faceLayers). */
   faceLayers: Uint16Array
+  /** The main thread's view of the heightfield water (engine.ts feeds it from the tick messages). */
+  water: SurfaceView
 }
 
-/** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water material and the instanced grass and flower decorations. */
+/** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water materials, the heightfield water surface and the instanced grass and flower decorations. */
 export class Visuals {
   readonly atmosphere = new AtmosphereController()
   readonly chunks: ChunkMeshes
@@ -50,6 +55,7 @@ export class Visuals {
   private requested: Effects = DEFAULT_EFFECTS
   private effects: Effects
   private readonly water: WaterMaterial
+  private readonly waterSurface: WaterSurface
   private waterParams: WaterParams = DEFAULT_WATER
   private readonly deco: DecorationMeshes
   private readonly decoRadius: { value: number }
@@ -74,6 +80,8 @@ export class Visuals {
     this.effects = this.resolve(this.requested)
     this.water = new WaterMaterial(this.lights, resolveEffects(this.requested, SUPPORT[o.backend]).waterDepth)
     this.water.setParams(this.waterParams)
+    this.waterSurface = new WaterSurface(o.layout.size[1], o.water, this.water.surface, this.water.curtain)
+    o.scene.add(this.waterSurface.group)
     this.syncWater()
     o.renderer.toneMapping = TONE_MAPPING
     this.post = new PostPipeline(o.renderer, o.scene, o.camera, this.quality.msaa)
@@ -111,6 +119,9 @@ export class Visuals {
     this.falling.set(cubes, light)
   }
 
+  /** How far the water surface is between the previous and the current water step (0–1). */
+  setWaterAlpha(a: number): void { waterAlpha.value = a }
+
   frame(dt: number): void {
     liquidNow.value = this.chunks.now()
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
@@ -122,6 +133,7 @@ export class Visuals {
     this.decoStats = this.effects.decorations
       ? this.deco.cull(this.o.camera.position, this.quality.decorationRadius, this.quality.decorationMaxInstances)
       : { instances: 0, draws: 0 }
+    this.waterSurface.update()
     if (this.effects.post) this.post.render()
     else this.o.renderer.render(this.o.scene, this.o.camera)
   }
@@ -141,6 +153,8 @@ export class Visuals {
     this.deco.dispose()
     this.o.scene.remove(this.falling.mesh)
     this.falling.dispose()
+    this.o.scene.remove(this.waterSurface.group)
+    this.waterSurface.dispose()
     this.water.dispose()
     this.sun.dispose()
     this.sky.detach(this.o.scene)
@@ -157,7 +171,9 @@ export class Visuals {
   }
 
   private syncWater(): void {
-    this.chunks.setLayerMaterial('liquid', this.effects.water ? this.water.material : this.chunks.baseMaterial('liquid'))
+    const on = this.effects.water
+    this.chunks.setLayerMaterial('liquid', on ? this.water.voxel : this.chunks.baseMaterial('liquid'))
+    this.waterSurface.setMaterials(on ? this.water.surface : this.water.plainSurface, on ? this.water.curtain : this.water.plainCurtain)
   }
 
   private resolve(requested: Effects): Effects {

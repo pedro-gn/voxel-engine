@@ -1,4 +1,5 @@
 import type { FallingBodyState, Landing } from '../sim/gravity.ts'
+import { RESYNC, SimClock } from './simClock.ts'
 
 export interface FallingCube { voxel: number; x: number; y: number; z: number }
 
@@ -25,14 +26,6 @@ export function cubeLight(light: (x: number, y: number, z: number) => number, x:
 
 /** Extra drawing lag, in ticks, beyond the one tick between a body's last two heights: room for arrival jitter. */
 export const MARGIN = 0.2
-/** How much faster or slower than real time the drawn clock may run while it follows the latency estimate. */
-const SLEW = 0.1
-/** The same when the drawn clock lags the estimate by more than a tick (after a hitch): catch up faster. */
-const FAST_SLEW = 0.5
-/** The latency estimate is the slowest arrival of this window (ms), so a single hitch is forgotten after it. */
-const WINDOW = 500
-/** A latency change beyond this many ticks restarts the estimate from the new arrival. */
-const RESYNC = 4
 /**
  * Heights kept per body while no frame has run for WINDOW ms (a background tab). The first frame back slews the
  * clock straight to the estimate, at most 1 + MARGIN + RESYNC ticks behind the newest, so older ones are never drawn.
@@ -57,11 +50,10 @@ interface Tracked {
 /**
  * Follows falling bodies between sim ticks for drawing (no three.js, so Node tests reach it).
  *
- * Bodies are drawn on a smoothed sim clock, not on message arrival: tick `t` is drawn at render time
- * `(t + 1 + MARGIN) × tickMs + offset`, where `offset` follows the slowest arrival latency (arrival − t × tickMs)
- * of the last WINDOW ms, slewed at most SLEW (FAST_SLEW when far behind) so the drawn speed never jumps. A late
- * message holds the cubes at the newest height (nothing is extrapolated) and delays the clock by the wait; an
- * early one is simply buffered.
+ * Bodies are drawn on the smoothed sim clock (SimClock), not on message arrival: tick `t` is drawn 1 + MARGIN ticks after
+ * it is due, so at render time `(t + 1 + MARGIN) × tickMs + offset`. While bodies are drawn the track holds the clock at
+ * the newest height: a late message holds the cubes there (nothing is extrapolated) and delays the clock by the wait; an
+ * early one is simply buffered. The clock may be shared with other things drawn on it (the water surface).
  *
  * A landed body glides on to its landing cell, then stays there until its chunk's mesh at the landing version is
  * applied, so a block never blinks out or jumps between the cube and the chunk mesh. If the mesh comes first (the
@@ -71,35 +63,21 @@ interface Tracked {
 export class FallingTrack {
   private readonly bodies = new Map<number, Tracked>()
   private readonly tickMs: number
-  /** Arrivals of the last WINDOW ms: (time, arrival − tick × tickMs). */
-  private readonly arrivals: { at: number; s: number }[] = []
-  /** Their maximum: the latency the drawn clock aims for. */
-  private latency = Number.NaN
-  /** The drawn clock's latency term; follows `latency` at a limited rate. */
-  private offset = Number.NaN
-  private frameAt = 0
-  /** The newest sim tick received. */
-  private newest = Number.NEGATIVE_INFINITY
+  private readonly clock: SimClock
 
-  /** `tickMs`: the sim's nominal tick length. */
-  constructor(tickMs: number) { this.tickMs = tickMs }
+  /** `tickMs`: the sim's nominal tick length. `clock`: the sim clock to draw on (fed by update, advanced by frame). */
+  constructor(tickMs: number, clock = new SimClock(tickMs)) {
+    this.tickMs = tickMs
+    this.clock = clock
+  }
 
   get size(): number { return this.bodies.size }
 
   /** The message of sim tick `tick` arrived at `now` (ms). */
   update(tick: number, falling: readonly FallingBodyState[], landed: readonly Landing[], now: number): void {
-    const s = now - tick * this.tickMs
-    if (Number.isNaN(this.latency) || Math.abs(s - this.latency) > RESYNC * this.tickMs) {
-      // A first arrival, or the sim paused or the page stalled: start the estimate over. With cubes on screen the
-      // drawn clock keeps its offset (a hold or the slew absorbs the change) so they never move back up.
-      this.arrivals.length = 0
-      if (this.bodies.size === 0 || Number.isNaN(this.offset)) this.offset = s
-    }
-    this.arrivals.push({ at: now, s })
-    while (this.arrivals[0]!.at < now - WINDOW) this.arrivals.shift()
-    this.latency = Math.max(...this.arrivals.map((a) => a.s))
-    this.newest = Math.max(this.newest, tick)
-    const idle = now - this.frameAt > WINDOW
+    // Cubes on screen hold the clock (see hold), so a restarted estimate never moves them back up.
+    this.clock.arrive(tick, now)
+    const idle = this.clock.idle(now)
     const seen = new Set<number>()
     for (const st of falling) {
       seen.add(st.id)
@@ -115,25 +93,14 @@ export class FallingTrack {
       b.landing = { chunk: l.chunk, version: l.version }
     }
     for (const [id, b] of this.bodies) if (!seen.has(id) && !b.landing) this.bodies.delete(id)
+    this.hold()
   }
 
   /** Cubes to draw at `now`, y in blocks. `applied(chunk)` is the chunk's applied mesh version. */
   frame(now: number, applied: (chunk: number) => number): FallingCube[] {
-    const target = this.latency
-    if (this.bodies.size === 0 || Number.isNaN(this.offset)) this.offset = target
-    else {
-      const rate = this.offset - target > this.tickMs ? FAST_SLEW : SLEW
-      const step = rate * Math.max(0, now - this.frameAt)
-      this.offset += Math.min(step, Math.max(-step, target - this.offset))
-    }
-    this.frameAt = now
-    let at = (now - this.offset) / this.tickMs - 1 - MARGIN // the sim tick drawn now, fractional
-    if (this.bodies.size > 0 && at > this.newest) {
-      // The next message is late: hold at the newest tick and push the clock back by the wait, so the cubes
-      // go on from here when it comes instead of catching up in a jump.
-      at = this.newest
-      this.offset = now - (at + 1 + MARGIN) * this.tickMs
-    }
+    let at = this.clock.advance(now) - 1 - MARGIN // the sim tick drawn now, fractional
+    // The clock holds at the newest tick (see hold); this only drops the rounding of its `+ 1 + MARGIN − 1 − MARGIN`.
+    if (this.bodies.size > 0 && at > this.clock.newest) at = this.clock.newest
     const out: FallingCube[] = []
     for (const [id, b] of this.bodies) {
       // Drop the heights already drawn past, keeping the one at or before `at` and at least two.
@@ -154,7 +121,13 @@ export class FallingTrack {
       }
       out.push({ voxel: b.voxel, x: b.x, y: y / 256, z: b.z })
     }
+    this.hold()
     return out
+  }
+
+  /** While cubes are drawn, the clock may show their newest height at most; nothing is extrapolated. */
+  private hold(): void {
+    this.clock.hold(this, this.bodies.size > 0 ? this.clock.newest + 1 + MARGIN : null)
   }
 }
 function push(b: Tracked, tick: number, y: number, idle: boolean): void {
