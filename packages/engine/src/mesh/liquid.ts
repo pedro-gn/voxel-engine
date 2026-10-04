@@ -1,6 +1,6 @@
 import { LAYER } from '../blocks/registry.ts'
 import { padIndex, type ChunkSnapshot } from '../world/reader.ts'
-import { voxelId, voxelState } from '../world/voxel.ts'
+import { AIR, voxelId, voxelState } from '../world/voxel.ts'
 import { AXES, REVERSE, STRIDE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
@@ -35,7 +35,9 @@ function cornerHeights(s: ChunkSnapshot, t: MeshTables, pi: number, group: numbe
     const cells = [pi, pi + SX[c]!, pi + SZ[c]! * STRIDE[2], pi + SX[c]! + SZ[c]! * STRIDE[2]]
     let sum = 0, n = 0, full = false
     for (const ci of cells) {
-      if (t.liquidGroup[voxelId(s.voxels[ci]!)] !== group) continue
+      const id = voxelId(s.voxels[ci]!)
+      if (id === AIR) { n++; continue } // open air counts as height 0, so edges and falls taper to the ground
+      if (t.liquidGroup[id] !== group) continue // walls (solids, other liquids, plants) are left out
       const hgt = cellHeight(s, t, ci, group)
       if (hgt === 1) { full = true; break }
       sum += hgt

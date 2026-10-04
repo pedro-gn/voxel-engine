@@ -32,6 +32,19 @@ function topDrops(s: ChunkSnapshot): number[] {
   return out
 }
 
+/** Top-face drops grouped by vertex x, for top vertices on plane y. */
+function dropsByX(s: ChunkSnapshot, y: number): Map<number, Set<number>> {
+  const { m } = mesh(s)
+  const out = new Map<number, Set<number>>()
+  for (let i = 0; i < m!.vertices.length; i += 2) {
+    const a = unpackA(m!.vertices[i]!)
+    if (a.normal !== FACE.PY || a.y !== y) continue
+    if (!out.has(a.x)) out.set(a.x, new Set())
+    out.get(a.x)!.add(a.drop)
+  }
+  return out
+}
+
 describe('liquid meshing', () => {
   it('maps levels to heights', () => {
     expect(liquidHeight(7)).toBeCloseTo(8 / 9)
@@ -44,7 +57,7 @@ describe('liquid meshing', () => {
     const { m, n } = mesh(s)
     expect(n).toBe(6)
     expect(translucent.quadCount).toBe(0)
-    expect(topDrops(s)).toEqual([2, 2, 2, 2]) // round((1 - 8/9) * 16) = 2
+    expect(topDrops(s)).toEqual([12, 12, 12, 12]) // corners average the cell (8/9) with 3 air cells (0): 2/9, so round(7/9 * 16) = 12
     assertOutwardWinding(m)
   })
   it('hides faces between stacked water and fills the lower cell to the top', () => {
@@ -69,7 +82,34 @@ describe('liquid meshing', () => {
     put(s, 4, 4, 4, water(7))
     put(s, 5, 4, 4, water(3))
     expect(mesh(s).n).toBe(10)
-    expect(topDrops(s)).toContain(5) // (8/9 + 4/9) / 2 → drop round(16/3) = 5
+    expect(topDrops(s)).toContain(11) // shared corner: (8/9 + 4/9 + 0 + 0) / 4 = 1/3, so drop round(32/3) = 11
+  })
+  it('tapers edge corners to air and keeps shared corners at the average of both cells', () => {
+    const s = emptySnap()
+    put(s, 4, 3, 4, ID.stone); put(s, 5, 3, 4, ID.stone)
+    put(s, 4, 4, 4, water(7))
+    put(s, 5, 4, 4, water(7))
+    const byX = dropsByX(s, 5)
+    expect([...byX.get(4)!]).toEqual([12]) // (8/9 + 3 air) / 4 = 2/9
+    expect([...byX.get(5)!]).toEqual([9]) // (8/9 + 8/9 + 2 air) / 4 = 4/9, so round(5/9 * 16) = 9
+    expect([...byX.get(6)!]).toEqual([12])
+  })
+  it('keeps the edge flat against a wall: stone is excluded, not counted as air', () => {
+    const s = emptySnap()
+    put(s, 4, 4, 4, water(7))
+    put(s, 5, 4, 4, ID.stone)
+    const byX = dropsByX(s, 5)
+    expect([...byX.get(4)!]).toEqual([12]) // (8/9 + 3 air) / 4
+    expect([...byX.get(5)!]).toEqual([11]) // (8/9 + 2 air) / 3 = 8/27, so round(19/27 * 16) = 11; the stone is left out
+  })
+  it('still forces a corner to full height next to water with water above, even with air around', () => {
+    const s = emptySnap()
+    put(s, 4, 4, 4, water(7))
+    put(s, 4, 5, 4, water(7)) // A has water above: height 1
+    put(s, 5, 4, 4, water(7)) // B beside it, open above
+    const byX = dropsByX(s, 5) // B's top plane; A's top is hidden by the water above it
+    expect([...byX.get(5)!]).toEqual([0]) // touching A
+    expect([...byX.get(6)!]).toEqual([12]) // air side
   })
   it('culls water faces against opaque blocks', () => {
     const s = emptySnap()
@@ -136,7 +176,7 @@ describe('liquid groups, springs and flow', () => {
     put(s, 6, 5, 5, packVoxel(SPRING_ID, 3))
     const tops = faces(liquidOf(s), FACE.PY)
     expect(tops).toHaveLength(1)
-    expect(unpackA(tops[0]!.a).drop).toBe(Math.round((1 - liquidHeight(7)) * 16))
+    expect(unpackA(tops[0]!.a).drop).toBe(Math.round((1 - liquidHeight(7) / 4) * 16)) // full level 8/9 averaged with 3 air cells
   })
   it('points the top-face flow downhill and leaves flat water still', () => {
     const s = emptySnap()
@@ -148,7 +188,8 @@ describe('liquid groups, springs and flow', () => {
     expect(code & 7).toBe(0) // toward +x
     const flat = emptySnap()
     for (let x = 4; x <= 6; x++) put(flat, x, 5, 5, water(5))
-    for (const f of faces(liquidOf(flat), FACE.PY)) expect(unpackFlow(f.a, f.b)).toBe(FLOW.STILL)
+    const flatMid = faces(liquidOf(flat), FACE.PY).find((f) => unpackA(f.a).x === 5)! // the middle cell; the end cells now taper outward
+    expect(unpackFlow(flatMid.a, flatMid.b)).toBe(FLOW.STILL)
   })
   it('marks the sides of falling water steep and leaves the top cell still', () => {
     const s = emptySnap()
