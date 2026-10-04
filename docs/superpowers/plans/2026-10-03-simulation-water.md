@@ -6106,3 +6106,30 @@ This task is interactive. The controller drives it with the user, who runs the a
 ## Checkpoint results
 
 *(Filled in during Task 18.)*
+
+### 2026-10-04
+
+- **Checkpoint 1 (dam break).** The first look was judged "muito ruim, tem que ser o mais fluido possível". The approved "voxel suave" follow-up (`.superpowers` ledger, WV1–WV5) landed:
+  - continuous waterfalls: down moves first, bottom-up, with a per-step send budget; net-zero movers stay awake; pool outlets are exempt from the wait rule;
+  - fluids at 20 Hz in the sandbox (`SimInitOptions.fluidEvery` / `fluidCap`; sandbox `fluidEvery 1`, `fluidCap 500` by the Node stress bench);
+  - tapered shorelines, with the world border acting as a wall;
+  - a 0.1 s height glide between remeshes;
+  - foam gated by surface height, keeping deep water's shore foam.
+  
+  Later fixes: plunge-pool holes (full corners do not glide). Browser check (WebGPU, ~180 fps, no console errors): the curtain is continuous and the film is clear.
+- **The user's verdict:** better, but water should behave like a fluid. The lake reads too shallow and water still blinks. **Decision:** sub-project 3c replaces the automaton and pools with heightfield water (spec `docs/superpowers/specs/2026-10-04-water-heightfield-design.md`, plan `docs/superpowers/plans/2026-10-04-water-heightfield.md`).
+- **Checkpoint 2 (river).** The spring feeds a shallow stream (1–2 units per cell) stepping down to the sea. It is judged together with 3c's river and sea checkpoint.
+- **Checkpoint 3 (falling sand).** The user saw the hand-over blink at the end of the fall. Fixed:
+  - the landed cube was lit from its own, now opaque, cell;
+  - a one-frame snap;
+  - speed jitter from message arrival times, fixed with a smoothed sim clock;
+  - double image after hitches, fixed with a 500 ms latency window and a 30 ms landing rush;
+  - bounded history.
+  
+  Browser: no dark frames, and cubes end exactly at their cells.
+- **Checkpoints 4 (drain cycle) and 5 (laptop measurements).** Deferred to 3c, which rewrites water and re-measures. The user chose to merge 3a now.
+- **Open, parked:**
+  - the stress scenario's falls show gaps while the sandbox `fluidCap 500` binds;
+  - chunk-seam cracks from the per-chunk blend (superseded by 3c);
+  - a landed body whose chunk never meshes is held forever;
+  - the split-seed and dropLayer follow-ups from the final review.
