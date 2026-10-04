@@ -883,6 +883,33 @@ export class FluidSystem {
 
   // ---- rebuild ----
 
+  /**
+   * Whether regenerating chunk ci from `before` to `after` can touch fluid state, so the world needs a
+   * rescan: liquid or pool members in it before, liquid in it after, or liquid on a neighbouring chunk's
+   * face against it (a pool or moving water whose wall or floor just changed). Reads the store, so call it
+   * before writing any of the regenerated chunks.
+   */
+  regenTouches(ci: number, before: Uint16Array, after: Uint16Array): boolean {
+    const liquid = this.reg.liquid
+    if (this.members.anyInChunk(ci)) return true
+    for (let i = 0; i < before.length; i++) if (liquid[voxelId(before[i]!)] === 1 || liquid[voxelId(after[i]!)] === 1) return true
+    const L = this.layout, store = this.port.store
+    const [cx, cy, cz] = L.chunkCoords(ci)
+    for (let d = 0; d < 6; d++) {
+      const nx = cx + DX[d]!, ny = cy + DY[d]!, nz = cz + DZ[d]!
+      if (!L.chunkInBounds(nx, ny, nz)) continue
+      const e = store.table[L.chunkIndex(nx, ny, nz)]!
+      if (e < 0) { if (liquid[voxelId(decodeUniform(e))] === 1) return true; continue }
+      // the neighbour's face against ci: its local coordinate on the axis of d is 0 (d positive) or 31
+      const vox = store.views.voxels(e), at = DX[d]! + DY[d]! + DZ[d]! > 0 ? 0 : 31
+      for (let a = 0; a < 32; a++) for (let b = 0; b < 32; b++) {
+        const i = DX[d] !== 0 ? at + (a << 5) + (b << 10) : DY[d] !== 0 ? a + (b << 5) + (at << 10) : a + (at << 5) + (b << 10)
+        if (liquid[voxelId(vox[i]!)] === 1) return true
+      }
+    }
+    return false
+  }
+
   /** Drops all fluid state and rescans the world: every still body becomes a pool, everything else moves. */
   rebuild(): void {
     this.needsRebuild = false

@@ -41,6 +41,14 @@ export class ChunkBits {
     w[i >>> 5] = w[i >>> 5]! & ~(1 << (i & 31))
   }
 
+  /** True if some bit is set in chunk ci. */
+  anyInChunk(ci: number): boolean {
+    const w = this.chunks.get(ci)
+    if (!w) return false
+    for (let i = 0; i < w.length; i++) if (w[i] !== 0) return true
+    return false
+  }
+
   clear(): void { this.chunks.clear() }
 
   /** Set bits; for tests and invariant checks. */

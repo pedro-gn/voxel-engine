@@ -181,20 +181,23 @@ export class Simulation {
     const writes: { ci: number; data: Uint16Array }[] = []
     const masks = new Map<number, number>()
     let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
+    let wet = false // a written chunk can touch fluid state: rescan the fluids (a whole-world pass) only then
     for (const c of cols) {
       if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
       for (let cy = 0; cy < L.cy; cy++) {
         const ci = L.chunkIndex(c.cx, cy, c.cz)
         const data = c.data.subarray(cy * CHUNK_VOLUME, (cy + 1) * CHUNK_VOLUME)
-        const m = diffMask(store.readVoxels(ci, vox), data)
+        const old = store.readVoxels(ci, vox)
+        const m = diffMask(old, data)
         if (m === 0) continue
+        if (!wet) wet = this.fluids.regenTouches(ci, old, data)
         masks.set(ci, m)
         writes.push({ ci, data })
         cx0 = Math.min(cx0, c.cx); cz0 = Math.min(cz0, c.cz); cx1 = Math.max(cx1, c.cx); cz1 = Math.max(cz1, c.cz)
       }
     }
     if (writes.length === 0) return [] // identical voxels give identical light
-    this.fluids.needsRebuild = true
+    if (wet) this.fluids.needsRebuild = true
     // 2. Light before, wherever the relight can reach.
     const x0 = cx0 * 32, z0 = cz0 * 32, x1 = cx1 * 32 + 32, z1 = cz1 * 32 + 32
     const reach: number[] = []

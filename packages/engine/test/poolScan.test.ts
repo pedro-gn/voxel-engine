@@ -83,4 +83,35 @@ describe('rebuild', () => {
     sim.step()
     expect([sim.fluids.needsRebuild, sim.fluids.pools.count]).toEqual([false, 0])
   })
+  it('rescans after replaceColumns only when a rewritten chunk can touch water', () => {
+    // water fills x 1..31 (y 1..3) of chunk column 0 against a stone wall at x = 32..33 in column 1; column 2 is dry ground
+    const fill: Fill = (x, y, z) => {
+      if (y === 0) return B.stone
+      if (x === 0 || z === 0 || z === 31) return y <= 8 ? B.stone : AIR
+      if (x >= 32 && x <= 33) return y <= 8 ? B.stone : AIR
+      return x < 32 && y <= 3 ? w(7) : AIR
+    }
+    const sim = fluidSim(fill, { size: [96, 32, 32] })
+    expect(sim.fluids.pools.count).toBe(1)
+    const regen = (cx: number, edit: (x: number, y: number, z: number) => number) => {
+      const data = new Uint16Array(32 * 32 * 32)
+      for (let y = 0; y < 32; y++) for (let lz = 0; lz < 32; lz++) for (let lx = 0; lx < 32; lx++) data[lx + (lz << 5) + (y << 10)] = edit(cx * 32 + lx, y, lz)
+      return sim.replaceColumns([{ cx, cz: 0, data }])
+    }
+    // a pillar on dry ground two columns away from the water: no rescan
+    expect(regen(2, (x, y, z) => (x === 80 && z === 5 && y === 1 ? B.stone : fill(x, y, z))).length).toBeGreaterThan(0)
+    expect(sim.fluids.needsRebuild).toBe(false)
+    // a pillar in column 1, behind the wall: water lies on chunk 0's face against it, so it rescans (conservatively)
+    regen(1, (x, y, z) => (x === 50 && z === 5 && y === 1 ? B.stone : fill(x, y, z)))
+    expect(sim.fluids.needsRebuild).toBe(true)
+    sim.step()
+    expect(sim.fluids.needsRebuild).toBe(false)
+    // the wall goes: the lake must notice its new outlet
+    regen(1, (x, y, z) => (x >= 32 && x <= 33 && y >= 1 ? AIR : fill(x, y, z)))
+    expect(sim.fluids.needsRebuild).toBe(true)
+    // pouring water into a dry column rescans too
+    sim.step()
+    regen(2, (x, y, z) => (x === 80 && z === 5 && y === 1 ? w(7) : fill(x, y, z)))
+    expect(sim.fluids.needsRebuild).toBe(true)
+  })
 })
