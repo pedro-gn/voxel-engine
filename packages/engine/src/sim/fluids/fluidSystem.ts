@@ -44,7 +44,7 @@ export interface FluidPort {
 export const DX = [1, -1, 0, 0, 0, 0]
 export const DY = [0, 0, 1, -1, 0, 0]
 export const DZ = [0, 0, 0, 0, 1, -1]
-/** Fluid steps without change before a moving cell sleeps (and is offered to a settle scan). */
+/** Fluid steps without taking part in a move before a moving cell sleeps (and is offered to a settle scan). */
 export const SLEEP_STEPS = 4
 /** How far along a side a cell looks for a drop before it prefers that side. */
 export const DROP_REACH = 4
@@ -54,6 +54,8 @@ const SIDES: readonly (readonly [number, number])[] = [[1, 0], [0, 1], [-1, 0], 
 const ascending = (a: number, b: number): number => a - b
 const SIDE_DX = [1, 0, -1, 0]
 const SIDE_DZ = [0, 1, 0, -1]
+/** Down-move sort keys hold the proposal index in 24 bits, and a step makes at most fluidCap down proposals. */
+const MAX_FLUID_CAP = 0xffffff
 /** What inlet() did with a moving cell: left it to the automaton, took its step, or left it to the automaton as an outlet a pool refills. */
 const INLET = { MOVE: 0, TAKEN: 1, OUTLET: 2 } as const
 type InletResult = (typeof INLET)[keyof typeof INLET]
@@ -112,6 +114,7 @@ export class FluidSystem {
       const v = this.o[k]
       if (!Number.isInteger(v) || v < 1) throw new RangeError(`fluid option ${k} must be an integer ≥ 1, got ${v}`)
     }
+    if (this.o.fluidCap > MAX_FLUID_CAP) throw new RangeError(`fluid option fluidCap must be ≤ ${MAX_FLUID_CAP}, got ${this.o.fluidCap}`)
     this.index = new SurfaceIndex(this.layout)
     this.members = new ChunkBits(this.layout)
     this.pools = new PoolTable(this.layout, this.index, this.members)
@@ -911,7 +914,7 @@ export class FluidSystem {
     slot.clear(); delta.length = 0; group.length = 0; this.sent.length = 0
     const sx = this.layout.size[0], layer = this.stride
     // Sort key: sender y, then proposal index (a total order, so any sort gives the same result). The index field
-    // is 24 bits: down proposals number at most fluidCap (4000 by default), far below 2^24.
+    // is 24 bits: down proposals number at most fluidCap, which the constructor caps at MAX_FLUID_CAP.
     const order = this.dOrder
     order.length = 0
     for (let k = 0; k < this.dFrom.length; k++) order.push(Math.floor(this.dFrom[k]! / layer) * 0x1000000 + k)
@@ -994,6 +997,7 @@ export class FluidSystem {
     }
     this.pools.clear(); this.index.clear(); this.members.clear(); this.contacts.clear()
     this.active.clear(); this.springs.clear(); this.settleQueue.clear()
+    this.slotOf.clear() // the wait rule reads the last step's moves: none survive a rescan
     this.port.jobs.cancel((j) => FLUID_JOBS.has(j.kind))
     const seeds: number[] = []
     this.forEachLiquid((x, y, z, pos, v) => {

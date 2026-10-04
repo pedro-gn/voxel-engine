@@ -49,6 +49,10 @@ describe('cell automaton', () => {
     expect(units(sim.store.getVoxel(5, 9, 5))).toBe(8)
     expect(units(sim.store.getVoxel(20, 10, 20))).toBe(8) // still waiting its turn
   })
+  it('accepts a fluidCap up to 2^24 − 1 (the down-move sort key holds 24 bits of index), and refuses more', () => {
+    expect(() => fluidSim(floor, { size: [32, 32, 32], fluids: { fluidCap: 2 ** 24 - 1 } })).not.toThrow()
+    expect(() => fluidSim(floor, { fluids: { fluidCap: 2 ** 24 } })).toThrow(RangeError)
+  })
   it('stays inside the world at every edge', () => {
     const sim = fluidSim(() => AIR)
     sim.submit(0, 0, { type: 'setBlock', pos: [0, 0, 0], voxel: w(7) })

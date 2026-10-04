@@ -46,7 +46,7 @@ export class ActiveQueue {
 
   drop(pos: number): void { this.state.delete(pos) }
 
-  /** One more step without change; returns the new idle count. */
+  /** One more step without taking part in a move; returns the new idle count. */
   rest(pos: number): number {
     const s = this.state.get(pos)
     if (!s) return 0
