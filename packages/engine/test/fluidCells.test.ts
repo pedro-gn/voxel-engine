@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defineBlock } from '../src/blocks/registry.ts'
+import { SPRING_RATES } from '../src/sim/fluids/cell.ts'
 import { AIR, packVoxel } from '../src/world/voxel.ts'
 import { B, FLUID_BLOCKS, basin, fluidSim, run, settle, spring, volume, w } from './fluidHelpers.ts'
 
@@ -61,13 +62,19 @@ describe('cell automaton', () => {
 })
 
 describe('falling column', () => {
-  it('stays contiguous under a constant source and conserves volume', () => {
+  const cell = (sim: ReturnType<typeof fluidSim>, y: number) => units(sim.store.getVoxel(16, y, 16))
+  it('stays contiguous under a constant source (front, then steady state) and conserves volume', () => {
     const sim = fluidSim((x, y, z) => (y === 0 ? B.stone : x === 16 && y === 26 && z === 16 ? spring(9) : AIR))
-    run(sim, 30)
-    for (let t = 0; t < 5; t++) {
+    let prev = 0
+    for (let t = 1; t <= 120; t++) {
       sim.step()
-      for (let y = 1; y <= 25; y++) expect(units(sim.store.getVoxel(16, y, 16)), `gap at y=${y}, step ${t}`).toBeGreaterThan(0)
+      // the spring gives its full rate every tick: nothing is lost or created elsewhere
+      expect(volume(sim) - prev, `injected at tick ${t}`).toBe(SPRING_RATES[9])
+      prev = volume(sim)
+      if (t < 30 || (t > 35 && t < 60)) continue
+      for (let y = 1; y <= 25; y++) expect(cell(sim, y), `gap at y=${y}, tick ${t}`).toBeGreaterThan(0)
     }
+    expect(sim.fluids.lost).toBe(0)
     // remove the source: what is left only moves around
     sim.submit(0, 0, { type: 'setBlock', pos: [16, 26, 16], voxel: AIR })
     sim.step()
@@ -76,7 +83,7 @@ describe('falling column', () => {
     settle(sim)
     expect(volume(sim)).toBe(before)
     expect(sim.fluids.lost).toBe(0)
-  })
+  }, 30000)
 })
 
 describe('two liquids', () => {

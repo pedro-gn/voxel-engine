@@ -50,6 +50,8 @@ export const SLEEP_STEPS = 4
 export const DROP_REACH = 4
 /** +x, +z, −x, −z. */
 const SIDES: readonly (readonly [number, number])[] = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+/** Ascending numeric order for the down-move sort keys. */
+const ascending = (a: number, b: number): number => a - b
 const SIDE_DX = [1, 0, -1, 0]
 const SIDE_DZ = [0, 1, 0, -1]
 
@@ -94,6 +96,8 @@ export class FluidSystem {
   private readonly slotOf = new Map<number, number>()
   private readonly deltas: number[] = []
   private readonly groups: number[] = []
+  /** Per touched cell: units it has sent this step (a sender never re-sends what it received this step). */
+  private readonly sent: number[] = []
   private readonly touched = new Set<number>()
 
   constructor(port: FluidPort, o: Partial<FluidOptions> = {}) {
@@ -801,9 +805,10 @@ export class FluidSystem {
     if (y > 0) {
       // A valid target below takes the whole cell: the cell below may itself be moving down this step, and down
       // moves apply first, bottom-up, so a falling column stays contiguous. Side moves keep the snapshot room.
-      if (this.sideVolume(x, y - 1, z, g) >= 0) {
+      const below = this.sideVolume(x, y - 1, z, g)
+      if (below >= 0) {
         this.dFrom.push(pos); this.dAmt.push(units); this.dGroup.push(g)
-        v -= Math.min(v, this.room(x, y - 1, z, g))
+        v -= Math.min(v, FULL - below)
       }
     }
     if (v < 2) return
@@ -863,7 +868,7 @@ export class FluidSystem {
 
   /** Applies one move, capped by the sender's and receiver's current units (per-step deltas included). */
   private applyMove(f: number, t: number, g: number, amount: number, sx: number, layer: number): void {
-    const slot = this.slotOf, delta = this.deltas, group = this.groups
+    const slot = this.slotOf, delta = this.deltas, group = this.groups, sent = this.sent
     const ty = Math.floor(t / layer), tr = t - ty * layer, tz = Math.floor(tr / sx), tx = tr - tz * sx
     if (this.members.has(tx, ty, tz)) return
     const tv = this.port.get(tx, ty, tz)
@@ -872,12 +877,14 @@ export class FluidSystem {
     const st = slot.get(t), sf = slot.get(f)
     if ((st !== undefined && group[st] !== g) || (sf !== undefined && group[sf] !== g)) return
     const fy = Math.floor(f / layer), fr = f - fy * layer, fz = Math.floor(fr / sx), fx = fr - fz * sx
-    const uf = volumeOf(this.reg, this.port.get(fx, fy, fz)) + (sf === undefined ? 0 : delta[sf]!)
+    const snap = volumeOf(this.reg, this.port.get(fx, fy, fz))
+    const uf = snap + (sf === undefined ? 0 : delta[sf]!)
+    const budget = snap - (sf === undefined ? 0 : sent[sf]!) // water received this step is never re-sent
     const ut = volumeOf(this.reg, tv) + (st === undefined ? 0 : delta[st]!)
-    const a = Math.min(amount, uf, FULL - ut)
+    const a = Math.min(amount, budget, uf, FULL - ut)
     if (a <= 0) return
-    if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g) } else delta[sf] = delta[sf]! - a
-    if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g) } else delta[st] = delta[st]! + a
+    if (sf === undefined) { slot.set(f, delta.length); delta.push(-a); group.push(g); sent.push(a) } else { delta[sf] = delta[sf]! - a; sent[sf] = sent[sf]! + a }
+    if (st === undefined) { slot.set(t, delta.length); delta.push(a); group.push(g); sent.push(0) } else delta[st] = delta[st]! + a
   }
 
   /**
@@ -888,13 +895,14 @@ export class FluidSystem {
   protected applyProposals(): Set<number> {
     // Per touched cell, in first-touch order: its slot in the parallel delta/group arrays.
     const slot = this.slotOf, delta = this.deltas, group = this.groups
-    slot.clear(); delta.length = 0; group.length = 0
+    slot.clear(); delta.length = 0; group.length = 0; this.sent.length = 0
     const sx = this.layout.size[0], layer = this.stride
-    // Sort key: sender y, then proposal index (so the order is total and independent of the sort algorithm).
+    // Sort key: sender y, then proposal index (a total order, so any sort gives the same result). The index field
+    // is 24 bits: down proposals number at most fluidCap (4000 by default), far below 2^24.
     const order = this.dOrder
     order.length = 0
     for (let k = 0; k < this.dFrom.length; k++) order.push(Math.floor(this.dFrom[k]! / layer) * 0x1000000 + k)
-    order.sort((a, b) => a - b)
+    order.sort(ascending)
     for (let i = 0; i < order.length; i++) {
       const k = order[i]! % 0x1000000, f = this.dFrom[k]!
       this.applyMove(f, f - layer, this.dGroup[k]!, this.dAmt[k]!, sx, layer)
