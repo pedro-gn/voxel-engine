@@ -6,7 +6,6 @@ import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
 import { createDecorationMaterials } from './decorations/material.ts'
 import { ChunkMeshes } from './chunkMeshes.ts'
-import { liquidNow } from './chunkVertex.ts'
 import { FallingCubes } from './falling.ts'
 import type { FallingCube } from './fallingTrack.ts'
 import { SunLights } from './lighting.ts'
@@ -123,7 +122,6 @@ export class Visuals {
   setWaterAlpha(a: number): void { waterAlpha.value = a }
 
   frame(dt: number): void {
-    liquidNow.value = this.chunks.now()
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
     const far = shadowDistance(this.o.viewDistance())
     this.lights.shadowFar.value = far

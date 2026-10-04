@@ -4,14 +4,9 @@ import { AIR, voxelId, voxelState } from '../world/voxel.ts'
 import { AXES, REVERSE, STRIDE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
-import { FACE, FLOW, LIQUID_DEEP, flowCode, packA, packB, packFlow } from './vertexFormat.ts'
+import { LIQUID_DEEP, packA, packB } from './vertexFormat.ts'
 
 export function liquidHeight(level: number): number { return (level + 1) / 9 }
-
-/** Below this corner-height slope (blocks per block) a surface reads as still. */
-const FLOW_EPS = 0.05
-/** Above it, as steep. */
-const FLOW_STEEP = 0.5
 
 const UP = STRIDE[1]
 const qa = new Uint32Array(4)
@@ -58,18 +53,22 @@ function cornerHeights(s: ChunkSnapshot, t: MeshTables, pi: number, group: numbe
   }
 }
 
-/** Downhill direction of the current top face from its corner heights, as a flow code. */
-function topFlow(): number {
-  const fx = (corners[0]! + corners[3]!) - (corners[1]! + corners[2]!) // -gradient along x
-  const fz = (corners[0]! + corners[1]!) - (corners[2]! + corners[3]!) // -gradient along z
-  const m = Math.hypot(fx, fz)
-  if (m < FLOW_EPS) return FLOW.STILL
-  const dir = ((Math.round(Math.atan2(fz, fx) / (Math.PI / 4)) % 8) + 8) % 8
-  return flowCode(dir, m > FLOW_STEEP)
-}
-
 function cornerIndex(sx: number, sz: number): number {
   return sz < 0 ? (sx < 0 ? 0 : 1) : (sx > 0 ? 2 : 3)
+}
+
+/** Per face × corner: 1 when the corner sits on the cell's top plane (the liquid mesher's vertex layout). */
+const TOP_ROW = new Uint8Array(24)
+for (let f = 0; f < 6; f++) {
+  const [d, u, v] = AXES[f]!
+  for (let c = 0; c < 4; c++) {
+    TOP_ROW[f * 4 + c] = d === 1 ? ((f & 1) === 0 ? 1 : 0) : u === 1 ? (c === 1 || c === 2 ? 1 : 0) : v === 1 ? (c >= 2 ? 1 : 0) : 0
+  }
+}
+
+/** Whether a liquid vertex (word A) is on its cell's top row: the only row whose height depends on the water level. */
+export function isTopRow(a: number): boolean {
+  return TOP_ROW[((a >>> 18) & 7) * 4 + ((a >>> 23) & 3)] === 1
 }
 
 export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: QuadBuilder, liquidOut: QuadBuilder): void {
@@ -85,7 +84,6 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     // Water at or above its column's floor is the heightfield's (render/water): only static water is meshed here.
     if (liquid && id === t.waterGroup && y >= s.floor[x + 1 + (z + 1) * PAD]!) continue
     if (liquid) cornerHeights(s, t, pi, group)
-    const falling = liquid && t.liquidGroup[voxelId(s.voxels[pi + UP]!)] === group
     // Water over water: its top-row vertices carry LIQUID_DEEP, so foam treats the surface as full height however thin
     // the top layer is.
     const deep = liquid && t.liquidGroup[voxelId(s.voxels[pi - UP]!)] === group
@@ -97,7 +95,6 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
       const l = s.light[ni]!
       const b = packB(t.faceLayers[id * 6 + f]!, l & 15, l >> 4, 1, 1)
       const plane = (f & 1) === 0 ? 1 : 0
-      const flow = !liquid ? FLOW.STILL : f === FACE.PY ? topFlow() : f !== FACE.NY && falling ? flowCode(0, true) : FLOW.STILL
       for (let c = 0; c < 4; c++) {
         const cu = c === 1 || c === 2 ? 1 : 0
         const cv = c >= 2 ? 1 : 0
@@ -113,7 +110,6 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
         }
         qa[c] = packA(vx, vy, vz, f, flags, c, drop)
         qb[c] = b
-        if (flow !== FLOW.STILL) [qa[c], qb[c]] = packFlow(qa[c]!, qb[c]!, flow)
       }
       out.push(qa, qb, false, REVERSE[f]!)
     }

@@ -49,12 +49,12 @@ function unpack(packed: N): { sky: N; blk: N; white: N } {
   return { sky: varying(rest.div(16).floor().div(15)), blk: varying(rest.mod(16).div(15)), white: varying(white.div(15)) }
 }
 
-/** Static voxel water: the chunk liquid layer's packed vertex. */
+/** Static voxel water: the chunk liquid layer's packed vertex. It never flows: what moves is the heightfield. */
 export function voxelWaterVertex(): WaterVertex {
   const v = chunkVertex(undefined, true)
   return {
     position: v.position, normal: v.normal, isTop: v.normal.y.greaterThan(0.5), sky: v.sky, blk: v.blk,
-    flow: v.flow, surface: v.surface, white: float(0), fall: float(1).add(v.flow.z.mul(2)), alpha: float(1),
+    flow: vec3(0, 0, 0), surface: v.surface, white: float(0), fall: float(1), alpha: float(1),
   }
 }
 

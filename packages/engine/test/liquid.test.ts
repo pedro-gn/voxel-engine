@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { liquidHeight, meshTranslucent } from '../src/mesh/liquid.ts'
+import { isTopRow, liquidHeight, meshTranslucent } from '../src/mesh/liquid.ts'
 import { Mesher, meshChunk } from '../src/mesh/mesher.ts'
 import { QuadBuilder } from '../src/mesh/quadBuilder.ts'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { meshTablesFrom } from '../src/mesh/tables.ts'
-import { FACE, FLOW, LIQUID_DEEP, unpackA, unpackFlow } from '../src/mesh/vertexFormat.ts'
-import { isTopRow } from '../src/render/liquidBlend.ts'
+import { FACE, LIQUID_DEEP, packA, unpackA } from '../src/mesh/vertexFormat.ts'
 import { OUTSIDE, PAD, type ChunkSnapshot } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
@@ -184,7 +183,7 @@ describe('Mesher', () => {
   })
 })
 
-describe('liquid groups, springs and flow', () => {
+describe('liquid groups and springs', () => {
   const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
   const SPRING_ID = 8
   const t2 = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
@@ -209,34 +208,6 @@ describe('liquid groups, springs and flow', () => {
     expect(tops).toHaveLength(1)
     expect(unpackA(tops[0]!.a).drop).toBe(Math.round((1 - liquidHeight(7) / 4) * 16)) // full level 8/9 averaged with 3 air cells
   })
-  it('points the top-face flow downhill and leaves flat water still', () => {
-    const s = emptySnap()
-    for (let x = 4; x <= 6; x++) put(s, x, 5, 5, water(x === 4 ? 7 : x === 5 ? 3 : 0))
-    const tops = faces(liquidOf(s), FACE.PY)
-    const mid = tops.find((f) => unpackA(f.a).x === 5)! // the first vertex of the x = 5 cell's top quad
-    const code = unpackFlow(mid.a, mid.b)
-    expect(code & FLOW.MOVING).toBeTruthy()
-    expect(code & 7).toBe(0) // toward +x
-    const flat = emptySnap()
-    for (let x = 4; x <= 6; x++) put(flat, x, 5, 5, water(5))
-    const flatMid = faces(liquidOf(flat), FACE.PY).find((f) => unpackA(f.a).x === 5)! // the middle cell; the end cells now taper outward
-    expect(unpackFlow(flatMid.a, flatMid.b)).toBe(FLOW.STILL)
-  })
-  it('marks the sides of falling water steep and leaves the top cell still', () => {
-    const s = emptySnap()
-    put(s, 5, 5, 5, water(7))
-    put(s, 5, 6, 5, water(7))
-    const side = faces(liquidOf(s), FACE.PX) // first vertex of each quad sits at the cell's own y
-    const lower = side.filter((f) => unpackA(f.a).y === 5)
-    const upper = side.filter((f) => unpackA(f.a).y === 6)
-    expect([lower.length, upper.length]).toEqual([1, 1])
-    expect(unpackFlow(lower[0]!.a, lower[0]!.b) & FLOW.STEEP).toBeTruthy()
-    expect(unpackFlow(upper[0]!.a, upper[0]!.b)).toBe(FLOW.STILL)
-  })
-  it('refuses a liquid texture layer at or above 512', () => {
-    const fl = reg.faceLayers(new Map(reg.textureNames().map((n) => [n, n === 'water' ? 600 : 1])))
-    expect(() => meshTablesFrom(reg, fl)).toThrow(/below layer 512/)
-  })
 })
 
 describe('static and simulated water', () => {
@@ -258,5 +229,20 @@ describe('static and simulated water', () => {
     const t = new QuadBuilder(), l = new QuadBuilder()
     meshTranslucent(s, t2, t, l)
     expect(l.quadCount).toBe(6)
+  })
+})
+
+describe('isTopRow', () => {
+  it('marks every corner of a +Y face and none of a -Y face', () => {
+    for (let c = 0; c < 4; c++) {
+      expect(isTopRow(packA(1, 2, 3, FACE.PY, 0, c, 5))).toBe(true)
+      expect(isTopRow(packA(1, 2, 3, FACE.NY, 0, c))).toBe(false)
+    }
+  })
+  it('marks exactly the two top corners (2 and 3) of each side face', () => {
+    for (const f of [FACE.PX, FACE.NX, FACE.PZ, FACE.NZ]) {
+      const top = [0, 1, 2, 3].filter((c) => isTopRow(packA(1, 2, 3, f, 0, c)))
+      expect(top, `face ${f}`).toEqual([2, 3])
+    }
   })
 })

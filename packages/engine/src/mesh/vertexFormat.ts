@@ -27,19 +27,3 @@ export function packB(layer: number, sky: number, block: number, w: number, h: n
 export function unpackB(b: number) {
   return { layer: b & 4095, sky: (b >>> 12) & 15, block: (b >>> 16) & 15, w: (b >>> 20) & 63, h: (b >>> 26) & 63 }
 }
-
-/** Liquid flow codes (5 bits): MOVING, STEEP, and a direction in bits 0-2 (0 = +x, then 45° steps toward +z). */
-export const FLOW = { STILL: 0, STEEP: 8, MOVING: 16 } as const
-
-export function flowCode(dir: number, steep: boolean): number {
-  return FLOW.MOVING | (steep ? FLOW.STEEP : 0) | (dir & 7)
-}
-
-/** Packs a flow code into a liquid vertex: bits 30-31 of word A (reserved) and bits 9-11 of word B (liquid layers stay below 512). */
-export function packFlow(a: number, b: number, code: number): [number, number] {
-  return [(a | ((code & 3) << 30)) >>> 0, (b | (((code >> 2) & 7) << 9)) >>> 0]
-}
-
-export function unpackFlow(a: number, b: number): number {
-  return ((a >>> 30) & 3) | (((b >>> 9) & 7) << 2)
-}
