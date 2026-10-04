@@ -3,7 +3,8 @@ import { mergeTiles, type WaterTick } from '../../sim/water/publish.ts'
 import type { WorldSize } from '../../world/layout.ts'
 import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
-  CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, FLOW_STEEP, JOIN, OUTSIDE, SINK, effective, level, quantizeFlow, shows, vertexShares,
+  CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, OUTSIDE, SINK, boreWhite, effective, froude, level, quantizeFlow, shows,
+  surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
 /**
@@ -474,13 +475,17 @@ export class SurfaceView {
     const north = z > 0 ? this.fluxZ[c - sx]! : 0, south = this.fluxZ[c]!
     // Velocity (blocks per second) = flux through a 1-block edge / depth, × steps per second.
     const k = this.stepHz / (2 * Math.max(depth, SUB / 8))
-    const speed = quantizeFlow((west + east) * k, (north + south) * k, d.info, o)
-    let white = speed > FLOW_STEEP ? Math.min(15, Math.round((speed - FLOW_STEEP) * 4)) : 0
+    const fr = froude(quantizeFlow((west + east) * k, (north + south) * k, d.info, o), depth * PER_SUB)
+    let white = surfaceWhite(fr)
     let curBits = 0
     if ((sm[vi]! & sm[vi + 1]! & sm[vi + vw]! & sm[vi + vw + 1]! & 2) === 0) {
       curBits = edgeBits(this.eC, h, hw)
-      // White water at the foot of a curtain falling into c, from the water it carries toward c.
+      // White water at the foot of a curtain falling into c, from the water it carries toward c…
       white = Math.max(white, this.foot(h - 1, ec, west), this.foot(h + 1, ec, -east), this.foot(h - hw, ec, north), this.foot(h + hw, ec, -south))
+      // …and where c runs onto dry ground (a front), from its Froude number.
+      if (this.front(h + 1, ec, east) || this.front(h - 1, ec, -west) || this.front(h + hw, ec, south) || this.front(h - hw, ec, -north)) {
+        white = Math.max(white, boreWhite(fr))
+      }
     }
     const l = this.light(x, Math.ceil(s * PER_SUB), z)
     d.info[o + 2] = depth * PER_SUB
@@ -494,6 +499,17 @@ export class SurfaceView {
     const ej = this.eC[j]!
     if (into <= 0 || ej < 0 || ej - level(ec) <= JOIN) return 0
     return Math.min(15, into >> 4)
+  }
+
+  /**
+   * Whether a column at effective value ec sending `out` toward halo cell j runs onto dry ground there: j is not drawn and
+   * its level lies below ec within JOIN (no wall, no curtain).
+   */
+  private front(j: number, ec: number, out: number): boolean {
+    const ej = this.eC[j]!
+    if (out <= 0 || ej >= 0 || ej === OUTSIDE) return false
+    const drop = ec - ~ej
+    return drop > 0 && drop <= JOIN
   }
 
   /**

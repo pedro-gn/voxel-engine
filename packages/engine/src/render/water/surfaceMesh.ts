@@ -10,6 +10,33 @@ export const SINK = 0.02
 export const FLOW_STILL = 0.15
 /** …below this they drift gently (1), above it steeply (2.5): 3a's two flow speeds. */
 export const FLOW_STEEP = 1.5
+/** Gravity (blocks/s², one block a metre) of the Froude number speed / √(g · depth) white water is measured by. */
+export const GRAVITY = 9.8
+/** Depths are counted as at least this (blocks) in the Froude number: thinner films are not faster for it. */
+export const FROUDE_MIN_DEPTH = 1 / 8
+/**
+ * A surface whitens past this Froude number, one level (of 15) per unit: well past the hydraulic-jump range, so a steep
+ * steady stream (the flood river: Fr 3–6) stays clear and only its shallow fast lips (Fr ~11) get a light edge.
+ */
+export const WHITE_FROUDE = 7.5
+/** A sheet running onto dry ground (a bore) whitens past this Froude number, 3 levels per unit: a breaking jump's start. */
+export const BORE_FROUDE = 1.7
+
+/** speed (blocks/s) / √(GRAVITY × depth (blocks, at least FROUDE_MIN_DEPTH)). */
+export function froude(speed: number, depth: number): number {
+  return speed / Math.sqrt(GRAVITY * Math.max(depth, FROUDE_MIN_DEPTH))
+}
+
+/** White water (0–15) of a surface at Froude number fr. */
+export function surfaceWhite(fr: number): number {
+  return fr > WHITE_FROUDE ? Math.min(15, Math.round(fr - WHITE_FROUDE)) : 0
+}
+
+/** White water (0–15) of a front running onto dry ground at Froude number fr. */
+export function boreWhite(fr: number): number {
+  return fr > BORE_FROUDE ? Math.min(15, Math.round((fr - BORE_FROUDE) * 3)) : 0
+}
+
 /** Corner offsets, in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z). */
 export const CORNER_X: readonly number[] = [-1, 1, 1, -1]
 export const CORNER_Z: readonly number[] = [-1, -1, 1, 1]

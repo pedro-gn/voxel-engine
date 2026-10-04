@@ -182,7 +182,7 @@ describe('SurfaceView', () => {
     expect(at(view, 0, 31, 'hCur')).toEqual([2.25, 2.125, 2.125, 2.25])
   })
 
-  it('writes the quantized flow, depth and white water from speed into info', () => {
+  it('writes the quantized flow and depth into info; a fast current a block deep stays clear', () => {
     const s = scene(32, 32, () => 2, () => SUB)
     const fx = (x: number, z: number, v: number) => { s.cols.flux[2 * (x + z * 32)] = v * 16 }
     const fz = (x: number, z: number, v: number) => { s.cols.flux[2 * (x + z * 32) + 1] = v * 16 }
@@ -190,7 +190,7 @@ describe('SurfaceView', () => {
     fz(20, 19, -4); fz(20, 20, -4) // 0.3125 blocks/s toward −z: gentle
     fx(24, 10, 64); fx(25, 10, 64); fz(25, 9, 64); fz(25, 10, 64) // diagonal, 7.07 blocks/s
     s.publish()
-    expect(at(s.view, 10, 5, 'info')).toEqual([2.5, 0, 1, LIT + 256 * 14]) // white round((5 − 1.5) × 4)
+    expect(at(s.view, 10, 5, 'info')).toEqual([2.5, 0, 1, LIT]) // Froude 5 / √9.8 = 1.6: no white water
     const g = at(s.view, 20, 20, 'info')
     expect(g[0]).toBeCloseTo(0)
     expect(g[1]).toBeCloseTo(-1)
@@ -198,7 +198,49 @@ describe('SurfaceView', () => {
     const d = at(s.view, 25, 10, 'info')
     expect(d[0]).toBeCloseTo(2.5 * Math.SQRT1_2)
     expect(d[1]).toBeCloseTo(2.5 * Math.SQRT1_2)
-    expect(d.slice(2)).toEqual([1, LIT + 256 * 15])
+    expect(d.slice(2)).toEqual([1, LIT])
+  })
+})
+
+describe('SurfaceView, white water', () => {
+  /** White water (0–15) of column (10, 5) of a uniform sheet `depth` sub deep, running toward +x at `speed` blocks/s. */
+  function whiteOf(depth: number, speed: number, dryPast = 32): number {
+    const s = scene(32, 32, () => 2, (x) => (x < dryPast ? depth : 0))
+    // speed = (west + east) × 20 / (2 × depth) with both edges carrying v sub per step.
+    const v = Math.round((speed * depth) / 20)
+    s.cols.flux[2 * (9 + 5 * 32)] = v * 16
+    s.cols.flux[2 * (10 + 5 * 32)] = v * 16
+    s.publish()
+    return Math.floor(at(s.view, 10, 5, 'info')[3]! / 256)
+  }
+
+  it('leaves a steady 12 blocks/s stream at its depth (half a block, the flood river\'s flow) clear', () => {
+    expect(whiteOf(SUB / 2, 12)).toBe(0)
+    expect(whiteOf((SUB * 3) / 4, 8)).toBe(0) // the deep end of a river step
+  })
+
+  it('gives the shallow fast lip of a river step a light white edge', () => {
+    const w = whiteOf(77, 20) // 0.3 block at 20 blocks/s
+    expect(w).toBeGreaterThan(0)
+    expect(w).toBeLessThanOrEqual(5)
+  })
+
+  it('whitens a shallow fast sheet', () => {
+    expect(whiteOf(SUB / 8, 20)).toBeGreaterThanOrEqual(8)
+  })
+
+  it('whitens a sheet running fast onto dry ground (a bore front), and not a slow one', () => {
+    expect(whiteOf(SUB / 8, 5, 11)).toBeGreaterThanOrEqual(6) // the dam break's front a second after the breach
+    expect(whiteOf(SUB / 8, 1, 11)).toBe(0) // a film creeping on
+    expect(whiteOf(SUB / 8, 5)).toBe(0) // the same sheet with water ahead
+  })
+
+  it('does not count a wall ahead as dry ground', () => {
+    const s = scene(32, 32, (x) => (x <= 10 ? 2 : 10), (x) => (x <= 10 ? SUB / 8 : 0))
+    s.cols.flux[2 * (9 + 5 * 32)] = 8 * 16 // 5 blocks/s, as in the bore test
+    s.cols.flux[2 * (10 + 5 * 32)] = 8 * 16
+    s.publish()
+    expect(Math.floor(at(s.view, 10, 5, 'info')[3]! / 256)).toBe(0)
   })
 })
 
