@@ -25,17 +25,18 @@ export function cubeLight(light: (x: number, y: number, z: number) => number, x:
 
 /** Extra drawing lag, in ticks, beyond the one tick between a body's last two heights: room for arrival jitter. */
 export const MARGIN = 0.2
-/** How much faster or slower than real time the drawn clock may run while it follows the latency filter. */
+/** How much faster or slower than real time the drawn clock may run while it follows the latency estimate. */
 const SLEW = 0.1
-/** How fast the latency filter forgets its slowest arrival, in ms per ms. */
-const LEAK = 0.01
-/**
- * A latency change beyond this many ticks resets the clock at once (a rise is adopted at once anyway; after a long
- * hitch, a drop would take LEAK ages to forget).
- */
+/** The same when the drawn clock lags the estimate by more than a tick (after a hitch): catch up faster. */
+const FAST_SLEW = 0.5
+/** The latency estimate is the slowest arrival of this window (ms), so a single hitch is forgotten after it. */
+const WINDOW = 500
+/** A latency change beyond this many ticks restarts the estimate from the new arrival. */
 const RESYNC = 4
-/** Heights kept per body: enough to cover the drawing lag, at most 1 + MARGIN + RESYNC ticks. */
-const KEEP = 8
+/** Once its chunk mesh is in, a landed cube still gliding reaches its cell within this many ms... */
+export const RUSH_MS = 30
+/** ...but never faster than this many times terminal speed (2 blocks per tick). */
+export const RUSH_CAP = 2.5
 
 interface Sample { tick: number; y: number }
 
@@ -44,26 +45,32 @@ interface Tracked {
   /** Heights (y256) by sim tick, oldest first. */
   samples: Sample[]
   landing: { chunk: number; version: number } | null
+  /** Set when a landed body's mesh is in before it reached its cell: it finishes its glide on its own clock. */
+  rush: { y: number; at: number; speed: number } | null
 }
 
 /**
  * Follows falling bodies between sim ticks for drawing (no three.js, so Node tests reach it).
  *
  * Bodies are drawn on a smoothed sim clock, not on message arrival: tick `t` is drawn at render time
- * `(t + 1 + MARGIN) × tickMs + offset`, where `offset` follows a decaying maximum of the arrival latency
- * (arrival − t × tickMs), slewed at most SLEW so the drawn speed never jumps. A late message holds the cube at
- * the newest height (nothing is extrapolated) and delays the clock by the wait; an early one is simply buffered.
+ * `(t + 1 + MARGIN) × tickMs + offset`, where `offset` follows the slowest arrival latency (arrival − t × tickMs)
+ * of the last WINDOW ms, slewed at most SLEW (FAST_SLEW when far behind) so the drawn speed never jumps. A late
+ * message holds the cubes at the newest height (nothing is extrapolated) and delays the clock by the wait; an
+ * early one is simply buffered.
  *
  * A landed body glides on to its landing cell, then stays there until its chunk's mesh at the landing version is
- * applied, so a block never blinks out or jumps between the cube and the chunk mesh.
+ * applied, so a block never blinks out or jumps between the cube and the chunk mesh. If the mesh comes first (the
+ * usual case, since cubes are drawn a tick behind), the rest of the glide is compressed to about RUSH_MS so the
+ * block is not shown twice for long.
  */
 export class FallingTrack {
   private readonly bodies = new Map<number, Tracked>()
   private readonly tickMs: number
-  /** Maximum of arrival − tick × tickMs, decaying by LEAK between arrivals; set at `latencyAt`. */
+  /** Arrivals of the last WINDOW ms: (time, arrival − tick × tickMs). */
+  private readonly arrivals: { at: number; s: number }[] = []
+  /** Their maximum: the latency the drawn clock aims for. */
   private latency = Number.NaN
-  private latencyAt = 0
-  /** The drawn clock's latency term; follows `latency` at most SLEW. */
+  /** The drawn clock's latency term; follows `latency` at a limited rate. */
   private offset = Number.NaN
   private frameAt = 0
   /** The newest sim tick received. */
@@ -77,17 +84,22 @@ export class FallingTrack {
   /** The message of sim tick `tick` arrived at `now` (ms). */
   update(tick: number, falling: readonly FallingBodyState[], landed: readonly Landing[], now: number): void {
     const s = now - tick * this.tickMs
-    const kept = this.latency - LEAK * Math.max(0, now - this.latencyAt)
-    if (Number.isNaN(kept) || Math.abs(s - kept) > RESYNC * this.tickMs) this.latency = this.offset = s
-    else this.latency = Math.max(s, kept)
-    this.latencyAt = now
+    if (Number.isNaN(this.latency) || Math.abs(s - this.latency) > RESYNC * this.tickMs) {
+      // A first arrival, or the sim paused or the page stalled: start the estimate over. With cubes on screen the
+      // drawn clock keeps its offset (a hold or the slew absorbs the change) so they never move back up.
+      this.arrivals.length = 0
+      if (this.bodies.size === 0 || Number.isNaN(this.offset)) this.offset = s
+    }
+    this.arrivals.push({ at: now, s })
+    while (this.arrivals[0]!.at < now - WINDOW) this.arrivals.shift()
+    this.latency = Math.max(...this.arrivals.map((a) => a.s))
     this.newest = Math.max(this.newest, tick)
     const seen = new Set<number>()
     for (const st of falling) {
       seen.add(st.id)
       const b = this.bodies.get(st.id)
       if (b) push(b, tick, st.y256)
-      else this.bodies.set(st.id, { voxel: st.voxel, x: st.x, z: st.z, samples: [{ tick: tick - 1, y: st.y256 + st.vy256 }, { tick, y: st.y256 }], landing: null })
+      else this.bodies.set(st.id, { voxel: st.voxel, x: st.x, z: st.z, samples: [{ tick: tick - 1, y: st.y256 + st.vy256 }, { tick, y: st.y256 }], landing: null, rush: null })
     }
     for (const l of landed) {
       const b = this.bodies.get(l.id)
@@ -104,7 +116,8 @@ export class FallingTrack {
     const target = this.latency
     if (this.bodies.size === 0 || Number.isNaN(this.offset)) this.offset = target
     else {
-      const step = SLEW * Math.max(0, now - this.frameAt)
+      const rate = this.offset - target > this.tickMs ? FAST_SLEW : SLEW
+      const step = rate * Math.max(0, now - this.frameAt)
       this.offset += Math.min(step, Math.max(-step, target - this.offset))
     }
     this.frameAt = now
@@ -117,18 +130,26 @@ export class FallingTrack {
     }
     const out: FallingCube[] = []
     for (const [id, b] of this.bodies) {
-      const last = b.samples[b.samples.length - 1]!
-      // A landed cube is handed over only once it rests in its landing cell and that cell's mesh is in.
-      if (b.landing && at >= last.tick && applied(b.landing.chunk) >= b.landing.version) { this.bodies.delete(id); continue }
-      out.push({ voxel: b.voxel, x: b.x, y: heightAt(b.samples, at) / 256, z: b.z })
+      while (b.samples.length > 2 && b.samples[1]!.tick <= at) b.samples.shift() // heights already drawn past
+      let y = heightAt(b.samples, at)
+      if (b.landing) {
+        const land = b.samples[b.samples.length - 1]!.y
+        const meshIn = applied(b.landing.chunk) >= b.landing.version
+        if (meshIn && y !== land && !b.rush) {
+          const cap = (RUSH_CAP * 512) / this.tickMs
+          b.rush = { y, at: now, speed: Math.min(cap, Math.max((y - land) / RUSH_MS, 0)) }
+        }
+        if (b.rush) y = Math.min(y, Math.max(land, b.rush.y - b.rush.speed * (now - b.rush.at)))
+        // A landed cube is handed over only once it rests in its landing cell and that cell's mesh is in.
+        if (meshIn && y === land) { this.bodies.delete(id); continue }
+      }
+      out.push({ voxel: b.voxel, x: b.x, y: y / 256, z: b.z })
     }
     return out
   }
 }
-
 function push(b: Tracked, tick: number, y: number): void {
   b.samples.push({ tick, y })
-  if (b.samples.length > KEEP) b.samples.shift()
 }
 
 /** The height at fractional sim tick `at`, held at the oldest and newest samples. */

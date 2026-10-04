@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { FallingTrack, MARGIN, cubeLight } from '../src/render/fallingTrack.ts'
+import { FallingTrack, MARGIN, RUSH_CAP, RUSH_MS, cubeLight } from '../src/render/fallingTrack.ts'
 import { AIR } from '../src/world/voxel.ts'
 import { B, fluidSim } from './fluidHelpers.ts'
 
 const body = (id: number, y256: number, vy256 = 24) => ({ id, voxel: 8, x: 3, z: 4, y256, vy256 })
 /** With messages on time, tick t is drawn from (t + 1) × 50 ms + LAG on. */
 const LAG = MARGIN * 50
+
+const V = 400, TOP = 500000, FRAME = 1000 / 180
+/** Blocks per second of a body falling V/256 block per tick. */
+const trueSpeed = (tickMs: number) => ((V / 256) * 1000) / tickMs
+/** The (fractional) tick whose height a cube of `fall` is drawn at. */
+const drawnTick = (y: number) => 100 + (TOP - y * 256) / V
+/** Drives a track at 180 fps with one body falling V per tick; tick 100 + n arrives at `arrival(n)` (non-decreasing). */
+function fall(tickMs: number, arrival: (n: number) => number, ticks: number): { now: number; y: number }[] {
+  const t = new FallingTrack(tickMs), arr = Array.from({ length: ticks }, (_, n) => arrival(n)), out: { now: number; y: number }[] = []
+  let next = 0
+  for (let now = 1000; now < 1000 + (ticks - 1) * tickMs; now += FRAME) {
+    while (next < ticks && arr[next]! <= now) { t.update(100 + next, [body(1, TOP - V * next, V)], [], now); next++ }
+    const c = t.frame(now, () => -1)
+    if (c.length > 0) out.push({ now, y: c[0]!.y })
+  }
+  return out
+}
+/** Downward speed (blocks/s) between consecutive frames. */
+const speeds = (f: { now: number; y: number }[]) => f.slice(1).map((g, i) => ({ now: g.now, v: (f[i]!.y - g.y) / ((g.now - f[i]!.now) / 1000) }))
 
 describe('FallingTrack', () => {
   it('starts a new body at its old cell and interpolates over one tick', () => {
@@ -28,29 +47,27 @@ describe('FallingTrack', () => {
     expect(t.frame(140 + LAG, () => applied)).toEqual([])
     expect(t.size).toBe(0)
   })
-  it('glides a landed cube down to its landing cell before handing it to the chunk mesh, even when the mesh is already applied', () => {
+  it('finishes the glide within RUSH_MS once the mesh is in, never faster than RUSH_CAP x terminal speed', () => {
     const t = new FallingTrack(50)
     t.update(0, [body(1, 6 * 256 + 100, 400)], [], 0)
     t.update(1, [body(1, 5 * 256 + 180, 432)], [], 50)
     t.update(2, [], [{ id: 1, x: 3, y: 4, z: 4, chunk: 7, version: 12 }], 100) // lands 436/256 blocks below the shown cube
-    const FRAME = 1000 / 180, applied = () => 12 // the remesh is already in: only the glide holds the cube
-    let last = t.frame(100 + LAG, applied)[0]!.y, now = 100 + LAG, held = 0, ticked = false
+    const FRAME = 1000 / 180, applied = () => 12 // the remesh is already in
+    const start = 100 + LAG
+    let last = t.frame(start, applied)[0]!.y, now = start
     expect(last).toBeCloseTo((5 * 256 + 180) / 256, 6)
     for (;;) {
       now += FRAME
-      if (now > 140 && !ticked) { t.update(3, [], [], now); ticked = true } // the next tick may arrive early, mid-glide: no jump either
       const cubes = t.frame(now, applied)
       if (cubes.length === 0) break
       const y = cubes[0]!.y
+      expect(y).toBeGreaterThanOrEqual(4)
       expect(last - y).toBeGreaterThanOrEqual(0)
-      expect(last - y).toBeLessThanOrEqual((1.1 * (436 / 256) * FRAME) / 50) // one frame of the last segment's motion (+ clock slew)
+      expect(last - y).toBeLessThanOrEqual((RUSH_CAP * 2 * FRAME) / 50 + 1e-9)
       last = y
-      if (++held > 100) throw new Error('never handed over')
+      expect(now - start).toBeLessThanOrEqual(RUSH_MS + FRAME)
     }
-    // Hidden on the first frame that would draw it at its landing cell (the applied mesh shows it there):
-    // the last drawn height is within one frame's motion above the cell, never below it.
-    expect(last).toBeGreaterThanOrEqual(4)
-    expect(last - 4).toBeLessThanOrEqual((1.1 * (436 / 256) * FRAME) / 50)
+    expect(now - start).toBeLessThanOrEqual(RUSH_MS + 2 * FRAME) // hidden the frame after it rests in its cell
     expect(t.size).toBe(0)
   })
   it('holds a landed cube at its landing cell until the mesh at the landing version is applied', () => {
@@ -63,51 +80,46 @@ describe('FallingTrack', () => {
     expect(t.frame(130 + LAG, () => 11)).toEqual([{ voxel: 8, x: 3, y: 1, z: 4 }])
     expect(t.frame(135 + LAG, () => 12)).toEqual([])
   })
-  it('moves a falling cube at its true speed although tick messages arrive with jitter', () => {
-    // Ticks every 50 ms of sim time; each message reaches the main thread 0-25 ms late, and the frame loop
-    // (180 fps) only sees it at the next frame. The cube falls 400/256 block per tick: 31.25 blocks/s.
-    const TICK = 50, FRAME = 1000 / 180, V = 400, TRUE = ((V / 256) * 1000) / TICK
+  for (const tickMs of [50, 1000 / 30]) it(`moves a falling cube at its true speed although tick messages arrive with jitter (tick ${tickMs.toFixed(1)} ms)`, () => {
+    // Each message reaches the main thread 0-25 ms late and the frame loop (180 fps) only sees it at the next frame.
     let seed = 12345
     const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32)
-    const arrivals = Array.from({ length: 60 }, (_, n) => 1000 + n * TICK + rnd() * 25)
-    const t = new FallingTrack(TICK)
-    let next = 0, prevY: number | null = null, worst = 0
-    for (let now = 1000; now < 1000 + 59 * TICK; now += FRAME) {
-      while (next < arrivals.length && arrivals[next]! <= now) {
-        t.update(100 + next, [body(1, 50000 - V * next, V)], [], now)
-        next++
-      }
-      const c = t.frame(now, () => -1)
-      if (c.length === 0) continue
-      const y = c[0]!.y
-      if (prevY !== null && now > 1000 + 6 * TICK) worst = Math.max(worst, Math.abs((prevY - y) / (FRAME / 1000) - TRUE) / TRUE)
-      prevY = y
-    }
+    const frames = fall(tickMs, (n) => 1000 + n * tickMs + rnd() * 25, 90)
+    const worst = Math.max(...speeds(frames).filter((f) => f.now > 1000 + 300).map((f) => Math.abs(f.v - trueSpeed(tickMs)) / trueSpeed(tickMs)))
     expect(worst).toBeLessThanOrEqual(0.15)
   })
   it('holds a cube while a tick message is late, then goes on from there without catching up in a jump', () => {
-    const TICK = 50, FRAME = 1000 / 180, V = 400, TRUE = ((V / 256) * 1000) / TICK
-    const arrivals = Array.from({ length: 40 }, (_, n) => 1000 + n * TICK + 3)
-    arrivals[20] = arrivals[21]! // a late sim timer: ticks 20 and 21 arrive together
-    const t = new FallingTrack(TICK)
-    let next = 0, prevY: number | null = null, held = 0
-    for (let now = 1000; now < 1000 + 39 * TICK; now += FRAME) {
-      while (next < arrivals.length && arrivals[next]! <= now) {
-        t.update(100 + next, [body(1, 50000 - V * next, V)], [], now)
-        next++
-      }
-      const c = t.frame(now, () => -1)
-      if (c.length === 0) continue
-      const y = c[0]!.y
-      if (prevY !== null) {
-        const speed = (prevY - y) / (FRAME / 1000)
-        expect(speed).toBeGreaterThanOrEqual(0)
-        expect(speed).toBeLessThanOrEqual(1.15 * TRUE)
-        if (speed === 0) held++
-      }
-      prevY = y
-    }
-    expect(held).toBeGreaterThan(0) // it did wait for the late tick rather than extrapolate
+    const frames = fall(50, (n) => 1000 + (n === 20 ? 21 : n) * 50 + 3, 40) // a late sim timer: ticks 20 and 21 arrive together
+    const v = speeds(frames)
+    for (const f of v) expect(f.v).toBeGreaterThanOrEqual(0)
+    for (const f of v) expect(f.v).toBeLessThanOrEqual(1.15 * trueSpeed(50))
+    expect(v.some((f) => f.v === 0)).toBe(true) // it did wait for the late tick rather than extrapolate
+  })
+  it('forgets a hitch within about a second: the drawing lag returns to normal', () => {
+    // A 200 ms main-thread stall delivers ticks 20-23 together at its end; every other message is 3 ms late.
+    const stallEnd = 1000 + 20 * 50 + 200
+    const frames = fall(50, (n) => Math.max(1000 + n * 50 + 3, n >= 20 && n <= 23 ? stallEnd : 0), 80)
+    for (const f of speeds(frames)) expect(f.v).toBeGreaterThanOrEqual(0)
+    for (const f of speeds(frames)) expect(f.v).toBeLessThanOrEqual(1.55 * trueSpeed(50)) // FAST_SLEW, no jump
+    const excess = (f: { now: number; y: number }) => (f.now - 1003) / 50 + 100 - 1 - MARGIN - drawnTick(f.y)
+    expect(excess(frames.find((f) => f.now > stallEnd)!)).toBeGreaterThan(2) // it did fall behind
+    for (const f of frames.filter((f) => f.now > stallEnd + 1500)) expect(Math.abs(excess(f))).toBeLessThan(FRAME / 50) // arrivals are seen up to a frame late
+  })
+  it('restarts the estimate when the latency jumps by more than RESYNC ticks, without moving a drawn cube back up', () => {
+    // The sim pauses for 400 ms after tick 20: every later message is 400 ms later than before, for good.
+    const frames = fall(50, (n) => 1000 + n * 50 + 3 + (n >= 20 ? 400 : 0), 80)
+    for (const f of speeds(frames)) expect(f.v).toBeGreaterThanOrEqual(0)
+    for (const f of speeds(frames)) expect(f.v).toBeLessThanOrEqual(1.55 * trueSpeed(50))
+    const excess = (f: { now: number; y: number }) => (f.now - 1403) / 50 + 100 - 1 - MARGIN - drawnTick(f.y)
+    for (const f of frames.filter((f) => f.now > 1000 + 20 * 50 + 400 + 1500)) expect(Math.abs(excess(f))).toBeLessThan(FRAME / 50) // arrivals are seen up to a frame late
+  })
+  it('restarts the estimate when messages turn much earlier than it, and catches up without a jump', () => {
+    // The first 20 messages are 300 ms late (a busy start), then they arrive on time.
+    const frames = fall(50, (n) => Math.max(1000 + n * 50 + 3 + (n < 20 ? 300 : 0), n < 20 ? 0 : 1000 + 19 * 50 + 303), 80)
+    for (const f of speeds(frames)) expect(f.v).toBeGreaterThanOrEqual(0)
+    for (const f of speeds(frames)) expect(f.v).toBeLessThanOrEqual(1.55 * trueSpeed(50))
+    const excess = (f: { now: number; y: number }) => (f.now - 1003) / 50 + 100 - 1 - MARGIN - drawnTick(f.y)
+    for (const f of frames.filter((f) => f.now > 1000 + 20 * 50 + 300 + 1500)) expect(Math.abs(excess(f))).toBeLessThan(FRAME / 50) // arrivals are seen up to a frame late
   })
   it('forgets a body that disappears without landing', () => {
     const t = new FallingTrack(50)
