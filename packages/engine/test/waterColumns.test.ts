@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Pcg32 } from '../src/sim/rng.ts'
 import { WaterColumns, damp, moved } from '../src/sim/water/columns.ts'
-import { MIN_FLOW, SUB } from '../src/sim/water/constants.ts'
+import { HEAD_EPS, MIN_FLOW, SUB } from '../src/sim/water/constants.ts'
+import { quantize } from '../src/sim/water/mirror.ts'
 
 const CAP = 1 << 20
 
@@ -36,6 +37,20 @@ function spread(g: WaterColumns): number {
   let lo = Infinity, hi = -Infinity
   for (let c = 0; c < g.n; c++) if (g.depth[c]! > 0) { lo = Math.min(lo, g.surface(c)); hi = Math.max(hi, g.surface(c)) }
   return hi - lo
+}
+
+/** The largest head over an edge whose higher side could send (at least MIN_FLOW deep). */
+function maxHead(g: WaterColumns): number {
+  let m = 0
+  for (let z = 0; z < g.sz; z++) for (let x = 0; x < g.sx; x++) {
+    const c = x + z * g.sx
+    for (const b of [x + 1 < g.sx ? c + 1 : -1, z + 1 < g.sz ? c + g.sx : -1]) {
+      if (b < 0) continue
+      const h = g.surface(c) - g.surface(b)
+      if ((h > 0 && g.depth[c]! >= MIN_FLOW) || (h < 0 && g.depth[b]! >= MIN_FLOW)) m = Math.max(m, Math.abs(h))
+    }
+  }
+  return m
 }
 
 function minDepth(g: WaterColumns): number {
@@ -134,12 +149,72 @@ describe('WaterColumns', () => {
     for (let x = 0; x < 32; x++) expect(g.flux[2 * (x + 31 * 32) + 1]).toBe(0) // +z edges of the last row
   })
 
+  it.each([1, 2, 3])('relaxes a slope of %i sub per column (zero start flux) before it sleeps: flat to one mirror level', (slope) => {
+    // A walled 64 × 16 channel (four tiles in a row) and a 64 × 64 basin sloping along x + z.
+    for (const [sx, sz, s] of [[64, 16, (x: number) => x * slope], [64, 64, (x: number, z: number) => (x + z) * slope]] as const) {
+      const g = grid(sx, sz, box(sx, sz, 0), (x, z) => (x > 0 && z > 0 && x < sx - 1 && z < sz - 1 ? 2 * SUB + s(x, z) : 0))
+      const v0 = g.total()
+      settle(g)
+      expect(g.total()).toBe(v0)
+      expect(spread(g)).toBeLessThan(SUB / 8)
+      expect(maxHead(g)).toBeLessThanOrEqual(HEAD_EPS)
+      expect(g.flux.every((f) => f === 0)).toBe(true)
+    }
+  }, 60_000)
+
+  it('drains a lake through a breach in its dam until, asleep, what is left lies flat to one mirror level', () => {
+    // Lake: x 1..46 on a bed at 20, one block deep. Dam at x = 47, breached at z 12..19 down to the bed; a pit at 0 beyond.
+    const sx = 64, sz = 32
+    const g = grid(sx, sz, (x, z) => (z === 0 || z === sz - 1 || x === 0 || x === sx - 1 ? 100 : x < 47 ? 20 : x === 47 ? (z >= 12 && z <= 19 ? 20 : 100) : 0),
+      (x, z) => (x > 0 && x < 47 && z > 0 && z < sz - 1 ? SUB : 0))
+    const v0 = g.total()
+    settle(g, CAP, 200_000, () => expect(g.total()).toBe(v0))
+    let pit = 0
+    const levels: number[] = []
+    for (let z = 1; z < sz - 1; z++) for (let x = 1; x < sx - 1; x++) {
+      const c = x + z * sx
+      if (x > 47) pit += g.depth[c]!
+      else if (x < 47 && g.depth[c]! >= SUB / 16) levels.push(quantize(g.surface(c))) // what the mirror shows
+    }
+    expect(pit).toBeGreaterThan(v0 / 2) // most of the lake went
+    if (levels.length > 0) expect(Math.max(...levels) - Math.min(...levels)).toBeLessThanOrEqual(1)
+    let lo = Infinity, hi = -Infinity
+    for (let z = 1; z < sz - 1; z++) for (let x = 1; x < 47; x++) { const c = x + z * sx; if (g.depth[c]! > 0) { lo = Math.min(lo, g.surface(c)); hi = Math.max(hi, g.surface(c)) } }
+    expect(hi - lo).toBeLessThan(SUB / 8)
+  }, 60_000)
+
+  it.each([['x', 64, 32], ['z', 32, 64]] as const)('is symmetric: a world and its %s-mirror stay mirror images every step, through every sleep', (axis, sx, sz) => {
+    const rng = new Pcg32(11)
+    const floors = Array.from({ length: sx * sz }, () => rng.nextInt(4))
+    const depths = Array.from({ length: sx * sz }, () => (rng.nextInt(3) === 0 ? rng.nextInt(3 * SUB) : 0))
+    const flip = (x: number, z: number): number => (axis === 'x' ? sx - 1 - x + z * sx : x + (sz - 1 - z) * sx)
+    const a = grid(sx, sz, (x, z) => floors[x + z * sx]!, (x, z) => depths[x + z * sx]!)
+    const b = grid(sx, sz, (x, z) => floors[flip(x, z)]!, (x, z) => depths[flip(x, z)]!)
+    const T = a.tiles
+    const flipTile = (t: number): number => {
+      const tx = t % T.tx, tz = (t - tx) / T.tx
+      return axis === 'x' ? T.tx - 1 - tx + tz * T.tx : tx + (T.tz - 1 - tz) * T.tx
+    }
+    let slept = 0
+    for (let i = 0; i < 20_000 && T.awakeCount() > 0; i++) {
+      a.step(CAP, null, 0)
+      b.step(CAP, null, 0)
+      for (let z = 0; z < sz; z++) for (let x = 0; x < sx; x++) {
+        if (a.depth[x + z * sx] !== b.depth[flip(x, z)]) throw new Error(`step ${i + 1}: (${x}, ${z}) holds ${a.depth[x + z * sx]}, its mirror ${b.depth[flip(x, z)]}`)
+      }
+      for (let t = 0; t < T.count; t++) expect(b.tiles.awake[flipTile(t)]).toBe(T.awake[t])
+      slept = Math.max(slept, T.count - T.awakeCount())
+    }
+    expect(slept).toBeGreaterThan(0)
+    expect(T.awakeCount()).toBe(0)
+  }, 60_000)
+
   it('steps at most `cap` tiles per step, round robin, and still settles exactly', () => {
     const rng = new Pcg32(3)
     const depths = Array.from({ length: 32 * 32 }, () => rng.nextInt(2 * SUB))
     const g = grid(32, 32, box(32, 32, 0), (x, z) => (x > 0 && z > 0 && x < 31 && z < 31 ? depths[x + z * 32]! : 0))
     const v0 = g.total()
-    settle(g, 1, 200_000, () => expect(g.total()).toBe(v0))
+    settle(g, 1, 200_000, () => { expect(g.total()).toBe(v0); expect(minDepth(g)).toBeGreaterThanOrEqual(0) })
     expect(spread(g)).toBeLessThanOrEqual(16)
   })
 })

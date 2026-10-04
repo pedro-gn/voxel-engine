@@ -172,14 +172,15 @@ export class WaterSystem {
     const out: number[] = []
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
-    const cols = this.cols, T = cols.tiles
+    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
       T.dirty[t] = 0
       out.push(t)
-      T.forEachColumn(t, (c, x, z) => {
-        this.mirror.flush(c, x, z, cols.floor[c]!, cols.depth[c]!, this.water, this.kind, this.height, this.get, this.set)
-      })
+      const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
+      for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
+        mirror.flush(c, x, z, floor[c]!, depth[c]!, this.water, this.kind, this.height, this.get, this.set)
+      }
     }
     this.published = this.publisher.publish(out, cols)
     return out

@@ -13,6 +13,8 @@ export class WaterTiles {
   readonly quiet: Uint8Array
   /** 1 when a column of the tile changed since the last flush: mirror it and publish it. */
   readonly dirty: Uint8Array
+  /** 1 when an edge of the tile moved water at its last step: publish bookkeeping, like `dirty`. */
+  readonly moving: Uint8Array
 
   constructor(sx: number, sz: number) {
     if (sx % TILE !== 0 || sz % TILE !== 0) throw new RangeError(`water tiles need world sizes that are multiples of ${TILE}, got ${sx} × ${sz}`)
@@ -24,6 +26,7 @@ export class WaterTiles {
     this.awake = new Uint8Array(this.count)
     this.quiet = new Uint8Array(this.count)
     this.dirty = new Uint8Array(this.count)
+    this.moving = new Uint8Array(this.count)
   }
 
   of(x: number, z: number): number { return Math.floor(x / TILE) + Math.floor(z / TILE) * this.tx }
@@ -59,6 +62,7 @@ export class WaterTiles {
     this.awake.fill(0)
     this.quiet.fill(0)
     this.dirty.fill(0)
+    this.moving.fill(0)
   }
 
   /** `dirty` is publish bookkeeping, cleared every tick: not world state. */

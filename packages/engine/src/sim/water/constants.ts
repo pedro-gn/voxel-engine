@@ -24,7 +24,20 @@ export const FLUX_EPS = 2
  * …and no column of it changed by more than this since its last step: 4 × (FLUX_EPS − 1), the most a quiet column can
  * change (four edges each moving 1/SUB). A still lake's integer heads keep 1/SUB moves going forever; below this they never sleep.
  */
-export const DEPTH_EPS = 4
+export const DEPTH_EPS = 4 * (FLUX_EPS - 1)
+/**
+ * …and no run of connected water along a row or column of it (its borders included) spans more than this (1/SUB block).
+ * A still lake never comes to rest in integers: a leftover 1/SUB bump moves on, leaving a −3/+1 pattern behind, so runs
+ * span up to 4–5 while the lake is flat (at 3 lakes never sleep, at 4 they take far longer). 6 sleeps above that jiggle and
+ * stays far under the mirror's quantum (SUB / 8).
+ */
+export const HEAD_EPS = 6
+/**
+ * …and the tile's mean slope along x and along z, Σ (last − first surface) over its runs per edge, stays at or under
+ * 1/2^SLOPE_SHIFT sub-unit per column. Leftover bumps cancel in that sum while a slope adds up: with zero flux, heads of
+ * 1–2 sub take longer than SLEEP_STEPS to move anything, so without this test a gentle slope would fall asleep as it is.
+ */
+export const SLOPE_SHIFT = 3
 /** At rebuild, a wall run at most this thick that floats over air or water (a bridge, a canopy) hides no water below it. */
 export const OVERHANG = 6
 /** One liquid unit (1/8 block, a voxel level step) in 1/SUB block. */
