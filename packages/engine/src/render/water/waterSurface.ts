@@ -27,10 +27,18 @@ function baseQuad(index: number[], height: number): THREE.InstancedBufferGeometr
   return g
 }
 
-function dynamic(array: Float32Array): THREE.InstancedBufferAttribute {
-  const a = new THREE.InstancedBufferAttribute(array, 4)
-  a.setUsage(THREE.DynamicDrawUsage)
-  return a
+/**
+ * An instance attribute over one of the view's arrays. It keeps three's static usage: with DynamicDrawUsage three would
+ * rewrite the whole buffer every frame; here `needsUpdate` and the row range (uploadRows) say what to upload.
+ */
+function instanced(array: Float32Array): THREE.InstancedBufferAttribute {
+  return new THREE.InstancedBufferAttribute(array, 4)
+}
+
+/** Whether any quad of the chunk column is drawn (a negative packed light hides one). */
+function anyDrawn(info: Float32Array): boolean {
+  for (let o = 3; o < info.length; o += 4) if (info[o]! >= 0) return true
+  return false
 }
 
 /**
@@ -100,12 +108,14 @@ export class WaterSurface {
       for (const a of s.attrs) uploadRows(a, start, count)
       d.rowLo = 32
       d.rowHi = -1
+      // A chunk column that dried out draws nothing: skip its 1024 collapsed quads.
+      s.surface.visible = anyDrawn(d.info)
     }
     const cs = d.curtains
     if (cs.generation !== s.generation) {
-      s.cgeo.setAttribute('cPrev', dynamic(cs.prev))
-      s.cgeo.setAttribute('cCur', dynamic(cs.cur))
-      s.cgeo.setAttribute('cInfo', dynamic(cs.info))
+      s.cgeo.setAttribute('cPrev', instanced(cs.prev))
+      s.cgeo.setAttribute('cCur', instanced(cs.cur))
+      s.cgeo.setAttribute('cInfo', instanced(cs.info))
       s.generation = cs.generation
     } else {
       for (const name of ['cPrev', 'cCur', 'cInfo']) s.cgeo.getAttribute(name).needsUpdate = true
@@ -117,16 +127,16 @@ export class WaterSurface {
   private create(cc: number, d: ColumnData): Slot {
     const ox = (cc % this.view.cx) * 32, oz = Math.floor(cc / this.view.cx) * 32
     const geo = baseQuad(SURFACE_INDEX, this.height)
-    const attrs = [dynamic(d.hPrev), dynamic(d.hCur), dynamic(d.info)]
+    const attrs = [instanced(d.hPrev), instanced(d.hCur), instanced(d.info)]
     geo.setAttribute('hPrev', attrs[0]!)
     geo.setAttribute('hCur', attrs[1]!)
     geo.setAttribute('info', attrs[2]!)
     geo.instanceCount = 1024
     const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${cc}`)
     const cgeo = baseQuad(CURTAIN_INDEX, this.height)
-    cgeo.setAttribute('cPrev', dynamic(d.curtains.prev))
-    cgeo.setAttribute('cCur', dynamic(d.curtains.cur))
-    cgeo.setAttribute('cInfo', dynamic(d.curtains.info))
+    cgeo.setAttribute('cPrev', instanced(d.curtains.prev))
+    cgeo.setAttribute('cCur', instanced(d.curtains.cur))
+    cgeo.setAttribute('cInfo', instanced(d.curtains.info))
     cgeo.instanceCount = 0
     const curtains = this.mesh(cgeo, this.curtainMaterial, ox, oz, `water-${cc}-curtains`)
     curtains.visible = false

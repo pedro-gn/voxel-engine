@@ -232,6 +232,60 @@ describe('SurfaceView, incremental', () => {
       for (const t of queue.splice(0)) if (t && view.apply(t)) { expect(fromScratch(view, cols.floor)).toEqual([]); checks++ }
     }
     expect(checks).toBeGreaterThan(50)
+  }, 20_000)
+})
+
+describe('SurfaceView, displayed alpha', () => {
+  /** A lake (floor 2) or a ledge (floor 6, x ≤ 10) over it; `step(depth, alpha)` sets the lake's depth, publishes and applies. */
+  function rising(ledge: boolean) {
+    const s = scene(32, 32, (x) => (ledge && x <= 10 ? 6 : 2), () => SUB)
+    const step = (depth: number, alpha?: number) => {
+      for (let z = 0; z < 32; z++) for (let x = ledge ? 11 : 0; x < 32; x++) s.cols.depth[x + z * 32] = depth
+      expect(s.view.apply(s.pub.publish([0, 1, 2, 3], s.cols)!, alpha)).toBe(true)
+    }
+    step(SUB)
+    step(2 * SUB) // prev 3, cur 4: drawn at 3.6 at alpha 0.6
+    return { ...s, step }
+  }
+  /** Corner k of column (x, z) as drawn at alpha `a`. */
+  const drawn = (view: SurfaceView, x: number, z: number, a: number) => {
+    const p = at(view, x, z, 'hPrev'), c = at(view, x, z, 'hCur')
+    return p.map((v, k) => v + (c[k]! - v) * a)
+  }
+
+  it('starts each step from the height on screen, not from the previous step', () => {
+    const { view, step } = rising(false)
+    const before = drawn(view, 10, 10, 0.6)
+    for (const v of before) expect(v).toBeCloseTo(3.6, 5)
+    step(3 * SUB, 0.6)
+    expect(drawn(view, 10, 10, 0)).toEqual(before.map(Math.fround)) // no jump at the publish
+    expect(at(view, 10, 10, 'hCur')).toEqual([5, 5, 5, 5])
+  })
+
+  it('starts a curtain from where it is drawn too', () => {
+    const { view, step } = rising(true)
+    const d = view.column(0)!
+    const curtain = (i: number) => [...d.curtains.prev.subarray(i * 4, i * 4 + 4)].map((v, k) => v + (d.curtains.cur[i * 4 + k]! - v) * 0.6)
+    const before = curtain(0)
+    expect(before[2]).toBeCloseTo(3.6, 5) // its bottom follows the lake
+    step(3 * SUB, 0.6)
+    expect([...d.curtains.prev.subarray(0, 4)]).toEqual(before.map(Math.fround))
+    expect(d.curtains.cur[2]).toBe(5)
+  })
+
+  it('never moves backwards or past the newest step when two publishes come in one frame', () => {
+    const { view, step } = rising(false)
+    const before = drawn(view, 10, 10, 0.6)[0]!
+    step(3 * SUB, 0.6)
+    step(4 * SUB, 0) // the engine passes 0 after an apply: the new step starts where the last one was drawn
+    expect(drawn(view, 10, 10, 0)[0]).toBe(Math.fround(before))
+    expect(drawn(view, 10, 10, 1)[0]).toBe(6)
+  })
+
+  it('keeps computing the previous step from scratch when no alpha is given', () => {
+    const { view, step } = rising(false)
+    step(3 * SUB)
+    expect(at(view, 10, 10, 'hPrev')).toEqual([4, 4, 4, 4])
   })
 })
 

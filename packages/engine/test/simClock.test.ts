@@ -51,6 +51,17 @@ describe('SimClock', () => {
     expect(next - last).toBeLessThanOrEqual((1.1 * 2 * FRAME) / 50) // at most real speed plus the slew
   })
 
+  it('holds at the lowest limit of its holders', () => {
+    const c = new SimClock(50)
+    const a = {}, b = {}
+    c.arrive(0, 0)
+    c.hold(a, 5)
+    c.hold(b, 3)
+    expect(c.advance(1000)).toBe(3)
+    c.hold(b, null)
+    expect(c.advance(1100)).toBe(5)
+  })
+
   it('slews toward a lower latency at a limited rate while something is drawn', () => {
     const c = new SimClock(50)
     const who = {}

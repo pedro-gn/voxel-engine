@@ -183,12 +183,20 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const waterView = new SurfaceView(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs)
   /** The sim tick of the last water publish applied: the surface moves from the step before it to it (stepAlpha). */
   let waterTick: number | null = null
+  /** The waterAlpha on screen: an apply starts the new step from it, after which alpha 0 shows the same heights. */
+  let waterShown = 1
+  /** Per chunk column, the layers [lo, hi) of the dirty chunks in it (relightWater's scratch). */
+  const relightRange = new Map<number, [number, number]>()
   /** Re-reads the water's light where the sim changed voxel light (dirty chunks): still water is not republished. */
   const relightWater = (chunks: readonly number[]) => {
+    if (chunks.length === 0) return
     for (const ci of chunks) {
       const [cx, cy, cz] = layout.chunkCoords(ci)
-      waterView.relight(cx + cz * waterView.cx, cy * 32, cy * 32 + 32)
+      const cc = cx + cz * waterView.cx, r = relightRange.get(cc)
+      if (r) { r[0] = Math.min(r[0], cy * 32); r[1] = Math.max(r[1], cy * 32 + 32) } else relightRange.set(cc, [cy * 32, cy * 32 + 32])
     }
+    for (const [cc, [lo, hi]] of relightRange) waterView.relight(cc, lo, hi)
+    relightRange.clear()
   }
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
@@ -391,7 +399,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         falling.update(m.tick, m.falling, m.landed, performance.now())
         if (m.water) {
           // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
-          if (waterView.apply(m.water)) { waterTick = m.tick; clock.hold(waterView, m.tick + 1) }
+          if (waterView.apply(m.water, waterShown)) { waterTick = m.tick; waterShown = 0; clock.hold(waterView, m.tick + 1) }
         } else clock.hold(waterView, null) // every tile settled (prev = cur): nothing to time
         relightWater(m.dirtyChunks)
         physicsStats = m.physics
@@ -472,7 +480,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     upload()
     // FallingTrack.frame advances the shared clock for this frame; the water reads it after.
     visuals.drawFalling(falling.frame(performance.now(), (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
-    visuals.setWaterAlpha(waterTick === null ? 1 : stepAlpha(clock.due, waterTick))
+    waterShown = waterTick === null ? 1 : stepAlpha(clock.due, waterTick)
+    visuals.setWaterAlpha(waterShown)
     visuals.frame(dt)
     if (o.gpuTiming && ++gpuFrames % 30 === 0) {
       renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})

@@ -118,6 +118,12 @@ export class SurfaceView {
   private readonly vPrev = new Float32Array(VERTICES * VERTICES * 4)
   private readonly vCur = new Float32Array(VERTICES * VERTICES * 4)
   private readonly smooth = new Uint8Array(VERTICES * VERTICES)
+  /** The alpha (0–1) the surface is drawn at while an apply runs; negative: none given (the previous step is computed). */
+  private shown = -1
+  /** Per curtain key (column × 4 + dir) of the chunk column being rebuilt: its heights as drawn, if it had one (tag = token). */
+  private readonly carryTag = new Int32Array(4096)
+  private readonly carryVal = new Float32Array(4096 * 4)
+  private carryToken = 0
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -169,8 +175,12 @@ export class SurfaceView {
   /**
    * Reads a tick's tiles (and any still pending) from shared memory. If the publish's buffer was reused before or while we
    * read it, nothing is applied: the tiles wait for the next tick, whose buffer holds them complete. Returns whether it applied.
+   *
+   * `shown`: the alpha the surface is drawn at now (waterAlpha). Given, each refreshed quad and curtain starts its new step
+   * from where it is drawn (hPrev ← mix(hPrev, hCur, shown)) rather than from the previous step, so a publish that comes
+   * before the step was drawn to its end does not jump; the caller then draws at alpha 0 to show the same heights.
    */
-  apply(t: WaterTick): boolean {
+  apply(t: WaterTick, shown?: number): boolean {
     // No tile list is ever modified: mergeTiles may hand back one of its inputs, and the publisher keeps its own.
     const recovering = this.pending.length > 0
     const tiles = mergeTiles(mergeTiles(t.tiles, this.pending), this.again)
@@ -225,13 +235,15 @@ export class SurfaceView {
       this.tileSettled[tile] = moving ? 0 : 1
     }
     this.lastCc = -1
+    this.shown = shown ?? -1
     for (const tile of tiles) if (this.tileChanged[tile] === e) this.refreshTile(tile, e)
     for (const cc of this.touched) {
       this.touchedFlag[cc] = 0
       const d = this.data[cc]
-      if (d) { this.buildCurtains(cc, d); this.markDirty(cc) }
+      if (d) { this.buildCurtains(cc, d, this.shown); this.markDirty(cc) }
     }
     this.touched.length = 0
+    this.shown = -1
     return true
   }
 
@@ -257,7 +269,7 @@ export class SurfaceView {
       any = true
       if (d.curtainMask[i] !== 0) curtains = true
     }
-    if (curtains) this.buildCurtains(cc, d)
+    if (curtains) this.buildCurtains(cc, d, 0) // the heights do not change: every curtain keeps them
     if (any) this.markDirty(cc)
   }
 
@@ -372,6 +384,10 @@ export class SurfaceView {
     // Corner k is this column's share (quadrant 3, 2, 0, 1) of vertex (x, z), (x+1, z), (x+1, z+1), (x, z+1).
     const v0 = vi * 4 + 3, v1 = (vi + 1) * 4 + 2, v2 = (vi + vw + 1) * 4, v3 = (vi + vw) * 4 + 1
     const hp = d.hPrev, hc = d.hCur, vp = this.vPrev, vc = this.vCur, sm = this.smooth
+    // A quad on screen starts its new step where it is drawn (see apply).
+    const a = this.shown, onScreen = a >= 0 && d.info[o + 3]! >= 0
+    const s0 = hp[o]! + (hc[o]! - hp[o]!) * a, s1 = hp[o + 1]! + (hc[o + 1]! - hp[o + 1]!) * a
+    const s2 = hp[o + 2]! + (hc[o + 2]! - hp[o + 2]!) * a, s3 = hp[o + 3]! + (hc[o + 3]! - hp[o + 3]!) * a
     let prevBits: number
     if (aligned) {
       // Drawn by the last apply as its current step, with these corners and curtains; or not drawn: at its ground.
@@ -385,6 +401,7 @@ export class SurfaceView {
       // Around four smooth vertices every neighbour is drawn within JOIN: no curtain hangs from or onto c.
       prevBits = (sm[vi]! & sm[vi + 1]! & sm[vi + vw]! & sm[vi + vw + 1]! & 1) !== 0 ? 0 : edgeBits(this.eP, h, hw)
     }
+    if (onScreen) { hp[o] = s0; hp[o + 1] = s1; hp[o + 2] = s2; hp[o + 3] = s3 }
     hc[o] = vc[v0]!; hc[o + 1] = vc[v1]!; hc[o + 2] = vc[v2]!; hc[o + 3] = vc[v3]!
     const s = level(this.cur[c]!), depth = Math.max(0, s - fl * SUB)
     const west = x > 0 ? this.fluxX[c - 1]! : 0, east = this.fluxX[c]!
@@ -412,9 +429,20 @@ export class SurfaceView {
     return Math.min(15, into >> 4)
   }
 
-  /** Lists a chunk column's curtains from its curtain masks and the corners refreshed this apply. */
-  private buildCurtains(cc: number, d: ColumnData): void {
+  /**
+   * Lists a chunk column's curtains from its curtain masks and the corners refreshed this apply. `carry` ≥ 0: a curtain the
+   * list already had starts from its heights drawn at alpha `carry` (see apply); negative: from its previous step.
+   */
+  private buildCurtains(cc: number, d: ColumnData, carry: number): void {
     const cs = d.curtains, sx = this.sx, mask = d.curtainMask
+    const tag = this.carryTag, val = this.carryVal, token = carry >= 0 ? ++this.carryToken : 0
+    if (carry >= 0) {
+      for (let k = 0; k < cs.count; k++) {
+        const o = k * 4, key = (cs.info[o]! + cs.info[o + 1]! * 32) * 4 + (cs.info[o + 2]! % 4), v = key * 4
+        tag[key] = token
+        for (let j = 0; j < 4; j++) val[v + j] = cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * carry
+      }
+    }
     const x0 = (cc % this.cx) * 32, z0 = Math.floor(cc / this.cx) * 32
     let n = 0
     for (let i = 0; i < 1024; i++) {
@@ -437,6 +465,8 @@ export class SurfaceView {
         const o = n * 4
         edge(cs.prev, o, was, d.hPrev[o4 + ta]!, d.hPrev[o4 + tb]!, jp ? jp.hPrev[oj + ba]! : gp, jp ? jp.hPrev[oj + bb]! : gp)
         edge(cs.cur, o, now, d.hCur[o4 + ta]!, d.hCur[o4 + tb]!, jc ? jc.hCur[oj + ba]! : gc, jc ? jc.hCur[oj + bb]! : gc)
+        const key = i * 4 + dir
+        if (token !== 0 && tag[key] === token) for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * 4 + j]!
         cs.info[o] = lx
         cs.info[o + 1] = lz
         cs.info[o + 2] = dir + 4 * (packed % 256)
