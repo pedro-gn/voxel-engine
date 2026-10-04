@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Engine } from '@elovox/engine'
 
-type Flood = { breach(): void; drop(): void; stopSpring(): void; stress(): void }
+type Flood = { breach(): void; drop(): void; stopSpring(): void; stress(): void; dig(): void }
 type W = Window & { __elovox?: { engine: Engine; flood: Flood | null; ready: boolean } }
 
 test.skip(!process.env.BENCH, 'set BENCH=1 to run the dam-break benchmarks')

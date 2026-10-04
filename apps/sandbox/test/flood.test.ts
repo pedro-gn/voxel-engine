@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
 import {
-  BREACH, DAM_X, FLOOD_SIZE, LAKE, PILLARS, SEA_LEVEL, SPRING, VALLEY,
-  breachCommands, dropCommands, floodColumn, floodGenerator, stopSpringCommands, stressCommands,
+  BREACH, CHANNEL, DAM_X, FLOOD_SIZE, LAKE, PILLARS, SEA_LEVEL, SPRING, VALLEY,
+  breachCommands, digCommands, dropCommands, floodColumn, floodGenerator, stopSpringCommands, stressCommands,
 } from '../src/scenes/flood.ts'
 
 describe('flood scene layout', () => {
@@ -40,6 +40,11 @@ describe('flood scene layout', () => {
   it('stops the spring by putting the given stone voxel on its cell', () => {
     const y = floodColumn(SPRING.x, SPRING.z).indexOf('spring')
     expect(stopSpringCommands(7)).toEqual([{ type: 'setBlock', pos: [SPRING.x, y, SPRING.z], voxel: 7 }])
+  })
+  it('digs a channel west of the lake through the ground, down to the lake floor', () => {
+    expect(digCommands()).toEqual([{ type: 'fillRegion', min: [CHANNEL.x0, LAKE.floor, CHANNEL.z0], max: [CHANNEL.x1, 24, CHANNEL.z1], voxel: 0 }])
+    expect(CHANNEL.x1).toBe(LAKE.x0 - 1) // it opens straight into the lake
+    for (const x of [CHANNEL.x0, CHANNEL.x1]) expect(floodColumn(x, CHANNEL.z0)[LAKE.floor]).not.toBeNull() // ground there now
   })
   it('stress: opens the whole dam and drops a 40 × 40 × 4 block of the given water voxel over the valley', () => {
     const [dam, dump] = stressCommands(99)
@@ -100,4 +105,21 @@ describe('flood scene simulation', () => {
     expect(sim.water.expected).toBe(v0)
     expect(sim.water.check()).toEqual([])
   }, 300_000)
+  it('a channel dug beside the lake fills while the lake goes down by exactly what the channel holds', () => {
+    const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0, log: () => {} })
+    sim.configure(floodGenerator, {})
+    sim.generate(floodGenerator)
+    const sum = (x0: number, z0: number, x1: number, z1: number) => {
+      let s = 0
+      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) s += sim.water.column(x, z).depth
+      return s
+    }
+    const lake0 = sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)
+    digCommands().forEach((c, i) => sim.submit(0, i, c))
+    for (let t = 0; t < 1500; t++) sim.step()
+    const channel = sum(CHANNEL.x0, CHANNEL.z0, CHANNEL.x1, CHANNEL.z1)
+    const area = (CHANNEL.x1 - CHANNEL.x0 + 1) * (CHANNEL.z1 - CHANNEL.z0 + 1)
+    expect(channel).toBeGreaterThan(area * 3 * SUB)
+    expect(lake0 - sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)).toBe(channel)
+  }, 180_000)
 })

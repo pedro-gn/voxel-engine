@@ -5,7 +5,7 @@ import { createControls } from './controls.ts'
 import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
-import { FLOOD_SIZE, breachCommands, dropCommands, stopSpringCommands, stressCommands } from './scenes/flood.ts'
+import { FLOOD_SIZE, breachCommands, digCommands, dropCommands, stopSpringCommands, stressCommands } from './scenes/flood.ts'
 import { paintTextures } from './textures.ts'
 import e2eDoc from './terrain/e2e.terrain.json'
 import showcaseDoc from './terrain/showcase.terrain.json'
@@ -132,6 +132,7 @@ const flood = sceneName === 'flood'
       breach: () => breachCommands().forEach((c) => engine.submit(c)),
       drop: () => dropCommands().forEach((c) => engine.submit(c)),
       stopSpring: () => stopSpringCommands(engine.blocks.id('stone')).forEach((c) => engine.submit(c)),
+      dig: () => digCommands().forEach((c) => engine.submit(c)),
       stress: () => stressCommands(packVoxel(engine.blocks.id('water'), 7)).forEach((c) => engine.submit(c)),
     }
   : null

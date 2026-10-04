@@ -19,6 +19,8 @@ export const SEA = { x1: 120, z0: 200, ground: 5 } as const
 export const RIVER = { x0: 8, x1: 12, z0: 136, z1: 199, head: 23 } as const
 export const SPRING = { x: 10, z: 136, flow: 8 } as const
 export const PILLARS = [{ x: 60, z: 160, base: 40, height: 8 }, { x: 70, z: 70, base: 40, height: 4 }] as const
+/** The dig checkpoint's channel: west of the lake, opening straight into it (x 4..24, z 40..43). */
+export const CHANNEL = { x0: 4, x1: LAKE.x0 - 1, z0: 40, z1: 43 } as const
 
 export type FloodBlock = 'stone' | 'dirt' | 'grass' | 'sand' | 'water' | 'spring' | 'planks'
 
@@ -95,4 +97,9 @@ export function stressCommands(water: number): Command[] {
 /** Removes the planks under each sand pillar, so the pillars fall (one into the lake). */
 export function dropCommands(): Command[] {
   return PILLARS.map((p) => ({ type: 'setBlock', pos: [p.x, p.base, p.z], voxel: AIR }))
+}
+
+/** Cuts CHANNEL through the ground down to the lake's floor: the lake runs into it. */
+export function digCommands(): Command[] {
+  return [{ type: 'fillRegion', min: [CHANNEL.x0, LAKE.floor, CHANNEL.z0], max: [CHANNEL.x1, GROUND - 1, CHANNEL.z1], voxel: AIR }]
 }
