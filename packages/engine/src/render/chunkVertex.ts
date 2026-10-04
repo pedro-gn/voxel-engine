@@ -1,6 +1,10 @@
-import { attribute, bool, float, modelWorldMatrix, select, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { attribute, bool, clamp, float, mix, modelWorldMatrix, select, uint, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { FLIP_U } from './faceUv.ts'
+import { BLEND_SECONDS } from './liquidBlend.ts'
+
+/** The liquid blend clock (ChunkMeshes.now(), seconds), set every frame; liquid heights glide toward their remeshed value. */
+export const liquidNow = uniform(0)
 
 /** Loose TSL node type for the optional per-layer scale table (a `uniformArray` of floats). */
 type ScaleTable = { element(i: unknown): ReturnType<typeof float> }
@@ -17,7 +21,11 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
   const pz = a.shiftRight(uint(12)).bitAnd(uint(63)).toFloat()
   const nIdx = a.shiftRight(uint(18)).bitAnd(uint(7))
   const ao = a.shiftRight(uint(21)).bitAnd(uint(3))
-  const drop = a.shiftRight(uint(25)).bitAnd(uint(31)).toFloat()
+  const target = a.shiftRight(uint(25)).bitAnd(uint(31)).toFloat()
+  // Liquid geometries carry the blend start per vertex (liquidBlend.ts); other layers have no such attributes.
+  const drop = liquid
+    ? mix(attribute('prevDrop', 'float'), target, clamp(liquidNow.sub(attribute('t0', 'float')).div(BLEND_SECONDS), 0, 1))
+    : target
   // Liquid faces keep flow bits in word B bits 9-11 (and word A bits 30-31), so their layer is 9 bits wide.
   const layerBits = b.bitAnd(uint(liquid ? 511 : 4095))
   const layer = layerBits.toFloat()
@@ -59,6 +67,8 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
     blk: varying(blk),
     ao: varying(aoF),
     flow: varying(flow),
+    /** The vertex's surface height within its cell (1 = full); always 1 for non-liquid layers. */
+    surface: liquid ? varying(float(1).sub(drop.div(16))) : float(1),
   }
 }
 

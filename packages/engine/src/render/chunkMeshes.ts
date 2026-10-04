@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
+import { blendFrom, type LiquidBlendState } from './liquidBlend.ts'
 import type { ChunkMaterials } from './materials.ts'
 
 const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
@@ -27,6 +28,9 @@ export class ChunkMeshes {
   private readonly owned: ChunkMaterials
   private readonly materials: Record<(typeof LAYERS)[number], THREE.Material>
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
+  /** Per chunk: the last applied liquid mesh and where its heights glide from (liquidBlend.ts). */
+  private readonly liquidBlend = new Map<number, LiquidBlendState>()
+  private readonly origin = performance.now()
 
   constructor(layout: Layout, materials: ChunkMaterials) {
     this.layout = layout
@@ -34,6 +38,9 @@ export class ChunkMeshes {
     this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
   }
+
+  /** Seconds since construction: the clock of the liquid blend (t0 attributes and the `liquidNow` uniform). */
+  now(): number { return (performance.now() - this.origin) / 1000 }
 
   get meshCount(): number { return this.group.children.length }
 
@@ -65,9 +72,16 @@ export class ChunkMeshes {
       const existing = slots![k]!
       if (!lm) {
         if (existing) { this.group.remove(existing); existing.geometry.dispose(); slots![k] = null }
+        if (name === 'liquid') this.liquidBlend.delete(ci) // the next liquid here rises from the cell bottom
         return
       }
       const geo = geometryOf(lm)
+      if (name === 'liquid') {
+        const b = blendFrom(this.liquidBlend.get(ci) ?? null, lm.vertices, this.now())
+        geo.setAttribute('prevDrop', new THREE.BufferAttribute(b.prevDrop, 1))
+        geo.setAttribute('t0', new THREE.BufferAttribute(b.t0, 1))
+        this.liquidBlend.set(ci, { vertices: lm.vertices, prevDrop: b.prevDrop, t0: b.t0 })
+      }
       if (existing) {
         existing.geometry.dispose()
         existing.geometry = geo
@@ -94,6 +108,7 @@ export class ChunkMeshes {
     if (!slots) return
     for (const m of slots) if (m) { this.group.remove(m); m.geometry.dispose() }
     this.meshes.delete(ci)
+    this.liquidBlend.delete(ci)
   }
 
   dispose(): void {
