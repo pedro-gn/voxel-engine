@@ -283,6 +283,13 @@ describe('rule context reads and write trimming', () => {
     expect(spy).not.toHaveBeenCalled()
     expect(sim.store.getVoxel(5, 5, 5)).toBe((3 << 12) | ID.water)
   })
+  it('reports physics busy only while fluid is moving', () => {
+    const sim = makeSim()
+    expect(sim.step().physics).toMatchObject({ active: 0, jobs: 0, busy: false })
+    sim.submit(1, 0, { type: 'setBlock', pos: [5, 20, 5], voxel: ID.water })
+    sim.step()
+    expect(sim.step().physics.busy).toBe(true)
+  })
   it('queues no neighbour notifications when no block listens for them', () => {
     const quiet = defineRules({ blocks: { grass: { onRandomTick() {} } } })
     const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: TEST_BLOCKS, rules: quiet, seed: 1 })

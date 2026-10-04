@@ -56,4 +56,12 @@ describe('MeshQueue', () => {
     expect(q.accept(3, 6)).toBe(true) // a ghost mesh of the same version is fine
     expect(q.accept(3, 8)).toBe(true)
   })
+  it('reports the last applied version of a chunk', () => {
+    const q = new MeshQueue()
+    expect(q.appliedVersion(3)).toBe(-1)
+    q.accept(3, 4)
+    expect(q.appliedVersion(3)).toBe(4)
+    q.accept(3, 2) // older: rejected, unchanged
+    expect(q.appliedVersion(3)).toBe(4)
+  })
 })

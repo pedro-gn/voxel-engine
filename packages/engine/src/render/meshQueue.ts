@@ -54,6 +54,9 @@ export class MeshQueue {
     if (p !== undefined) this.mark(ci, p)
   }
 
+  /** The version of the mesh last applied for a chunk; −1 before any. */
+  appliedVersion(ci: number): number { return this.applied.get(ci) ?? -1 }
+
   /** True if a result with this version may replace what is shown. Same version is allowed (ghost meshes). */
   accept(ci: number, version: number): boolean {
     const last = this.applied.get(ci)

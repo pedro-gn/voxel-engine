@@ -12,6 +12,7 @@ import { columnsIn } from './sim/simHost.ts'
 import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
+import { FallingTrack } from './render/fallingTrack.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
@@ -69,6 +70,12 @@ export interface EngineStats {
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
   shadowCasters: number
   decorationInstances: number; decorationDraws: number
+  /** Falling blocks being drawn (in the air or waiting for their chunk mesh). */
+  fallingBodies: number
+  /** Moving fluid cells, live pools and queued region jobs, as of the last tick. */
+  fluidActive: number; fluidPools: number; regionJobs: number
+  /** True while any physics work (moving fluid, region jobs, pending contacts) was left after the last tick. */
+  physicsBusy: boolean
   /** GPU render time in ms; null when not tracked or unsupported. */
   gpuMs: number | null
 }
@@ -166,6 +173,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const reader = new WorldReader(buffers, registry.opaque)
   const ghosts = new GhostEdits(layout)
   const queue = new MeshQueue()
+  const falling = new FallingTrack()
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
 
@@ -192,7 +200,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   const tex = await buildTextureArray(o.textures, registry.textureNames(), tileSize)
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
-  const tables = meshTablesFrom(registry, registry.faceLayers(tex.layerOf), decorations.tables)
+  const faceLayers = registry.faceLayers(tex.layerOf)
+  const tables = meshTablesFrom(registry, faceLayers, decorations.tables)
   const highlight = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
     new THREE.LineBasicNodeMaterial({ color: 0x1b1f24 }),
@@ -211,6 +220,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     viewDistance: () => controls.current.distance,
     decorations,
+    faceLayers,
   })
 
   // ---- lifecycle ----
@@ -338,6 +348,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
+  let physicsStats = { active: 0, pools: 0, jobs: 0, busy: false }
+  const tickMs = 1000 / (o.sim?.tickHz ?? 20)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
     switch (m.type) {
@@ -360,6 +372,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         lastTickMs = m.tickMs
         slotsUsed = m.slotsUsed
         markTick(m, CLIENT_ID, ghosts, markDirty)
+        falling.update(m.falling, m.landed, performance.now())
+        physicsStats = m.physics
         for (const a of m.acks) events.emit('ack', a)
         for (const ev of m.events) events.emit('event', ev)
         events.emit('tick', { tick: m.tick, tickMs: m.tickMs })
@@ -434,6 +448,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     controls.apply(camera)
     dispatch()
     upload()
+    visuals.drawFalling(falling.frame(performance.now(), tickMs, (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     visuals.frame(dt)
     if (o.gpuTiming && ++gpuFrames % 30 === 0) {
       renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})
@@ -541,6 +556,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         meshQueue: queue.size, meshInFlight: queue.inFlightCount + results.length, failedChunks: failed.size,
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
+        fallingBodies: falling.size, fluidActive: physicsStats.active, fluidPools: physicsStats.pools, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
       }
     },
     dispose,

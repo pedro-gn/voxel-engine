@@ -6,6 +6,8 @@ import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
 import { createDecorationMaterials } from './decorations/material.ts'
 import { ChunkMeshes } from './chunkMeshes.ts'
+import { FallingCubes } from './falling.ts'
+import type { FallingCube } from './fallingTrack.ts'
 import { SunLights } from './lighting.ts'
 import { createChunkMaterials } from './materials.ts'
 import { PostPipeline, TONE_MAPPING } from './post.ts'
@@ -30,6 +32,8 @@ export interface VisualsOptions {
   /** The orbit camera's distance to its target; sets how far shadows reach. */
   viewDistance: () => number
   decorations: DecorationRegistry
+  /** Per block id × 6 faces (+X −X +Y −Y +Z −Z): texture-array layer (BlockRegistry.faceLayers). */
+  faceLayers: Uint16Array
 }
 
 /** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water material and the instanced grass and flower decorations. */
@@ -48,6 +52,7 @@ export class Visuals {
   private waterParams: WaterParams = DEFAULT_WATER
   private readonly deco: DecorationMeshes
   private readonly decoRadius: { value: number }
+  private readonly falling: FallingCubes
   private decoStats = { instances: 0, draws: 0 }
   private readonly warned = new Set<string>()
 
@@ -62,6 +67,8 @@ export class Visuals {
     this.decoRadius = dm.radius
     this.deco = new DecorationMeshes(o.layout, dm)
     o.scene.add(this.deco.group)
+    this.falling = new FallingCubes(o.texture, this.lights, o.faceLayers)
+    o.scene.add(this.falling.mesh)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
     this.water = new WaterMaterial(this.lights, resolveEffects(this.requested, SUPPORT[o.backend]).waterDepth)
@@ -98,6 +105,11 @@ export class Visuals {
     this.deco.apply(ci, data.grass, data.flowers)
   }
 
+  /** Falling blocks to draw this frame. */
+  drawFalling(cubes: readonly FallingCube[], light: (x: number, y: number, z: number) => number): void {
+    this.falling.set(cubes, light)
+  }
+
   frame(dt: number): void {
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
     const far = shadowDistance(this.o.viewDistance())
@@ -125,6 +137,8 @@ export class Visuals {
     this.chunks.dispose()
     this.o.scene.remove(this.deco.group)
     this.deco.dispose()
+    this.o.scene.remove(this.falling.mesh)
+    this.falling.dispose()
     this.water.dispose()
     this.sun.dispose()
     this.sky.detach(this.o.scene)

@@ -42,6 +42,8 @@ export interface TickResult {
   falling: FallingBodyState[]
   /** Bodies that landed this tick, with their chunk's version after commit. */
   landed: Landing[]
+  /** Moving fluid cells, live pools and queued region jobs after this tick; busy: any physics work is pending. */
+  physics: { active: number; pools: number; jobs: number; busy: boolean }
 }
 
 const DX = [1, -1, 0, 0, 0, 0]
@@ -299,9 +301,11 @@ export class Simulation {
     }
     const landed = this.gravity.landed
     for (const l of landed) l.version = this.store.versions[l.chunk]!
+    const active = this.fluids.activeCount, jobs = this.jobs.size
+    const physics = { active, pools: this.fluids.pools.count, jobs, busy: active > 0 || jobs > 0 || this.fluids.contactsPending() }
     const events = this.events
     this.events = []
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics }
   }
 
   hash(): number {
