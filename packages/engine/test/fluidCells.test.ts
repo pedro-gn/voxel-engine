@@ -99,6 +99,38 @@ describe('falling column', () => {
   })
 })
 
+describe('side-fed fall', () => {
+  // A reservoir (x ≤ 20, bed below y = 20, full water from y = 20 up `h` rows) whose east wall at x = 21 opens over
+  // z 8..11, down to the bed. The opening's cells rest on the bed and feed sideways the columns at x = 22, which fall
+  // to the floor at y = 0 (the dam-break lip of the sandbox's flood scene).
+  const F = 20, D = 21, Z0 = 8, Z1 = 11
+  it.each([2, 3, 4])('a lip %i rows high feeds its falls without gaps', (h) => {
+    const top = F + h - 1
+    const sim = fluidSim((x, y, z) => {
+      if (y === 0) return B.stone
+      if (x > D) return AIR
+      if (y < F) return B.stone
+      if (x === 0 || x === D || z === 0 || z === 31) return y <= top + 1 ? B.stone : AIR
+      return y <= top ? w(7) : AIR
+    }, { size: [64, 32, 32] })
+    sim.submit(0, 0, { type: 'fillRegion', min: [D, F, Z0], max: [D, top, Z1], voxel: AIR })
+    sim.step()
+    const before = volume(sim)
+    for (let t = 2; t <= 300; t++) {
+      sim.step()
+      if (t < 60) continue
+      // above the landing (the pool at the bottom rises to about y = 2), every falling column is water up to its top
+      for (let z = Z0; z <= Z1; z++) {
+        let wTop = 0
+        for (let y = 4; y <= top; y++) if (units(sim.store.getVoxel(D + 1, y, z)) > 0) wTop = y
+        for (let y = 4; y < wTop; y++) if (units(sim.store.getVoxel(D + 1, y, z)) === 0) expect.fail(`gap at (${D + 1}, ${y}, ${z}), tick ${t}`)
+      }
+    }
+    expect(volume(sim)).toBe(before)
+    expect(sim.fluids.lost).toBe(0)
+  })
+})
+
 describe('two liquids', () => {
   it('never turns one liquid into another when both flow into the same air cell', () => {
     const lava = defineBlock({ name: 'lava', liquid: true, textures: 'water' })

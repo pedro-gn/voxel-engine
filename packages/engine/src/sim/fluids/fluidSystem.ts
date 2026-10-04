@@ -54,6 +54,9 @@ const SIDES: readonly (readonly [number, number])[] = [[1, 0], [0, 1], [-1, 0], 
 const ascending = (a: number, b: number): number => a - b
 const SIDE_DX = [1, 0, -1, 0]
 const SIDE_DZ = [0, 1, 0, -1]
+/** What inlet() did with a moving cell: left it to the automaton, took its step, or left it to the automaton as an outlet a pool refills. */
+const INLET = { MOVE: 0, TAKEN: 1, OUTLET: 2 } as const
+type InletResult = (typeof INLET)[keyof typeof INLET]
 
 /** Water in the world: moving cells, still pools, springs (spec §4; design notes in the 3a plan). */
 export class FluidSystem {
@@ -276,13 +279,14 @@ export class FluidSystem {
       const v = this.port.get(x, y, z)
       const g = flowGroup(this.reg, v)
       if (g === 0 || this.members.has(x, y, z)) { this.active.drop(pos); continue }
-      if (this.inlet(pos, x, y, z, g, volumeOf(this.reg, v))) {
+      const r = this.inlet(pos, x, y, z, g, volumeOf(this.reg, v))
+      if (r === INLET.TAKEN) {
         // Joined or absorbed cells left the queue. A cell waiting at a pool's edge stays in line and can still
         // fall asleep, so a pool that cannot fill it never leaves it active forever.
         if (this.active.has(pos)) keep.push(pos)
         continue
       }
-      this.propose(pos, x, y, z, g, volumeOf(this.reg, v))
+      this.propose(pos, x, y, z, g, volumeOf(this.reg, v), r === INLET.OUTLET)
       keep.push(pos)
     }
     const touched = this.applyProposals()
@@ -339,39 +343,39 @@ export class FluidSystem {
   }
 
   /**
-   * A moving cell next to a pool (design notes: A cell next to a pool). Returns true when the pool took
-   * the cell's step; false lets the automaton move the cell.
+   * A moving cell next to a pool (design notes: A cell next to a pool). Returns TAKEN when the pool took the
+   * cell's step; MOVE or OUTLET (the pool refills the cell after the automaton moves it) lets the automaton move it.
    */
-  protected inlet(pos: number, x: number, y: number, z: number, g: number, v: number): boolean {
+  protected inlet(pos: number, x: number, y: number, z: number, g: number, v: number): InletResult {
     const adj = this.adjacentPools(x, y, z)
-    if (adj.length === 0) return false
+    if (adj.length === 0) return INLET.MOVE
     for (const p of adj) {
       if (p.frozen || p.liquid !== g || y !== p.surfaceY + 1) continue
       if (!this.members.has(x, y - 1, z) || this.pools.ownerOf(x, y - 1, z) !== p || !this.accepts(p, v)) continue
       p.balance += v // falling onto the surface
       this.active.drop(pos)
       this.port.write(x, y, z, AIR)
-      return true
+      return INLET.TAKEN
     }
     for (const p of adj) {
       if (p.frozen || p.liquid !== g || y > p.surfaceY) continue
-      if (!this.supported(x, y, z)) { p.outlets.add(pos); return false }
+      if (!this.supported(x, y, z)) { p.outlets.add(pos); return INLET.OUTLET }
       if (y === p.surfaceY) {
         const want = p.level + 1
-        if (v < want) { p.outlets.add(pos); return true }
+        if (v < want) { p.outlets.add(pos); return INLET.TAKEN }
         if (v > want) {
           if (!this.accepts(p, v - want)) continue
           p.balance += v - want
           this.port.write(x, y, z, liquidVoxel(g, want))
         }
         this.join(p, x, y, z, pos, want)
-        return true
+        return INLET.TAKEN
       }
-      if (v === FULL && this.closedAbove(p, x, y, z)) { this.join(p, x, y, z, pos, FULL); return true }
+      if (v === FULL && this.closedAbove(p, x, y, z)) { this.join(p, x, y, z, pos, FULL); return INLET.TAKEN }
       p.outlets.add(pos)
-      return false
+      return INLET.OUTLET
     }
-    return false
+    return INLET.MOVE
   }
 
   /** A cell becomes a member of p: index or capped entry, then its open neighbours become outlets or contacts. */
@@ -799,8 +803,11 @@ export class FluidSystem {
     return out
   }
 
-  /** Down first, then sideways by halving differences of 2 or more; sides that lead to a drop win. */
-  protected propose(pos: number, x: number, y: number, z: number, g: number, units: number): void {
+  /**
+   * Down first, then sideways by halving differences of 2 or more; sides that lead to a drop win. `outlet`: a pool
+   * refills the cell this step (inlet() registered it as an outlet).
+   */
+  protected propose(pos: number, x: number, y: number, z: number, g: number, units: number, outlet = false): void {
     let v = units
     if (y > 0) {
       // A valid target below takes the whole cell: the cell below may itself be moving down this step, and down
@@ -808,10 +815,13 @@ export class FluidSystem {
       const below = this.sideVolume(x, y - 1, z, g)
       if (below >= 0) {
         this.dFrom.push(pos); this.dAmt.push(units); this.dGroup.push(g)
-        // Water below that took part in a move last step is still falling: wait for the column to move on instead of shedding
-        // sideways mid-air (which punches holes that the whole-column move then carries down). `slotOf` still holds
-        // the previous step's moved cells here (senders and receivers, also those whose net change is 0). A column that stays blocked stops changing and spreads as before.
-        if (below > 0 && this.slotOf.has(pos - this.stride)) return
+        // Water below that took part in a move last step is still falling: wait for the column to move on instead of
+        // shedding sideways mid-air (which punches holes that the whole-column move then carries down). `slotOf` still
+        // holds the previous step's moved cells here (senders and receivers, also those whose net change is 0). A
+        // column that stays blocked stops changing and spreads as before. A pool's outlet never waits: its pool
+        // refills what it sheds, so no hole opens, and a lip that waited whenever the cell below fed the fall beside it
+        // would feed that fall in pulses (holes sliding down it).
+        if (below > 0 && !outlet && this.slotOf.has(pos - this.stride)) return
         v -= Math.min(v, FULL - below)
       }
     }
