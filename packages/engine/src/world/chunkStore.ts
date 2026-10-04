@@ -28,6 +28,8 @@ export class ChunkStore {
   private nextSlot = 0
   private readonly open = new Set<number>()
   private readonly dirty = new Set<number>()
+  /** Chunks opened only by quiet writes since the last commit: their versions move, but commit() asks for no remesh. */
+  private readonly quiet = new Set<number>()
 
   constructor(o: ChunkStoreOptions) {
     this.layout = new Layout(o.buffers.size)
@@ -61,6 +63,19 @@ export class ChunkStore {
     return true
   }
 
+  /**
+   * Writes a voxel under the chunk's seqlock without asking for a remesh: commit() bumps the version but leaves the chunk
+   * out of its result unless a normal write also opened it. For the water mirror, whose cells the heightfield draws.
+   * Marks no neighbour: a mirror write changes no face, light or AO.
+   */
+  setVoxelQuiet(x: number, y: number, z: number, v: number): boolean {
+    if (!this.layout.inBounds(x, y, z)) return false
+    if (this.getVoxel(x, y, z) === v) return false
+    const slot = this.writable(this.layout.chunkOf(x, y, z), true)
+    this.views.voxels(slot)[Layout.localIndex(x & 31, y & 31, z & 31)] = v
+    return true
+  }
+
   setLight(x: number, y: number, z: number, l: number): void {
     if (!this.layout.inBounds(x, y, z)) return
     if (this.getLight(x, y, z) === l) return
@@ -76,6 +91,7 @@ export class ChunkStore {
     if (uniform) {
       const e = this.table[ci]!
       if (e < 0 && decodeUniform(e) === v0) return
+      this.quiet.delete(ci)
       this.openChunk(ci)
       if (e >= 0) this.free.push(e)
       Atomics.store(this.table, ci, encodeUniform(v0))
@@ -133,10 +149,11 @@ export class ChunkStore {
     for (const ci of this.open) {
       this.tryCollapse(ci)
       Atomics.add(this.versions, ci, 1) // back to even: stable
-      out.add(ci)
+      if (!this.quiet.has(ci)) out.add(ci)
     }
     this.open.clear()
     this.dirty.clear()
+    this.quiet.clear()
     return [...out].sort((a, b) => a - b)
   }
 
@@ -146,7 +163,9 @@ export class ChunkStore {
     this.open.add(ci)
   }
 
-  private writable(ci: number): number {
+  private writable(ci: number, quiet = false): number {
+    if (!quiet) this.quiet.delete(ci)
+    else if (!this.open.has(ci)) this.quiet.add(ci)
     this.openChunk(ci)
     const e = this.table[ci]!
     if (e >= 0) return e

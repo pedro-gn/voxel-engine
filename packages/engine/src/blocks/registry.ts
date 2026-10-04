@@ -119,3 +119,9 @@ export class BlockRegistry {
     return out
   }
 }
+
+/** The liquid the water simulation moves: the first liquid block that is not a spring; 0 when the registry has none. */
+export function waterGroupOf(reg: BlockRegistry): number {
+  for (let id = 1; id < reg.count; id++) if (reg.liquid[id] === 1 && reg.source[id] === 0) return id
+  return 0
+}

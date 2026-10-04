@@ -156,4 +156,38 @@ describe('ChunkStore', () => {
     expect(store.lightSnapshot(0)).toBe(0)
     expect(store.readLight(0, new Uint8Array(32768)).every((l) => l === 0)).toBe(true)
   })
+  it('writes quietly: the version moves but commit() asks for no remesh', () => {
+    const { store } = makeStore([64, 64, 64])
+    expect(store.setVoxelQuiet(1, 1, 1, ID.water)).toBe(true)
+    expect(store.versions[0]! & 1).toBe(1)
+    expect(store.getVoxel(1, 1, 1)).toBe(ID.water)
+    expect(store.commit()).toEqual([])
+    expect(store.versions[0]).toBe(2)
+    expect(store.setVoxelQuiet(1, 1, 1, ID.water)).toBe(false)
+  })
+
+  it('remeshes a chunk that a normal write also opened, whichever came first', () => {
+    const { store } = makeStore([64, 64, 64])
+    store.setVoxelQuiet(1, 1, 1, ID.water)
+    store.setVoxel(2, 1, 1, ID.stone)
+    expect(store.commit()).toEqual([0])
+    store.setVoxel(3, 1, 1, ID.stone)
+    store.setVoxelQuiet(4, 1, 1, ID.water)
+    expect(store.commit()).toEqual([0])
+    store.setVoxelQuiet(5, 1, 1, ID.water)
+    expect(store.commit()).toEqual([]) // the quiet mark does not leak into the next commit
+  })
+
+  it('gives a uniform chunk a slot for a quiet write and collapses it once it is uniform again', () => {
+    const { store } = makeStore([64, 64, 64])
+    store.writeChunkDense(0, new Uint16Array(32768).fill(ID.water))
+    store.commit()
+    expect(store.slotOf(0)).toBe(-1)
+    store.setVoxelQuiet(1, 31, 1, AIR)
+    store.commit()
+    expect(store.slotOf(0)).toBeGreaterThanOrEqual(0)
+    store.setVoxelQuiet(1, 31, 1, ID.water)
+    store.commit()
+    expect(store.slotOf(0)).toBe(-1)
+  })
 })

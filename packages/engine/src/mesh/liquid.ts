@@ -82,6 +82,8 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     const out = layer === LAYER.LIQUID ? liquidOut : translucent
     const liquid = t.liquid[id] === 1
     const group = liquid ? t.liquidGroup[id]! : 0
+    // Water at or above its column's floor is the heightfield's (render/water): only static water is meshed here.
+    if (liquid && id === t.waterGroup && y >= s.floor[x + 1 + (z + 1) * PAD]!) continue
     if (liquid) cornerHeights(s, t, pi, group)
     const falling = liquid && t.liquidGroup[voxelId(s.voxels[pi + UP]!)] === group
     // Water over water: its top-row vertices carry LIQUID_DEEP, so foam treats the surface as full height however thin

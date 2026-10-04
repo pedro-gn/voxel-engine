@@ -1,3 +1,4 @@
+import { NO_FLOOR } from './waterBuffers.ts'
 import { SlotViews, decodeUniform, impliedLight, type WorldBuffers } from './buffers.ts'
 import { Layout } from './layout.ts'
 import { AIR, FULL_SKY, voxelId } from './voxel.ts'
@@ -9,10 +10,13 @@ export function padIndex(px: number, py: number, pz: number): number { return px
 /** Bits of ChunkSnapshot.outside: which side's 1-voxel border lies outside the world (it then reads as air). */
 export const OUTSIDE = { NX: 1, PX: 2, NZ: 4, PZ: 8 } as const
 
-/** `outside`: OUTSIDE bits for the x and z borders; the y borders are not tracked. */
-export interface ChunkSnapshot { voxels: Uint16Array; light: Uint8Array; outside: number }
+/**
+ * `outside`: OUTSIDE bits for the x and z borders; the y borders are not tracked.
+ * `floor`: per padded column (px + pz × PAD), the water floor minus the chunk's base y, or NO_FLOOR. Water voxels at or above it belong to the heightfield.
+ */
+export interface ChunkSnapshot { voxels: Uint16Array; light: Uint8Array; outside: number; floor: Int16Array }
 export function createSnapshot(): ChunkSnapshot {
-  return { voxels: new Uint16Array(PAD_VOLUME), light: new Uint8Array(PAD_VOLUME), outside: 0 }
+  return { voxels: new Uint16Array(PAD_VOLUME), light: new Uint8Array(PAD_VOLUME), outside: 0, floor: new Int16Array(PAD * PAD).fill(NO_FLOOR) }
 }
 
 const FACE_NEIGHBOURS: readonly (readonly [number, number, number])[] = [
@@ -26,6 +30,7 @@ export class WorldReader {
   readonly versions: Uint32Array
   private readonly views = new SlotViews()
   private readonly opaque: Uint8Array
+  private readonly floors: Int16Array
   /** Reader-private word; only ever touched by `fence()`. */
   private readonly fenceWord = new Int32Array(new SharedArrayBuffer(4))
 
@@ -34,6 +39,7 @@ export class WorldReader {
     this.table = new Int32Array(buffers.chunkTable)
     this.versions = new Uint32Array(buffers.versions)
     this.opaque = opaque
+    this.floors = new Int16Array(buffers.water.floor)
   }
 
   addPage(index: number, page: SharedArrayBuffer): void { this.views.addPage(index, page) }
@@ -111,6 +117,12 @@ export class WorldReader {
     const bx = cx * 32, by = cy * 32, bz = cz * 32
     out.outside = (bx === 0 ? OUTSIDE.NX : 0) | (bx + 32 >= SX ? OUTSIDE.PX : 0) |
       (bz === 0 ? OUTSIDE.NZ : 0) | (bz + 32 >= SZ ? OUTSIDE.PZ : 0)
+    // Floors are not under the seqlock: a floor that moves marks the chunks it reclassifies dirty, so a stale read is redone.
+    for (let pz = 0; pz < PAD; pz++) for (let px = 0; px < PAD; px++) {
+      const x = bx + px - 1, z = bz + pz - 1
+      const f = x < 0 || z < 0 || x >= SX || z >= SZ ? NO_FLOOR : this.floors[x + z * SX]!
+      out.floor[px + pz * PAD] = f === NO_FLOOR ? NO_FLOOR : f - by
+    }
     for (let py = 0; py < PAD; py++) {
       const y = by + py - 1
       for (let pz = 0; pz < PAD; pz++) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BlockRegistry, LAYER, defineBlock } from '../src/blocks/registry.ts'
+import { BlockRegistry, LAYER, defineBlock, waterGroupOf } from '../src/blocks/registry.ts'
 import { ID, testRegistry } from './helpers.ts'
 
 describe('BlockRegistry', () => {
@@ -87,4 +87,14 @@ describe('BlockRegistry', () => {
       defineBlock({ name: 'b', liquid: true, source: 'a' }),
     ])).toThrow(/must be a liquid that is not itself a source/)
   })
+})
+
+it('names the simulated water: the first liquid that is not a spring', () => {
+  const reg = new BlockRegistry([
+    defineBlock({ name: 'spring', liquid: true, source: 'water' }),
+    defineBlock({ name: 'water', liquid: true }),
+    defineBlock({ name: 'lava', liquid: true }),
+  ])
+  expect(waterGroupOf(reg)).toBe(2)
+  expect(waterGroupOf(new BlockRegistry([defineBlock({ name: 'stone' })]))).toBe(0)
 })

@@ -1,8 +1,10 @@
-import type { BlockRegistry } from '../blocks/registry.ts'
+import { waterGroupOf, type BlockRegistry } from '../blocks/registry.ts'
 import { emptyDecorationTables, type DecorationTables } from '../render/decorations/defs.ts'
 
 /** Plain typed arrays, so they can be posted to mesh workers. */
 export interface MeshTables {
+  /** The simulated water's block id (waterGroupOf): its voxels at or above a column's floor are drawn by the heightfield. 0: none. */
+  waterGroup: number
   opaque: Uint8Array
   layer: Uint8Array
   liquid: Uint8Array
@@ -28,5 +30,6 @@ export function meshTablesFrom(registry: BlockRegistry, faceLayers: Uint16Array,
   return {
     opaque: registry.opaque, layer: registry.layer, liquid: registry.liquid,
     liquidGroup: registry.liquidGroup, source: registry.source, faceLayers, deco,
+    waterGroup: waterGroupOf(registry),
   }
 }

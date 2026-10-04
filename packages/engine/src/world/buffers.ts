@@ -1,5 +1,6 @@
 import { CHUNK_VOLUME, Layout, type WorldSize } from './layout.ts'
 import { FULL_SKY, voxelId } from './voxel.ts'
+import { createWaterBuffers, type WaterBuffers } from './waterBuffers.ts'
 
 export const SLOTS_PER_PAGE = 256
 export const SLOT_VOXEL_BYTES = CHUNK_VOLUME * 2
@@ -10,6 +11,8 @@ export interface WorldBuffers {
   size: WorldSize
   chunkTable: SharedArrayBuffer
   versions: SharedArrayBuffer
+  /** Heightfield water shared with the main thread and the mesh workers (waterBuffers.ts). */
+  water: WaterBuffers
 }
 
 export function encodeUniform(voxel: number): number { return -(voxel + 1) }
@@ -23,7 +26,7 @@ export function createWorldBuffers(size: WorldSize): WorldBuffers {
   const layout = new Layout(size)
   const chunkTable = new SharedArrayBuffer(layout.chunkCount * 4)
   new Int32Array(chunkTable).fill(encodeUniform(0))
-  return { size: layout.size, chunkTable, versions: new SharedArrayBuffer(layout.chunkCount * 4) }
+  return { size: layout.size, chunkTable, versions: new SharedArrayBuffer(layout.chunkCount * 4), water: createWaterBuffers(layout.size) }
 }
 
 export class SlotViews {

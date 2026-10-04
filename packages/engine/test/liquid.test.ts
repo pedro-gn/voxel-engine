@@ -6,7 +6,7 @@ import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { meshTablesFrom } from '../src/mesh/tables.ts'
 import { FACE, FLOW, LIQUID_DEEP, unpackA, unpackFlow } from '../src/mesh/vertexFormat.ts'
 import { isTopRow } from '../src/render/liquidBlend.ts'
-import { OUTSIDE, type ChunkSnapshot } from '../src/world/reader.ts'
+import { OUTSIDE, PAD, type ChunkSnapshot } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
@@ -236,5 +236,27 @@ describe('liquid groups, springs and flow', () => {
   it('refuses a liquid texture layer at or above 512', () => {
     const fl = reg.faceLayers(new Map(reg.textureNames().map((n) => [n, n === 'water' ? 600 : 1])))
     expect(() => meshTablesFrom(reg, fl)).toThrow(/below layer 512/)
+  })
+})
+
+describe('static and simulated water', () => {
+  it('leaves water at or above its column\'s floor to the heightfield and meshes the static water below it', () => {
+    expect(tables.waterGroup).toBe(ID.water)
+    const s = emptySnap()
+    put(s, 4, 3, 4, water(7)) // below the floor: static
+    put(s, 4, 6, 4, water(7)) // at the floor: simulated, not meshed here
+    put(s, 9, 6, 9, water(7)) // a column with no floor (NO_FLOOR): static
+    s.floor[(4 + 1) + (4 + 1) * PAD] = 5
+    expect(mesh(s).n).toBe(12) // two lone static cells, 6 faces each
+  })
+  it('still meshes a spring above its column\'s floor', () => {
+    const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
+    const t2 = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
+    const s = emptySnap()
+    put(s, 6, 5, 5, packVoxel(8, 3))
+    s.floor[(6 + 1) + (5 + 1) * PAD] = 0
+    const t = new QuadBuilder(), l = new QuadBuilder()
+    meshTranslucent(s, t2, t, l)
+    expect(l.quadCount).toBe(6)
   })
 })

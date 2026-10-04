@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
-import { OUTSIDE, WorldReader, createSnapshot, padIndex } from '../src/world/reader.ts'
+import { OUTSIDE, PAD, WorldReader, createSnapshot, padIndex } from '../src/world/reader.ts'
+import { NO_FLOOR } from '../src/world/waterBuffers.ts'
 import { AIR, FULL_SKY } from '../src/world/voxel.ts'
 import { ID, testRegistry } from './helpers.ts'
 
@@ -101,5 +102,18 @@ describe('WorldReader', () => {
     store.setVoxel(64, 40, 40, ID.glass)         // chunk (2,1,1) no longer uniform opaque
     store.commit()
     expect(reader.isTrivial(centre)).toBe(false)
+  })
+  it('copies each column\'s water floor relative to the chunk base, NO_FLOOR outside the world', () => {
+    const buffers = createWorldBuffers([64, 64, 64])
+    const floors = new Int16Array(buffers.water.floor)
+    floors[3 + 4 * 64] = 40
+    floors[31 + 0 * 64] = 5
+    const reader = new WorldReader(buffers, reg.opaque)
+    const snap = createSnapshot()
+    expect(reader.snapshot(reader.layout.chunkIndex(0, 1, 0), snap)).not.toBeNull()
+    expect(snap.floor[(3 + 1) + (4 + 1) * PAD]).toBe(40 - 32)
+    expect(snap.floor[(31 + 1) + (0 + 1) * PAD]).toBe(5 - 32)
+    expect(snap.floor[0]).toBe(NO_FLOOR) // x = -1, z = -1: outside the world
+    expect(snap.floor[(10 + 1) + (10 + 1) * PAD]).toBe(NO_FLOOR) // never set
   })
 })
