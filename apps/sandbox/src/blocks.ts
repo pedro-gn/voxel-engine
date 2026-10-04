@@ -29,7 +29,7 @@ export const DECORATIONS = [
     name: 'meadow',
     grass: { blades: 20, height: [0.25, 0.55], base: '#4f8a2e', tip: '#a9d65a', overhang: 0.32 },
     flowers: { chance: 0.06, patchScale: 12, colors: ['#e94b4b', '#f5d142', '#ffffff', '#f08ac0', '#6f8cf0'] },
-    // Grass youth (state bits 0–1): new grass is bare and fills in as it matures.
+    // Grass youth (state bits 0-1): new grass is bare and fills in as it matures.
     stateDensity: [1, 2 / 3, 1 / 3, 0],
   }),
 ]
