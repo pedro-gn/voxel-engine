@@ -51,6 +51,8 @@ export class WaterSystem {
   published: WaterTick | null = null
   private readonly publisher: WaterPublisher
   private steps = 0
+  /** Whether a full rebuild ran (generation). */
+  private built = false
   private readonly port: WaterPort
   private readonly layout: Layout
   private readonly height: number
@@ -95,7 +97,21 @@ export class WaterSystem {
 
   get enabled(): boolean { return this.water !== 0 }
   get seaLevel(): number { return this.cycle.seaLevel }
-  set seaLevel(v: number) { this.cycle.seaLevel = v }
+
+  /**
+   * Sets the sea level (the generator's configure()) and finds the sea again at once, so the step never pins the old sea's
+   * columns to the new level. The sea account follows the sea's water as in a region rebuild (plan decision 7).
+   */
+  setSeaLevel(v: number): void {
+    const cy = this.cycle
+    if (v === cy.seaLevel) return
+    const before = cy.seaDepth(this.cols)
+    cy.seaLevel = v
+    if (this.water === 0) return
+    cy.findSea(this.cols)
+    cy.sea += cy.seaDepth(this.cols) - before
+    this.expected = this.total()
+  }
   get sea(): number { return this.cycle.sea }
   get stepCount(): number { return this.steps }
 
@@ -196,14 +212,22 @@ export class WaterSystem {
     return out
   }
 
-  /** Drops all water state and rebuilds every column from the voxels (generation, recovery). */
+  /**
+   * Drops all water state and rebuilds every column from the voxels (generation, recovery). After the first (generation,
+   * where every chunk is meshed anyway), chunks whose static water became the heightfield's or the other way round are
+   * remeshed, as after a regeneration.
+   */
   rebuild(): void {
     this.needsRebuild = false
     if (this.water === 0) return
     const [sx, , sz] = this.layout.size, cols = this.cols, cy = this.cycle
     cols.tiles.clear()
     cy.springs.clear()
-    rebuildColumns(this.port.store, this.kind, cols, this.mirror, 0, 0, sx, sz)
+    const remesh = (ci: number) => this.port.remesh(ci)
+    rebuildColumns(this.port.store, this.kind, cols, this.mirror, 0, 0, sx, sz, this.built
+      ? (x, z, from, to) => this.waterChunks(x, z, Math.min(from, to), Math.max(from, to), remesh)
+      : undefined)
+    this.built = true
     this.findSprings(0, 0, sx, sz)
     cy.findSea(cols)
     cy.sea = cy.seaDepth(cols)
@@ -213,30 +237,36 @@ export class WaterSystem {
   }
 
   /**
-   * Rebuilds columns [x0, x1) × [z0, z1) after a regeneration, paused or not (plan decision 10). Returns the chunks whose
+   * Rebuilds the columns of chunk columns `ccs` ([cx, cz] pairs) after a regeneration, paused or not (plan decision 10).
+   * Only those chunk columns: one between two regenerated ones keeps its columns, flux and films. Returns the chunks whose
    * static water became the heightfield's or the other way round (they need a remesh even if their voxels did not change).
    */
-  rebuildRegion(x0: number, z0: number, x1: number, z1: number): number[] {
-    if (this.water === 0) return []
-    const cols = this.cols, cy = this.cycle, T = cols.tiles
+  rebuildChunkColumns(ccs: readonly (readonly [number, number])[]): number[] {
+    if (this.water === 0 || ccs.length === 0) return []
+    const cols = this.cols, cy = this.cycle, T = cols.tiles, L = this.layout
     const remesh = new Set<number>()
+    const regenerated = new Set(ccs.map(([cx, cz]) => cx + cz * L.cx))
     for (const s of [...cy.springs]) {
-      const [x, , z] = this.layout.voxelCoords(s)
-      if (x >= x0 && x < x1 && z >= z0 && z < z1) cy.springs.delete(s)
+      const [x, , z] = L.voxelCoords(s)
+      if (regenerated.has((x >> 5) + (z >> 5) * L.cx)) cy.springs.delete(s)
     }
     const seaBefore = cy.seaDepth(cols)
-    rebuildColumns(this.port.store, this.kind, cols, this.mirror, x0, z0, x1, z1, (x, z, from, to) => {
+    const moved = (x: number, z: number, from: number, to: number) => {
       this.waterChunks(x, z, Math.min(from, to), Math.max(from, to), (ci) => remesh.add(ci))
-    })
-    this.findSprings(x0, z0, x1, z1)
+    }
+    for (const [cx, cz] of ccs) {
+      rebuildColumns(this.port.store, this.kind, cols, this.mirror, cx * 32, cz * 32, cx * 32 + 32, cz * 32 + 32, moved)
+      this.findSprings(cx * 32, cz * 32, cx * 32 + 32, cz * 32 + 32)
+    }
     // The sea account follows the sea's water (plan decision 7): a column that joins the sea brings its depth, one that
     // leaves takes the depth it held before the rebuild, and a regenerated sea column adds what its depth changed by.
     cy.findSea(cols)
     cy.sea += cy.seaDepth(cols) - seaBefore
-    for (let tz = Math.floor(z0 / TILE); tz <= Math.floor((z1 - 1) / TILE); tz++) {
-      for (let tx = Math.floor(x0 / TILE); tx <= Math.floor((x1 - 1) / TILE); tx++) T.dirty[tx + tz * T.tx] = 1
+    for (const [cx, cz] of ccs) {
+      const x0 = cx * 32, z0 = cz * 32
+      for (let tz = z0 / TILE; tz < (z0 + 32) / TILE; tz++) for (let tx = x0 / TILE; tx < (x0 + 32) / TILE; tx++) T.dirty[tx + tz * T.tx] = 1
+      this.wakeUnsettled(Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(cols.sx, x0 + 33), Math.min(cols.sz, z0 + 33))
     }
-    this.wakeUnsettled(Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(cols.sx, x1 + 1), Math.min(cols.sz, z1 + 1))
     this.expected = this.total()
     return [...remesh].sort((a, b) => a - b)
   }

@@ -230,6 +230,72 @@ describe('water in the world: edits and rebuilds', () => {
     expect(sim.water.expected).toBe(7 * SUB) // it joined the heightfield's running total
   })
 
+  it('a healing rebuild remeshes the chunks whose static water became the heightfield\'s', () => {
+    const sim = waterSim((x, y, z) => {
+      if (y < 25) return B.stone
+      if (y <= 31) return x === 5 && z === 5 ? w(7) : B.stone
+      if (y === 32) return x === 5 && z === 5 ? AIR : B.stone
+      return y <= 40 && x === 5 && z === 5 ? B.glass : AIR
+    }, { size: [32, 64, 32] })
+    expect(sim.water.column(5, 5)).toMatchObject({ floor: 41, depth: 0 })
+    // The roof goes behind the water system's back (as after a physics error), and the next step heals from the voxels.
+    for (let y = 33; y <= 40; y++) sim.store.setVoxelQuiet(5, y, 5, AIR)
+    sim.water.needsRebuild = true
+    const r = sim.step()
+    expect(sim.water.column(5, 5)).toMatchObject({ floor: 25, depth: 7 * SUB })
+    expect(r.dirtyChunks).toContain(sim.layout.chunkIndex(0, 0, 0))
+  })
+
+  it('a regeneration rebuilds only the regenerated chunk columns: one between two of them keeps its flow', () => {
+    // 96 × 32 × 32: chunk column 1 holds walled water that is still flowing (a mound in a pool); 0 and 2 are dry land.
+    const pool = (extra: boolean): Fill => (x, y, z) => {
+      if (y === 0) return B.stone
+      if (extra && (x === 5 || x === 70) && y <= 10 && z === 5) return B.stone // the regenerations' change: dry pillars
+      if (x < 32 || x >= 64) return AIR
+      if (x === 32 || x === 63 || z === 0 || z === 31) return y <= 8 ? B.stone : AIR
+      return y <= (x >= 40 && x <= 50 && z >= 10 && z <= 20 ? 6 : 2) ? w(7) : AIR
+    }
+    const sim = waterSim(pool(false), { size: [96, 32, 32] })
+    run(sim, 5)
+    const sx = 96, cols = sim.water.cols
+    const snap = () => {
+      const out: number[] = []
+      for (let z = 0; z < 32; z++) for (let x = 33; x < 63; x++) {
+        const c = x + z * sx
+        out.push(cols.depth[c]!, cols.flux[2 * c + 1]!, x < 62 ? cols.flux[2 * c]! : 0)
+      }
+      return out
+    }
+    const before = snap()
+    expect(before.some((v, i) => i % 3 !== 0 && v !== 0)).toBe(true) // it is flowing
+    const data0 = new Uint16Array(32 * 32 * 32), data2 = new Uint16Array(32 * 32 * 32)
+    sim.generateColumnData(fillGenerator(pool(true)), 0, 0, data0)
+    sim.generateColumnData(fillGenerator(pool(true)), 2, 0, data2)
+    sim.replaceColumns([{ cx: 0, cz: 0, data: data0 }, { cx: 2, cz: 0, data: data2 }])
+    expect(snap()).toEqual(before)
+    expect(sim.water.column(5, 5).floor).toBe(11) // the regenerated columns were rebuilt
+    expect(sim.water.column(70, 5).floor).toBe(11)
+    run(sim, 20)
+    expect(sim.water.total()).toBe(sim.water.expected)
+  })
+
+  it('a new sea level from configure() finds the sea again at once', () => {
+    // Water 2 blocks deep (surface 3) over the whole 32 × 32 floor: the sea at level 3.
+    const flat: Fill = (_x, y) => (y === 0 ? B.stone : y <= 2 ? w(7) : AIR)
+    const sim = waterSim(flat, { seaLevel: 3 })
+    expect(sim.water.cycle.mask[5 + 5 * 32]).toBe(1)
+    sim.configure(fillGenerator(flat, 5), null) // the same water is no sea at level 5…
+    expect(sim.water.cycle.mask[5 + 5 * 32]).toBe(0)
+    run(sim, 5)
+    expect(sim.water.column(5, 5)).toMatchObject({ floor: 1, depth: 2 * SUB }) // …so nothing pins it to 5
+    expect(sim.water.total()).toBe(sim.water.expected)
+    sim.configure(fillGenerator(flat, 3), null) // back at level 3 it is the sea again
+    expect(sim.water.cycle.mask[5 + 5 * 32]).toBe(1)
+    run(sim, 5)
+    expect(sim.water.column(5, 5)).toMatchObject({ floor: 1, depth: 2 * SUB })
+    expect(sim.water.total()).toBe(sim.water.expected)
+  })
+
   it('a region rebuild adds the depth of columns that join the sea to the sea account, and removes it when they leave', () => {
     // 64 × 32 × 32: chunk column 1 (x ≥ 32) is sea at level 3; chunk column 0 is land at floor 5, or sea when `wet`.
     const coast = (wet: boolean): Fill => (x, y) => {

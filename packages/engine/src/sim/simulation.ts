@@ -145,7 +145,7 @@ export class Simulation {
   configure(gen: GeneratorModule, doc: unknown): void {
     const r = gen.configure?.(doc, { size: this.layout.size, seed: this.seed, id: (name) => this.registry.id(name) })
     const sea = r && typeof r === 'object' ? r.seaLevel : undefined
-    this.water.seaLevel = Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0
+    this.water.setSeaLevel(Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0)
   }
 
   /** Runs the generator for chunk column (cx, cz) into `column` (32 × 32 × height voxels, cleared to air first). */
@@ -185,6 +185,7 @@ export class Simulation {
     const vox = new Uint16Array(CHUNK_VOLUME)
     const writes: { ci: number; data: Uint16Array }[] = []
     const masks = new Map<number, number>()
+    const regenerated: [number, number][] = []
     let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
     for (const c of cols) {
       if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
@@ -196,6 +197,8 @@ export class Simulation {
         if (m === 0) continue
         masks.set(ci, m)
         writes.push({ ci, data })
+        const last = regenerated[regenerated.length - 1]
+        if (!last || last[0] !== c.cx || last[1] !== c.cz) regenerated.push([c.cx, c.cz])
         cx0 = Math.min(cx0, c.cx); cz0 = Math.min(cz0, c.cz); cx1 = Math.max(cx1, c.cx); cz1 = Math.max(cz1, c.cz)
       }
     }
@@ -229,8 +232,8 @@ export class Simulation {
         if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) out.add(L.chunkIndex(cx + dx, cy + dy, cz + dz))
       })
     }
-    // The water of the regenerated columns, rebuilt now even while paused; chunks whose static water changed hands remesh.
-    for (const ci of this.water.rebuildRegion(x0, z0, x1, z1)) out.add(ci)
+    // The water of the regenerated chunk columns, rebuilt now even while paused; chunks whose static water changed hands remesh.
+    for (const ci of this.water.rebuildChunkColumns(regenerated)) out.add(ci)
     return [...out].sort((a, b) => a - b)
   }
 
