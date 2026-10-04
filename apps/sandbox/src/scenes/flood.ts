@@ -75,6 +75,23 @@ export function breachCommands(): Command[] {
   return [{ type: 'fillRegion', min: [DAM_X, LAKE.floor, BREACH.z0], max: [DAM_X, LAKE.top, BREACH.z1], voxel: AIR }]
 }
 
+/** Stops the river so the scene can settle: `stone` (the stone voxel) replaces the spring at its head. */
+export function stopSpringCommands(stone: number): Command[] {
+  return [{ type: 'setBlock', pos: [SPRING.x, groundAt(SPRING.x, SPRING.z), SPRING.z], voxel: stone }]
+}
+
+/**
+ * The stress test: the whole dam opens (every row of the lake's east side) and a 40 × 40 × 4 block of
+ * full water (`water`: the full water voxel) drops into the valley beside the breach.
+ */
+export function stressCommands(water: number): Command[] {
+  const y0 = VALLEY.ground + 8
+  return [
+    { type: 'fillRegion', min: [DAM_X, LAKE.floor, LAKE.z0], max: [DAM_X, LAKE.top, LAKE.z1], voxel: AIR },
+    { type: 'fillRegion', min: [160, y0, 55], max: [199, y0 + 3, 94], voxel: water },
+  ]
+}
+
 /** Removes the planks under each sand pillar, so the pillars fall (one into the lake). */
 export function dropCommands(): Command[] {
   return PILLARS.map((p) => ({ type: 'setBlock', pos: [p.x, p.base, p.z], voxel: AIR }))
