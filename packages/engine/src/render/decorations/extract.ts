@@ -2,9 +2,10 @@ import type { MeshTables } from '../../mesh/tables.ts'
 import { valueNoise2 } from '../../sim/generator.ts'
 import { hash32 } from '../../sim/rng.ts'
 import { PAD, padIndex, type ChunkSnapshot } from '../../world/reader.ts'
-import { AIR, voxelId } from '../../world/voxel.ts'
+import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
 
 export const EDGE = { PX: 1, NX: 2, PZ: 4, NZ: 8 } as const
+const DENSITY_SEED = 0x51d3e
 const FLOWER_SEED = 0x6f1e7
 const PATCH_SEED = 0x2a7c1
 const UP = PAD * PAD
@@ -53,6 +54,9 @@ export function extractDecorations(
     const k = d.byBlock[voxelId(s.voxels[pi]!)]!
     if (k === 0) continue
     if (voxelId(s.voxels[pi + UP]!) !== AIR) continue
+    const wx = ox + x, wy = oy + y, wz = oz + z
+    const dens = d.stateDensity[(k - 1) * 4 + (voxelState(s.voxels[pi]!) & 3)]!
+    if (dens < 1 && hash32(DENSITY_SEED, wx, wy, wz) / 4294967296 >= dens) continue
     let edge = 0
     for (const [off, bit] of SIDES) if (!t.opaque[voxelId(s.voxels[pi + off]!)]) edge |= bit
     const l = s.light[pi + UP]!
@@ -61,7 +65,6 @@ export function extractDecorations(
     if (d.grass[di]) grass.push(a, di)
     const colors = d.flowerColors[di]!
     if (colors === 0) continue
-    const wx = ox + x, wy = oy + y, wz = oz + z
     const p = flowerChanceAt(d.flowerChance[di]!, d.patchScale[di]!, wx, wz)
     if (p > 0 && hash32(FLOWER_SEED, wx, wy, wz) / 4294967296 < p) {
       flowers.push(a, di | ((hash32(FLOWER_SEED + 1, wx, wy, wz) % colors) << 8))

@@ -131,3 +131,30 @@ describe('MeshJobRunner decorations (Review Focus 2)', () => {
     expect(after.data.grass).toBeNull()
   })
 })
+
+describe('stateDensity', () => {
+  const YOUNG = defineDecoration({ name: 'meadow', grass: {}, stateDensity: [1, 2 / 3, 1 / 3, 0] })
+  const plane = (state: number) => {
+    const s = emptySnap()
+    for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) put(s, x, 4, z, (state << 12) | ID.grass)
+    return s
+  }
+  const count = (state: number) => instances(run(plane(state), decoratedMeshTables([YOUNG])).grass).length
+  it('keeps every tuft at state 0, none at state 3, and about a third at state 2', () => {
+    expect(count(0)).toBe(1024)
+    expect(count(3)).toBe(0)
+    const third = count(2)
+    expect(third).toBeGreaterThan(1024 * 0.25)
+    expect(third).toBeLessThan(1024 * 0.42)
+  })
+  it('is deterministic per block and nested: a block shown at 1/3 is also shown at 2/3', () => {
+    const at = (state: number) => new Set(instances(run(plane(state), decoratedMeshTables([YOUNG])).grass).map((i) => i.lx + i.lz * 32))
+    const a = at(2), b = at(1)
+    for (const k of a) expect(b.has(k)).toBe(true)
+  })
+  it('validates stateDensity', () => {
+    const b = new BlockRegistry([defineBlock({ name: 'stone' })])
+    expect(() => new DecorationRegistry([{ name: 'x', stateDensity: [1, 2, 0, 0] as unknown as [number, number, number, number] }], b)).toThrow(/stateDensity/)
+    expect(() => new DecorationRegistry([{ name: 'x', stateDensity: [1, 1] as unknown as [number, number, number, number] }], b)).toThrow(/stateDensity/)
+  })
+})

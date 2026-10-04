@@ -7,7 +7,7 @@ export const MAX_FLOWER_COLORS = 8
 
 export interface GrassDef { blades?: number; height?: readonly [number, number]; base?: string; tip?: string; overhang?: number }
 export interface FlowerDef { chance?: number; patchScale?: number; colors?: readonly string[] }
-export interface DecorationDef { name: string; grass?: GrassDef; flowers?: FlowerDef }
+export interface DecorationDef { name: string; grass?: GrassDef; flowers?: FlowerDef; /** Instance density by the decorated block's state & 3 (e.g. grass youth: [1, ⅔, ⅓, 0]). Default all 1. */ stateDensity?: readonly [number, number, number, number] }
 
 export function defineDecoration(def: DecorationDef): DecorationDef {
   return def
@@ -15,7 +15,7 @@ export function defineDecoration(def: DecorationDef): DecorationDef {
 
 export interface ResolvedGrass { blades: number; height: readonly [number, number]; base: Rgb; tip: Rgb; overhang: number }
 export interface ResolvedFlowers { chance: number; patchScale: number; colors: readonly Rgb[] }
-export interface ResolvedDecoration { name: string; grass: ResolvedGrass | null; flowers: ResolvedFlowers | null }
+export interface ResolvedDecoration { name: string; grass: ResolvedGrass | null; flowers: ResolvedFlowers | null; stateDensity: readonly number[] }
 
 /** Plain typed arrays, posted to mesh workers in MeshTables. byBlock: 0 = none, k = decoration k − 1. */
 export interface DecorationTables {
@@ -24,10 +24,11 @@ export interface DecorationTables {
   flowerChance: Float32Array
   patchScale: Float32Array
   flowerColors: Uint8Array
+  stateDensity: Float32Array
 }
 
 export function emptyDecorationTables(blockCount: number): DecorationTables {
-  return { byBlock: new Uint8Array(blockCount), grass: new Uint8Array(0), flowerChance: new Float32Array(0), patchScale: new Float32Array(0), flowerColors: new Uint8Array(0) }
+  return { byBlock: new Uint8Array(blockCount), grass: new Uint8Array(0), flowerChance: new Float32Array(0), patchScale: new Float32Array(0), flowerColors: new Uint8Array(0), stateDensity: new Float32Array(0) }
 }
 
 const DEFAULT_FLOWER_COLORS = ['#e94b4b', '#f5d142', '#ffffff', '#f08ac0', '#6f8cf0']
@@ -69,7 +70,11 @@ function resolve(d: DecorationDef): ResolvedDecoration {
       colors: colors.map((c, i) => hexToLinear(c, `${p} flowers.colors[${i}]`)),
     }
   }
-  return { name: d.name, grass, flowers }
+  const sd = d.stateDensity ?? [1, 1, 1, 1]
+  if (!Array.isArray(sd) || sd.length !== 4 || !sd.every((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) {
+    throw new RangeError(`${p} stateDensity must be 4 numbers in [0, 1]`)
+  }
+  return { name: d.name, grass, flowers, stateDensity: sd }
 }
 
 /** Main-thread registry of decorations; validates the blocks' `decoration` names (Deviation 9). */
@@ -99,6 +104,7 @@ export class DecorationRegistry {
       flowerChance: Float32Array.from(this.defs, (d) => d.flowers?.chance ?? 0),
       patchScale: Float32Array.from(this.defs, (d) => d.flowers?.patchScale ?? 1),
       flowerColors: Uint8Array.from(this.defs, (d) => d.flowers?.colors.length ?? 0),
+      stateDensity: Float32Array.from(this.defs.flatMap((d) => d.stateDensity)),
     }
   }
 
