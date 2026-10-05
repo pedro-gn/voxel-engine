@@ -68,7 +68,15 @@ export class WaterSystem {
   private readonly queue: number[] = []
   private readonly dist: number[] = []
   private readonly from: number[] = []
-  private readonly vols: number[] = []
+  private readonly fl: number[] = []
+  private readonly sd: number[] = []
+  private readonly seedC: number[] = []
+  private readonly seedV: number[] = []
+  private readonly seedS: number[] = []
+  private readonly seedF: number[] = []
+  private readonly done: number[] = []
+  private readonly group: number[] = []
+  private readonly seedOf: Int32Array
   private readonly targets: number[] = []
   private readonly edit: EditColumn = { floor: 0, depth: 0 }
   private ex = 0
@@ -96,6 +104,7 @@ export class WaterSystem {
     this.cycle = new WaterCycle(sx * sz)
     this.mirror = new WaterMirror(sx * sz)
     this.stamp = new Int32Array(sx * sz)
+    this.seedOf = new Int32Array(sx * sz)
     this.publisher = new WaterPublisher(port.buffers)
     this.get = (x, y, z) => port.get(x, y, z)
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
@@ -183,74 +192,105 @@ export class WaterSystem {
   }
 
   /**
-   * Spreads the volume that walls placed since the last call displaced (see `pending`) in one multi-source breadth-first
-   * search. Each source column displaced min(depth, rise × SUB) of water, taken out of its depth (applyEdit raised the floor and
-   * kept the depth). The search starts from all sources at once (queue order: insertion order of the sources, then -x +x -z +z)
-   * through wet neighbours that can exchange water, to at most DISPLACE_RADIUS columns from the nearest source. It picks the
-   * first ceil(total / DISPLACE_SHARE) columns, a source among them while its floor is still under its old surface, and each gets
-   * an equal integer share; the first `total mod n` get one more. Without a wet neighbour nothing moves: the water rides on top
-   * of the wall. If a huge edit finds fewer columns than that within the radius, their shares exceed 1/16 block and normal flow
-   * levels it. Σ depth is unchanged. Runs before the step and before the mirror flush, so edits within a tick spread together.
+   * Spreads the volume that walls placed since the last call displaced (see `pending`). Each source column displaced
+   * min(depth, rise × SUB) of water, taken out of its depth (applyEdit raised the floor and kept the depth). Sources are
+   * handled per connected group, in insertion order: a breadth-first search from the first source not yet handled goes through
+   * wet neighbours that can exchange water (order -x +x -z +z) to at most DISPLACE_RADIUS columns from the nearest source; sources
+   * it reaches join the group. The group's volume goes to the first ceil(volume / DISPLACE_SHARE) columns the search found (a
+   * source among them while its floor is still under its old surface), in equal integer shares, the first `volume mod n` getting
+   * one more. A group with no wet column besides its sources keeps its water on top of the walls, and water never crosses
+   * between groups. If a huge edit finds fewer columns than wanted within the radius, their shares exceed 1/16 block and normal
+   * flow levels it. Σ depth is unchanged. Runs before the step and before the mirror flush, so edits within a tick spread together.
    */
   private spreadDisplaced(): void {
     const pending = this.pending
     if (pending.size === 0) return
     const cols = this.cols, { floor, depth, sx, sz } = cols, T = cols.tiles
-    const q = this.queue, dist = this.dist, from = this.from, stamp = this.stamp
-    const gen = ++this.gen
-    q.length = 0
-    dist.length = 0
-    from.length = 0
-    let total = 0, eligible = 0
+    const q = this.queue, dist = this.dist, from = this.from, fl = this.fl, sd = this.sd, stamp = this.stamp, seedOf = this.seedOf
+    const sc = this.seedC, sv = this.seedV, ss = this.seedS, sf = this.seedF, done = this.done, group = this.group
+    sc.length = 0
+    sv.length = 0
+    ss.length = 0
+    sf.length = 0
+    done.length = 0
     for (const [c, e] of pending) {
       const vol = Math.min(depth[c]!, (floor[c]! - e.f0) * SUB)
       if (vol <= 0) continue
-      total += vol
-      stamp[c] = gen
-      q.push(c)
-      dist.push(0)
-      from.push(e.s0)
-      this.vols.push(vol)
-      if (floor[c]! * SUB < e.s0) eligible++
+      seedOf[c] = sc.length + 1
+      sc.push(c)
+      sv.push(vol)
+      ss.push(e.s0)
+      sf.push(e.f0)
+      done.push(0)
     }
     pending.clear()
-    const seeds = q.length
-    const want = Math.ceil(total / DISPLACE_SHARE)
-    for (let i = 0; i < q.length && eligible < want; i++) {
-      const d = dist[i]!
-      if (d >= DISPLACE_RADIUS) continue
-      const cc = q[i]!, cx = cc % sx, cz = (cc - cx) / sx, f = from[i]!
-      for (let k = 0; k < 4; k++) {
-        const nx = cx + (k === 0 ? -1 : k === 1 ? 1 : 0), nz = cz + (k === 2 ? -1 : k === 3 ? 1 : 0)
-        if (nx < 0 || nz < 0 || nx >= sx || nz >= sz) continue
-        const n = nx + nz * sx
-        if (stamp[n] === gen || depth[n]! <= 0 || floor[n]! * SUB >= f) continue
-        if (floor[cc]! * SUB >= cols.surface(n)) continue
-        stamp[n] = gen
-        q.push(n)
-        dist.push(d + 1)
-        from.push(cols.surface(n))
-        eligible++
+    for (let s0 = 0; s0 < sc.length; s0++) {
+      if (done[s0] === 1) continue
+      const gen = ++this.gen
+      q.length = 0
+      dist.length = 0
+      from.length = 0
+      fl.length = 0
+      sd.length = 0
+      group.length = 0
+      let total = 0, eligible = 0
+      const join = (i: number, d: number): void => {
+        const c = sc[i]!
+        done[i] = 1
+        group.push(i)
+        total += sv[i]!
+        stamp[c] = gen
+        q.push(c)
+        dist.push(d)
+        from.push(ss[i]!)
+        fl.push(sf[i]!)
+        sd.push(1)
+        if (floor[c]! * SUB < ss[i]!) eligible++
       }
-    }
-    if (q.length > seeds) {
-      // targets: the eligible queue entries in order, at most `want`
-      const targets = this.targets
+      join(s0, 0)
+      for (let i = 0; i < q.length && eligible < Math.ceil(total / DISPLACE_SHARE); i++) {
+        const d = dist[i]!
+        if (d >= DISPLACE_RADIUS) continue
+        const cc = q[i]!, cx = cc % sx, cz = (cc - cx) / sx, f = from[i]!, fc = fl[i]! * SUB
+        for (let k = 0; k < 4; k++) {
+          const nx = cx + (k === 0 ? -1 : k === 1 ? 1 : 0), nz = cz + (k === 2 ? -1 : k === 3 ? 1 : 0)
+          if (nx < 0 || nz < 0 || nx >= sx || nz >= sz) continue
+          const n = nx + nz * sx
+          if (stamp[n] === gen || depth[n]! <= 0) continue
+          const si = seedOf[n]! - 1
+          // a source's floor before its wall is what the water saw
+          if ((si >= 0 ? sf[si]! : floor[n]!) * SUB >= f) continue
+          if (si >= 0 && done[si] === 0) {
+            if (fc >= ss[si]!) continue
+            join(si, d + 1)
+          } else {
+            const sn = si >= 0 ? ss[si]! : cols.surface(n)
+            if (fc >= sn) continue
+            stamp[n] = gen
+            q.push(n)
+            dist.push(d + 1)
+            from.push(sn)
+            fl.push(floor[n]!)
+            sd.push(0)
+            eligible++
+          }
+        }
+      }
+      if (q.length === group.length) continue // no wet column besides the sources: the water stays on top
+      const want = Math.ceil(total / DISPLACE_SHARE), targets = this.targets
       targets.length = 0
       for (let i = 0; i < q.length && targets.length < want; i++) {
-        const c = q[i]!
-        if (i >= seeds || floor[c]! * SUB < from[i]!) targets.push(c)
+        if (sd[i] === 0 || floor[q[i]!]! * SUB < from[i]!) targets.push(q[i]!)
       }
       const n = targets.length, share = Math.floor(total / n), extra = total - share * n
-      let k = 0
-      for (let i = 0; i < seeds; i++) { depth[q[i]!] = depth[q[i]!]! - this.vols[i]!; T.dirty[T.of(q[i]! % sx, Math.floor(q[i]! / sx))] = 1 }
-      for (let i = 0; i < n; i++, k++) {
+      for (const i of group) { depth[sc[i]!] = depth[sc[i]!]! - sv[i]!; T.dirty[T.of(sc[i]! % sx, Math.floor(sc[i]! / sx))] = 1 }
+      for (let i = 0; i < n; i++) {
         const t = targets[i]!, tx = t % sx
         depth[t] = depth[t]! + share + (i < extra ? 1 : 0)
         T.wake(T.of(tx, (t - tx) / sx))
       }
     }
-    this.vols.length = 0
+    for (const c of sc) seedOf[c] = 0
   }
 
   /** One physics step (spec §3): springs, flow over the awake tiles, the sea. Not called while paused. */

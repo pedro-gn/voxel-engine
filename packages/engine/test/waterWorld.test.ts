@@ -565,4 +565,60 @@ describe('a block placed in water spreads its displaced volume at once', () => {
     expect(sim.water.column(35, 60).depth).toBeGreaterThan(24 * SUB)
     expect(sim.water.column(1, 1).depth).toBe(24 * SUB) // far outside the radius: untouched
   })
+
+  it('a block filling the top water cell leaves no pillar either: the whole column is spread', () => {
+    const sim = waterSim(big(4), { water: { debug: true } })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'setBlock', pos: [10, 4, 10], voxel: B.stone })
+    sim.step()
+    expect(sim.water.column(10, 10).floor).toBe(5)
+    expect(maxStep(sim)).toBeLessThanOrEqual(SUB / 16)
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+  })
+
+  it('a platform in the top water cell levels the rest of the lake evenly', () => {
+    const sim = waterSim(big(6), { water: { debug: true } })
+    sim.setPaused(true) // only the spread, no flow over the platform
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [8, 6, 8], max: [13, 6, 13], voxel: B.stone })
+    sim.step()
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    const depths = new Set<number>()
+    for (let z = 1; z <= 20; z++) for (let x = 1; x <= 20; x++) if (x < 8 || x > 13 || z < 8 || z > 13) depths.add(sim.water.column(x, z).depth)
+    expect(Math.max(...depths) - Math.min(...depths)).toBeLessThanOrEqual(1)
+    expect(Math.min(...depths)).toBeGreaterThan(6 * SUB) // the lake rose, the water did not ride on the platform
+  })
+
+  it('two sealed basins edited in the same tick each keep their own water', () => {
+    const a = lake(4, 12, 8)
+    const sim = waterSim((x, y, z) => (x <= 12 ? a(x, y, z) : a(x - 13, y, z)))
+    sim.setPaused(true)
+    const da = depthSum(sim, 0, 0, 12, 31), db = depthSum(sim, 13, 0, 31, 31)
+    sim.submit(0, 0, { type: 'setBlock', pos: [5, 1, 5], voxel: B.stone })
+    sim.submit(0, 0, { type: 'setBlock', pos: [18, 1, 5], voxel: B.stone })
+    sim.step()
+    expect(depthSum(sim, 0, 0, 12, 31)).toBe(da)
+    expect(depthSum(sim, 13, 0, 31, 31)).toBe(db)
+    expect(sim.water.column(5, 5).floor).toBe(2)
+    expect(sim.water.column(18, 5).floor).toBe(2)
+  })
+
+  it('a sealed one-column hole edited in the same tick as a lake keeps its water', () => {
+    const base = lake(4, 12, 8)
+    const sim = waterSim((x, y, z) => {
+      if (x === 20 && z === 20) return y === 0 ? B.stone : y <= 4 ? w(7) : AIR
+      if (x >= 19 && x <= 21 && z >= 19 && z <= 21 && y <= 6) return B.stone
+      return base(x, y, z)
+    })
+    sim.setPaused(true)
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'setBlock', pos: [20, 1, 20], voxel: B.stone })
+    sim.submit(0, 0, { type: 'setBlock', pos: [5, 1, 5], voxel: B.stone })
+    sim.step()
+    expect(sim.water.column(20, 20)).toEqual({ floor: 2, depth: 4 * SUB, surface: 6 * SUB }) // rides on top
+    expect(depthSum(sim, 1, 1, 10, 10)).toBe(100 * 4 * SUB)
+    expect(sim.water.total()).toBe(total)
+  })
 })
