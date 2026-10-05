@@ -199,6 +199,13 @@ export class SurfaceView {
 
   column(cc: number): ColumnData | undefined { return this.data[cc] }
 
+  /** The water surface (blocks) of column (x, z) as last published, or null where none is drawn (dry, too shallow, outside). */
+  surfaceAt(x: number, z: number): number | null {
+    if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
+    const c = x + z * this.sx, v = this.cur[c]!
+    return shows(v, this.floor[c]!) ? v * PER_SUB : null
+  }
+
   /**
    * Chunk columns whose data changed since the last call, in index order. The array is reused: it stays valid until the next
    * call, and the caller must not keep or modify it.

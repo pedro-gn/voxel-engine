@@ -572,6 +572,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       if (cmd.type === 'setBlock' && validateCommand(cmd, layout, registry.count, NO_CUSTOM_COMMANDS) === null) {
         const c = cmd as SetBlockCommand
         for (const ci of ghosts.add(s, c.pos[0], c.pos[1], c.pos[2], c.voxel)) markDirty(ci, PRIORITY.GHOST)
+        visuals.noteEdit(c.pos[0], c.pos[1], c.pos[2]) // a block at the water line sends ripples over the water
       }
       sim.postMessage({ type: 'submit', clientId: CLIENT_ID, seq: s, cmd } satisfies ToSim)
       return s

@@ -7,6 +7,7 @@ import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
 import type { WaterParams } from './settings.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
+import { rippleEffect, tiltedNormal } from './water/ripples.ts'
 import { curtainVertex, surfaceVertex, voxelWaterVertex, type WaterVertex } from './water/waterVertex.ts'
 
 type N = ReturnType<typeof float>
@@ -36,7 +37,7 @@ function createUniforms() {
 type WaterUniforms = ReturnType<typeof createUniforms>
 
 /** Ripples, depth colour, shore foam, white water, sun glint and sky fresnel, for any water vertex source. */
-function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean): void {
+function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean, edits = false): void {
   m.positionNode = v.position
   m.transparent = true
   m.depthWrite = false
@@ -55,7 +56,10 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   const g = mix(slope(wp.xz.sub(dir.mul(phase))), slope(wp.xz.sub(dir.mul(fract(phase.add(0.5))))), abs(phase.mul(2).sub(1)))
   const ripple = normalize(vec3(g.x.mul(RIPPLE / EPS), 1, g.y.mul(RIPPLE / EPS)))
   // Ripples ride on the surface's own tilt (a river ramp); on flat water v.normal is straight up and this is the ripple.
-  const n = select(v.isTop, normalize(ripple.add(v.normal).sub(vec3(0, 1, 0))), v.normal)
+  // Ripples from block edits at the water line tilt the surface (the heightfield's only) and whiten the first ring's crest.
+  const edit = edits ? rippleEffect(wp.xz) : null
+  const flat = normalize(ripple.add(v.normal).sub(vec3(0, 1, 0)))
+  const n = select(v.isTop, edit ? tiltedNormal(flat, edit) : flat, v.normal)
 
   const thickness = depthEffects
     ? positionView.z.sub(perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar)).max(0)
@@ -71,7 +75,8 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
     .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
   const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)).mul(smoothstep(0.2, 0.6, v.surface)) : float(0)
   // White water breaks up with the same noise as the foam, so fast water churns rather than turning flat white.
-  const white = max(foam, v.white.mul(foamNoise.mul(0.6).add(0.55)).min(1))
+  const streaks = max(foam, v.white.mul(foamNoise.mul(0.6).add(0.55)).min(1))
+  const white = edit ? max(streaks, edit.z) : streaks
   const streak = select(v.isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(v.fall)), 0)).mul(0.12))
   const albedo = mix(mix(u.shallow, u.deep, depthT).add(streak), vec3(1), white)
   m.colorNode = vec4(albedo, mix(mix(float(0.66), float(0.94), depthT), float(1), white).mul(v.alpha))
@@ -105,13 +110,13 @@ export class WaterMaterial {
   private readonly u = createUniforms()
 
   constructor(lights: LightUniforms, depthEffects: boolean) {
-    const make = (v: WaterVertex): VoxelNodeMaterial => {
+    const make = (v: WaterVertex, edits = false): VoxelNodeMaterial => {
       const m = new VoxelNodeMaterial(v.sky)
-      shade(m, v, this.u, lights, depthEffects)
+      shade(m, v, this.u, lights, depthEffects, edits)
       return m
     }
     this.voxel = make(voxelWaterVertex())
-    this.surface = make(surfaceVertex())
+    this.surface = make(surfaceVertex(), true)
     this.curtain = make(curtainVertex())
     this.curtain.side = THREE.DoubleSide
     this.plainSurface = plain(surfaceVertex(), this.u, lights)
