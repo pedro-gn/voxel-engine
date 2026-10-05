@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, SINK, arcPoint, arcReach, cornerHeights,
-  curtainAt, exitSpeed, level, quantizeFlow, shows,
+  ARC_COLUMNS, ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, JOIN, SINK, arcPoint,
+  cornerHeights, curtainAt, exitSpeed, layArc, level, quantizeFlow, shows,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
@@ -72,9 +72,9 @@ describe('SurfaceView', () => {
     expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
     expect([...cs.prev.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
     expect([...cs.info.subarray(k * 4, k * 4 + 4)]).toEqual([10, 5, 0 + 4 * LIT, 20])
-    const r = Math.fround(arcReach(exitSpeed(20, 20), 7, 4, [3, 3, 3]))
+    const r = Math.fround(flat(exitSpeed(20, 20), 7, 3)[0])
     expect(r).toBeGreaterThan(0)
-    expect([...cs.reach.subarray(k * 2, k * 2 + 2)]).toEqual([r, r]) // thrown out with the flow, in both steps
+    expect([...cs.reach.subarray(k * 4, k * 4 + 4)]).toEqual([r, r, r, r]) // thrown out with the flow: both ends, both steps
     expect(at(s.view, 11, 5, 'info')[3]).toBe(LIT + 256) // white water 1 = 20 >> 4
   })
 
@@ -213,25 +213,73 @@ function curtainIndex(view: SurfaceView, cc: number, lx: number, lz: number, dir
   throw new Error(`no curtain at (${lx}, ${lz}) dir ${dir}`)
 }
 
-describe('curtain arcs', () => {
-  const low = [0, 0, 0] // the columns past the neighbour lie far below
+/** layArc over ground at `level` everywhere ahead: [reach, foot]. */
+function flat(v: number, top: number, lv: number): number[] {
+  const out = new Float64Array(2), l = Array<number>(ARC_COLUMNS).fill(lv)
+  layArc(v, top, l, l, l, out)
+  return [...out]
+}
 
-  it('throws a bigger flow farther out at the same drop, and caps the reach', () => {
-    expect(exitSpeed(32, 20)).toBe(2.5) // 32/256 block per step through a one-block edge, 20 steps per second
-    expect(arcReach(exitSpeed(0, 20), 7, 4, low)).toBe(0)
-    const small = arcReach(exitSpeed(8, 20), 7, 4, low), big = arcReach(exitSpeed(32, 20), 7, 4, low)
-    expect(small).toBeGreaterThan(0)
-    expect(small).toBeLessThan(0.5) // a trickle stays close to the wall
-    expect(big).toBeGreaterThan(3 * small)
-    expect(arcReach(exitSpeed(8, 20), 12, 9, low)).toBeGreaterThan(small) // a higher fall lands farther out
-    expect(arcReach(exitSpeed(1000, 20), 7, 4, low)).toBe(ARC_REACH)
+/** layArc over ground at `levels` (near = far = level): [reach, foot]. */
+function over(v: number, top: number, levels: number[]): number[] {
+  const out = new Float64Array(2)
+  layArc(v, top, levels, levels, levels, out)
+  return [...out]
+}
+
+/** Points of the arc (top, foot, reach) that lie below the level of the column under them (`levels`, 0 = the neighbour). */
+function cuts(top: number, foot: number, r: number, levels: ArrayLike<number>): string[] {
+  const p = new Float64Array(2), bad: string[] = []
+  for (let k = 0; k <= 256; k++) {
+    arcPoint(top, foot, r, k / 256, p, 0)
+    const i = Math.floor(p[0]!)
+    if (i < levels.length && p[1]! < levels[i]! - 1e-9) bad.push(`u ${p[0]!.toFixed(3)} y ${p[1]!.toFixed(3)} < ${levels[i]}`)
+  }
+  return bad
+}
+
+describe('curtain arcs', () => {
+  it('maps the measured flows to exit speeds that grow with the flow, the cap only a guard', () => {
+    // The calibration table of exitSpeed: (flux, drop) → reach over flat ground.
+    const reach = (flux: number, drop: number) => flat(exitSpeed(flux, 20), 20, 20 - drop)[0]!
+    expect(exitSpeed(64, 20)).toBe(1) // 0.125 · √flux blocks/s at 20 steps per second
+    expect(reach(0, 4)).toBe(0)
+    expect(reach(8, 4)).toBeCloseTo(0.22, 2) // a trickle stays close to the wall
+    expect(reach(110, 15)).toBeCloseTo(1.61, 2) // one removed dam block
+    expect(reach(210, 14)).toBeCloseTo(2.14, 2) // a breach
+    expect(reach(480, 12)).toBeCloseTo(3, 2) // the dam column: the largest flow measured just reaches the cap
+    expect(reach(32, 4) / reach(8, 4)).toBeCloseTo(2, 5) // the square root of the flow
+    expect(reach(8, 9)).toBeGreaterThan(reach(8, 4)) // a higher fall lands farther out
+    expect(reach(2000, 15)).toBe(ARC_REACH)
   })
 
-  it('ends short of a column ahead that rises into the arc, and of the world\'s border', () => {
-    const v = exitSpeed(64, 20) // reaches the cap
-    expect(arcReach(v, 7, 4, [3, 4, 3])).toBe(ARC_REACH) // the arc passes over a low step
-    expect(arcReach(v, 7, 4, [3, 6.9, 3])).toBe(2 - 2 * ARC_GAP) // a wall two columns past the neighbour
-    expect(arcReach(v, 7, 4, [Infinity, 3, 3])).toBe(1 - 2 * ARC_GAP) // outside the world
+  it('lands a single removed dam block visibly shorter than a wide breach', () => {
+    const block = flat(exitSpeed(110, 20), 24, 9)[0]!, breach = flat(exitSpeed(400, 20), 22, 10)[0]!
+    expect(breach - block).toBeGreaterThan(1)
+  })
+
+  it('keeps the drawn arc above every column it crosses, over stepped ground and the dam\'s valley', () => {
+    const grounds: [number, number[]][] = [
+      [10, [8, 6, 4, 2]], [10, [6, 4, 2, 0]], [10, [6, 4, 2, 2]], [24, [10.5, 10.5, 10.5, 9.5]], [7, [3, 6.9, 3, 3]],
+      [7, [3, 4, 3, 3]], [12, [3, 9, 3, 3]], [12, [3, 3, 3, 11]], [7, [3, Infinity, 3, 3]],
+    ]
+    for (const [top, levels] of grounds) for (const flux of [0, 8, 32, 75, 110, 210, 480, 2000]) {
+      const [r, foot] = over(exitSpeed(flux, 20), top, levels)
+      expect(r).toBeGreaterThanOrEqual(0)
+      expect(r).toBeLessThanOrEqual(ARC_REACH)
+      expect(cuts(top, foot!, r!, levels), `top ${top} over ${levels} at flux ${flux}`).toEqual([])
+    }
+  })
+
+  it('lands where the free fall meets the ground, and ends short of a wall ahead and of the world\'s border', () => {
+    const v = exitSpeed(480, 20)
+    const [r, foot] = over(v, 10, [8, 6, 4, 2])
+    // Over the neighbour (level 8) and onto the next step: the free arc comes down to its level 6 at 1.73 blocks, inside it.
+    expect(foot).toBe(6)
+    expect(r).toBeCloseTo(v * Math.sqrt((2 * 4) / 20), 9)
+    expect(over(exitSpeed(110, 20), 24, [10.5, 10.5, 10.5, 9.5])[1]).toBe(10.5) // the dam's valley: on the near bank
+    expect(over(v, 10, [3, 3, 9.9, 3])).toEqual([2 - 2 * ARC_GAP, 3]) // a wall two columns past the neighbour, in the way
+    expect(over(v, 7, [3, Infinity, 3, 3])).toEqual([1 - 2 * ARC_GAP, 3]) // outside the world
   })
 
   it('lays the arc from the top on the wall\'s plane, in front of the wall below it, down to its foot', () => {
@@ -253,40 +301,74 @@ describe('curtain arcs', () => {
 
   it('throws a curtain out with its flow and lands it on the water below', () => {
     const s = scene(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
-    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * (z < 16 ? 32 : 4)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * (z < 16 ? 480 : 4)
     s.publish()
     const cs = s.view.column(0)!.curtains
     const big = curtainIndex(s.view, 0, 10, 5), small = curtainIndex(s.view, 0, 10, 20)
-    expect(cs.reach[big * 2 + 1]).toBe(Math.fround(arcReach(exitSpeed(32, 20), 7, 4, [3, 3, 3])))
-    expect(cs.reach[big * 2 + 1]).toBeGreaterThan(1)
-    expect(cs.reach[small * 2 + 1]).toBeLessThan(0.25)
+    const r = Math.fround(flat(exitSpeed(480, 20), 7, 3)[0]!)
+    expect([...cs.reach.subarray(big * 4 + 2, big * 4 + 4)]).toEqual([r, r])
+    expect(r).toBeGreaterThan(1)
+    expect(cs.reach[small * 4 + 2]).toBeLessThan(0.25)
     for (const k of [big, small]) expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3]) // feet on the lake
   })
 
+  it('shares each end with the curtain beside it, so a wide fall has no seams where the flow changes', () => {
+    const s = scene(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * (z < 16 ? 8 : 200)
+    s.publish()
+    const cs = s.view.column(0)!.curtains, lo = curtainIndex(s.view, 0, 10, 15), hi = curtainIndex(s.view, 0, 10, 16)
+    // Curtain (10, 15)'s end B and (10, 16)'s end A are the same vertex: same top, foot and reach, so the same arc.
+    expect([cs.cur[lo * 4 + 1], cs.cur[lo * 4 + 3], cs.reach[lo * 4 + 3]]).toEqual([cs.cur[hi * 4], cs.cur[hi * 4 + 2], cs.reach[hi * 4 + 2]])
+    // That end is thrown with both curtains' mean exit speed: farther than the weak side's other end, shorter than the strong's.
+    expect(cs.reach[lo * 4 + 3]).toBeGreaterThan(cs.reach[lo * 4 + 2]!)
+    expect(cs.reach[hi * 4 + 2]).toBeLessThan(cs.reach[hi * 4 + 3]!)
+    expect(cs.reach[lo * 4 + 3]).toBe(Math.fround(flat((exitSpeed(8, 20) + exitSpeed(200, 20)) / 2, 7, 3)[0]!))
+  })
+
   it('ends a curtain before a wall ahead, on the water in front of it', () => {
-    const s = scene(32, 32, (x) => (x <= 10 ? 6 : x <= 12 ? 2 : 10), (x) => (x <= 12 ? SUB : 0))
-    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * 200
+    const s = scene(32, 32, (x) => (x <= 10 ? 9 : x <= 12 ? 2 : 10), (x) => (x <= 12 ? SUB : 0))
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * 480
     s.publish()
     const cs = s.view.column(0)!.curtains, k = curtainIndex(s.view, 0, 10, 5)
-    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(2 - 2 * ARC_GAP))
-    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
+    expect([...cs.reach.subarray(k * 4 + 2, k * 4 + 4)]).toEqual([2 - 2 * ARC_GAP, 2 - 2 * ARC_GAP].map(Math.fround))
+    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([10, 10, 3, 3])
+  })
+
+  it('keeps each end of every curtain above the ground it crosses, its own top checked on its own', () => {
+    // A sloping upper sheet (the ends' tops differ) over stepped dry ground, with a wall across every fifth row.
+    const floor = (x: number, z: number) => (x <= 10 ? 20 : x === 13 && z % 5 === 0 ? 19 : Math.max(2, 18 - 2 * (x - 11)))
+    const s = scene(32, 32, floor, (x, z) => (x <= 10 ? SUB + z * 20 : 0))
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * (((z * 37) % 480) + 1)
+    s.publish()
+    expect(fromScratch(s.view, s.cols.floor)).toEqual([])
+    const cs = s.view.column(0)!.curtains
+    let checked = 0
+    for (let z = 0; z < 32; z++) {
+      const k = curtainIndex(s.view, 0, 10, z)
+      for (let end = 0; end < 2; end++) {
+        const top = cs.cur[k * 4 + end]!, foot = cs.cur[k * 4 + 2 + end]!, r = cs.reach[k * 4 + 2 + end]!
+        const levels = [11, 12, 13, 14].map((x) => level(s.view.cur[x + z * 32]!) / SUB)
+        expect(cuts(top, foot, r, levels), `(10, ${z}) end ${end}`).toEqual([])
+        checked++
+      }
+      if (z > 0) expect(cs.cur[k * 4]).not.toBe(cs.cur[k * 4 + 1]) // the ends' tops differ
+    }
+    expect(checked).toBe(64)
   })
 
   it('lands across a chunk-column border, and follows the water there when only it changes', () => {
-    const s = scene(64, 32, (x) => (x <= 29 ? 10 : 2), () => SUB)
-    for (let z = 0; z < 32; z++) s.cols.flux[2 * (29 + z * 64)] = 16 * 200
+    const s = scene(64, 32, (x) => (x <= 29 ? 25 : 2), () => SUB)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (29 + z * 64)] = 16 * 480
     s.publish()
     const cs = s.view.column(0)!.curtains
     let k = curtainIndex(s.view, 0, 29, 5)
-    expect(cs.reach[k * 2 + 1]).toBe(ARC_REACH) // lands in column 33, in chunk column 1
-    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([11, 11, 3, 3])
+    expect(cs.reach[k * 4 + 2]).toBe(ARC_REACH) // lands in column 33, in chunk column 1
+    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([26, 26, 3, 3])
     for (let z = 0; z < 32; z++) for (let x = 33; x < 64; x++) s.cols.depth[x + z * 64] = 2 * SUB
     expect(s.publish([2, 3, 6, 7])).toBe(true) // chunk column 1 only: nothing within a column of chunk column 0 changes
     expect(fromScratch(s.view, s.cols.floor)).toEqual([])
     k = curtainIndex(s.view, 0, 29, 5)
-    // The risen water (a block higher from column 33) now stands in the arc's way: it lands on the slope up to it.
-    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(3 - 2 * ARC_GAP))
-    expect(cs.cur[k * 4 + 2]).toBeGreaterThan(3.25)
+    expect(cs.cur[k * 4 + 2]).toBeGreaterThan(3.5) // its feet rose with the water they land on
   })
 })
 
@@ -413,12 +495,13 @@ describe('SurfaceView, displayed alpha', () => {
     flow(32, 0.6)
     const cs = s.view.column(0)!.curtains
     let k = curtainIndex(s.view, 0, 10, 5)
-    expect(cs.reach[k * 2]).toBeLessThan(cs.reach[k * 2 + 1]!) // moving out with the stronger flow
-    const before = cs.reach[k * 2]! + (cs.reach[k * 2 + 1]! - cs.reach[k * 2]!) * 0.6
+    expect(cs.reach[k * 4]).toBeLessThan(cs.reach[k * 4 + 2]!) // moving out with the stronger flow
+    const before = [0, 1].map((e) => cs.reach[k * 4 + e]! + (cs.reach[k * 4 + 2 + e]! - cs.reach[k * 4 + e]!) * 0.6)
     flow(64, 0.6)
     k = curtainIndex(s.view, 0, 10, 5)
-    expect(cs.reach[k * 2]).toBe(Math.fround(before)) // no jump at the publish
-    expect(cs.reach[k * 2 + 1]).toBe(ARC_REACH)
+    expect([...cs.reach.subarray(k * 4, k * 4 + 2)]).toEqual(before.map(Math.fround)) // no jump at the publish
+    const r = Math.fround(flat(exitSpeed(64, 20), 7, 3)[0]!)
+    expect([...cs.reach.subarray(k * 4 + 2, k * 4 + 4)]).toEqual([r, r])
   })
 
   it('never moves backwards or past the newest step when two publishes come in one frame', () => {
@@ -481,18 +564,18 @@ describe('SurfaceView, displayed alpha', () => {
     // Its heights, then its reach negated: the lake rises, so the fall gets shorter and lands closer (moving "back" is up).
     const drawnCurtain = (view: SurfaceView, a: number) => {
       const cs = view.column(0)!.curtains, k = curtain(view), o = k * 4
-      const r = cs.reach[k * 2]! + (cs.reach[k * 2 + 1]! - cs.reach[k * 2]!) * a
-      return [...[0, 1, 2, 3].map((j) => cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * a), -r]
+      const r = [0, 1].map((e) => cs.reach[o + e]! + (cs.reach[o + 2 + e]! - cs.reach[o + e]!) * a)
+      return [...[0, 1, 2, 3].map((j) => cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * a), -r[0]!, -r[1]!]
     }
     // Chunk column 0 holds the ledge and tile 0; tiles 3 and 7 lie in chunk column 1.
-    const { view, jumps, back } = settleThenFar(64, (x) => (x <= 10 ? 6 : 2), [3, 7], drawnCurtain, 16)
+    const { view, jumps, back } = settleThenFar(64, (x) => (x <= 10 ? 6 : 2), [3, 7], drawnCurtain, 128)
     expect(Math.max(...back)).toBeLessThanOrEqual(0)
     expect(Math.max(...jumps)).toBeLessThan(1 / 256)
     const cs = view.column(0)!.curtains, k = curtain(view), o = k * 4
     expect(cs.cur[o + 2]).toBe(4) // its bottom: the risen lake
     expect([...cs.prev.subarray(o, o + 4)]).toEqual([...cs.cur.subarray(o, o + 4)])
-    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(arcReach(exitSpeed(16, 20), 7, 3, [4, 4, 4])))
-    expect(cs.reach[k * 2]).toBe(cs.reach[k * 2 + 1])
+    const r = Math.fround(flat(exitSpeed(128, 20), 7, 4)[0]!)
+    expect([...cs.reach.subarray(o, o + 4)]).toEqual([r, r, r, r]) // ended: prev = cur, both ends
   })
 })
 
@@ -520,27 +603,13 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
         if (jx < 0 || jz < 0 || jx >= sx || jz >= sz) continue
         const j = jx + jz * sx, was = curtainAt(prev, floor, c, j), now = curtainAt(cur, floor, c, j)
         if (!was && !now) continue
-        const flux = dir === 0 ? view.fluxX[c]! : dir === 1 ? -view.fluxX[c - 1]! : dir === 2 ? view.fluxZ[c]! : -view.fluxZ[c - sx]!
-        const v = exitSpeed(Math.max(0, flux), 20)
-        const [ta, tb] = CURTAIN_TOP[dir]!, [na, nb] = CURTAIN_BOTTOM[dir]!
-        // Expected (top A, top B, foot A, foot B) and reach in a step; an absent curtain rolls up to its top. The arc lands
-        // on the column `arcReach` reaches, at its height there (its corners' mix), or on its ground.
+        const [ta, tb] = CURTAIN_TOP[dir]!
+        // Expected (top A, top B, foot A, foot B, reach A, reach B) in a step; an absent curtain rolls up to its top.
         const lay = (s: Int32Array, o: number, on: boolean): number[] => {
           const a = k[o + ta]!, b = k[o + tb]!
-          if (!on) return [a, b, a, b, 0]
-          const top = (a + b) * 0.5, drop = top - level(s[j]!) / SUB
-          const ahead = [1, 2, 3].map((m) => {
-            const ax = jx + m * dx, az = jz + m * dz
-            return ax < 0 || az < 0 || ax >= sx || az >= sz ? Infinity : level(s[ax + az * sx]!) / SUB
-          })
-          const r = arcReach(v, top, drop, ahead), u = ARC_GAP + r, m = Math.floor(u), f = u - m
-          const px = jx + m * dx, pz = jz + m * dz
-          if (!cornerHeights(s, floor, sx, sz, px, pz, k, 8)) {
-            const g = Math.fround(level(s[px + pz * sx]!) / SUB)
-            return [a, b, g, g, Math.fround(r)]
-          }
-          const fa = Math.fround(k[8 + na]! + (k[8 + ta]! - k[8 + na]!) * f), fb = Math.fround(k[8 + nb]! + (k[8 + tb]! - k[8 + nb]!) * f)
-          return [a, b, fa, fb, Math.fround(r)]
+          if (!on) return [a, b, a, b, 0, 0]
+          const [ra, fa] = expectedEnd(view, floor, s, x, z, dir, 0, a), [rb, fb] = expectedEnd(view, floor, s, x, z, dir, 1, b)
+          return [a, b, fa!, fb!, ra!, rb!]
         }
         const p = lay(prev, 0, was), q = lay(cur, 4, now)
         want.push(`${lx},${lz},${dir}: ${p.join(' ')} | ${q.join(' ')}`)
@@ -551,13 +620,43 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
       const cs = d.curtains
       for (let n = 0; n < cs.count; n++) {
         const o = n * 4
-        const p = [...cs.prev.subarray(o, o + 4), cs.reach[n * 2]], q = [...cs.cur.subarray(o, o + 4), cs.reach[n * 2 + 1]]
+        const p = [...cs.prev.subarray(o, o + 4), ...cs.reach.subarray(o, o + 2)], q = [...cs.cur.subarray(o, o + 4), ...cs.reach.subarray(o + 2, o + 4)]
         got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${p.join(' ')} | ${q.join(' ')}`)
       }
     }
     if (got.join('/') !== want.join('/')) bad.push(`curtains of ${cc}: ${got.join('/')} vs ${want.join('/')}`)
   }
   return bad
+}
+
+/**
+ * [reach, foot] of end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in step `s`, from scratch: thrown
+ * at the mean exit speed of it and the curtain beside that end on the same side (if one hangs there in the step), over the
+ * higher level of their two rows, onto this row's columns (their corners, or their ground when not drawn).
+ */
+function expectedEnd(view: SurfaceView, floor: Int16Array, s: Int32Array, x: number, z: number, dir: number, end: number, top: number): number[] {
+  const { sx, sz } = view, dx = DIR_X[dir]!, dz = DIR_Z[dir]!, ox = END_X[dir]![end]!, oz = END_Z[dir]![end]!
+  const speed = (c: number) => {
+    const f = dir === 0 ? view.fluxX[c]! : dir === 1 ? -view.fluxX[c - 1]! : dir === 2 ? view.fluxZ[c]! : -view.fluxZ[c - sx]!
+    return exitSpeed(Math.max(0, f), 20)
+  }
+  const inside = (ax: number, az: number) => ax >= 0 && az >= 0 && ax < sx && az < sz
+  const nx = x + ox, nz = z + oz
+  const shared = inside(nx, nz) && curtainAt(s, floor, nx + nz * sx, nx + dx + (nz + dz) * sx)
+  const v = shared ? (speed(x + z * sx) + speed(nx + nz * sx)) / 2 : speed(x + z * sx)
+  const levels: number[] = [], near: number[] = [], far: number[] = [], corners = new Float32Array(4)
+  for (let i = 0; i < ARC_COLUMNS; i++) {
+    const ax = x + dx * (i + 1), az = z + dz * (i + 1)
+    if (!inside(ax, az)) { levels.push(Infinity); near.push(0); far.push(0); continue }
+    const g = level(s[ax + az * sx]!) / SUB
+    levels.push(shared ? Math.max(g, level(s[ax + ox + (az + oz) * sx]!) / SUB) : g)
+    const drawn = cornerHeights(s, floor, sx, sz, ax, az, corners, 0)
+    near.push(drawn ? corners[CURTAIN_BOTTOM[dir]![end]!]! : g)
+    far.push(drawn ? corners[CURTAIN_TOP[dir]![end]!]! : g)
+  }
+  const out = new Float64Array(2)
+  layArc(v, top, levels, near, far, out)
+  return [Math.fround(out[0]!), Math.fround(out[1]!)]
 }
 
 /** Edge-adjacent drawn columns within JOIN of each other whose shared corners differ: "x,z +x|+z: a vs b". */

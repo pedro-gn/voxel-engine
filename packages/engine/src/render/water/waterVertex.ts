@@ -95,7 +95,7 @@ export function surfaceVertex(): WaterVertex {
  * A waterfall curtain (WaterSurface): one instanced strip of ARC_SEGMENTS segments per curtain, bent into a ballistic arc.
  * - The base strip's `strip` attribute is (s, end): s the fall fraction (0 top, 1 foot, evenly in time), end 0 for the
  *   edge's end A and 1 for B. The edge's ends sit on the upper column's side `dir` (0 +x, 1 −x, 2 +z, 3 −z).
- * - cPrev/cCur hold (top A, top B, foot A, foot B), cReach the arc's reach (previous, current step): each mixed by waterAlpha.
+ * - cPrev/cCur hold (top A, top B, foot A, foot B), cReach its ends' reaches (A, B in the previous step, then A, B in the current one): each mixed by waterAlpha.
  * - cInfo is (lx, lz, dir + 4 × light, flux).
  * Each end's point lies arcPoint(top, foot, reach, s) (surfaceMesh.ts) away: in front of the wall's plane along `dir` (by
  * ARC_GAP at least below the top, so it never meets the wall it pours from), and down from the top.
@@ -103,13 +103,13 @@ export function surfaceVertex(): WaterVertex {
 export function curtainVertex(): WaterVertex {
   const strip = attribute('strip', 'vec2')
   const cp = attribute('cPrev', 'vec4'), cc = attribute('cCur', 'vec4'), info = attribute('cInfo', 'vec4')
-  const reach = attribute('cReach', 'vec2')
+  const reach = attribute('cReach', 'vec4')
   const h = mix(cp, cc, waterAlpha)
-  const r = mix(reach.x, reach.y, waterAlpha)
   const dir = info.z.mod(4)
   const light = info.z.div(4).floor()
   const s = strip.x
   const isB = strip.y.greaterThan(0.5)
+  const r = select(isB, mix(reach.y, reach.w, waterAlpha), mix(reach.x, reach.z, waterAlpha))
   const d0 = dir.lessThan(0.5), d1 = dir.lessThan(1.5), d2 = dir.lessThan(2.5)
   const one = float(1), zero = float(0)
   const ax = select(d0, one, select(d1, zero, select(d2, one, zero)))

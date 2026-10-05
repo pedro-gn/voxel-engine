@@ -43,46 +43,92 @@ export const CORNER_Z: readonly number[] = [-1, -1, 1, 1]
 /** Curtain directions 0 +x, 1 −x, 2 +z, 3 −z: the neighbour's offset. */
 export const DIR_X: readonly number[] = [1, -1, 0, 0]
 export const DIR_Z: readonly number[] = [0, 0, 1, -1]
+/**
+ * Per direction and end (A, B): the offset (x, z) to the column beside the curtain's column on that end's side. A curtain
+ * there through the same side shares that end (layArc runs once for both: no seam between them).
+ */
+export const END_X: readonly (readonly [number, number])[] = [[0, 0], [0, 0], [1, -1], [-1, 1]]
+export const END_Z: readonly (readonly [number, number])[] = [[-1, 1], [1, -1], [0, 0], [0, 0]]
 /** Per direction, the upper column's corners at the edge's ends A and B… */
 export const CURTAIN_TOP: readonly (readonly [number, number])[] = [[1, 2], [3, 0], [2, 3], [0, 1]]
 /** …and the lower neighbour's corners at the same ends. */
 export const CURTAIN_BOTTOM: readonly (readonly [number, number])[] = [[0, 3], [2, 1], [1, 0], [3, 2]]
 
 /**
- * Gravity (blocks/s²) of the curtain arcs: about twice the Froude number's 9.8, so a fall reads as quick at block scale and
- * a trickle (8/SUB block per step) stays within half a block of its wall over a 4-block drop, while the dam break's flows
- * (100–500/SUB per step) reach the cap.
+ * Waterfall curtains are ballistic arcs. A curtain's end leaves its edge level at the exit speed v = exitSpeed(flux) and
+ * falls under ARC_GRAVITY: it would come down `drop` blocks at v · √(2 drop / g) in front of its wall (layArc finds where
+ * over the ground ahead). The exit speed compresses the flow (its square root), calibrated on the flood scene's measured
+ * curtains (flux in 1/SUB block per step at 20 steps per second; reach over flat ground):
+ *
+ * | flow                         | flux | drop (blocks) | reach (blocks) |
+ * |------------------------------|------|---------------|----------------|
+ * | a trickle                    |    8 |             4 |           0.22 |
+ * | one removed dam block        |  110 |            15 |           1.61 |
+ * | the 10-wide breach           |  210 |            14 |           2.14 |
+ * | a dam column (the most seen) |  480 |            12 |           3.00 |
+ *
+ * so a small flow trickles close to its wall, a big one arcs out, and ARC_REACH is only a guard.
  */
 export const ARC_GRAVITY = 20
-/** The farthest (blocks) a curtain lands from its wall: the arc never reaches into geometry farther away. */
+/** The farthest (blocks) a curtain lands from its wall: a guard, so the arc never reaches into geometry farther away. */
 export const ARC_REACH = 3
 /** The least distance (blocks) a curtain hangs in front of its wall's plane below its top, even with no flow. */
 export const ARC_GAP = 1 / 16
 /** Segments of a curtain's strip, evenly spaced in fall time. */
 export const ARC_SEGMENTS = 8
+/** Columns a curtain may cross or land on along its side: its neighbour (0), then up to ARC_REACH + ARC_GAP more. */
+export const ARC_COLUMNS = 1 + Math.floor(ARC_REACH + ARC_GAP)
+/** The discharge (blocks² per second through a one-block edge) that leaves at 1 block/s (see exitSpeed). */
+const EXIT_DISCHARGE = 5
 
 /**
  * Exit speed (blocks/s) of the water pouring over an edge that moves `flux` (1/SUB block per step through its one-block
- * width) at `stepHz` steps per second: the discharge per block of width, read as the speed through a one-block-high brink.
- * (The upper column's depth is no help: the outflow limiter drains a brink column every step, so flux / depth is pinned
- * at one column per step whatever the flow.)
+ * width) at `stepHz` steps per second: √(q / EXIT_DISCHARGE) with q = flux · stepHz / SUB the discharge, i.e. 0.125 · √flux
+ * at 20 steps per second (see ARC_GRAVITY for the calibration). The upper column's depth is no help: the outflow limiter
+ * drains a brink column every step, so flux / depth sits at one column per step whatever the flow.
  */
-export function exitSpeed(flux: number, stepHz: number): number { return (Math.max(0, flux) * stepHz) / SUB }
+export function exitSpeed(flux: number, stepHz: number): number {
+  return Math.sqrt((Math.max(0, flux) * stepHz) / SUB / EXIT_DISCHARGE)
+}
 
 /**
- * Horizontal reach (blocks, from ARC_GAP in front of the wall) of a curtain falling `drop` blocks from height `top` at exit
- * speed v: the ballistic v · √(2 drop / g), at most ARC_REACH. `ahead[m − 1]` is the level (blocks) of the m-th column
- * past the one the curtain falls beside (Infinity outside the world): where one stands above the arc at its near face,
- * the curtain ends ARC_GAP short of that face instead, so it never cuts into a wall or a bank ahead.
+ * Lays one end of a curtain, at exit speed v from height `top`, over the columns along its side: `levels[i]` the level
+ * (blocks) of column i past the edge (0 the neighbour; Infinity outside the world), `near[i]`, `far[i]` that column's
+ * height at the end's line on its sides nearer to and farther from the wall. Writes out[0] the reach (the end lands at
+ * u = ARC_GAP + reach in front of the wall's plane) and out[1] the foot: the landing column's height there, mixed from
+ * near to far.
+ * - The free arc lands in the first column whose level it comes down to before that column's far face. A column standing
+ *   at or above the arc where it enters (a wall, a bank, the world's border) stops it at the far side of the one before.
+ * - The arc as drawn (arcPoint, from `top` down to the landing's foot) is then checked at each face it crosses: it must
+ *   clear the levels on both sides (the landing column's down to its foot). Where it does not, it lands at the far side of
+ *   the column before that face instead, and is checked again. So no drawn point lies below the column under it.
  */
-export function arcReach(v: number, top: number, drop: number, ahead: ArrayLike<number>): number {
-  if (v <= 0 || drop <= 0) return 0
-  let r = Math.min(ARC_REACH, v * Math.sqrt((2 * drop) / ARC_GRAVITY))
-  for (let m = 1; m <= ARC_GAP + r; m++) {
-    const s = (m - ARC_GAP) / r // the arc's fall fraction at that face (see arcPoint)
-    if (ahead[m - 1]! > top - drop * s * s) return m - 2 * ARC_GAP
+export function layArc(v: number, top: number, levels: ArrayLike<number>, near: ArrayLike<number>, far: ArrayLike<number>, out: Float64Array): void {
+  let r = 0
+  if (v > 0) {
+    r = ARC_REACH
+    for (let i = 0; i < ARC_COLUMNS; i++) {
+      const l = levels[i]!
+      if (l >= top) { r = i - 2 * ARC_GAP; break }
+      const d = v * Math.sqrt((2 * (top - l)) / ARC_GRAVITY) // where the free arc comes down to l
+      if (d < i - ARC_GAP) { r = i - 2 * ARC_GAP; break } // already below l at the column's near face: it is in the way
+      if (d < i + 1 - ARC_GAP) { r = d; break }
+    }
+    r = Math.max(0, Math.min(ARC_REACH, r))
   }
-  return r
+  for (;;) {
+    const u = ARC_GAP + r, k = Math.min(ARC_COLUMNS - 1, Math.floor(u)), f = u - k
+    const foot = near[k]! + (far[k]! - near[k]!) * f
+    out[0] = r
+    out[1] = foot
+    let bad = 0
+    for (let m = 1; m <= k && bad === 0; m++) {
+      const s = (m - ARC_GAP) / r, y = top - (top - foot) * s * s
+      if (y < Math.max(levels[m - 1]!, m < k ? levels[m]! : Math.min(levels[m]!, foot))) bad = m
+    }
+    if (bad === 0) return
+    r = bad - 2 * ARC_GAP
+  }
 }
 
 /**

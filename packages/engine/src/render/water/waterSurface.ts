@@ -71,7 +71,7 @@ function instanced(array: Float32Array, size = 4): THREE.InstancedBufferAttribut
 
 /** The view's curtain arrays, by attribute name. */
 const CURTAIN_ATTRIBUTES: readonly (readonly [string, (cs: ColumnData['curtains']) => Float32Array, number])[] = [
-  ['cPrev', (cs) => cs.prev, 4], ['cCur', (cs) => cs.cur, 4], ['cReach', (cs) => cs.reach, 2], ['cInfo', (cs) => cs.info, 4],
+  ['cPrev', (cs) => cs.prev, 4], ['cCur', (cs) => cs.cur, 4], ['cReach', (cs) => cs.reach, 4], ['cInfo', (cs) => cs.info, 4],
 ]
 
 function wireCurtains(g: THREE.InstancedBufferGeometry, cs: ColumnData['curtains']): void {

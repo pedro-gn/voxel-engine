@@ -1,8 +1,9 @@
 import * as THREE from 'three/webgpu'
 import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
-import { ARC_REACH, ARC_SEGMENTS } from '../src/render/water/surfaceMesh.ts'
+import { ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, arcPoint } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
+import { curtainVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
 import { WaterSurface } from '../src/render/water/waterSurface.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
@@ -95,7 +96,7 @@ describe('WaterSurface', () => {
     expect(cgeo.getAttribute('cCur').array).toBe(d.curtains.cur)
     expect(cgeo.getAttribute('cInfo').array).toBe(d.curtains.info)
     expect(cgeo.getAttribute('cReach').array).toBe(d.curtains.reach)
-    expect(cgeo.getAttribute('cReach').itemSize).toBe(2)
+    expect(cgeo.getAttribute('cReach').itemSize).toBe(4)
     expect(cgeo.instanceCount).toBe(32)
     expect(curtains.visible).toBe(true)
   })
@@ -178,6 +179,70 @@ function wgsl(mesh: THREE.Mesh): { vertex: string; fragment: string } {
   b.build()
   return { vertex: b.vertexShader, fragment: b.fragmentShader }
 }
+
+/**
+ * Evaluates a TSL node graph on the CPU for given attribute values (each a number[]), component-wise: just the nodes the
+ * curtain's position uses. A node it does not know fails the test rather than being guessed.
+ */
+function evaluate(node: unknown, attributes: Record<string, number[]>): number[] {
+  const n = node as Record<string, unknown> & { constructor: { name: string } }
+  const at = (v: number[], i: number) => v[v.length === 1 ? 0 : i]!
+  const zip = (a: number[], b: number[], f: (x: number, y: number) => number) =>
+    Array.from({ length: Math.max(a.length, b.length) }, (_, i) => f(at(a, i), at(b, i)))
+  const e = (k: string) => evaluate(n[k], attributes)
+  switch (n.constructor.name) {
+    case 'VarNode': return e('node')
+    case 'ConstNode': return [n.value as number]
+    case 'UniformNode': return [n.value as number]
+    case 'AttributeNode': return attributes[n._attributeName as string]!
+    case 'JoinNode': return (n.nodes as unknown[]).flatMap((m) => evaluate(m, attributes))
+    case 'SplitNode': { const v = e('node'); return [...(n.components as string)].map((c) => v['xyzw'.indexOf(c)]!) }
+    case 'ConditionalNode': return e('condNode')[0] ? e('ifNode') : e('elseNode')
+    case 'OperatorNode': {
+      const ops: Record<string, (x: number, y: number) => number> = {
+        '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y, '%': (x, y) => x % y,
+        '<': (x, y) => +(x < y), '>': (x, y) => +(x > y), '<=': (x, y) => +(x <= y), '>=': (x, y) => +(x >= y), '&&': (x, y) => +(x && y),
+      }
+      const op = ops[n.op as string]
+      if (!op) throw new Error(`operator ${n.op as string}`)
+      return zip(e('aNode'), e('bNode'), op)
+    }
+    case 'MathNode': {
+      const a = e('aNode')
+      switch (n.method) {
+        case 'floor': return a.map(Math.floor)
+        case 'min': return zip(a, e('bNode'), Math.min)
+        case 'max': return zip(a, e('bNode'), Math.max)
+        case 'mix': { const b = e('bNode'), c = e('cNode'); return zip(a, b, (x) => x).map((x, i) => x + (at(b, i) - x) * at(c, i)) }
+        default: throw new Error(`math ${n.method as string}`)
+      }
+    }
+    default: throw new Error(`node ${n.constructor.name}`)
+  }
+}
+
+describe('curtainVertex', () => {
+  it('lays each end where arcPoint does: in front of the wall along its side, from its top down to its foot', () => {
+    const position = curtainVertex().position
+    const p = new Float64Array(2)
+    const before = waterAlpha.value
+    try {
+      for (let dir = 0; dir < 4; dir++) for (const alpha of [0, 0.3, 1]) for (let k = 0; k <= ARC_SEGMENTS; k++) for (let end = 0; end < 2; end++) {
+        const s = k / ARC_SEGMENTS
+        const prev = [7, 7.5, 3, 3.25], cur = [6, 6.5, 2.5, 2], reach = [0.4, 0.9, 2.2, 1.6], info = [5, 9, dir + 4 * 37, 50]
+        waterAlpha.value = alpha
+        const got = evaluate(position, { strip: [s, end], cPrev: prev, cCur: cur, cReach: reach, cInfo: info })
+        const mix = (a: number, b: number) => a + (b - a) * alpha
+        arcPoint(mix(prev[end]!, cur[end]!), mix(prev[2 + end]!, cur[2 + end]!), mix(reach[end]!, reach[2 + end]!), s, p, 0)
+        // The end's corner of the upper column (CURTAIN_TOP): its x and z offsets in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z).
+        const corner = CURTAIN_TOP[dir]![end]!, ex = corner === 1 || corner === 2 ? 1 : 0, ez = corner >= 2 ? 1 : 0
+        const ox = [1, -1, 0, 0][dir]!, oz = [0, 0, 1, -1][dir]!
+        const want = [5 + ex + ox * p[0]!, p[1]!, 9 + ez + oz * p[0]!]
+        for (let i = 0; i < 3; i++) expect(got[i], `dir ${dir} α ${alpha} s ${s} end ${end}`).toBeCloseTo(want[i]!, 5)
+      }
+    } finally { waterAlpha.value = before }
+  })
+})
 
 describe('WaterMaterial', () => {
   it('builds the curtain and surface shaders against their meshes\' attributes', () => {
