@@ -72,10 +72,16 @@ function baseBody(height: number): THREE.InstancedBufferGeometry {
       index.push(...(end === 0 ? [a, c, b, a, d, c] : [a, b, c, a, c, d]))
     }
   }
+  const bodies = index.length
   for (let row = 0; row < 2; row++) index.push(SPLASH(row, 0), SPLASH(row, 1), SPLASH(row + 1, 1), SPLASH(row, 0), SPLASH(row + 1, 1), SPLASH(row + 1, 0))
   g.setAttribute('strip', new THREE.BufferAttribute(strip, 4))
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BODY_VERTICES * 3), 3))
   g.setIndex(index)
+  // Every curtain's splash first, then every body. The water is translucent and writes no depth, so it blends in draw order:
+  // drawn per instance (body, splash, next body…), each body covered part of the previous curtain's splash on screen, a
+  // tooth per block along a wide fall's foot. A splash lies on the water under the bodies, so the bodies blend over it.
+  g.addGroup(bodies, index.length - bodies, 0)
+  g.addGroup(0, bodies, 0)
   bound(g, height, CURTAIN_MARGIN)
   return g
 }
@@ -145,7 +151,7 @@ export class WaterSurface {
     this.curtainMaterial = curtain
     for (const s of this.slots.values()) {
       s.surface.material = surface
-      s.curtains.material = curtain
+      s.curtains.material = [curtain] // one material over its two groups (baseBody)
     }
   }
 
@@ -196,14 +202,14 @@ export class WaterSurface {
     const cgeo = baseBody(this.height)
     wireCurtains(cgeo, d.curtains)
     cgeo.instanceCount = 0
-    const curtains = this.mesh(cgeo, this.curtainMaterial, ox, oz, `water-${cc}-curtains`)
+    const curtains = this.mesh(cgeo, [this.curtainMaterial], ox, oz, `water-${cc}-curtains`)
     curtains.visible = false
     const slot: Slot = { surface, geo, attrs, curtains, cgeo, generation: d.curtains.generation }
     this.slots.set(cc, slot)
     return slot
   }
 
-  private mesh(geo: THREE.InstancedBufferGeometry, material: THREE.Material, ox: number, oz: number, name: string): THREE.Mesh {
+  private mesh(geo: THREE.InstancedBufferGeometry, material: THREE.Material | THREE.Material[], ox: number, oz: number, name: string): THREE.Mesh {
     const m = new THREE.Mesh(geo, material)
     m.position.set(ox, 0, oz)
     m.matrixAutoUpdate = false

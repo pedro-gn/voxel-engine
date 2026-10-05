@@ -162,6 +162,10 @@ describe('WaterSurface', () => {
     // The splash: two quads across the foot, rows −1, 0 and 0, 1.
     const splash = (row: number) => [8 * rows + 2 * row, 8 * rows + 2 * row + 1, 8 * rows + 2 * row + 2, 8 * rows + 2 * row + 3]
     expect([quad(4 * ARC_SEGMENTS), quad(4 * ARC_SEGMENTS + 1)]).toEqual([splash(0), splash(1)])
+    // Drawn as two groups, every instance's splash before every body: a body drawn first would let the next curtain's body
+    // cover part of its splash on screen (the water blends in draw order), a tooth per block along a wide fall's foot.
+    const bodies = 6 * ARC_SEGMENTS * 4
+    expect(cgeo.groups.map((g) => [g.start, g.count, g.materialIndex])).toEqual([[bodies, 12, 0], [0, bodies, 0]])
     const box = cgeo.boundingBox!
     expect(box.min.x).toBeLessThanOrEqual(-ARC_REACH - 1)
     expect(box.max.z).toBeGreaterThanOrEqual(32 + ARC_REACH + 1)
@@ -175,7 +179,7 @@ describe('WaterSurface', () => {
     const a = mat(), b = mat()
     ws.setMaterials(a, b)
     expect((ws.group.getObjectByName('water-0') as THREE.Mesh).material).toBe(a)
-    expect((ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).material).toBe(b)
+    expect((ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).material).toEqual([b]) // over both groups
   })
 })
 
@@ -188,7 +192,7 @@ function wgsl(mesh: THREE.Mesh): { vertex: string; fragment: string } {
   const b = new THREE.WGSLNodeBuilder(mesh, renderer) as unknown as {
     material: THREE.Material; camera: THREE.Camera; scene: THREE.Scene; build(): void; vertexShader: string; fragmentShader: string
   }
-  b.material = mesh.material as THREE.Material
+  b.material = [mesh.material].flat()[0]!
   b.camera = new THREE.PerspectiveCamera()
   b.scene = new THREE.Scene()
   b.build()
