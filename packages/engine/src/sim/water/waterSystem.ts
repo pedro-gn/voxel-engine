@@ -11,6 +11,11 @@ import { WaterMirror } from './mirror.ts'
 import { WaterPublisher, type WaterTick } from './publish.ts'
 import { rebuildColumns, waterKinds } from './rebuild.ts'
 
+/** A displaced volume spreads over columns that each take at most this much (1/16 block). */
+const DISPLACE_SHARE = SUB / 16
+/** The farthest a displaced volume looks for wet columns, in columns. */
+const DISPLACE_RADIUS = 16
+
 export interface WaterOptions {
   /** Awake tiles stepped per tick, in tile order, round robin; the rest wait (spec §6 safety net). Integer ≥ 1. Default 1024. */
   tileCap: number
@@ -163,6 +168,48 @@ export class WaterSystem {
     T.dirty[T.of(x, z)] = 1
     if (this.wetAround(x, z)) T.wakeAround(x, z)
     if (col.floor !== f0) this.floorMoved(x, z, c, f0, col.floor)
+    // A wall that raised a wet column's floor displaced water: spread it over the lake around at once.
+    if (nk === KIND.WALL && col.floor > f0 && d0 > 0) this.displace(x, z, c, f0 * SUB + d0, Math.min(d0, (col.floor - f0) * SUB))
+  }
+
+  /**
+   * The wall placed at column c displaced `vol` sub-units of water (applyEdit raised the floor and kept the depth). Moves them
+   * to the connected wet columns around: a breadth-first search through wet, unblocked neighbours (order -x +x -z +z, radius
+   * DISPLACE_RADIUS) picks the first ceil(vol / DISPLACE_SHARE) columns, and each gets an equal integer share; the first
+   * `vol mod n` get one more. c itself is one of them while its floor is still under the old surface. With no wet neighbour
+   * nothing moves: the water rides on top of the wall. Σ depth is unchanged.
+   */
+  private displace(x: number, z: number, c: number, s0: number, vol: number): void {
+    const cols = this.cols, { floor, depth, sx, sz } = cols, T = cols.tiles
+    const want = Math.ceil(vol / DISPLACE_SHARE)
+    const self = floor[c]! * SUB < s0
+    const found: number[] = [c], dist = [0], seen = new Set<number>([c])
+    for (let i = 0; i < found.length && found.length < want + 1; i++) {
+      const d = dist[i]!
+      if (d >= DISPLACE_RADIUS) continue
+      const cc = found[i]!, cx = cc % sx, cz = (cc - cx) / sx
+      const from = i === 0 ? s0 : cols.surface(cc)
+      for (let k = 0; k < 4; k++) {
+        const nx = cx + (k === 0 ? -1 : k === 1 ? 1 : 0), nz = cz + (k === 2 ? -1 : k === 3 ? 1 : 0)
+        if (nx < 0 || nz < 0 || nx >= sx || nz >= sz) continue
+        const n = nx + nz * sx
+        if (seen.has(n) || depth[n]! <= 0 || floor[n]! * SUB >= from) continue
+        if (i > 0 && floor[cc]! * SUB >= cols.surface(n)) continue
+        seen.add(n)
+        found.push(n)
+        dist.push(d + 1)
+      }
+    }
+    const targets = (self ? found : found.slice(1)).slice(0, want)
+    if (found.length < 2 || targets.length === 0) return
+    const n = targets.length, share = Math.floor(vol / n), extra = vol - share * n
+    depth[c] = depth[c]! - vol
+    for (let i = 0; i < n; i++) {
+      const t = targets[i]!, tx = t % sx, tz = (t - tx) / sx
+      depth[t] = depth[t]! + share + (i < extra ? 1 : 0)
+      T.wake(T.of(tx, tz))
+    }
+    T.dirty[T.of(x, z)] = 1
   }
 
   /** One physics step (spec §3): springs, flow over the awake tiles, the sea. Not called while paused. */
