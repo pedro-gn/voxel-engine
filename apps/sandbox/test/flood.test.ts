@@ -1,5 +1,6 @@
 import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { MIN_FLOW } from '@elovox/engine/src/sim/water/constants.ts'
 import { SUB } from '@elovox/engine/src/world/waterBuffers.ts'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
@@ -110,7 +111,7 @@ describe('flood scene simulation', () => {
     expect(sim.water.expected).toBe(v0)
     expect(sim.water.check()).toEqual([])
   }, 300_000)
-  it('a channel dug beside the lake fills while the lake goes down by exactly what the channel holds', () => {
+  it('a channel dug beside the lake fills; the lake goes down by what the channel holds plus a rim film thinner than MIN_FLOW', () => {
     const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0, log: () => {} })
     sim.configure(floodGenerator, {})
     sim.generate(floodGenerator)
@@ -129,6 +130,9 @@ describe('flood scene simulation', () => {
     const channel = sum(CHANNEL.x0, CHANNEL.z0, CHANNEL.x1, CHANNEL.z1)
     const area = (CHANNEL.x1 - CHANNEL.x0 + 1) * (CHANNEL.z1 - CHANNEL.z0 + 1)
     expect(channel).toBeGreaterThan(area * 3 * SUB)
-    expect(lake0 - sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)).toBe(channel + rim() - rim0)
+    const spill = rim() - rim0
+    expect(spill).toBeGreaterThanOrEqual(0)
+    expect(spill).toBeLessThan(MIN_FLOW) // a film that thin never flows off the rim
+    expect(lake0 - sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)).toBe(channel + spill)
   }, 180_000)
 })

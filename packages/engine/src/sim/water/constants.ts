@@ -13,9 +13,12 @@ export const GAIN = 3
 /**
  * The gain of a step in which the tile cap leaves awake tiles out (k = 2/16). A throttled tile border is advanced out of
  * phase (each tile reads its neighbour's heads only when it steps), which lowers the stable gain far below the checkerboard
- * bound: measured on a 32 × 32 box at cap 1, k up to about 2.2/16 damps and k from 2.25/16 up locks into a z-checkerboard
- * limit cycle on the border columns that never sleeps. 2/16 is under that, with a thin margin (about 10%), and the
- * throttled water is slow anyway: each tile advances 1/N of the steps. An unthrottled step uses GAIN.
+ * bound. Measured on a 32 × 32 box of shallow water (random 0–2 blocks) at cap 1, k up to about 2.2/16 damps and k from
+ * 2.25/16 up locks into a z-checkerboard limit cycle on the border columns that never sleeps; 2/16 is under that, with a
+ * thin margin (about 10%). That bound holds for shallow water only: deep or violent throttled events (random 0–8 blocks,
+ * a deep dam break across a tile border) still lock into the border cycle at any gain. Known limitation, reachable only
+ * when awake tiles exceed the tile cap; the follow-up is in-phase border stepping or a soft cap. An unthrottled step
+ * uses GAIN.
  */
 export const THROTTLED_GAIN = 2
 /** The head an edge feels is clamped to 2 blocks: a cliff does not accelerate water without bound, the excess just pours. */

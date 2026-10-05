@@ -301,4 +301,18 @@ describe('WaterColumns', () => {
     expect(minDepth(g)).toBeGreaterThanOrEqual(0)
     expect(spread(g)).toBeLessThanOrEqual(16)
   }, 300_000)
+
+  // KNOWN LIMITATION (it.fails): deep or violent water (here random 0-8 blocks) throttled by the tile cap still locks into
+  // the border limit cycle at THROTTLED_GAIN; no gain fixes it, the cause is the out-of-phase border stepping. It predates
+  // THROTTLED_GAIN and needs awake tiles above the tile cap. Follow-up: in-phase border stepping or a soft cap. When that
+  // lands, this test starts passing and Vitest fails it: turn it.fails into it.
+  for (const cap of [3, 1]) {
+    it.fails(`deep water, 9 awake tiles, cap ${cap}: settles exactly and every tile sleeps`, () => {
+      const rng = new Pcg32(7)
+      const n = 48
+      const g = grid(n, n, box(n, n, 0), (x, z) => (x > 0 && z > 0 && x < n - 1 && z < n - 1 ? rng.nextInt(8 * SUB) : 0))
+      const v0 = g.total()
+      settle(g, cap, 60_000, () => { expect(g.total()).toBe(v0) })
+    }, 300_000)
+  }
 })
