@@ -3,9 +3,9 @@ import { mergeTiles, type WaterTick } from '../../sim/water/publish.ts'
 import type { WorldSize } from '../../world/layout.ts'
 import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
-  ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_MAX, FLARE_SHARED, JOIN, OUTSIDE,
-  SINK, boreWhite, bodyClears, bodyThickness, curtainAt, effective, exitSpeed, froude, layArc, layBody, level, quantizeFlow, shows,
-  surfaceWhite, vertexShares,
+  ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX, JOIN, OUTSIDE,
+  SINK, boreWhite, bodyMargin, bodyThickness, curtainAt, effective, exitSpeed, flareAmount, flareCode, flareOpen, froude, layArc,
+  layBody, level, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
 /**
@@ -13,9 +13,10 @@ import {
  * - `prev`, `cur` (4 floats): (top A, top B, foot A, foot B) heights in blocks;
  * - `reach`, `thick`, `flare` (4 floats each): per end, (A, B) of the previous step then (A, B) of the current one: how far
  *   (blocks) it lands past ARC_GAP in front of its wall, how thick its body is behind the arc, and how far (blocks, at the
- *   foot) it widens sideways (FLARE_SHARED: it joins the curtain beside it there, with no side face);
- * - `info` (4 floats): (lx, lz, dir + 4 × (light + 256 × water), flux), `water` flagging (bit 0 end A, bit 1 end B) the ends
- *   that land on drawn water, where the splash goes.
+ *   foot) it widens sideways and how open it is (flareCode: a free end, with a side face, or one shared with the curtain beside it);
+ * - `info` (4 floats): (lx, lz, dir + 4 × (light + 256 × water), packFlux(flux, splash A, splash B)), `water` flagging (bit 0
+ *   end A, bit 1 end B) the ends that land on drawn water, where the splash goes; a splash byte holds its width and the slope
+ *   of the water under it (splashCode).
  */
 export class Curtains {
   count = 0
@@ -159,7 +160,11 @@ export class SurfaceView {
   /** …the ground (blocks) under those columns and under the row beside the end, and the end's laid result (see layEnd). */
   private readonly bedH = new Float64Array(ARC_COLUMNS)
   private readonly sideH = new Float64Array(ARC_COLUMNS)
-  private readonly arc = new Float64Array(5)
+  private readonly arc = new Float64Array(6)
+  /** The corners (blocks) on the end's line of the column groundBeside last looked at, and the splash bytes of the ends laid last. */
+  private besideNear = 0
+  private besideFar = 0
+  private readonly endSplash = new Int32Array(2)
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -563,9 +568,9 @@ export class SurfaceView {
         for (let e = 0; e < 2; e++) {
           val[v + 4 + e] = cs.reach[o + e]! + (cs.reach[o + 2 + e]! - cs.reach[o + e]!) * carry
           val[v + 6 + e] = cs.thick[o + e]! + (cs.thick[o + 2 + e]! - cs.thick[o + e]!) * carry
-          const fp = cs.flare[o + e]!, fc = cs.flare[o + 2 + e]!
-          // An end that is shared in one step and free in the other changes its kind at once: the side face has no middle.
-          val[v + 8 + e] = fp < 0 !== fc < 0 ? fc : fp + (fc - fp) * carry
+          // Openness and widening carry separately: an end moving between shared and free closes or opens its side face.
+          const fp = cs.flare[o + e]!, fc = cs.flare[o + 2 + e]!, op = flareOpen(fp), ap = flareAmount(fp)
+          val[v + 8 + e] = flareCode(op + (flareOpen(fc) - op) * carry, ap + (flareAmount(fc) - ap) * carry)
         }
       }
     }
@@ -602,7 +607,7 @@ export class SurfaceView {
         cs.info[o] = lx
         cs.info[o + 1] = lz
         cs.info[o + 2] = dir + 4 * ((packed % 256) + 256 * water)
-        cs.info[o + 3] = flux
+        cs.info[o + 3] = packFlux(flux, this.endSplash[0]!, this.endSplash[1]!)
         n++
       }
     }
@@ -619,13 +624,18 @@ export class SurfaceView {
     const out = cur ? cs.cur : cs.prev, r = cur ? o + 2 : o, a = this.arc
     let water = 0
     for (let end = 0; end < 2; end++) {
-      if (!on) { out[o + 2 + end] = out[o + end]!; cs.reach[r + end] = 0; cs.thick[r + end] = 0; cs.flare[r + end] = 0; continue }
+      if (!on) {
+        out[o + 2 + end] = out[o + end]!; cs.reach[r + end] = 0; cs.thick[r + end] = 0; cs.flare[r + end] = flareCode(1, 0)
+        this.endSplash[end] = 0
+        continue
+      }
       this.layEnd(out[o + end]!, cur, x, z, dir, end, v)
       cs.reach[r + end] = a[0]!
       out[o + 2 + end] = a[1]!
       cs.thick[r + end] = a[2]!
       cs.flare[r + end] = a[3]!
       water |= a[4]! << end
+      this.endSplash[end] = a[5]!
     }
     return water
   }
@@ -635,7 +645,7 @@ export class SurfaceView {
    * [0] its reach and [1] its foot (layArc), [2] its body's thickness (layBody), [3] its flare and [4] whether it lands on
    * drawn water. The curtain beside that end on the same side, when one hangs there in the step, shares the end: it is thrown
    * at the mean of both curtains' exit speeds (v is this one's) over the higher of both rows' levels and ground, so both lay
-   * the same arc and body there, which do not flare (FLARE_SHARED). It lands on this row's columns: their corners at the
+   * the same arc, foot and body there, which do not flare (flareCode(0, 0)). It lands on this row's columns: their corners at the
    * end's line (near and far from the wall) when drawn, their ground otherwise. A free end flares when the row beside it
    * (in the world) is clear of the arc and the body, as far as its flux gives it body.
    */
@@ -663,14 +673,31 @@ export class SurfaceView {
         bed[i] = Math.min(this.floor[a]!, near[i]!, far[i]!)
       } else { near[i] = g; far[i] = g; bed[i] = g }
       if (beside) flank[i] = this.groundBeside(s, cur, ax + ox, az + oz, nc2, fc2)
-      if (shared) bed[i] = Math.max(bed[i]!, flank[i]!)
+      if (shared) {
+        // Both rows lay the end from the higher of their corners too, so the two feet (and bodies) are one.
+        near[i] = Math.max(near[i]!, this.besideNear)
+        far[i] = Math.max(far[i]!, this.besideFar)
+        bed[i] = Math.max(bed[i]!, flank[i]!)
+      }
     }
     layArc(speed, top, levels, near, far, arc)
     const r = arc[0]!, foot = arc[1]!, want = bodyThickness(speed), thick = layBody(want, top, foot, r, bed)
     arc[2] = thick
-    arc[3] = shared ? FLARE_SHARED : beside && want > 0 && bodyClears(flank, top, foot, r, 0) && bodyClears(flank, top, foot, r, thick) ? FLARE_MAX * Math.min(1, want / BODY_MAX) : 0
+    // A free end flares as far as its flux gives it body and the row beside it lets it: the less the arc clears that row's
+    // ground, the less it widens, so the flare follows the flux smoothly.
+    let amount = 0
+    if (!shared && beside && want > 0) {
+      const margin = Math.min(bodyMargin(flank, top, foot, r, 0), bodyMargin(flank, top, foot, r, thick))
+      amount = FLARE_MAX * Math.min(1, want / BODY_MAX) * Math.min(1, Math.max(0, margin / FLARE_FADE))
+    }
+    arc[3] = flareCode(shared ? 0 : 1, amount)
+    // The splash: where the end lands on drawn water (either row's, when shared), as wide as its speed gives it, on the
+    // slope of that column's surface along the fall.
     const land = Math.min(ARC_COLUMNS - 1, Math.floor(ARC_GAP + r)), ax = x + dx * (land + 1), az = z + dz * (land + 1)
-    arc[4] = ax >= 0 && az >= 0 && ax < sx && az < sz && shows(s[ax + az * sx]!, this.floor[ax + az * sx]!) ? 1 : 0
+    const drawn = (px: number, pz: number) => px >= 0 && pz >= 0 && px < sx && pz < sz && shows(s[px + pz * sx]!, this.floor[px + pz * sx]!)
+    const wet = drawn(ax, az) || (shared && drawn(ax + ox, az + oz))
+    arc[4] = wet ? 1 : 0
+    arc[5] = wet ? splashCode(splashHalf(speed), far[land]! - near[land]!) : 0
   }
 
   /**
@@ -680,11 +707,13 @@ export class SurfaceView {
    */
   private groundBeside(s: Int32Array, cur: boolean, ax: number, az: number, ca: number, cb: number): number {
     const a = ax + az * this.sx, w = s[a]!
-    if (!shows(w, this.floor[a]!)) return level(w) * PER_SUB
+    if (!shows(w, this.floor[a]!)) { this.besideNear = this.besideFar = level(w) * PER_SUB; return this.besideNear }
     const da = this.data[(ax >> 5) + (az >> 5) * this.cx]
-    if (da === undefined) return this.floor[a]!
+    if (da === undefined) { this.besideNear = this.besideFar = level(w) * PER_SUB; return this.floor[a]! }
     const h = cur ? da.hCur : da.hPrev, oa = ((ax & 31) + (az & 31) * 32) * 4
-    return Math.min(this.floor[a]!, h[oa + ca]!, h[oa + cb]!)
+    this.besideNear = h[oa + ca]!
+    this.besideFar = h[oa + cb]!
+    return Math.min(this.floor[a]!, this.besideNear, this.besideFar)
   }
 
   /** Water leaving column c through its side `dir` (1/SUB block per step; negative: coming in). */
@@ -706,7 +735,7 @@ const CARRY = 10
 
 /**
  * Snaps the curtains within SETTLED of their end, heights, reach, thickness and flare (prev ← cur); returns whether any is
- * still farther. An end whose flare changes between shared (negative) and free is not counted: it is carried across at once.
+ * still farther.
  */
 function settleCurtains(cs: Curtains): boolean {
   let moving = false
@@ -716,7 +745,8 @@ function settleCurtains(cs: Curtains): boolean {
     for (let e = 0; e < 2; e++) {
       const fp = cs.flare[o + e]!, fc = cs.flare[o + 2 + e]!
       if (Math.abs(cs.reach[o + 2 + e]! - cs.reach[o + e]!) >= SETTLED || Math.abs(cs.thick[o + 2 + e]! - cs.thick[o + e]!) >= SETTLED) far = true
-      if (fp < 0 === fc < 0 && Math.abs(fc - fp) >= SETTLED) far = true
+      // The drawn quantities: the widening, and the openness (stored in 1/255).
+      if (Math.abs(flareAmount(fc) - flareAmount(fp)) >= SETTLED || Math.abs(flareOpen(fc) - flareOpen(fp)) > 1 / 64) far = true
     }
     for (let k = o; k < o + 4; k++) if (Math.abs(cs.cur[k]! - cs.prev[k]!) >= SETTLED) far = true
     if (far) moving = true

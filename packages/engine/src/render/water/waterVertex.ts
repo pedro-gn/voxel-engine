@@ -1,7 +1,7 @@
 import type * as THREE from 'three/webgpu'
 import { attribute, bool, float, instanceIndex, mix, normalize, select, smoothstep, uniform, varying, vec2, vec3 } from 'three/tsl'
 import { chunkVertex } from '../chunkVertex.ts'
-import { ARC_GAP, ARC_SEGMENTS, SPLASH_LIFT, SPLASH_MAX, SPLASH_PER_ROOT } from './surfaceMesh.ts'
+import { ARC_GAP, ARC_SEGMENTS, FLARE_OPEN_STEPS, SLOPE_UNITS, SPLASH_LIFT, SPLASH_UNITS } from './surfaceMesh.ts'
 
 /** Loose TSL node type (see voxelLighting.ts). */
 type N = any
@@ -99,13 +99,16 @@ export function surfaceVertex(): WaterVertex {
  *   front (face 0) and back (face 1) at s; 2 for the splash at the foot, whose s is the signed row (−1, 0, 1) across it.
  * - cPrev/cCur hold (top A, top B, foot A, foot B); cReach, cThick and cFlare hold per end (A, B in the previous step, then
  *   A, B in the current one) its reach, the thickness of its body and its flare. Each is mixed by waterAlpha.
- * - cInfo is (lx, lz, dir + 4 × (light + 256 × water), flux), water flagging (bit 0 A, bit 1 B) the ends that land on water.
+ * - cInfo is (lx, lz, dir + 4 × (light + 256 × water), packFlux(flux, splash A, splash B)), water flagging (bit 0 A, bit 1 B)
+ *   the ends that land on water.
  * Each end's front point lies arcPoint(top, foot, reach, s) (surfaceMesh.ts) away: in front of the wall's plane along `dir`
  * (by ARC_GAP at least below the top, so it never meets the wall it pours from), and down from the top; its back point
- * backPoint(…, thick, s) that much nearer the wall. A free end (flare ≥ 0) moves out along the edge by flare × s; an end
- * shared with the curtain beside it (FLARE_SHARED) does not, and its side face collapses (no seam where bodies join).
- * The splash is a white strip across the foot at the landing point, as wide as the flux gives it, fading out to its rows'
- * edges, where the landing column is water.
+ * backPoint(…, thick, s) that much nearer the wall. A flare (flareCode) says how open an end is and how far it moves out
+ * along the edge (by its amount × s); an end shared with the curtain beside it is closed: it does not flare, and its side
+ * face collapses (no seam where bodies join), both mixing smoothly with the other steps.
+ * The splash is a white strip across the foot at the landing point, as wide as its end's speed gives it (its splash byte),
+ * lying on the slope of the landing column's surface, fading out to its rows' edges, where the landing column is water and
+ * the drawn foot has settled onto the current one.
  */
 export function curtainVertex(): WaterVertex {
   const strip = attribute('strip', 'vec4')
@@ -127,9 +130,19 @@ export function curtainVertex(): WaterVertex {
   const row = strip.x
   const r = select(isB, mix(reach.y, reach.w, a), mix(reach.x, reach.z, a))
   const t = select(isB, mix(thick.y, thick.w, a), mix(thick.x, thick.z, a))
+  // A flare is stored as round(open × 255) + amount (flareCode): both mix between the steps on their own.
   const flareP = select(isB, flare.y, flare.x), flareC = select(isB, flare.w, flare.z)
-  const flareAmount = mix(flareP.max(0), flareC.max(0), a)
-  const open = mix(select(flareP.greaterThanEqual(0), one, zero), select(flareC.greaterThanEqual(0), one, zero), a)
+  const openP = flareP.floor(), openC = flareC.floor()
+  const flareAmount = mix(flareP.sub(openP), flareC.sub(openC), a)
+  const open = mix(openP, openC, a).div(FLARE_OPEN_STEPS)
+  // info.w is the flux (below 256) + 256 × (splash byte of end A + 256 × the one of B): see packFlux, splashCode.
+  const flux = info.w.mod(256)
+  const splashes = info.w.sub(flux).div(256)
+  const splashA = splashes.mod(256)
+  const code = select(isB, splashes.sub(splashA).div(256), splashA)
+  const codeLow = code.mod(16), codeSlope = code.sub(codeLow).div(16)
+  const half = codeLow.div(SPLASH_UNITS)
+  const slope = select(codeSlope.greaterThanEqual(8), codeSlope.sub(16), codeSlope).div(SLOPE_UNITS)
   const d0 = dir.lessThan(0.5), d1 = dir.lessThan(1.5), d2 = dir.lessThan(2.5)
   const ax = select(d0, one, select(d1, zero, select(d2, one, zero)))
   const az = select(d0, zero, select(d1, one, select(d2, one, zero)))
@@ -149,11 +162,10 @@ export function curtainVertex(): WaterVertex {
   // The splash lies across the landing column (floor(ARC_GAP + r) out): ± its half extent about the landing point.
   const land = r.add(ARC_GAP)
   const landBase = land.floor()
-  const flux = info.w
-  const half = flux.max(0).sqrt().mul(SPLASH_PER_ROOT).min(SPLASH_MAX)
   const across = land.add(row.mul(half)).min(landBase.add(1)).max(landBase.max(ARC_GAP))
   const u = select(isSplash, across, arc)
-  const y = top.sub(drop.mul(s.mul(s))).add(select(isSplash, float(SPLASH_LIFT), zero))
+  // The splash lies on the surface of the landing column: the foot, then the slope along the fall from the landing point.
+  const y = top.sub(drop.mul(s.mul(s))).add(select(isSplash, slope.mul(across.sub(land)).add(SPLASH_LIFT), zero))
   const spread = flareAmount.mul(s)
   // Normal of the arc (u, y) = (r s, top − drop s²): perpendicular to its tangent (r, −2 drop s), facing out and up. With no
   // reach it faces straight out, like a flat curtain. The back face looks the other way.
@@ -165,7 +177,11 @@ export function curtainVertex(): WaterVertex {
   const fade = mix(float(0.45), float(1), smoothstep(0, 24, flux))
   // The splash shows at the ends that land on water, once the curtain has unrolled, and fades out toward its rows' edges.
   const wet = select(isB, water.div(2).floor(), water.sub(water.div(2).floor().mul(2)))
-  const splash = fade.mul(wet).mul(drop.max(0).min(1)).mul(float(1).sub(row.abs()))
+  // It also waits for the foot to settle: while the curtain unrolls (or the water under it moves) the drawn foot is far from
+  // the current one, and a splash there would hang in the air.
+  const footNow = select(isB, cc.w, cc.z), settled = float(1).sub(top.sub(drop).sub(footNow).abs().mul(4)).max(0)
+  const splashFade = mix(float(0.45), float(1), half.div(0.4).min(1))
+  const splash = splashFade.mul(wet).mul(drop.max(0).min(1)).mul(settled).mul(float(1).sub(row.abs()))
   return {
     position: vec3(info.x.add(select(isB, bx, ax)).add(ox.mul(u)).add(lx.mul(spread)), y, info.y.add(select(isB, bz, az)).add(oz.mul(u)).add(lz.mul(spread))),
     normal: varying(normal),

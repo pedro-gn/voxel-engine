@@ -2,7 +2,8 @@ import * as THREE from 'three/webgpu'
 import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
 import {
-  ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, FLARE_SHARED, SPLASH_LIFT, arcPoint, backPoint, splashHalf,
+  ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, SPLASH_LIFT, arcPoint, backPoint, flareAmount, flareCode, flareOpen, packFlux, splashCode,
+  splashHalfOf, splashSlopeOf,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { curtainVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
@@ -205,7 +206,7 @@ function evaluate(node: unknown, attributes: Record<string, number[]>): number[]
     Array.from({ length: Math.max(a.length, b.length) }, (_, i) => f(at(a, i), at(b, i)))
   const e = (k: string) => evaluate(n[k], attributes)
   switch (n.constructor.name) {
-    case 'VarNode': return e('node')
+    case 'VarNode': case 'VaryingNode': case 'SubBuildNode': return e('node')
     case 'ConstNode': return [n.value as number]
     case 'UniformNode': return [n.value as number]
     case 'AttributeNode': return attributes[n._attributeName as string]!
@@ -226,6 +227,7 @@ function evaluate(node: unknown, attributes: Record<string, number[]>): number[]
       switch (n.method) {
         case 'floor': return a.map(Math.floor)
         case 'sqrt': return a.map(Math.sqrt)
+        case 'abs': return a.map(Math.abs)
         case 'min': return zip(a, e('bNode'), Math.min)
         case 'max': return zip(a, e('bNode'), Math.max)
         case 'mix': { const b = e('bNode'), c = e('cNode'); return zip(a, b, (x) => x).map((x, i) => x + (at(b, i) - x) * at(c, i)) }
@@ -244,9 +246,14 @@ describe('curtainVertex', () => {
     let checked = 0
     try {
       for (let dir = 0; dir < 4; dir++) for (const alpha of [0, 0.3, 1]) {
-        for (const flare of [[0.5, 0.3, 0.4, 0.1], [FLARE_SHARED, 0, FLARE_SHARED, 0.5], [0.5, FLARE_SHARED, 0, FLARE_SHARED]]) {
+        // Flares (A prev, B prev, A cur, B cur) as stored: open or shared, with their widening; the splash bytes of both ends.
+        for (const [flare, splash] of [
+          [[flareCode(1, 0.5), flareCode(1, 0.3), flareCode(1, 0.4), flareCode(1, 0.1)], [splashCode(0.5, 0.25), splashCode(0.3, -0.5)]],
+          [[flareCode(0, 0), flareCode(1, 0.2), flareCode(0, 0.4), flareCode(0.5, 0.5)], [splashCode(0.75, 0.875), splashCode(0.1, -1)]],
+          [[flareCode(1, 0.5), flareCode(0.4, 0.1), flareCode(0, 0), flareCode(0, 0)], [splashCode(0, 0), splashCode(0.4, 0.125)]],
+        ] as [number[], number[]][]) {
           const prev = [7, 7.5, 3, 3.25], cur = [6, 6.5, 2.5, 2], reach = [0.4, 0.9, 2.2, 1.6], thick = [0.1, 0.4, 0.3, 0.5]
-          const info = [5, 9, dir + 4 * (37 + 256 * 2), 50] // water at end B only
+          const info = [5, 9, dir + 4 * (37 + 256 * 2), packFlux(50, splash[0]!, splash[1]!)] // water at end B only
           const mixed = (a: number, b: number) => a + (b - a) * alpha
           waterAlpha.value = alpha
           const ox = [1, -1, 0, 0][dir]!, oz = [0, 0, 1, -1][dir]!
@@ -261,13 +268,14 @@ describe('curtainVertex', () => {
             const got = evaluate(position, { strip: [s, end, face, kind], cPrev: prev, cCur: cur, cReach: reach, cThick: thick, cFlare: flare, cInfo: info })
             const top = mixed(prev[end]!, cur[end]!), foot = mixed(prev[2 + end]!, cur[2 + end]!), r = mixed(reach[end]!, reach[2 + end]!)
             const t = mixed(thick[end]!, thick[2 + end]!), fp = flare[end]!, fc = flare[2 + end]!
-            const open = mixed(+(fp >= 0), +(fc >= 0)), amount = mixed(Math.max(fp, 0), Math.max(fc, 0))
+            const open = mixed(flareOpen(fp), flareOpen(fc)), amount = mixed(flareAmount(fp), flareAmount(fc))
             let u: number, y: number, along: number
             if (kind === 2) {
-              // The splash: across the landing column, about the landing point, as wide as the flux gives it; at the foot, a little up.
-              const land = ARC_GAP + r, base = Math.floor(land)
-              u = Math.min(base + 1, Math.max(Math.max(base, ARC_GAP), land + s * splashHalf(50)))
-              y = foot + SPLASH_LIFT
+              // The splash: across the landing column, about the landing point, as wide as its byte says, at the foot plus the
+              // slope of the water along the fall from the landing point, a little up.
+              const land = ARC_GAP + r, base = Math.floor(land), byte = splash[end]!
+              u = Math.min(base + 1, Math.max(Math.max(base, ARC_GAP), land + s * splashHalfOf(byte)))
+              y = foot + splashSlopeOf(byte) * (u - land) + SPLASH_LIFT
               along = amount
             } else {
               // A side face's back edge is only as thick as it is open; the front is the arc itself.
@@ -286,6 +294,26 @@ describe('curtainVertex', () => {
       }
     } finally { waterAlpha.value = before }
     expect(checked).toBe(4 * 3 * 3 * (9 * 2 * 2 * 2 + 6))
+  })
+
+  it('shows no splash while the drawn foot is away from the current one (a curtain unrolling), and the full splash once it has settled (4)', () => {
+    const alphaNode = curtainVertex().alpha
+    const before = waterAlpha.value
+    try {
+      const splash = (prevFoot: number, a: number) => {
+        waterAlpha.value = a
+        // End A, row 0 of the splash, water under it (bit 0), a wide fall; the foot is 3 now, and was `prevFoot` before.
+        const attributes = {
+          strip: [0, 0, 0, 2], cPrev: [7, 7, prevFoot, prevFoot], cCur: [7, 7, 3, 3], cReach: [1, 1, 1, 1], cThick: [0.3, 0.3, 0.3, 0.3],
+          cFlare: [flareCode(1, 0.3), 0, flareCode(1, 0.3), 0], cInfo: [5, 9, 0 + 4 * (37 + 256 * 1), packFlux(100, splashCode(0.5, 0), 0)],
+        }
+        return evaluate(alphaNode, attributes)[0]!
+      }
+      expect(splash(3, 0.5)).toBeGreaterThan(0.5) // the foot is where it was: the splash shows
+      expect(splash(7, 0.3)).toBe(0) // a newborn curtain: its foot starts at its top and is 4 blocks up at 70 % of the step
+      expect(splash(7, 0.97)).toBeLessThan(0.6 * splash(7, 1)) // and still fading in 3 % before the end, 0.12 block up
+      expect(splash(7, 1)).toBeGreaterThan(0.5) // arrived
+    } finally { waterAlpha.value = before }
   })
 })
 

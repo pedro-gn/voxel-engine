@@ -154,11 +154,9 @@ export const BODY_MIN = 0.04
 export const BODY_MAX = 0.5
 /** While falling, a free end of a curtain widens sideways by flare · s (s the fall fraction), at most FLARE_MAX at the foot. */
 export const FLARE_MAX = 0.5
-/** The flare value of an end shared with the curtain beside it: no flare, and no side face (the two bodies join there). */
-export const FLARE_SHARED = -1
-/** The splash at a curtain's foot spans ± min(SPLASH_MAX, SPLASH_PER_ROOT · √flux) blocks along the fall's direction… */
+/** The splash at a curtain's foot spans ± min(SPLASH_MAX, SPLASH_PER_SPEED · the end's exit speed) blocks along the fall… */
 export const SPLASH_MAX = 0.75
-export const SPLASH_PER_ROOT = 0.07
+export const SPLASH_PER_SPEED = 0.56
 /** …and lies this far (blocks) above the water it lands on. */
 export const SPLASH_LIFT = 0.02
 /** Candidate thicknesses are tried this far inside the limits that bound them (the ground tests are exact). */
@@ -169,10 +167,51 @@ export function bodyThickness(v: number): number {
   return v > 0 ? Math.min(BODY_MAX, Math.max(BODY_MIN, BODY_PER_SPEED * v)) : 0
 }
 
-/** The splash's half extent (blocks) at a curtain's foot for a flux (1/SUB block per step). */
-export function splashHalf(flux: number): number {
-  return Math.min(SPLASH_MAX, SPLASH_PER_ROOT * Math.sqrt(Math.max(0, flux)))
+/** The splash's half extent (blocks) at a curtain's foot for an exit speed (blocks/s) of its end. */
+export function splashHalf(speed: number): number {
+  return Math.min(SPLASH_MAX, SPLASH_PER_SPEED * Math.max(0, speed))
 }
+
+/** The flare is full when the arc clears the ground beside its end by this much (blocks), and fades out to none at 0. */
+export const FLARE_FADE = 0.5
+/** An end's flare is stored in one float: round(open × 255) + amount (blocks, below 1): see flareCode. */
+export const FLARE_OPEN_STEPS = 255
+
+/**
+ * The stored flare of a curtain end in a step: `open` (0–1) is how far the end is a free one, with a side face, and `amount`
+ * (0 ≤ amount < 1, blocks) how far it widens sideways at the foot. An end shared with the curtain beside it is open 0 (an
+ * amount of 0 at rest), a free one open 1; the two mix independently while a curtain moves from one to the other, so
+ * neither jumps (SurfaceView carry).
+ */
+export function flareCode(open: number, amount: number): number {
+  return Math.round(Math.min(1, Math.max(0, open)) * FLARE_OPEN_STEPS) + Math.min(0.999, Math.max(0, amount))
+}
+/** The openness (0–1) of a stored flare. */
+export function flareOpen(code: number): number { return Math.floor(code) / FLARE_OPEN_STEPS }
+/** The widening (blocks) of a stored flare. */
+export function flareAmount(code: number): number { return code - Math.floor(code) }
+
+/** The splash ± half extent, in 1/SPLASH_UNITS (it stores in 4 bits)… */
+export const SPLASH_UNITS = 16
+/** …and the water surface's slope along the fall in 1/SLOPE_UNITS block per block (a signed 4 bits). */
+export const SLOPE_UNITS = 8
+/**
+ * An end's splash in one byte: its half extent (blocks) and the slope of the water it lands on along the fall (blocks per
+ * block, how much higher the landing column's far side is than its near side), so the splash lies on that surface.
+ */
+export function splashCode(half: number, slope: number): number {
+  const h = Math.min(SPLASH_UNITS - 1, Math.round(Math.max(0, half) * SPLASH_UNITS))
+  const s = Math.min(7, Math.max(-8, Math.round(slope * SLOPE_UNITS)))
+  return h + 16 * (s & 15)
+}
+export function splashHalfOf(code: number): number { return (code & 15) / SPLASH_UNITS }
+export function splashSlopeOf(code: number): number { const s = code >> 4; return (s >= 8 ? s - 16 : s) / SLOPE_UNITS }
+/** A curtain's info.w: its flux (below 256: every effect of it has saturated by then) and its ends' splash bytes. */
+export function packFlux(flux: number, codeA: number, codeB: number): number {
+  return Math.min(255, Math.max(0, Math.round(flux))) + 256 * (codeA + 256 * codeB)
+}
+export function fluxOf(packed: number): number { return packed % 256 }
+export function splashOf(packed: number, end: number): number { return Math.floor(packed / (end === 0 ? 256 : 65536)) % 256 }
 
 /**
  * The point at fall fraction s of the back face of a curtain from `top` to `foot` with reach r and thickness `thick`: the arc
@@ -185,17 +224,24 @@ export function backPoint(top: number, foot: number, r: number, thick: number, s
 }
 
 /**
- * Whether the back face of a curtain (backPoint, thickness `thick`; 0 is the arc itself) lies on or above the ground `bed[i]`
- * (blocks) of every column i it is over (0 the column past the wall's plane), from `top` down to `foot` with reach r. The
- * back face descends as it goes out, so its lowest point over a column is where it leaves it, and over the last the foot.
+ * How far (blocks) the back face of a curtain (backPoint, thickness `thick`; 0 is the arc itself) clears the ground `bed[i]`
+ * (blocks) of the columns it is over (0 the column past the wall's plane), from `top` down to `foot` with reach r: the least
+ * height it has over any of them, negative where it lies under one. The back face descends as it goes out, so its lowest
+ * point over a column is where it leaves it, and over the last the foot.
  */
-export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): boolean {
+export function bodyMargin(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): number {
   const end = Math.max(ARC_GAP + r - thick, ARC_GAP), last = Math.min(bed.length - 1, Math.floor(end)), drop = top - foot
+  let margin = foot - bed[last]!
   for (let m = 1; m <= last; m++) {
     const s = (m + thick - ARC_GAP) / r // where the back face crosses the face between columns m − 1 and m
-    if (top - drop * s * s < bed[m - 1]!) return false
+    margin = Math.min(margin, top - drop * s * s - bed[m - 1]!)
   }
-  return foot >= bed[last]!
+  return margin
+}
+
+/** Whether the back face lies on or above the ground of every column it is over (bodyMargin is not negative). */
+export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): boolean {
+  return bodyMargin(bed, top, foot, r, thick) >= 0
 }
 
 /**
