@@ -70,24 +70,36 @@ export function editRipples(view: SurfaceView, set: RippleSet, cmd: EditCommand,
     return
   }
   const [x0, y0, z0] = cmd.min, [x1, y1, z1] = cmd.max
-  let n = 0
-  const cx: number[] = [], cz: number[] = []
-  for (let z = z0; z <= z1 && n < REGION_RIPPLES; z++) for (let x = x0; x <= x1 && n < REGION_RIPPLES; x++) {
-    if (x !== x0 && x !== x1 && z !== z0 && z !== z1) continue
-    if (cx.some((px, i) => Math.hypot(px - x, cz[i]! - z) < RIPPLE_SPACING)) continue
-    const s = view.surfaceAt(x, z)
-    if (s === null) continue
-    for (let y = Math.max(y0, Math.ceil(s - 1 - RIPPLE_RANGE)); y <= Math.min(y1, Math.floor(s + RIPPLE_RANGE)); y++) {
+  // The shell's columns in order around it: the z0 row, the x1 column, the z1 row, the x0 column.
+  const ring: [number, number][] = []
+  for (let x = x0; x <= x1; x++) ring.push([x, z0])
+  for (let z = z0 + 1; z <= z1; z++) ring.push([x1, z])
+  if (z1 > z0) for (let x = x1 - 1; x >= x0; x--) ring.push([x, z1])
+  if (x1 > x0) for (let z = z1 - 1; z > z0; z--) ring.push([x0, z])
+  // Those at a water line (own column or a wet neighbour, as for one block) where the fill changes something.
+  const at: [number, number, number][] = []
+  for (const [x, z] of ring) {
+    let lo = Infinity, hi = -Infinity
+    for (let k = 0; k < 5; k++) {
+      const s = view.surfaceAt(k === 1 ? x - 1 : k === 2 ? x + 1 : x, k === 3 ? z - 1 : k === 4 ? z + 1 : z)
+      if (s !== null) { lo = Math.min(lo, s); hi = Math.max(hi, s) }
+    }
+    for (let y = Math.max(y0, Math.ceil(lo - 1 - RIPPLE_RANGE)); y <= Math.min(y1, Math.floor(hi + RIPPLE_RANGE)); y++) {
       if (get(x, y, z) === cmd.voxel) continue
-      const at = waterLineSurface(view, x, y, z)
-      if (at === null) continue
-      set.add(x + 0.5, z + 0.5, at)
-      cx.push(x)
-      cz.push(z)
-      n++
+      const s = waterLineSurface(view, x, y, z)
+      if (s === null) continue
+      at.push([x, z, s])
       break
     }
   }
+  // At most REGION_RIPPLES of them, taken evenly along the shell and RIPPLE_SPACING apart, so they spread around it.
+  const chosen: [number, number, number][] = []
+  const step = Math.max(1, at.length / REGION_RIPPLES)
+  for (let j = 0; j < REGION_RIPPLES; j++) {
+    const c = at[Math.floor(j * step)]
+    if (c && !chosen.some((p) => Math.hypot(p[0] - c[0], p[1] - c[1]) < RIPPLE_SPACING)) chosen.push(c)
+  }
+  for (const [x, z, s] of chosen) set.add(x + 0.5, z + 0.5, s)
 }
 
 /** The live ripples: the centre (x, z) of each in the first `count` slots, its surface height y, and the clock time it started. */

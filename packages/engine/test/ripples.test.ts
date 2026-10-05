@@ -119,6 +119,31 @@ describe('ripples, review round 1', () => {
     expect(quiet.count).toBe(1)
   })
 
+  it('rings a breach and a dig on the dry shore beside the water, with the same neighbour rule as one block (A)', () => {
+    const view = lake() // wet for x < 20, dry from x = 20
+    const air = () => 0
+    const breach = new RippleSet()
+    editRipples(view, breach, { type: 'fillRegion', min: [20, 2, 10], max: [20, 4, 19], voxel: 0 }, () => 5) // a 1-wide cut on the shore column
+    expect(breach.count).toBeGreaterThan(0)
+    const dig = new RippleSet()
+    editRipples(view, dig, { type: 'fillRegion', min: [20, 2, 10], max: [25, 4, 13], voxel: 0 }, () => 5) // dry ground opening into the lake
+    expect(dig.count).toBeGreaterThan(0)
+    for (let i = 0; i < dig.count; i++) expect(dig.x[i]).toBeLessThan(21) // only where a wet neighbour is
+    const inland = new RippleSet()
+    editRipples(view, inland, { type: 'fillRegion', min: [24, 2, 10], max: [28, 4, 13], voxel: 5 }, air) // dry land, no water beside
+    expect(inland.count).toBe(0)
+  })
+
+  it('spreads the ripples of a region around its shell instead of along its first row (B)', () => {
+    const view = lake()
+    const set = new RippleSet()
+    editRipples(view, set, { type: 'fillRegion', min: [2, 2, 2], max: [13, 4, 13], voxel: 5 }, () => 0)
+    expect(set.count).toBe(4)
+    const xs = new Set(Array.from({ length: 4 }, (_, i) => set.x[i]!)), zs = new Set(Array.from({ length: 4 }, (_, i) => set.z[i]!))
+    expect(xs.size).toBeGreaterThan(1) // not all on one column of the region
+    expect(zs.size).toBeGreaterThan(1) // not all on one row
+  })
+
   it('restarts its clock when the pool empties, so it never drifts in a long session (4)', () => {
     const r = new RippleSet()
     r.update(5000)
