@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Pcg32 } from '../src/sim/rng.ts'
 import { WaterColumns, damp, moved } from '../src/sim/water/columns.ts'
+import { fallColumn } from '../src/sim/water/fall.ts'
 import { GAIN, HEAD_EPS, MIN_FLOW, SUB, THROTTLED_GAIN } from '../src/sim/water/constants.ts'
 import { quantize } from '../src/sim/water/mirror.ts'
 
@@ -315,4 +316,57 @@ describe('WaterColumns', () => {
       settle(g, cap, 60_000, () => { expect(g.total()).toBe(v0) })
     }, 300_000)
   }
+})
+
+describe('WaterColumns falls', () => {
+  // A ledge at 12 (x ≤ 10) over open ground at 2; the brink column (10, 8) holds 2 blocks and already pours east.
+  const sx = 32, sz = 16, z = 8, brink = 10 + z * sx
+  const ledge = (ahead: (x: number) => number = () => 2) => {
+    const g = grid(sx, sz, (x) => (x <= 10 ? 12 : ahead(x)), (x, zz) => (x === 10 && zz === z ? 2 * SUB : 0))
+    g.flux[brink * 2] = 240 << 4
+    return g
+  }
+  const row = (g: WaterColumns, x: number) => g.depth[x + z * sx]!
+
+  it('lands the water a fall moves where its arc does, flying over the column at the foot of the wall', () => {
+    const g = ledge(), v0 = g.total()
+    g.step(CAP, null, 0)
+    expect(g.total()).toBe(v0)
+    const east = [11, 12, 13, 14].map((x) => row(g, x)), m = east.reduce((a, b) => a + b)
+    const k = fallColumn(m, (12 + 2 - 2) * SUB, 3) // from the brink's surface down to the open ground
+    expect(m).toBeGreaterThan(0)
+    expect(k).toBeGreaterThan(0)
+    expect(east).toEqual(east.map((_, i) => (i === k ? m : 0)))
+  })
+
+  it('stops a fall at ground ahead higher than where it falls to', () => {
+    const g = ledge((x) => (x === 12 ? 5 : 2))
+    g.step(CAP, null, 0)
+    expect(row(g, 11)).toBeGreaterThan(0)
+    expect(row(g, 12) + row(g, 13) + row(g, 14)).toBe(0)
+  })
+
+  it('does not throw a wall of water collapsing on its own floor (no brink): it runs on along the ground', () => {
+    const g = grid(sx, sz, () => 2, (x, zz) => (x === 10 && zz === z ? 4 * SUB : 0))
+    g.flux[brink * 2] = 240 << 4
+    g.step(CAP, null, 0)
+    expect(row(g, 11)).toBeGreaterThan(0)
+    expect(row(g, 12) + row(g, 13)).toBe(0)
+  })
+
+  it('pours a ledge into the open the same as its mirror image, step by step', () => {
+    const floor = (x: number) => (x <= 10 ? 12 : 2), depth = (x: number) => (x >= 3 && x <= 10 ? 2 * SUB : 0)
+    const a = grid(sx, sz, (x) => floor(x), (x, zz) => (zz > 4 && zz < 12 ? depth(x) : 0))
+    const b = grid(sx, sz, (x) => floor(sx - 1 - x), (x, zz) => (zz > 4 && zz < 12 ? depth(sx - 1 - x) : 0))
+    let landed = 0
+    for (let i = 0; i < 400; i++) {
+      a.step(CAP, null, 0)
+      b.step(CAP, null, 0)
+      for (let zz = 0; zz < sz; zz++) for (let x = 0; x < sx; x++) {
+        if (a.depth[x + zz * sx] !== b.depth[sx - 1 - x + zz * sx]) throw new Error(`step ${i + 1}: (${x}, ${zz}) ${a.depth[x + zz * sx]} vs ${b.depth[sx - 1 - x + zz * sx]}`)
+      }
+      if (a.depth[12 + 8 * sx]! > a.depth[11 + 8 * sx]!) landed++
+    }
+    expect(landed).toBeGreaterThan(0) // the falls did land past the foot of the wall
+  })
 })

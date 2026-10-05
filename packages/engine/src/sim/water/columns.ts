@@ -1,4 +1,5 @@
 import * as K from './constants.ts'
+import { ARC_GAP, ARC_REACH, FALL_MIN, fallColumn } from './fall.ts'
 import { WaterTiles } from './tiles.ts'
 
 // Plain module constants: Vitest's module transform turns imported bindings into property reads, several times slower in
@@ -15,6 +16,28 @@ const WEST = 1, NORTH = 2, EAST = 4, SOUTH = 8
 const RUN_MIN = 8, END = 4
 /** A column thinner than this (1/16 block) shows no water, in the mirror or the renderer: an edge between two such films does not keep a tile awake. */
 const SHOWN = SUB / 16
+/** Columns past the one beside an edge that a fall can land on (ARC_REACH + ARC_GAP out). */
+const FALL_COLUMNS = Math.floor(ARC_REACH + ARC_GAP)
+/** A fall's code (WaterColumns.falls) keeps its drop in 1/FALL_DROP_UNITS block above its clear columns (2 bits). */
+const FALL_DROP_UNITS = 16
+const FALL_DROP_MAX = (1 << 14) - 1
+
+/**
+ * The fall code of an edge whose sender stands more than FALL_MIN above the level `level` of the receiver r (both 1/SUB
+ * block): its drop, and how many columns past r, going on by `stride` (±1 along x, ±sx along z), the water may fly over
+ * before ground higher than that level stops it (at most FALL_COLUMNS; the world's border stops it too).
+ */
+function fallCode(floor: Int16Array, r: number, stride: number, level: number, drop: number, sx: number, sz: number): number {
+  const x = r % sx, z = (r - x) / sx, along = stride === 1 || stride === -1, sign = stride > 0 ? 1 : -1
+  let clear = 0
+  for (let i = 1; i <= FALL_COLUMNS; i++) {
+    const p = (along ? x : z) + i * sign
+    if (p < 0 || p >= (along ? sx : sz)) break
+    if (floor[r + i * stride]! * SUB > level) break
+    clear = i
+  }
+  return clear | (Math.min(FALL_DROP_MAX, Math.floor((drop * FALL_DROP_UNITS) / SUB)) << 2)
+}
 
 /** A stored flux after one step of friction: loses 1/2^FRICTION_SHIFT, rounded away from zero, so a lone flux always dies out. */
 export function damp(f: number): number {
@@ -33,8 +56,13 @@ function scaled(f: number, d: number, out: number): number {
   return Math.floor(((f >> FLUX_FP) * d) / out) << FLUX_FP
 }
 
-/** Step 2 for edge e (a → b): friction, the head, then no flux from a thin film or toward a floor at the sender's surface. */
-function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, e: number, a: number, b: number, gain: number): void {
+/**
+ * Step 2 for edge e (a → b, b = a + stride): friction, the head, then no flux from a thin film or toward a floor at the
+ * sender's surface. An edge whose sender shows water and stands more than FALL_MIN above the receiver, over a brink (its
+ * floor above the receiver's surface: the water leaves the ground, unlike a wall of water collapsing), is a fall: its code
+ * (fallCode, from the step's starting surfaces, so the order edges move in does not matter) says where transfer lands it.
+ */
+function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number): void {
   const fa = floor[a]! * SUB, fb = floor[b]! * SUB, da = depth[a]!, db = depth[b]!
   const sa = fa + da, sb = fb + db
   let h = sa - sb
@@ -44,6 +72,10 @@ function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, e: n
   if (f > 0) { if (da < MIN_FLOW || sa <= fb) f = 0 }
   else if (f < 0) { if (db < MIN_FLOW || sb <= fa) f = 0 }
   flux[e] = f
+  let code = 0
+  if (f > 0 && sa - sb > FALL_MIN && fa > sb && da >= SHOWN) code = fallCode(floor, b, stride, sb, sa - sb, sx, sz)
+  else if (f < 0 && sb - sa > FALL_MIN && fb > sa && db >= SHOWN) code = fallCode(floor, a, -stride, sa, sb - sa, sx, sz)
+  fall[e] = code
 }
 
 /** Step 3 for column c: scales its outflows (east, south, west, north edges; −1 where none) to move at most its depth. */
@@ -61,13 +93,30 @@ function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, sou
   if (north >= 0 && flux[north]! < 0) flux[north] = -scaled(-flux[north]!, d, out)
 }
 
-/** Step 4 for edge e (a → b): moves its water; returns the amount (≥ 0). */
-function transfer(depth: Int32Array, flux: Int32Array, e: number, a: number, b: number): number {
+/** The column transfer's last fall landed its water on (−1: it landed beside the edge, or moved none). */
+let thrown = -1
+
+/**
+ * Step 4 for edge e (a → b, b = a + stride): moves its water; returns the amount (≥ 0). A fall's water flies over the
+ * columns its arc crosses and lands on the one fallColumn gives (thrown), as its curtain is drawn.
+ */
+function transfer(depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, stride: number): number {
+  thrown = -1
   const m = moved(flux[e]!)
   if (m === 0) return 0
+  const n = m < 0 ? -m : m, code = fall[e]!
+  if (code !== 0) {
+    const k = fallColumn(n, ((code >> 2) * SUB) / FALL_DROP_UNITS, code & 3)
+    if (k > 0) {
+      // The sender loses it; the receiver beside the edge is flown over.
+      if (m > 0) { depth[a] = depth[a]! - n; thrown = b + k * stride } else { depth[b] = depth[b]! - n; thrown = a - k * stride }
+      depth[thrown] = depth[thrown]! + n
+      return n
+    }
+  }
   depth[a] = depth[a]! - m
   depth[b] = depth[b]! + m
-  return m < 0 ? -m : m
+  return n
 }
 
 /** Step 5 for column c: a sea column goes back to the sea's surface; returns the water it gave (negative: took). */
@@ -110,6 +159,8 @@ export class WaterColumns {
   /** Per column c: flux through its +x edge at 2c and its +z edge at 2c + 1 (1/(16 SUB) block per step; positive toward +x / +z). */
   readonly flux: Int32Array
   readonly tiles: WaterTiles
+  /** Per edge (as flux): where a fall lands the water it moves this step, or 0 for an edge that is not a fall (fallCode). */
+  private readonly falls: Uint16Array
   /** Per column: depth after its last step (the quiet test). */
   private readonly last: Int32Array
   private readonly stepping: Uint8Array
@@ -140,6 +191,7 @@ export class WaterColumns {
     this.floor = floor
     this.depth = new Int32Array(this.n)
     this.flux = new Int32Array(this.n * 2)
+    this.falls = new Uint16Array(this.n * 2)
     this.last = new Int32Array(this.n)
     this.tiles = new WaterTiles(sx, sz)
     this.stepping = new Uint8Array(this.tiles.count)
@@ -219,7 +271,7 @@ export class WaterColumns {
   }
 
   private accelerateAll(gain: number): void {
-    const floor = this.floor, depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
+    const floor = this.floor, depth = this.depth, flux = this.flux, fall = this.falls, sx = this.sx, sz = this.sz, tx = this.tiles.tx
     const dirty = this.tiles.dirty
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!, o = this.open[k]!
@@ -227,20 +279,20 @@ export class WaterColumns {
       const xe = x1 < sx ? x1 : x1 - 1, ze = z1 < sz ? z1 : z1 - 1 // edges leave columns x < xe (+x), rows z < ze (+z)
       for (let z = z0; z < z1; z++) {
         const row = z * sx
-        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2, c, c + 1, gain) }
-        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2 + 1, c, c + sx, gain) }
+        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz) }
+        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz) }
       }
       // A border edge stored in a tile that does not step is that tile's to publish: it must republish when the edge's moved
       // water changes, from any value to any other. Here it moved water at the last step; transferAll catches it moving now.
       if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
         const c = x0 - 1 + z * sx
         if (moved(flux[c * 2]!) !== 0) dirty[t - 1] = 1
-        accelerate(floor, depth, flux, c * 2, c, c + 1, gain)
+        accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz)
       }
       if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
         const c = x + (z0 - 1) * sx
         if (moved(flux[c * 2 + 1]!) !== 0) dirty[t - tx] = 1
-        accelerate(floor, depth, flux, c * 2 + 1, c, c + sx, gain)
+        accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz)
       }
     }
   }
@@ -261,9 +313,12 @@ export class WaterColumns {
     }
   }
 
-  /** Moves the water of every edge touching a stepped tile. Water crossing into a tile that does not step reaches it. */
+  /**
+   * Moves the water of every edge touching a stepped tile. Water crossing into a tile that does not step reaches it, and so
+   * does a fall's water landing in one (landed).
+   */
   private transferAll(): void {
-    const depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
+    const depth = this.depth, flux = this.flux, fall = this.falls, sx = this.sx, sz = this.sz, tx = this.tiles.tx
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!, o = this.open[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
@@ -272,28 +327,38 @@ export class WaterColumns {
       for (let z = z0; z < z1; z++) {
         const row = z * sx
         for (let x = x0; x < xe; x++) {
-          const c = x + row, m = transfer(depth, flux, c * 2, c, c + 1)
+          const c = x + row, m = transfer(depth, flux, fall, c * 2, c, c + 1, 1)
           if (m > most) most = m
           if (m > 0 && x + 1 === x1 && (o & EAST) !== 0) this.reach(t + 1, m)
+          if (thrown >= 0) this.landed(thrown, m)
         }
         if (z < ze) for (let x = x0; x < x1; x++) {
-          const c = x + row, m = transfer(depth, flux, c * 2 + 1, c, c + sx)
+          const c = x + row, m = transfer(depth, flux, fall, c * 2 + 1, c, c + sx, sx)
           if (m > most) most = m
           if (m > 0 && z + 1 === z1 && (o & SOUTH) !== 0) this.reach(t + tx, m)
+          if (thrown >= 0) this.landed(thrown, m)
         }
       }
       if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
-        const c = x0 - 1 + z * sx, m = transfer(depth, flux, c * 2, c, c + 1)
+        const c = x0 - 1 + z * sx, m = transfer(depth, flux, fall, c * 2, c, c + 1, 1)
         if (m > most) most = m
         if (m > 0) this.reach(t - 1, m)
+        if (thrown >= 0) this.landed(thrown, m)
       }
       if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
-        const c = x + (z0 - 1) * sx, m = transfer(depth, flux, c * 2 + 1, c, c + sx)
+        const c = x + (z0 - 1) * sx, m = transfer(depth, flux, fall, c * 2 + 1, c, c + sx, sx)
         if (m > most) most = m
         if (m > 0) this.reach(t - tx, m)
+        if (thrown >= 0) this.landed(thrown, m)
       }
       this.most[k] = most
     }
+  }
+
+  /** A fall landed `amount` of water on column c: a tile that does not step takes it as water crossing into it (reach). */
+  private landed(c: number, amount: number): void {
+    const x = c % this.sx, t = Math.floor(x / TILE) + Math.floor((c - x) / this.sx / TILE) * this.tiles.tx
+    if (this.stepping[t] === 0) this.reach(t, amount)
   }
 
   /** `amount` of water crossed into tile t, which does not step: mirror and publish it, and a real stream wakes it. */
