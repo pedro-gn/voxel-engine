@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Simulation } from '../src/sim/simulation.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB } from '../src/sim/water/constants.ts'
-import { WaterPublisher, mergeTiles } from '../src/sim/water/publish.ts'
+import { HIDE_DEPTH, SHOW_DEPTH, WaterPublisher, mergeTiles } from '../src/sim/water/publish.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { createWaterBuffers } from '../src/world/waterBuffers.ts'
 import { WATER_BLOCKS, fillGenerator, lake, run, w, waterSim } from './waterHelpers.ts'
@@ -25,6 +25,27 @@ describe('WaterPublisher', () => {
     expect(p.publish([1], cols)).toEqual({ seq: 2, parity: 0, tiles: [0, 1] })
     expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [1] })
     expect(p.publish([], cols)).toBeNull()
+  })
+
+  it('draws a thin film with hysteresis: shown from SHOW_DEPTH, hidden below HIDE_DEPTH, at SHOW_DEPTH in between', () => {
+    const b = createWaterBuffers([32, 32, 32])
+    const cols = new WaterColumns(32, 32, new Int16Array(b.floor))
+    cols.floor.fill(2)
+    const p = new WaterPublisher(b), surface = new Int32Array(b.surface)
+    // Published depth (surface − ground) of column 0 after publishing it at `d`: what the renderer reads (it draws ≥ SHOW_DEPTH).
+    const at = (d: number) => {
+      cols.depth[0] = d
+      const t = p.publish([0], cols)!
+      const v = surface[t.parity * 1024]!
+      return v >= 0 ? v - 2 * SUB : -1
+    }
+    expect(at(SHOW_DEPTH - 1)).toBe(SHOW_DEPTH - 1) // not yet shown: as it is (under the threshold, hidden)
+    expect(at(SHOW_DEPTH + 3)).toBe(SHOW_DEPTH + 3) // shown
+    expect(at(SHOW_DEPTH - 1)).toBe(SHOW_DEPTH) // swinging back under the threshold: still drawn, at it
+    expect(at(HIDE_DEPTH)).toBe(SHOW_DEPTH)
+    expect(at(HIDE_DEPTH - 1)).toBe(HIDE_DEPTH - 1) // under HIDE_DEPTH: hidden again
+    expect(at(SHOW_DEPTH - 1)).toBe(SHOW_DEPTH - 1) // and it takes SHOW_DEPTH to show it again
+    expect(at(0)).toBe(-1) // dry: its ground
   })
 
   it('clamps the published flux to 16 bits', () => {
