@@ -1,6 +1,7 @@
 import type * as THREE from 'three/webgpu'
 import { attribute, bool, float, instanceIndex, mix, normalize, select, smoothstep, uniform, varying, vec2, vec3 } from 'three/tsl'
 import { chunkVertex } from '../chunkVertex.ts'
+import { ARC_GAP, ARC_SEGMENTS } from './surfaceMesh.ts'
 
 /** Loose TSL node type (see voxelLighting.ts). */
 type N = any
@@ -91,32 +92,44 @@ export function surfaceVertex(): WaterVertex {
 }
 
 /**
- * A waterfall curtain (WaterSurface): one instanced quad per curtain.
- * - The base quad's `corner` (0 top A, 1 top B, 2 bottom B, 3 bottom A) picks a height from cPrev/cCur (top A, top B, bottom A, bottom B).
+ * A waterfall curtain (WaterSurface): one instanced strip of ARC_SEGMENTS segments per curtain, bent into a ballistic arc.
+ * - The base strip's `strip` attribute is (s, end): s the fall fraction (0 top, 1 foot, evenly in time), end 0 for the
+ *   edge's end A and 1 for B. The edge's ends sit on the upper column's side `dir` (0 +x, 1 −x, 2 +z, 3 −z).
+ * - cPrev/cCur hold (top A, top B, foot A, foot B), cReach the arc's reach (previous, current step): each mixed by waterAlpha.
  * - cInfo is (lx, lz, dir + 4 × light, flux).
- * - The edge's ends A and B sit on the upper column's side `dir` (0 +x, 1 −x, 2 +z, 3 −z).
+ * Each end's point lies arcPoint(top, foot, reach, s) (surfaceMesh.ts) away: in front of the wall's plane along `dir` (by
+ * ARC_GAP at least below the top, so it never meets the wall it pours from), and down from the top.
  */
 export function curtainVertex(): WaterVertex {
-  const corner = attribute('corner', 'float')
+  const strip = attribute('strip', 'vec2')
   const cp = attribute('cPrev', 'vec4'), cc = attribute('cCur', 'vec4'), info = attribute('cInfo', 'vec4')
+  const reach = attribute('cReach', 'vec2')
   const h = mix(cp, cc, waterAlpha)
+  const r = mix(reach.x, reach.y, waterAlpha)
   const dir = info.z.mod(4)
   const light = info.z.div(4).floor()
-  const isB = corner.greaterThan(0.5).and(corner.lessThan(2.5))
-  const top = corner.lessThan(1.5)
+  const s = strip.x
+  const isB = strip.y.greaterThan(0.5)
   const d0 = dir.lessThan(0.5), d1 = dir.lessThan(1.5), d2 = dir.lessThan(2.5)
   const one = float(1), zero = float(0)
   const ax = select(d0, one, select(d1, zero, select(d2, one, zero)))
   const az = select(d0, zero, select(d1, one, select(d2, one, zero)))
   const bx = select(d0, one, select(d1, zero, select(d2, zero, one)))
   const bz = select(d0, one, select(d1, zero, select(d2, one, zero)))
-  const y = select(top, select(isB, h.y, h.x), select(isB, h.w, h.z))
-  const normal = select(d0, vec3(1, 0, 0), select(d1, vec3(-1, 0, 0), select(d2, vec3(0, 0, 1), vec3(0, 0, -1))))
+  // Outward: the direction the water leaves its column in.
+  const ox = select(d0, one, select(d1, float(-1), zero))
+  const oz = select(d1, zero, select(d2, one, float(-1)))
+  const top = select(isB, h.y, h.x), drop = top.sub(select(isB, h.w, h.z))
+  const u = r.mul(s).add(s.mul(ARC_SEGMENTS).min(1).mul(ARC_GAP))
+  const y = top.sub(drop.mul(s.mul(s)))
+  // Normal of the arc (u, y) = (r s, top − drop s²): perpendicular to its tangent (r, −2 drop s), facing out and up. With no
+  // reach it faces straight out, like a flat curtain.
+  const out = drop.max(0).mul(s).mul(2).add(0.001)
   const { sky, blk } = unpack(light)
   const flux = info.w
   return {
-    position: vec3(info.x.add(select(isB, bx, ax)), y, info.y.add(select(isB, bz, az))),
-    normal: varying(normal),
+    position: vec3(info.x.add(select(isB, bx, ax)).add(ox.mul(u)), y, info.y.add(select(isB, bz, az)).add(oz.mul(u))),
+    normal: varying(normalize(vec3(ox.mul(out), r, oz.mul(out)))),
     isTop: bool(false),
     sky, blk,
     flow: vec3(0, 0, 0),

@@ -3,19 +3,21 @@ import { mergeTiles, type WaterTick } from '../../sim/water/publish.ts'
 import type { WorldSize } from '../../world/layout.ts'
 import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
-  CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, OUTSIDE, SINK, boreWhite, effective, froude, level, quantizeFlow, shows,
-  surfaceWhite, vertexShares,
+  ARC_GAP, ARC_REACH, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, OUTSIDE, SINK, arcReach, boreWhite, effective,
+  exitSpeed, froude, level, quantizeFlow, shows, surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
 /**
- * The curtains of one chunk column, per curtain (4 floats each):
- * - `prev`, `cur`: (top A, top B, bottom A, bottom B) heights in blocks;
- * - `info`: (lx, lz, dir + 4 × light, flux).
+ * The curtains of one chunk column, per curtain:
+ * - `prev`, `cur` (4 floats): (top A, top B, foot A, foot B) heights in blocks;
+ * - `reach` (2 floats): how far (blocks) its arc lands past ARC_GAP in front of its wall, in the previous and current step;
+ * - `info` (4 floats): (lx, lz, dir + 4 × light, flux).
  */
 export class Curtains {
   count = 0
   prev = new Float32Array(64)
   cur = new Float32Array(64)
+  reach = new Float32Array(32)
   info = new Float32Array(64)
   /** Bumped whenever the arrays are replaced: the renderer then rebuilds its attributes. */
   generation = 0
@@ -24,10 +26,11 @@ export class Curtains {
     if (n * 4 <= this.prev.length) return
     let cap = this.prev.length
     while (cap < n * 4) cap *= 2
-    const grow = (a: Float32Array): Float32Array<ArrayBuffer> => { const b = new Float32Array(cap); b.set(a); return b }
-    this.prev = grow(this.prev)
-    this.cur = grow(this.cur)
-    this.info = grow(this.info)
+    const grow = (a: Float32Array, n: number): Float32Array<ArrayBuffer> => { const b = new Float32Array(n); b.set(a); return b }
+    this.prev = grow(this.prev, cap)
+    this.cur = grow(this.cur, cap)
+    this.reach = grow(this.reach, cap / 2)
+    this.info = grow(this.info, cap)
     this.generation++
   }
 }
@@ -54,6 +57,9 @@ export class ColumnData {
 
 /** 1 / SUB: a power of two, so multiplying by it is exact (and cheaper than dividing). */
 const PER_SUB = 1 / SUB
+
+/** Columns from a curtain's column to the farthest it can land on: its neighbour, then up to ARC_REACH (+ ARC_GAP) more. */
+const ARC_SPAN = 1 + Math.floor(ARC_REACH + ARC_GAP)
 
 /** Vertices along one side of a tile plus its one-column ring, and columns along one side of those plus a halo. */
 const VERTICES = TILE + 3
@@ -121,9 +127,12 @@ export class SurfaceView {
   private readonly smooth = new Uint8Array(VERTICES * VERTICES)
   /** The alpha (0–1) the surface is drawn at while an apply runs; negative: none given (the previous step is computed). */
   private shown = -1
-  /** Per curtain key (column × 4 + dir) of the chunk column being rebuilt: its heights as drawn, if it had one (tag = token). */
+  /**
+   * Per curtain key (column × 4 + dir) of the chunk column being rebuilt: its heights and reach as drawn (CARRY floats), if
+   * it had one (tag = token).
+   */
   private readonly carryTag = new Int32Array(4096)
-  private readonly carryVal = new Float32Array(4096 * 4)
+  private readonly carryVal = new Float32Array(4096 * CARRY)
   private carryToken = 0
   /**
    * Alpha mode (apply given `shown`): the columns the last apply left drawn with hPrev ≠ hCur, and the chunk columns with
@@ -135,6 +144,8 @@ export class SurfaceView {
   /** Per column: the epoch of the apply that put it in nextMoving. */
   private readonly movingMark: Uint16Array
   private curtainsMoving: number[] = []
+  /** Scratch for `lay`: the levels (blocks) of the columns past a curtain's neighbour. */
+  private readonly ahead = new Float64Array(ARC_SPAN - 1)
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -366,6 +377,15 @@ export class SurfaceView {
     if (this.touchedFlag[cc] === 0) { this.touchedFlag[cc] = 1; this.touched.push(cc) }
   }
 
+  /** Touches the chunk columns of the columns up to ARC_SPAN from (x, z) along each axis: those whose curtains may land on it. */
+  private touchSpan(x: number, z: number): void {
+    const xa = Math.max(0, x - ARC_SPAN) >> 5, xb = Math.min(this.sx - 1, x + ARC_SPAN) >> 5
+    const za = Math.max(0, z - ARC_SPAN) >> 5, zb = Math.min(this.sz - 1, z + ARC_SPAN) >> 5
+    const cx = x >> 5, cz = z >> 5
+    for (let i = xa; i <= xb; i++) this.touch(i + cz * this.cx)
+    for (let k = za; k <= zb; k++) this.touch(cx + k * this.cx)
+  }
+
   /**
    * Refreshes the columns of the tile and its one-column ring (their corners see the tile) that this apply's changes reach:
    * those with a changed column among their 3 × 3. A ring side is left to the tile beyond it when that tile changed too, and
@@ -436,16 +456,17 @@ export class SurfaceView {
     const sx = this.sx, c = x + z * sx, cc = (x >> 5) + (z >> 5) * this.cx
     const fl = this.floor[c]!, pv = this.prev[c]!, ec = this.eC[h]!
     const was = shows(pv, fl), drawn = was || ec >= 0
+    const lx = x & 31, lz = z & 31, i = lx + lz * 32, o = i * 4
+    // A curtain depends on its column's 3 × 3 and on the columns its arc passes over and lands on: up to ARC_SPAN columns
+    // out along its side (`lay`), drawn or not. Those near the chunk column's border may hold curtains of another one.
+    if (lx < ARC_SPAN || lx >= 32 - ARC_SPAN || lz < ARC_SPAN || lz >= 32 - ARC_SPAN) this.touchSpan(x, z)
     let d = this.data[cc]
     if (!d) {
       if (!drawn) return
       d = new ColumnData()
       this.data[cc] = d
     }
-    const lx = x & 31, lz = z & 31, i = lx + lz * 32, o = i * 4
     d.mark(lz)
-    // A curtain depends only on its column's 3 × 3 (its bottom corners' vertices included), so refreshing the column's own
-    // chunk column's curtains is enough.
     if (cc !== this.lastCc) { this.lastCc = cc; this.markDirty(cc); this.touch(cc) }
     if (!drawn) { d.info[o + 3] = -1; d.curtainMask[i] = 0; return }
     // Corner k is this column's share (quadrant 3, 2, 0, 1) of vertex (x, z), (x+1, z), (x+1, z+1), (x, z+1).
@@ -514,16 +535,17 @@ export class SurfaceView {
 
   /**
    * Lists a chunk column's curtains from its curtain masks and the corners refreshed this apply. `carry` ≥ 0: a curtain the
-   * list already had starts from its heights drawn at alpha `carry` (see apply); negative: from its previous step.
+   * list already had starts from its heights and reach drawn at alpha `carry` (see apply); negative: from its previous step.
    */
   private buildCurtains(cc: number, d: ColumnData, carry: number): void {
     const cs = d.curtains, sx = this.sx, mask = d.curtainMask
     const tag = this.carryTag, val = this.carryVal, token = carry >= 0 ? ++this.carryToken : 0
     if (carry >= 0) {
       for (let k = 0; k < cs.count; k++) {
-        const o = k * 4, key = (cs.info[o]! + cs.info[o + 1]! * 32) * 4 + (cs.info[o + 2]! % 4), v = key * 4
+        const o = k * 4, key = (cs.info[o]! + cs.info[o + 1]! * 32) * 4 + (cs.info[o + 2]! % 4), v = key * CARRY
         tag[key] = token
         for (let j = 0; j < 4; j++) val[v + j] = cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * carry
+        val[v + 4] = cs.reach[k * 2]! + (cs.reach[k * 2 + 1]! - cs.reach[k * 2]!) * carry
       }
     }
     const x0 = (cc % this.cx) * 32, z0 = Math.floor(cc / this.cx) * 32
@@ -536,28 +558,64 @@ export class SurfaceView {
       for (let dir = 0; dir < 4; dir++) {
         const was = ((m >> dir) & 1) === 1, now = ((m >> (dir + 4)) & 1) === 1
         if (!was && !now) continue
-        const jx = x + DIR_X[dir]!, jz = z + DIR_Z[dir]!, j = jx + jz * sx
-        const dj = this.data[(jx >> 5) + (jz >> 5) * this.cx], oj = ((jx & 31) + (jz & 31) * 32) * 4
-        const fj = this.floor[j]!, pj = this.prev[j]!, cj = this.cur[j]!
-        const [ta, tb] = CURTAIN_TOP[dir]!, [ba, bb] = CURTAIN_BOTTOM[dir]!
-        const gp = level(pj) / SUB, gc = level(cj) / SUB
-        // A neighbour drawn in a step has its corners there; otherwise the curtain reaches its ground.
-        const jp = dj !== undefined && shows(pj, fj) ? dj : undefined
-        const jc = dj !== undefined && shows(cj, fj) ? dj : undefined
+        const [ta, tb] = CURTAIN_TOP[dir]!
+        const flux = Math.max(0, this.edgeFlux(c, dir)), v = exitSpeed(flux, this.stepHz)
         cs.reserve(n + 1)
         const o = n * 4
-        edge(cs.prev, o, was, d.hPrev[o4 + ta]!, d.hPrev[o4 + tb]!, jp ? jp.hPrev[oj + ba]! : gp, jp ? jp.hPrev[oj + bb]! : gp)
-        edge(cs.cur, o, now, d.hCur[o4 + ta]!, d.hCur[o4 + tb]!, jc ? jc.hCur[oj + ba]! : gc, jc ? jc.hCur[oj + bb]! : gc)
+        cs.prev[o] = d.hPrev[o4 + ta]!
+        cs.prev[o + 1] = d.hPrev[o4 + tb]!
+        cs.cur[o] = d.hCur[o4 + ta]!
+        cs.cur[o + 1] = d.hCur[o4 + tb]!
+        // The edge's flux now stands for both steps: the view keeps only the current one.
+        cs.reach[n * 2] = this.lay(cs.prev, o, was, false, x, z, dir, v)
+        cs.reach[n * 2 + 1] = this.lay(cs.cur, o, now, true, x, z, dir, v)
         const key = i * 4 + dir
-        if (token !== 0 && tag[key] === token) for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * 4 + j]!
+        if (token !== 0 && tag[key] === token) {
+          for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * CARRY + j]!
+          cs.reach[n * 2] = val[key * CARRY + 4]!
+        }
         cs.info[o] = lx
         cs.info[o + 1] = lz
         cs.info[o + 2] = dir + 4 * (packed % 256)
-        cs.info[o + 3] = Math.max(0, this.edgeFlux(c, dir))
+        cs.info[o + 3] = flux
         n++
       }
     }
     cs.count = n
+  }
+
+  /**
+   * Lays one step of the curtain from column (x, z) through its side `dir`, whose tops (top A, top B) are already in out[o],
+   * out[o + 1]: its feet into out[o + 2], out[o + 3]; returns its reach (`arcReach`, at exit speed v). The arc lands on the
+   * column that reach takes it to, at that column's height there (its near and far corners at the curtain's ends, mixed),
+   * or on its ground when it is not drawn. A curtain absent in the step (`on` false) is rolled up to its top, with no reach.
+   */
+  private lay(out: Float32Array, o: number, on: boolean, cur: boolean, x: number, z: number, dir: number, v: number): number {
+    const ta = out[o]!, tb = out[o + 1]!
+    if (!on) { out[o + 2] = ta; out[o + 3] = tb; return 0 }
+    const s = cur ? this.cur : this.prev, sx = this.sx, sz = this.sz, dx = DIR_X[dir]!, dz = DIR_Z[dir]!
+    const jx = x + dx, jz = z + dz, top = (ta + tb) * 0.5, drop = top - level(s[jx + jz * sx]!) * PER_SUB
+    const ahead = this.ahead
+    for (let m = 1; m < ARC_SPAN; m++) {
+      const ax = jx + m * dx, az = jz + m * dz
+      ahead[m - 1] = ax < 0 || az < 0 || ax >= sx || az >= sz ? Infinity : level(s[ax + az * sx]!) * PER_SUB
+    }
+    const r = arcReach(v, top, drop, ahead), u = ARC_GAP + r, m = Math.floor(u), f = u - m
+    const lx = jx + m * dx, lz = jz + m * dz, l = lx + lz * sx, w = s[l]!
+    const dl = this.data[(lx >> 5) + (lz >> 5) * this.cx]
+    if (dl !== undefined && shows(w, this.floor[l]!)) {
+      // Ends A and B run along the landing column's sides, from its near corners (CURTAIN_BOTTOM) to its far ones (on the
+      // upper column's side `dir`, like the top corners: CURTAIN_TOP).
+      const h = cur ? dl.hCur : dl.hPrev, ol = ((lx & 31) + (lz & 31) * 32) * 4
+      const [na, nb] = CURTAIN_BOTTOM[dir]!, [fa, fb] = CURTAIN_TOP[dir]!
+      out[o + 2] = h[ol + na]! + (h[ol + fa]! - h[ol + na]!) * f
+      out[o + 3] = h[ol + nb]! + (h[ol + fb]! - h[ol + nb]!) * f
+    } else {
+      const g = level(w) * PER_SUB
+      out[o + 2] = g
+      out[o + 3] = g
+    }
+    return r
   }
 
   /** Water leaving column c through its side `dir` (1/SUB block per step; negative: coming in). */
@@ -574,14 +632,21 @@ export class SurfaceView {
 /** Heights (blocks) closer than this to their end are snapped to it in alpha mode (SurfaceView.settleRest). */
 const SETTLED = 1 / 256
 
-/** Snaps the curtains within SETTLED of their end (prev ← cur); returns whether any is still farther. */
+/** Floats a carried curtain keeps (SurfaceView.buildCurtains): its four heights and its reach. */
+const CARRY = 5
+
+/** Snaps the curtains within SETTLED of their end, heights and reach (prev ← cur); returns whether any is still farther. */
 function settleCurtains(cs: Curtains): boolean {
   let moving = false
-  for (let o = 0; o < cs.count * 4; o += 4) {
-    let far = false
+  for (let n = 0; n < cs.count; n++) {
+    const o = n * 4
+    let far = Math.abs(cs.reach[n * 2 + 1]! - cs.reach[n * 2]!) >= SETTLED
     for (let k = o; k < o + 4; k++) if (Math.abs(cs.cur[k]! - cs.prev[k]!) >= SETTLED) far = true
     if (far) moving = true
-    else for (let k = o; k < o + 4; k++) cs.prev[k] = cs.cur[k]!
+    else {
+      for (let k = o; k < o + 4; k++) cs.prev[k] = cs.cur[k]!
+      cs.reach[n * 2] = cs.reach[n * 2 + 1]!
+    }
   }
   return moving
 }
@@ -600,12 +665,4 @@ function edgeBits(e: Int32Array, h: number, hw: number): number {
   if (a < 0) return 0
   return (a - level(e[h + 1]!) > JOIN ? 1 : 0) | (a - level(e[h - 1]!) > JOIN ? 2 : 0)
     | (a - level(e[h + hw]!) > JOIN ? 4 : 0) | (a - level(e[h - hw]!) > JOIN ? 8 : 0)
-}
-
-/** A curtain's (top A, top B, bottom A, bottom B); one absent in this step is rolled up to its top. */
-function edge(out: Float32Array, o: number, on: boolean, ta: number, tb: number, ba: number, bb: number): void {
-  out[o] = ta
-  out[o + 1] = tb
-  out[o + 2] = on ? ba : ta
-  out[o + 3] = on ? bb : tb
 }

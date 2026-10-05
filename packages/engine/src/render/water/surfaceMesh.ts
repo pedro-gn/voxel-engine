@@ -48,6 +48,54 @@ export const CURTAIN_TOP: readonly (readonly [number, number])[] = [[1, 2], [3, 
 /** …and the lower neighbour's corners at the same ends. */
 export const CURTAIN_BOTTOM: readonly (readonly [number, number])[] = [[0, 3], [2, 1], [1, 0], [3, 2]]
 
+/**
+ * Gravity (blocks/s²) of the curtain arcs: about twice the Froude number's 9.8, so a fall reads as quick at block scale and
+ * a trickle (8/SUB block per step) stays within half a block of its wall over a 4-block drop, while the dam break's flows
+ * (100–500/SUB per step) reach the cap.
+ */
+export const ARC_GRAVITY = 20
+/** The farthest (blocks) a curtain lands from its wall: the arc never reaches into geometry farther away. */
+export const ARC_REACH = 3
+/** The least distance (blocks) a curtain hangs in front of its wall's plane below its top, even with no flow. */
+export const ARC_GAP = 1 / 16
+/** Segments of a curtain's strip, evenly spaced in fall time. */
+export const ARC_SEGMENTS = 8
+
+/**
+ * Exit speed (blocks/s) of the water pouring over an edge that moves `flux` (1/SUB block per step through its one-block
+ * width) at `stepHz` steps per second: the discharge per block of width, read as the speed through a one-block-high brink.
+ * (The upper column's depth is no help: the outflow limiter drains a brink column every step, so flux / depth is pinned
+ * at one column per step whatever the flow.)
+ */
+export function exitSpeed(flux: number, stepHz: number): number { return (Math.max(0, flux) * stepHz) / SUB }
+
+/**
+ * Horizontal reach (blocks, from ARC_GAP in front of the wall) of a curtain falling `drop` blocks from height `top` at exit
+ * speed v: the ballistic v · √(2 drop / g), at most ARC_REACH. `ahead[m − 1]` is the level (blocks) of the m-th column
+ * past the one the curtain falls beside (Infinity outside the world): where one stands above the arc at its near face,
+ * the curtain ends ARC_GAP short of that face instead, so it never cuts into a wall or a bank ahead.
+ */
+export function arcReach(v: number, top: number, drop: number, ahead: ArrayLike<number>): number {
+  if (v <= 0 || drop <= 0) return 0
+  let r = Math.min(ARC_REACH, v * Math.sqrt((2 * drop) / ARC_GRAVITY))
+  for (let m = 1; m <= ARC_GAP + r; m++) {
+    const s = (m - ARC_GAP) / r // the arc's fall fraction at that face (see arcPoint)
+    if (ahead[m - 1]! > top - drop * s * s) return m - 2 * ARC_GAP
+  }
+  return r
+}
+
+/**
+ * The point at fall fraction s (0–1, in time) of a curtain from `top` to `foot` (blocks) with reach r, into out[o] (distance
+ * in front of the wall's plane) and out[o + 1] (height): u = r · s (+ ARC_GAP below the top), y = top − (top − foot) · s².
+ * A ballistic arc, parted evenly in time: it leaves the edge level and lands at u = ARC_GAP + r on the foot. The curtain
+ * vertex shader (waterVertex.ts) lays its strip by the same formula.
+ */
+export function arcPoint(top: number, foot: number, r: number, s: number, out: Float64Array, o: number): void {
+  out[o] = r * s + ARC_GAP * Math.min(1, s * ARC_SEGMENTS)
+  out[o + 1] = top - (top - foot) * s * s
+}
+
 /** The level (1/SUB block) a published value stands for: a wet column's surface, a dry one's ground. */
 export function level(v: number): number { return v >= 0 ? v : ~v }
 

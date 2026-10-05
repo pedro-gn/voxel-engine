@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
+import { ARC_REACH, ARC_SEGMENTS } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterSurface } from '../src/render/water/waterSurface.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
@@ -57,7 +58,7 @@ describe('WaterSurface', () => {
     const geo = (ws.group.getObjectByName('water-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     for (const name of ['hPrev', 'hCur', 'info']) expect((geo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
     const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
-    for (const name of ['cPrev', 'cCur', 'cInfo']) expect((cgeo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
+    for (const name of ['cPrev', 'cCur', 'cInfo', 'cReach']) expect((cgeo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
   })
 
   it('merges the rows of several updates into one range until three uploads them', () => {
@@ -93,6 +94,8 @@ describe('WaterSurface', () => {
     expect(cgeo.getAttribute('cPrev').array).toBe(d.curtains.prev)
     expect(cgeo.getAttribute('cCur').array).toBe(d.curtains.cur)
     expect(cgeo.getAttribute('cInfo').array).toBe(d.curtains.info)
+    expect(cgeo.getAttribute('cReach').array).toBe(d.curtains.reach)
+    expect(cgeo.getAttribute('cReach').itemSize).toBe(2)
     expect(cgeo.instanceCount).toBe(32)
     expect(curtains.visible).toBe(true)
   })
@@ -125,6 +128,30 @@ describe('WaterSurface', () => {
     expect(curtains.visible).toBe(true)
   })
 
+  it('draws each curtain as a strip of ARC_SEGMENTS segments that share their vertices, bounded past its chunk column by the reach', () => {
+    const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+    const ws = new WaterSurface(32, view, mat(), mat())
+    ws.update()
+    const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const strip = cgeo.getAttribute('strip')
+    expect(strip.itemSize).toBe(2)
+    expect(strip.count).toBe(2 * (ARC_SEGMENTS + 1))
+    expect(cgeo.getAttribute('position').count).toBe(strip.count)
+    for (let k = 0; k <= ARC_SEGMENTS; k++) for (let side = 0; side < 2; side++) {
+      expect([strip.getX(2 * k + side), strip.getY(2 * k + side)]).toEqual([k / ARC_SEGMENTS, side]) // (fall fraction, end A or B)
+    }
+    const index = [...cgeo.getIndex()!.array]
+    expect(index.length).toBe(6 * ARC_SEGMENTS)
+    for (let k = 0; k < ARC_SEGMENTS; k++) {
+      // Segment k spans rows k and k + 1, both ends: its lower row is the next segment's upper row (no gap between them).
+      expect([...new Set(index.slice(6 * k, 6 * k + 6))].sort((a, b) => a - b)).toEqual([2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 3])
+    }
+    const box = cgeo.boundingBox!
+    expect(box.min.x).toBeLessThanOrEqual(-ARC_REACH - 1)
+    expect(box.max.z).toBeGreaterThanOrEqual(32 + ARC_REACH + 1)
+    expect(cgeo.boundingSphere!.containsPoint(new THREE.Vector3(-ARC_REACH - 1, 0, -ARC_REACH - 1))).toBe(true)
+  })
+
   it('swaps the materials of every mesh', () => {
     const view = published(32, 32, () => 2, () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
@@ -136,7 +163,42 @@ describe('WaterSurface', () => {
   })
 })
 
+/** Builds the WGSL of `mesh`'s material in Node (no GPU): the node graph must resolve against its geometry. */
+function wgsl(mesh: THREE.Mesh): { vertex: string; fragment: string } {
+  const canvas = { width: 1, height: 1, style: {}, addEventListener() {}, removeEventListener() {}, getContext: () => null }
+  const renderer = new THREE.WebGPURenderer({ canvas } as never)
+  ;(renderer as unknown as { hasFeature: () => boolean }).hasFeature = () => false // no backend in Node
+  // The typings leave out what the renderer sets on a builder before building it, and what it builds.
+  const b = new THREE.WGSLNodeBuilder(mesh, renderer) as unknown as {
+    material: THREE.Material; camera: THREE.Camera; scene: THREE.Scene; build(): void; vertexShader: string; fragmentShader: string
+  }
+  b.material = mesh.material as THREE.Material
+  b.camera = new THREE.PerspectiveCamera()
+  b.scene = new THREE.Scene()
+  b.build()
+  return { vertex: b.vertexShader, fragment: b.fragmentShader }
+}
+
 describe('WaterMaterial', () => {
+  it('builds the curtain and surface shaders against their meshes\' attributes', () => {
+    const warn = vi.spyOn(console, 'warn')
+    try {
+      const m = new WaterMaterial(createLightUniforms(), false) // depth effects need a GPU backend's depth texture
+      const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+      const ws = new WaterSurface(32, view, m.surface, m.curtain)
+      ws.update()
+      for (const name of ['water-0', 'water-0-curtains']) {
+        const { vertex, fragment } = wgsl(ws.group.getObjectByName(name) as THREE.Mesh)
+        expect(vertex).toContain('@vertex')
+        expect(fragment).toContain('@fragment')
+      }
+      ws.setMaterials(m.plainSurface, m.plainCurtain)
+      wgsl(ws.group.getObjectByName('water-0-curtains') as THREE.Mesh)
+      expect(warn).not.toHaveBeenCalled() // e.g. "Vertex attribute … not found on geometry"
+      m.dispose()
+    } finally { warn.mockRestore() }
+  })
+
   it('builds the voxel, surface and curtain materials, stylised and plain', () => {
     const m = new WaterMaterial(createLightUniforms(), true)
     expect(m.curtain.side).toBe(THREE.DoubleSide)

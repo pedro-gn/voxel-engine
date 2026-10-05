@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, SINK, cornerHeights, curtainAt, level, quantizeFlow, shows,
+  ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, JOIN, SINK, arcPoint, arcReach, cornerHeights,
+  curtainAt, exitSpeed, level, quantizeFlow, shows,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
@@ -71,6 +72,9 @@ describe('SurfaceView', () => {
     expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
     expect([...cs.prev.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
     expect([...cs.info.subarray(k * 4, k * 4 + 4)]).toEqual([10, 5, 0 + 4 * LIT, 20])
+    const r = Math.fround(arcReach(exitSpeed(20, 20), 7, 4, [3, 3, 3]))
+    expect(r).toBeGreaterThan(0)
+    expect([...cs.reach.subarray(k * 2, k * 2 + 2)]).toEqual([r, r]) // thrown out with the flow, in both steps
     expect(at(s.view, 11, 5, 'info')[3]).toBe(LIT + 256) // white water 1 = 20 >> 4
   })
 
@@ -202,6 +206,90 @@ describe('SurfaceView', () => {
   })
 })
 
+/** Index of the curtain of column (lx, lz) of chunk column `cc` through side `dir`. */
+function curtainIndex(view: SurfaceView, cc: number, lx: number, lz: number, dir = 0): number {
+  const cs = view.column(cc)!.curtains
+  for (let k = 0; k < cs.count; k++) if (cs.info[k * 4] === lx && cs.info[k * 4 + 1] === lz && cs.info[k * 4 + 2]! % 4 === dir) return k
+  throw new Error(`no curtain at (${lx}, ${lz}) dir ${dir}`)
+}
+
+describe('curtain arcs', () => {
+  const low = [0, 0, 0] // the columns past the neighbour lie far below
+
+  it('throws a bigger flow farther out at the same drop, and caps the reach', () => {
+    expect(exitSpeed(32, 20)).toBe(2.5) // 32/256 block per step through a one-block edge, 20 steps per second
+    expect(arcReach(exitSpeed(0, 20), 7, 4, low)).toBe(0)
+    const small = arcReach(exitSpeed(8, 20), 7, 4, low), big = arcReach(exitSpeed(32, 20), 7, 4, low)
+    expect(small).toBeGreaterThan(0)
+    expect(small).toBeLessThan(0.5) // a trickle stays close to the wall
+    expect(big).toBeGreaterThan(3 * small)
+    expect(arcReach(exitSpeed(8, 20), 12, 9, low)).toBeGreaterThan(small) // a higher fall lands farther out
+    expect(arcReach(exitSpeed(1000, 20), 7, 4, low)).toBe(ARC_REACH)
+  })
+
+  it('ends short of a column ahead that rises into the arc, and of the world\'s border', () => {
+    const v = exitSpeed(64, 20) // reaches the cap
+    expect(arcReach(v, 7, 4, [3, 4, 3])).toBe(ARC_REACH) // the arc passes over a low step
+    expect(arcReach(v, 7, 4, [3, 6.9, 3])).toBe(2 - 2 * ARC_GAP) // a wall two columns past the neighbour
+    expect(arcReach(v, 7, 4, [Infinity, 3, 3])).toBe(1 - 2 * ARC_GAP) // outside the world
+  })
+
+  it('lays the arc from the top on the wall\'s plane, in front of the wall below it, down to its foot', () => {
+    const p = new Float64Array(2)
+    for (const r of [0, 0.4, ARC_REACH]) {
+      let u0 = -1, y0 = Infinity
+      for (let k = 0; k <= ARC_SEGMENTS; k++) {
+        arcPoint(7, 3, r, k / ARC_SEGMENTS, p, 0)
+        if (k === 0) expect([...p]).toEqual([0, 7]) // joins the upper surface's edge, above the wall
+        else expect(p[0]).toBeGreaterThanOrEqual(ARC_GAP) // never on or behind the wall's plane, even with no flow
+        expect(p[0]).toBeGreaterThanOrEqual(u0)
+        expect(p[1]).toBeLessThan(y0)
+        u0 = p[0]!
+        y0 = p[1]!
+      }
+      expect([...p]).toEqual([ARC_GAP + r, 3])
+    }
+  })
+
+  it('throws a curtain out with its flow and lands it on the water below', () => {
+    const s = scene(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * (z < 16 ? 32 : 4)
+    s.publish()
+    const cs = s.view.column(0)!.curtains
+    const big = curtainIndex(s.view, 0, 10, 5), small = curtainIndex(s.view, 0, 10, 20)
+    expect(cs.reach[big * 2 + 1]).toBe(Math.fround(arcReach(exitSpeed(32, 20), 7, 4, [3, 3, 3])))
+    expect(cs.reach[big * 2 + 1]).toBeGreaterThan(1)
+    expect(cs.reach[small * 2 + 1]).toBeLessThan(0.25)
+    for (const k of [big, small]) expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3]) // feet on the lake
+  })
+
+  it('ends a curtain before a wall ahead, on the water in front of it', () => {
+    const s = scene(32, 32, (x) => (x <= 10 ? 6 : x <= 12 ? 2 : 10), (x) => (x <= 12 ? SUB : 0))
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * 200
+    s.publish()
+    const cs = s.view.column(0)!.curtains, k = curtainIndex(s.view, 0, 10, 5)
+    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(2 - 2 * ARC_GAP))
+    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
+  })
+
+  it('lands across a chunk-column border, and follows the water there when only it changes', () => {
+    const s = scene(64, 32, (x) => (x <= 29 ? 10 : 2), () => SUB)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (29 + z * 64)] = 16 * 200
+    s.publish()
+    const cs = s.view.column(0)!.curtains
+    let k = curtainIndex(s.view, 0, 29, 5)
+    expect(cs.reach[k * 2 + 1]).toBe(ARC_REACH) // lands in column 33, in chunk column 1
+    expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([11, 11, 3, 3])
+    for (let z = 0; z < 32; z++) for (let x = 33; x < 64; x++) s.cols.depth[x + z * 64] = 2 * SUB
+    expect(s.publish([2, 3, 6, 7])).toBe(true) // chunk column 1 only: nothing within a column of chunk column 0 changes
+    expect(fromScratch(s.view, s.cols.floor)).toEqual([])
+    k = curtainIndex(s.view, 0, 29, 5)
+    // The risen water (a block higher from column 33) now stands in the arc's way: it lands on the slope up to it.
+    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(3 - 2 * ARC_GAP))
+    expect(cs.cur[k * 4 + 2]).toBeGreaterThan(3.25)
+  })
+})
+
 describe('SurfaceView, white water', () => {
   /** White water (0–15) of column (10, 5) of a uniform sheet `depth` sub deep, running toward +x at `speed` blocks/s. */
   function whiteOf(depth: number, speed: number, dryPast = 32): number {
@@ -315,6 +403,24 @@ describe('SurfaceView, displayed alpha', () => {
     expect(d.curtains.cur[2]).toBe(5)
   })
 
+  it('carries a curtain\'s reach from where it is drawn when its flow changes', () => {
+    const s = scene(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+    const flow = (f: number, alpha?: number) => {
+      for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * 32)] = 16 * f
+      expect(s.view.apply(s.pub.publish([0, 1, 2, 3], s.cols)!, alpha)).toBe(true)
+    }
+    flow(8)
+    flow(32, 0.6)
+    const cs = s.view.column(0)!.curtains
+    let k = curtainIndex(s.view, 0, 10, 5)
+    expect(cs.reach[k * 2]).toBeLessThan(cs.reach[k * 2 + 1]!) // moving out with the stronger flow
+    const before = cs.reach[k * 2]! + (cs.reach[k * 2 + 1]! - cs.reach[k * 2]!) * 0.6
+    flow(64, 0.6)
+    k = curtainIndex(s.view, 0, 10, 5)
+    expect(cs.reach[k * 2]).toBe(Math.fround(before)) // no jump at the publish
+    expect(cs.reach[k * 2 + 1]).toBe(ARC_REACH)
+  })
+
   it('never moves backwards or past the newest step when two publishes come in one frame', () => {
     const { view, step } = rising(false)
     const before = drawn(view, 10, 10, 0.6)[0]!
@@ -335,8 +441,11 @@ describe('SurfaceView, displayed alpha', () => {
    * applied at alpha 0.5 (the alpha drawn just before). Returns, per later apply, how far `drawnAt` moved (`jumps`) and moved
    * back (`back`; the lake rises) between the frame before it (alpha 0.5) and right after it (alpha 0, as the engine draws).
    */
-  function settleThenFar(sx: number, floor: (x: number) => number, far: number[], drawnAt: (view: SurfaceView, a: number) => number[]) {
+  function settleThenFar(
+    sx: number, floor: (x: number) => number, far: number[], drawnAt: (view: SurfaceView, a: number) => number[], ledgeFlux = 0,
+  ) {
     const s = scene(sx, 32, floor, () => SUB)
+    for (let z = 0; z < 32; z++) s.cols.flux[2 * (10 + z * sx)] = 16 * ledgeFlux // over the ledge's edge, if it has one
     s.publish()
     s.publish([]) // loaded and settled
     for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) if (floor(x) === 2) s.cols.depth[x + z * sx] = 2 * SUB
@@ -367,23 +476,23 @@ describe('SurfaceView, displayed alpha', () => {
     expect(at(view, 5, 5, 'hPrev')).toEqual([4, 4, 4, 4]) // and it reached its end
   })
 
-  it('moves a curtain of a chunk column no later apply touches on to its end too', () => {
-    const curtain = (view: SurfaceView) => {
-      const cs = view.column(0)!.curtains
-      for (let k = 0; k < cs.count; k++) if (cs.info[k * 4] === 10 && cs.info[k * 4 + 1] === 5 && cs.info[k * 4 + 2]! % 4 === 0) return k
-      throw new Error('no curtain at (10, 5) +x')
-    }
+  it('moves a curtain of a chunk column no later apply touches on to its end too, its reach included', () => {
+    const curtain = (view: SurfaceView) => curtainIndex(view, 0, 10, 5)
+    // Its heights, then its reach negated: the lake rises, so the fall gets shorter and lands closer (moving "back" is up).
     const drawnCurtain = (view: SurfaceView, a: number) => {
-      const cs = view.column(0)!.curtains, o = curtain(view) * 4
-      return [0, 1, 2, 3].map((k) => cs.prev[o + k]! + (cs.cur[o + k]! - cs.prev[o + k]!) * a)
+      const cs = view.column(0)!.curtains, k = curtain(view), o = k * 4
+      const r = cs.reach[k * 2]! + (cs.reach[k * 2 + 1]! - cs.reach[k * 2]!) * a
+      return [...[0, 1, 2, 3].map((j) => cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * a), -r]
     }
     // Chunk column 0 holds the ledge and tile 0; tiles 3 and 7 lie in chunk column 1.
-    const { view, jumps, back } = settleThenFar(64, (x) => (x <= 10 ? 6 : 2), [3, 7], drawnCurtain)
+    const { view, jumps, back } = settleThenFar(64, (x) => (x <= 10 ? 6 : 2), [3, 7], drawnCurtain, 16)
     expect(Math.max(...back)).toBeLessThanOrEqual(0)
     expect(Math.max(...jumps)).toBeLessThan(1 / 256)
-    const cs = view.column(0)!.curtains, o = curtain(view) * 4
+    const cs = view.column(0)!.curtains, k = curtain(view), o = k * 4
     expect(cs.cur[o + 2]).toBe(4) // its bottom: the risen lake
     expect([...cs.prev.subarray(o, o + 4)]).toEqual([...cs.cur.subarray(o, o + 4)])
+    expect(cs.reach[k * 2 + 1]).toBe(Math.fround(arcReach(exitSpeed(16, 20), 7, 3, [4, 4, 4])))
+    expect(cs.reach[k * 2]).toBe(cs.reach[k * 2 + 1])
   })
 })
 
@@ -407,16 +516,33 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
       if (!same(d.hPrev.subarray(o, o + 4), k.subarray(0, 4))) bad.push(`${x},${z} hPrev ${d.hPrev.subarray(o, o + 4)} vs ${k.subarray(0, 4)}`)
       if (!same(d.hCur.subarray(o, o + 4), k.subarray(4, 8))) bad.push(`${x},${z} hCur ${d.hCur.subarray(o, o + 4)} vs ${k.subarray(4, 8)}`)
       for (let dir = 0; dir < 4; dir++) {
-        const jx = x + DIR_X[dir]!, jz = z + DIR_Z[dir]!
+        const dx = DIR_X[dir]!, dz = DIR_Z[dir]!, jx = x + dx, jz = z + dz
         if (jx < 0 || jz < 0 || jx >= sx || jz >= sz) continue
         const j = jx + jz * sx, was = curtainAt(prev, floor, c, j), now = curtainAt(cur, floor, c, j)
         if (!was && !now) continue
-        // Expected (top A, top B, bottom A, bottom B) per step; an absent curtain rolls up to its top.
-        const jp = cornerHeights(prev, floor, sx, sz, jx, jz, k, 8), jc = cornerHeights(cur, floor, sx, sz, jx, jz, k, 12)
-        const [ta, tb] = CURTAIN_TOP[dir]!, [ba, bb] = CURTAIN_BOTTOM[dir]!
-        const gp = Math.fround(level(prev[j]!) / SUB), gc = Math.fround(level(cur[j]!) / SUB)
-        const p = was ? [k[ta]!, k[tb]!, jp ? k[8 + ba]! : gp, jp ? k[8 + bb]! : gp] : [k[ta]!, k[tb]!, k[ta]!, k[tb]!]
-        const q = now ? [k[4 + ta]!, k[4 + tb]!, jc ? k[12 + ba]! : gc, jc ? k[12 + bb]! : gc] : [k[4 + ta]!, k[4 + tb]!, k[4 + ta]!, k[4 + tb]!]
+        const flux = dir === 0 ? view.fluxX[c]! : dir === 1 ? -view.fluxX[c - 1]! : dir === 2 ? view.fluxZ[c]! : -view.fluxZ[c - sx]!
+        const v = exitSpeed(Math.max(0, flux), 20)
+        const [ta, tb] = CURTAIN_TOP[dir]!, [na, nb] = CURTAIN_BOTTOM[dir]!
+        // Expected (top A, top B, foot A, foot B) and reach in a step; an absent curtain rolls up to its top. The arc lands
+        // on the column `arcReach` reaches, at its height there (its corners' mix), or on its ground.
+        const lay = (s: Int32Array, o: number, on: boolean): number[] => {
+          const a = k[o + ta]!, b = k[o + tb]!
+          if (!on) return [a, b, a, b, 0]
+          const top = (a + b) * 0.5, drop = top - level(s[j]!) / SUB
+          const ahead = [1, 2, 3].map((m) => {
+            const ax = jx + m * dx, az = jz + m * dz
+            return ax < 0 || az < 0 || ax >= sx || az >= sz ? Infinity : level(s[ax + az * sx]!) / SUB
+          })
+          const r = arcReach(v, top, drop, ahead), u = ARC_GAP + r, m = Math.floor(u), f = u - m
+          const px = jx + m * dx, pz = jz + m * dz
+          if (!cornerHeights(s, floor, sx, sz, px, pz, k, 8)) {
+            const g = Math.fround(level(s[px + pz * sx]!) / SUB)
+            return [a, b, g, g, Math.fround(r)]
+          }
+          const fa = Math.fround(k[8 + na]! + (k[8 + ta]! - k[8 + na]!) * f), fb = Math.fround(k[8 + nb]! + (k[8 + tb]! - k[8 + nb]!) * f)
+          return [a, b, fa, fb, Math.fround(r)]
+        }
+        const p = lay(prev, 0, was), q = lay(cur, 4, now)
         want.push(`${lx},${lz},${dir}: ${p.join(' ')} | ${q.join(' ')}`)
       }
     }
@@ -425,7 +551,8 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
       const cs = d.curtains
       for (let n = 0; n < cs.count; n++) {
         const o = n * 4
-        got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${[...cs.prev.subarray(o, o + 4)].join(' ')} | ${[...cs.cur.subarray(o, o + 4)].join(' ')}`)
+        const p = [...cs.prev.subarray(o, o + 4), cs.reach[n * 2]], q = [...cs.cur.subarray(o, o + 4), cs.reach[n * 2 + 1]]
+        got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${p.join(' ')} | ${q.join(' ')}`)
       }
     }
     if (got.join('/') !== want.join('/')) bad.push(`curtains of ${cc}: ${got.join('/')} vs ${want.join('/')}`)

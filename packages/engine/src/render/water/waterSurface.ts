@@ -1,11 +1,13 @@
 import * as THREE from 'three/webgpu'
+import { ARC_GAP, ARC_REACH, ARC_SEGMENTS } from './surfaceMesh.ts'
 import type { ColumnData, SurfaceView } from './surfaceView.ts'
 
-/** Base quad corners, in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z) (surface) or top A, top B, bottom B, bottom A (curtain). */
+/** Base quad corners, in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z). */
 const CORNERS = [0, 1, 2, 3]
 /** Facing +y, counter-clockwise seen from above. */
 const SURFACE_INDEX = [0, 2, 1, 0, 3, 2]
-const CURTAIN_INDEX = [0, 1, 2, 0, 2, 3]
+/** How far (blocks) a curtain reaches past its chunk column: from its column's edge, ARC_GAP + ARC_REACH out. */
+const CURTAIN_MARGIN = Math.ceil(ARC_GAP + ARC_REACH)
 
 interface Slot {
   surface: THREE.Mesh
@@ -16,14 +18,46 @@ interface Slot {
   generation: number
 }
 
-function baseQuad(index: number[], height: number): THREE.InstancedBufferGeometry {
+/** Bounds of a chunk column's instances, `margin` blocks past its sides (+ 1), over the world's height. */
+function bound(g: THREE.InstancedBufferGeometry, height: number, margin: number): void {
+  const half = 16 + margin + 1
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(16, height / 2, 16), Math.hypot(half, height / 2, half))
+  g.boundingBox = new THREE.Box3(new THREE.Vector3(16 - half, 0, 16 - half), new THREE.Vector3(16 + half, height, 16 + half))
+}
+
+/** The surface's base quad: `corner` (0–3) picks the corner of the instance's heights. */
+function baseQuad(height: number): THREE.InstancedBufferGeometry {
   const g = new THREE.InstancedBufferGeometry()
   g.setAttribute('corner', new THREE.BufferAttribute(Float32Array.from(CORNERS), 1))
   // three's node materials expect a `position` attribute; the shaders build positions from the instance data instead.
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3))
+  g.setIndex(SURFACE_INDEX)
+  bound(g, height, 0)
+  return g
+}
+
+/**
+ * A curtain's base strip: ARC_SEGMENTS segments, rows 0..ARC_SEGMENTS from its top to its foot. Vertex 2k + end has
+ * `strip` = (k / ARC_SEGMENTS, end), end 0 at the edge's end A and 1 at B; segment k is the quad between rows k and k + 1,
+ * so neighbouring segments share their row of vertices.
+ */
+function baseStrip(height: number): THREE.InstancedBufferGeometry {
+  const g = new THREE.InstancedBufferGeometry()
+  const rows = ARC_SEGMENTS + 1, strip = new Float32Array(rows * 4), index: number[] = []
+  for (let k = 0; k < rows; k++) {
+    strip[k * 4] = k / ARC_SEGMENTS
+    strip[k * 4 + 1] = 0
+    strip[k * 4 + 2] = k / ARC_SEGMENTS
+    strip[k * 4 + 3] = 1
+  }
+  for (let k = 0; k < ARC_SEGMENTS; k++) {
+    const a = 2 * k, b = a + 1, c = a + 3, d = a + 2 // top A, top B, foot B, foot A of the segment
+    index.push(a, b, c, a, c, d)
+  }
+  g.setAttribute('strip', new THREE.BufferAttribute(strip, 2))
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rows * 2 * 3), 3))
   g.setIndex(index)
-  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(16, height / 2, 16), Math.hypot(16, height / 2, 16) + 1)
-  g.boundingBox = new THREE.Box3(new THREE.Vector3(-1, 0, -1), new THREE.Vector3(33, height, 33))
+  bound(g, height, CURTAIN_MARGIN)
   return g
 }
 
@@ -31,8 +65,17 @@ function baseQuad(index: number[], height: number): THREE.InstancedBufferGeometr
  * An instance attribute over one of the view's arrays. It keeps three's static usage: with DynamicDrawUsage three would
  * rewrite the whole buffer every frame; here `needsUpdate` and the row range (uploadRows) say what to upload.
  */
-function instanced(array: Float32Array): THREE.InstancedBufferAttribute {
-  return new THREE.InstancedBufferAttribute(array, 4)
+function instanced(array: Float32Array, size = 4): THREE.InstancedBufferAttribute {
+  return new THREE.InstancedBufferAttribute(array, size)
+}
+
+/** The view's curtain arrays, by attribute name. */
+const CURTAIN_ATTRIBUTES: readonly (readonly [string, (cs: ColumnData['curtains']) => Float32Array, number])[] = [
+  ['cPrev', (cs) => cs.prev, 4], ['cCur', (cs) => cs.cur, 4], ['cReach', (cs) => cs.reach, 2], ['cInfo', (cs) => cs.info, 4],
+]
+
+function wireCurtains(g: THREE.InstancedBufferGeometry, cs: ColumnData['curtains']): void {
+  for (const [name, array, size] of CURTAIN_ATTRIBUTES) g.setAttribute(name, instanced(array(cs), size))
 }
 
 /** Whether any quad of the chunk column is drawn (a negative packed light hides one). */
@@ -113,12 +156,10 @@ export class WaterSurface {
     }
     const cs = d.curtains
     if (cs.generation !== s.generation) {
-      s.cgeo.setAttribute('cPrev', instanced(cs.prev))
-      s.cgeo.setAttribute('cCur', instanced(cs.cur))
-      s.cgeo.setAttribute('cInfo', instanced(cs.info))
+      wireCurtains(s.cgeo, cs)
       s.generation = cs.generation
     } else {
-      for (const name of ['cPrev', 'cCur', 'cInfo']) s.cgeo.getAttribute(name).needsUpdate = true
+      for (const [name] of CURTAIN_ATTRIBUTES) s.cgeo.getAttribute(name).needsUpdate = true
     }
     s.cgeo.instanceCount = cs.count
     s.curtains.visible = cs.count > 0
@@ -126,17 +167,15 @@ export class WaterSurface {
 
   private create(cc: number, d: ColumnData): Slot {
     const ox = (cc % this.view.cx) * 32, oz = Math.floor(cc / this.view.cx) * 32
-    const geo = baseQuad(SURFACE_INDEX, this.height)
+    const geo = baseQuad(this.height)
     const attrs = [instanced(d.hPrev), instanced(d.hCur), instanced(d.info)]
     geo.setAttribute('hPrev', attrs[0]!)
     geo.setAttribute('hCur', attrs[1]!)
     geo.setAttribute('info', attrs[2]!)
     geo.instanceCount = 1024
     const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${cc}`)
-    const cgeo = baseQuad(CURTAIN_INDEX, this.height)
-    cgeo.setAttribute('cPrev', instanced(d.curtains.prev))
-    cgeo.setAttribute('cCur', instanced(d.curtains.cur))
-    cgeo.setAttribute('cInfo', instanced(d.curtains.info))
+    const cgeo = baseStrip(this.height)
+    wireCurtains(cgeo, d.curtains)
     cgeo.instanceCount = 0
     const curtains = this.mesh(cgeo, this.curtainMaterial, ox, oz, `water-${cc}-curtains`)
     curtains.visible = false
