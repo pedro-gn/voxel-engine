@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Pcg32 } from '../src/sim/rng.ts'
 import { WaterColumns, damp, moved } from '../src/sim/water/columns.ts'
-import { HEAD_EPS, MIN_FLOW, SUB } from '../src/sim/water/constants.ts'
+import { GAIN, HEAD_EPS, MIN_FLOW, SUB, THROTTLED_GAIN } from '../src/sim/water/constants.ts'
 import { quantize } from '../src/sim/water/mirror.ts'
 
 const CAP = 1 << 20
@@ -277,4 +277,28 @@ describe('WaterColumns', () => {
     settle(g, 1, 200_000, () => { expect(g.total()).toBe(v0); expect(minDepth(g)).toBeGreaterThanOrEqual(0) })
     expect(spread(g)).toBeLessThanOrEqual(16)
   })
+
+  it('accelerates with THROTTLED_GAIN while the cap leaves awake tiles out of the step, and with GAIN otherwise', () => {
+    // Two awake tiles side by side; a head of 10 sub across the edge (3, 4) → (4, 4) of the first one.
+    const head = 10
+    const at = (cap: number): number => {
+      const g = grid(32, 16, box(32, 16, 0), (x, z) => (x === 0 || z === 0 || x === 31 || z === 15 ? 0 : x <= 3 ? 400 + head : 400))
+      g.tiles.wake(0); g.tiles.wake(1)
+      g.step(cap, null, 0)
+      return g.flux[(3 + 4 * 32) * 2]!
+    }
+    expect(at(2)).toBe(head * GAIN) // every awake tile steps
+    expect(at(1)).toBe(head * THROTTLED_GAIN) // tile 1 waits: the step is throttled
+    expect(THROTTLED_GAIN).toBeLessThan(GAIN)
+  })
+
+  it.each([8, 4])('settles exactly, and every tile sleeps, with 16 awake tiles and a cap of %i', (cap) => {
+    const rng = new Pcg32(5)
+    const n = 64
+    const g = grid(n, n, box(n, n, 0), (x, z) => (x > 0 && z > 0 && x < n - 1 && z < n - 1 ? rng.nextInt(2 * SUB) : 0))
+    const v0 = g.total()
+    settle(g, cap, 150_000, () => { expect(g.total()).toBe(v0) })
+    expect(minDepth(g)).toBeGreaterThanOrEqual(0)
+    expect(spread(g)).toBeLessThanOrEqual(16)
+  }, 300_000)
 })

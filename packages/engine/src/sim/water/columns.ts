@@ -3,7 +3,7 @@ import { WaterTiles } from './tiles.ts'
 
 // Plain module constants: Vitest's module transform turns imported bindings into property reads, several times slower in
 // the step's loops.
-const { DEPTH_EPS, FLUX_EPS, FLUX_FP, FRICTION_SHIFT, GAIN, HEAD_EPS, MAX_HEAD, MIN_FLOW, SLEEP_STEPS, SLOPE_SHIFT, SUB, TILE } = K
+const { DEPTH_EPS, FLUX_EPS, FLUX_FP, FRICTION_SHIFT, GAIN, HEAD_EPS, MAX_HEAD, MIN_FLOW, SLEEP_STEPS, SLOPE_SHIFT, SUB, THROTTLED_GAIN, TILE } = K
 
 const FRICTION_MASK = (1 << FRICTION_SHIFT) - 1
 /** A stored flux this large (either sign) moves FLUX_EPS or more: the edge is not quiet. */
@@ -34,13 +34,13 @@ function scaled(f: number, d: number, out: number): number {
 }
 
 /** Step 2 for edge e (a → b): friction, the head, then no flux from a thin film or toward a floor at the sender's surface. */
-function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, e: number, a: number, b: number): void {
+function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, e: number, a: number, b: number, gain: number): void {
   const fa = floor[a]! * SUB, fb = floor[b]! * SUB, da = depth[a]!, db = depth[b]!
   const sa = fa + da, sb = fb + db
   let h = sa - sb
   if (h > MAX_HEAD) h = MAX_HEAD
   else if (h < -MAX_HEAD) h = -MAX_HEAD
-  let f = damp(flux[e]!) + h * GAIN
+  let f = damp(flux[e]!) + h * gain
   if (f > 0) { if (da < MIN_FLOW || sa <= fb) f = 0 }
   else if (f < 0) { if (db < MIN_FLOW || sb <= fa) f = 0 }
   flux[e] = f
@@ -174,7 +174,9 @@ export class WaterColumns {
    */
   step(cap: number, sea: Uint8Array | null, seaSurface: number): number {
     this.collect(cap)
-    this.accelerateAll()
+    // The cap left awake tiles out: their borders advance out of phase, which only a lower gain keeps stable.
+    const throttled = this.list.length >= cap && this.tiles.awakeCount() > this.list.length
+    this.accelerateAll(throttled ? THROTTLED_GAIN : GAIN)
     this.limitAll()
     this.transferAll()
     const credit = sea ? this.pinAll(sea, seaSurface) : 0
@@ -216,7 +218,7 @@ export class WaterColumns {
     }
   }
 
-  private accelerateAll(): void {
+  private accelerateAll(gain: number): void {
     const floor = this.floor, depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
     const dirty = this.tiles.dirty
     for (let k = 0; k < this.list.length; k++) {
@@ -225,20 +227,20 @@ export class WaterColumns {
       const xe = x1 < sx ? x1 : x1 - 1, ze = z1 < sz ? z1 : z1 - 1 // edges leave columns x < xe (+x), rows z < ze (+z)
       for (let z = z0; z < z1; z++) {
         const row = z * sx
-        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2, c, c + 1) }
-        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2 + 1, c, c + sx) }
+        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2, c, c + 1, gain) }
+        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, c * 2 + 1, c, c + sx, gain) }
       }
       // A border edge stored in a tile that does not step is that tile's to publish: it must republish when the edge's moved
       // water changes, from any value to any other. Here it moved water at the last step; transferAll catches it moving now.
       if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
         const c = x0 - 1 + z * sx
         if (moved(flux[c * 2]!) !== 0) dirty[t - 1] = 1
-        accelerate(floor, depth, flux, c * 2, c, c + 1)
+        accelerate(floor, depth, flux, c * 2, c, c + 1, gain)
       }
       if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
         const c = x + (z0 - 1) * sx
         if (moved(flux[c * 2 + 1]!) !== 0) dirty[t - tx] = 1
-        accelerate(floor, depth, flux, c * 2 + 1, c, c + sx)
+        accelerate(floor, depth, flux, c * 2 + 1, c, c + sx, gain)
       }
     }
   }

@@ -6,10 +6,18 @@ export const FLUX_FP = 4
 /** Friction: every step a flux loses 1/2^FRICTION_SHIFT of itself, at least one stored unit (rounded away from zero). */
 export const FRICTION_SHIFT = 4
 /**
- * Stored flux gained per step per 1/SUB block of head: k = GAIN / 2^FLUX_FP = 1/8. The step is symplectic Euler on the
- * discrete wave equation; its stiffest (checkerboard) mode is stable while 8k ≤ 4, so k = 1/8 keeps a 4× margin.
+ * Stored flux gained per step per 1/SUB block of head: k = GAIN / 2^FLUX_FP = 3/16. The step is symplectic Euler on the
+ * discrete wave equation; its stiffest (checkerboard) mode is stable while 8k ≤ 4, so k = 3/16 keeps a 2.7× margin.
  */
-export const GAIN = 2
+export const GAIN = 3
+/**
+ * The gain of a step in which the tile cap leaves awake tiles out (k = 2/16). A throttled tile border is advanced out of
+ * phase (each tile reads its neighbour's heads only when it steps), which lowers the stable gain far below the checkerboard
+ * bound: measured on a 32 × 32 box at cap 1, k up to about 2.2/16 damps and k from 2.25/16 up locks into a z-checkerboard
+ * limit cycle on the border columns that never sleeps. 2/16 is under that, with a thin margin (about 10%), and the
+ * throttled water is slow anyway: each tile advances 1/N of the steps. An unthrottled step uses GAIN.
+ */
+export const THROTTLED_GAIN = 2
 /** The head an edge feels is clamped to 2 blocks: a cliff does not accelerate water without bound, the excess just pours. */
 export const MAX_HEAD = 2 * SUB
 /** A column shallower than this (1/64 block) sends nothing: films stay as damp puddles. */
@@ -19,7 +27,7 @@ export const TILE = 16
 /** Quiet steps before a tile falls asleep (half a second at 20 Hz). */
 export const SLEEP_STEPS = 10
 /** A tile is quiet while every edge it moved carried less than this (1/SUB block per step)… */
-export const FLUX_EPS = 2
+export const FLUX_EPS = 3
 /**
  * …and no column of it changed by more than this since its last step: 4 × (FLUX_EPS − 1), the most a quiet column can
  * change (four edges each moving 1/SUB). A still lake's integer heads keep 1/SUB moves going forever; below this they never sleep.
