@@ -239,6 +239,24 @@ export function bodyMargin(bed: ArrayLike<number>, top: number, foot: number, r:
   return margin
 }
 
+/**
+ * How far (blocks) a free end's arc and body clear the ground `flank[i]` of the row beside it, for its flare: like bodyMargin,
+ * but only ground above the foot is an obstacle (a dry or shallow flank, level with the foot, is not), and the landing point
+ * counts as clear by its distance to the face of the next column whose ground is above the foot, so the flare fades out
+ * before the landing steps onto higher ground instead of flipping off.
+ */
+export function flareMargin(flank: ArrayLike<number>, top: number, foot: number, r: number, thick: number): number {
+  const end = Math.max(ARC_GAP + r - thick, ARC_GAP), last = Math.min(flank.length - 1, Math.floor(end)), drop = top - foot
+  let margin = flank[last]! > foot ? foot - flank[last]! : Infinity
+  for (let m = 1; m <= last; m++) {
+    const s = (m + thick - ARC_GAP) / r
+    margin = Math.min(margin, top - drop * s * s - flank[m - 1]!)
+  }
+  const u = ARC_GAP + r, k = Math.min(flank.length - 1, Math.floor(u))
+  if (k + 1 < flank.length && flank[k + 1]! > foot) margin = Math.min(margin, k + 1 - u)
+  return margin
+}
+
 /** Whether the back face lies on or above the ground of every column it is over (bodyMargin is not negative). */
 export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): boolean {
   return bodyMargin(bed, top, foot, r, thick) >= 0

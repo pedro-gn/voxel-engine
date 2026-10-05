@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   ARC_COLUMNS, ARC_GAP, ARC_REACH, ARC_SEGMENTS, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX,
-  JOIN, SINK, arcPoint, backPoint, bodyClears, bodyMargin, bodyThickness, cornerHeights, curtainAt, exitSpeed, layArc, layBody,
+  JOIN, SINK, flareMargin, arcPoint, backPoint, bodyClears, bodyThickness, cornerHeights, curtainAt, exitSpeed, layArc, layBody,
   flareAmount, flareCode, flareOpen, fluxOf, level, quantizeFlow, shows, splashCode, splashHalf, splashHalfOf, splashOf, splashSlopeOf,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
@@ -561,9 +561,10 @@ describe('curtain bodies, review round 1', () => {
     const cs = s.view.column(0)!.curtains, a = curtainIndex(s.view, 0, 10, 20), b = curtainIndex(s.view, 0, 10, 21)
     const at = (k: number, e: number) => ({
       top: cs.cur[k * 4 + e], foot: cs.cur[k * 4 + 2 + e], reach: cs.reach[k * 4 + 2 + e], thick: cs.thick[k * 4 + 2 + e],
-      flare: cs.flare[k * 4 + 2 + e], splash: splashOf(cs.info[k * 4 + 3]!, e),
+      flare: cs.flare[k * 4 + 2 + e],
     })
-    return { lo: at(a, 1), hi: at(b, 0), wet: [wetBits(cs, a) >> 1, wetBits(cs, b) & 1] }
+    const splash = [splashOf(cs.info[a * 4 + 3]!, 1), splashOf(cs.info[b * 4 + 3]!, 0)]
+    return { lo: at(a, 1), hi: at(b, 0), wet: [wetBits(cs, a) >> 1, wetBits(cs, b) & 1], splash }
   }
 
   it('lays a shared end from both rows over a shoreline, so both bodies join there (1)', () => {
@@ -574,7 +575,9 @@ describe('curtain bodies, review round 1', () => {
     // Row 20 lands on dry ground, row 21 on water: a block-high crack before.
     const wet = seam(shore(() => 2, (x, z) => (z === 21 ? SUB : 0)))
     expect(wet.lo).toEqual(wet.hi)
-    expect(wet.wet).toEqual([1, 1])
+    expect(wet.wet).toEqual([0, 1]) // each curtain splashes only on its own landing water (round 2, B)
+    expect(wet.splash[0]).toBe(0)
+    expect(wet.splash[1]).toBeGreaterThan(0)
   })
 
   it('carries a flare that changes kind from where it is drawn: no jump, the side face closing or opening smoothly (2)', () => {
@@ -623,6 +626,35 @@ describe('curtain bodies, review round 1', () => {
     expect(splashSlopeOf(lo)).toBeCloseTo(0.125, 2) // the landing column's surface rises that much (its corners: half the quarter block a column gains)
     expect(fluxOf(cs.info[a * 4 + 3]!)).toBe(8) // and the curtain's own flux is still there
     expect(fluxOf(cs.info[b * 4 + 3]!)).toBe(200)
+  })
+})
+
+describe('curtain bodies, review round 2', () => {
+  /** One fall (row 20, flux 400) off a plateau (floor 6, x <= 10) whose ends have free rows beside them; `ground` shapes the land past it. */
+  function fall(floor: (x: number, z: number) => number, depth: (x: number, z: number) => number, flux = 400) {
+    const s = scene(32, 32, (x, z) => (x <= 10 && z === 20 ? 6 : floor(x, z)), (x, z) => (x <= 10 && z === 20 ? SUB : depth(x, z)))
+    s.cols.flux[2 * (10 + 20 * 32)] = 16 * flux
+    s.publish()
+    const cs = s.view.column(0)!.curtains, k = curtainIndex(s.view, 0, 10, 20)
+    return { flareA: flareAmount(cs.flare[k * 4 + 2]!), flareB: flareAmount(cs.flare[k * 4 + 3]!) }
+  }
+
+  it('flares over dry ground and shallow pools: only ground above the foot is an obstacle (A)', () => {
+    for (const depth of [0, SUB / 8, SUB / 2, SUB]) {
+      const f = fall(() => 2, (x, z) => (z === 20 ? 0 : 0) + (x > 10 ? depth : 0))
+      expect(f.flareA, `pool ${depth}`).toBeGreaterThan(0.4)
+      expect(f.flareB, `pool ${depth}`).toBeGreaterThan(0.4)
+    }
+  })
+
+  it('fades the flare out before the landing reaches higher ground beside it, not all at once (3, P3)', () => {
+    // A bump (5 high) at (12, 19) in the row beside end A, two columns past the edge: the landing column steps onto it as flux grows.
+    const flares: number[] = []
+    for (let f = 60; f <= 400; f += 5) flares.push(fall((x, z) => (x === 12 && z === 19 ? 5 : 2), (x) => (x > 10 ? SUB : 0), f).flareA)
+    let jump = 0
+    for (let i = 1; i < flares.length; i++) jump = Math.max(jump, Math.abs(flares[i]! - flares[i - 1]!))
+    expect(Math.max(...flares)).toBeGreaterThan(0.15)
+    expect(jump).toBeLessThan(0.06)
   })
 })
 
@@ -967,12 +999,12 @@ function expectedEnd(view: SurfaceView, floor: Int16Array, s: Int32Array, x: num
   const r = out[0]!, foot = out[1]!, want = bodyThickness(v), thick = layBody(want, top, foot, r, bed)
   let amount = 0
   if (!shared && inside(nx, nz) && want > 0) {
-    const margin = Math.min(bodyMargin(flank, top, foot, r, 0), bodyMargin(flank, top, foot, r, thick))
+    const margin = Math.min(flareMargin(flank, top, foot, r, 0), flareMargin(flank, top, foot, r, thick))
     amount = FLARE_MAX * Math.min(1, want / BODY_MAX) * Math.min(1, Math.max(0, margin / FLARE_FADE))
   }
   const land = Math.min(ARC_COLUMNS - 1, Math.floor(ARC_GAP + r)), lx = x + dx * (land + 1), lz = z + dz * (land + 1)
   const drawnAt = (px: number, pz: number) => inside(px, pz) && shows(s[px + pz * sx]!, floor[px + pz * sx]!)
-  const wet = drawnAt(lx, lz) || (shared && drawnAt(lx + ox, lz + oz)) ? 1 : 0
+  const wet = drawnAt(lx, lz) ? 1 : 0
   const splash = wet ? splashCode(splashHalf(v), far[land]! - near[land]!) : 0
   return [r, foot, thick, flareCode(shared ? 0 : 1, amount), wet, splash].map(Math.fround)
 }

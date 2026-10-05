@@ -4,7 +4,7 @@ import type { WorldSize } from '../../world/layout.ts'
 import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
   ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX, JOIN, OUTSIDE,
-  SINK, boreWhite, bodyMargin, bodyThickness, curtainAt, effective, exitSpeed, flareAmount, flareCode, flareOpen, froude, layArc,
+  SINK, boreWhite, bodyThickness, curtainAt, effective, exitSpeed, flareAmount, flareCode, flareMargin, flareOpen, froude, layArc,
   layBody, level, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
@@ -694,7 +694,7 @@ export class SurfaceView {
     // ground, the less it widens, so the flare follows the flux smoothly.
     let amount = 0
     if (!shared && beside && want > 0) {
-      const margin = Math.min(bodyMargin(flank, top, foot, r, 0), bodyMargin(flank, top, foot, r, thick))
+      const margin = Math.min(flareMargin(flank, top, foot, r, 0), flareMargin(flank, top, foot, r, thick))
       amount = FLARE_MAX * Math.min(1, want / BODY_MAX) * Math.min(1, Math.max(0, margin / FLARE_FADE))
     }
     arc[3] = flareCode(shared ? 0 : 1, amount)
@@ -702,7 +702,7 @@ export class SurfaceView {
     // slope of that column's surface along the fall.
     const land = Math.min(ARC_COLUMNS - 1, Math.floor(ARC_GAP + r)), ax = x + dx * (land + 1), az = z + dz * (land + 1)
     const drawn = (px: number, pz: number) => px >= 0 && pz >= 0 && px < sx && pz < sz && shows(s[px + pz * sx]!, this.floor[px + pz * sx]!)
-    const wet = drawn(ax, az) || (shared && drawn(ax + ox, az + oz))
+    const wet = drawn(ax, az) // each curtain splashes on its own landing water only; the shared data stays symmetric
     arc[4] = wet ? 1 : 0
     arc[5] = wet ? splashCode(splashHalf(speed), far[land]! - near[land]!) : 0
   }
