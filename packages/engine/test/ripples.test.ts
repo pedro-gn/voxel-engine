@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RIPPLE_CAPACITY, RIPPLE_LIFE, RippleSet, atWaterLine } from '../src/render/water/ripples.ts'
+import { RIPPLE_CAPACITY, RIPPLE_LIFE, RippleSet, atWaterLine, editRipples, rippleHeightWeight, waterLineSurface } from '../src/render/water/ripples.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB } from '../src/sim/water/constants.ts'
@@ -49,10 +49,10 @@ describe('RippleSet', () => {
   it('starts a ripple at the centre of the block, and ages them with the frame clock until they die', () => {
     const r = new RippleSet()
     expect(r.count).toBe(0)
-    r.add(10.5, 20.5)
+    r.add(10.5, 20.5, 3)
     expect([r.count, r.x[0], r.z[0], r.start[0]]).toEqual([1, 10.5, 20.5, 0])
     r.update(0.5)
-    r.add(3.5, 4.5)
+    r.add(3.5, 4.5, 3)
     expect([r.count, r.start[1]]).toEqual([2, 0.5])
     r.update(RIPPLE_LIFE - 0.4) // the first is 1.3 s old: gone
     expect(r.count).toBe(1)
@@ -63,11 +63,70 @@ describe('RippleSet', () => {
 
   it('keeps a fixed pool: edits in quick succession each get a ripple, and the oldest is replaced beyond it', () => {
     const r = new RippleSet()
-    for (let i = 0; i < RIPPLE_CAPACITY; i++) { r.add(i, 0); r.update(0.01) }
+    for (let i = 0; i < RIPPLE_CAPACITY; i++) { r.add(i, 0, 3); r.update(0.01) }
     expect(r.count).toBe(RIPPLE_CAPACITY)
-    r.add(100, 0) // the pool is full: the one at x = 0 goes
+    r.add(100, 0, 3) // the pool is full: the one at x = 0 goes
     expect(r.count).toBe(RIPPLE_CAPACITY)
     const xs = Array.from({ length: r.count }, (_, i) => r.x[i]!).sort((a, b) => a - b)
     expect(xs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 100])
+  })
+})
+
+/** A lake at y 3 (x < 20) and a raised pool at y 12 (x >= 24, z < 8) above it, in one world. */
+function twoLevels(): SurfaceView {
+  const b = createWaterBuffers([32, 32, 32])
+  const cols = new WaterColumns(32, 32, new Int16Array(b.floor))
+  for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+    const pool = x >= 24 && z < 8
+    cols.floor[x + z * 32] = pool ? 11 : 2
+    cols.depth[x + z * 32] = pool ? SUB : x < 20 ? SUB : 0
+  }
+  const view = new SurfaceView([32, 32, 32], b, () => 15)
+  view.apply(new WaterPublisher(b).publish([0, 1, 2, 3], cols)!)
+  return view
+}
+
+describe('ripples, review round 1', () => {
+  it('rings only the water at the level of the edit: a lower pool within the radius gets none (1)', () => {
+    const view = twoLevels()
+    expect(waterLineSurface(view, 23, 12, 4)).toBe(12) // beside the raised pool
+    const set = new RippleSet()
+    set.add(23.5, 4.5, waterLineSurface(view, 23, 12, 4)!)
+    expect(set.weightAt(0, 12)).toBe(1) // the pool's own surface
+    expect(set.weightAt(0, 12.3)).toBeGreaterThan(0)
+    expect(set.weightAt(0, 3)).toBe(0) // the lake nine blocks below
+    expect(rippleHeightWeight(0.5)).toBe(0)
+  })
+
+  it('ripples a region edit at the water-line cells of its shell, spaced and capped, and skips no-op edits (2, 3)', () => {
+    const view = lake()
+    const set = new RippleSet()
+    const air = () => 0
+    // A 12-wide fill along the water line (y 2..4) of the lake: at most 4 ripples, at least 3 blocks apart.
+    editRipples(view, set, { type: 'fillRegion', min: [2, 2, 2], max: [13, 4, 13], voxel: 5 }, air)
+    expect(set.count).toBeGreaterThan(1)
+    expect(set.count).toBeLessThanOrEqual(4)
+    for (let i = 0; i < set.count; i++) for (let j = i + 1; j < set.count; j++) {
+      expect(Math.hypot(set.x[i]! - set.x[j]!, set.z[i]! - set.z[j]!)).toBeGreaterThanOrEqual(3)
+    }
+    // A region high above the lake: nothing. A block already there: nothing.
+    const quiet = new RippleSet()
+    editRipples(view, quiet, { type: 'fillRegion', min: [2, 20, 2], max: [13, 22, 13], voxel: 5 }, air)
+    editRipples(view, quiet, { type: 'setBlock', pos: [10, 3, 10], voxel: 5 }, () => 5)
+    editRipples(view, quiet, { type: 'fillRegion', min: [2, 2, 2], max: [13, 4, 13], voxel: 5 }, () => 5)
+    expect(quiet.count).toBe(0)
+    editRipples(view, quiet, { type: 'setBlock', pos: [10, 3, 10], voxel: 5 }, air)
+    expect(quiet.count).toBe(1)
+  })
+
+  it('restarts its clock when the pool empties, so it never drifts in a long session (4)', () => {
+    const r = new RippleSet()
+    r.update(5000)
+    expect(r.now).toBe(0) // nothing alive: back to 0
+    r.add(1, 1, 3)
+    r.update(0.5)
+    expect(r.now).toBe(0.5) // alive: the clock keeps running
+    r.update(2)
+    expect(r.now).toBe(0)
   })
 })

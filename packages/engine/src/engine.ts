@@ -19,7 +19,7 @@ import { CostMeter } from './render/costMeter.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
-import { validateCommand, type Ack, type Command, type SetBlockCommand } from './sim/commands.ts'
+import { validateCommand, type Ack, type Command, type FillRegionCommand, type SetBlockCommand } from './sim/commands.ts'
 import type { SimEvent } from './sim/simulation.ts'
 import { createWorldBuffers } from './world/buffers.ts'
 import { Layout, type WorldSize } from './world/layout.ts'
@@ -571,8 +571,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       // Ghost only what the sim will accept, so a prediction is never left without an ack to clear it.
       if (cmd.type === 'setBlock' && validateCommand(cmd, layout, registry.count, NO_CUSTOM_COMMANDS) === null) {
         const c = cmd as SetBlockCommand
+        visuals.noteEdit(c, world.get) // a block at the water line sends ripples over the water (before the ghost: world.get sees it)
         for (const ci of ghosts.add(s, c.pos[0], c.pos[1], c.pos[2], c.voxel)) markDirty(ci, PRIORITY.GHOST)
-        visuals.noteEdit(c.pos[0], c.pos[1], c.pos[2]) // a block at the water line sends ripples over the water
+      } else if (cmd.type === 'fillRegion' && validateCommand(cmd, layout, registry.count, NO_CUSTOM_COMMANDS) === null) {
+        visuals.noteEdit(cmd as FillRegionCommand, world.get)
       }
       sim.postMessage({ type: 'submit', clientId: CLIENT_ID, seq: s, cmd } satisfies ToSim)
       return s

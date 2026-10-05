@@ -57,7 +57,7 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   const ripple = normalize(vec3(g.x.mul(RIPPLE / EPS), 1, g.y.mul(RIPPLE / EPS)))
   // Ripples ride on the surface's own tilt (a river ramp); on flat water v.normal is straight up and this is the ripple.
   // Ripples from block edits at the water line tilt the surface (the heightfield's only) and whiten the first ring's crest.
-  const edit = edits ? rippleEffect(wp.xz) : null
+  const edit = edits ? rippleEffect(wp) : null
   const flat = normalize(ripple.add(v.normal).sub(vec3(0, 1, 0)))
   const n = select(v.isTop, edit ? tiltedNormal(flat, edit) : flat, v.normal)
 

@@ -21,7 +21,7 @@ import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
 import type { SurfaceView } from './water/surfaceView.ts'
 import { WaterSurface } from './water/waterSurface.ts'
-import { atWaterLine, ripples, syncRipples } from './water/ripples.ts'
+import { editRipples, ripples, syncRipples, type EditCommand } from './water/ripples.ts'
 import { waterAlpha } from './water/waterVertex.ts'
 
 export interface VisualsOptions {
@@ -122,9 +122,9 @@ export class Visuals {
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
 
-  /** A block was placed or removed at (x, y, z): starts a ripple on the water if that is at the water line (see atWaterLine). */
-  noteEdit(x: number, y: number, z: number): void {
-    if (atWaterLine(this.o.water, x, y, z)) ripples.add(x + 0.5, z + 0.5)
+  /** An edit was submitted: starts the ripples of one at a water line (see editRipples); `get` is the main thread's voxel copy. */
+  noteEdit(cmd: EditCommand, get: (x: number, y: number, z: number) => number): void {
+    editRipples(this.o.water, ripples, cmd, get)
   }
 
   frame(dt: number): void {
