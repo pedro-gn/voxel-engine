@@ -621,4 +621,17 @@ describe('a block placed in water spreads its displaced volume at once', () => {
     expect(depthSum(sim, 1, 1, 10, 10)).toBe(100 * 4 * SUB)
     expect(sim.water.total()).toBe(total)
   })
+
+  it('a platform wider than twice the radius still lifts the lake near it evenly: the radius counts from the nearest source', () => {
+    const sim = waterSim(lake(24, 128, 30), { size: [128, 32, 128], water: { debug: true } })
+    sim.setPaused(true)
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [40, 23, 40], max: [79, 23, 79], voxel: B.stone })
+    sim.step()
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    const near = [[39, 60], [35, 60], [30, 60], [60, 39], [60, 20], [80, 60], [60, 80], [60, 85]].map(([x, z]) => sim.water.column(x!, z!).depth)
+    expect(Math.max(...near) - Math.min(...near)).toBeLessThanOrEqual(SUB / 16)
+    expect(Math.min(...near)).toBeGreaterThan(24 * SUB)
+  })
 })

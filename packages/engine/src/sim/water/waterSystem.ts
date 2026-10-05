@@ -76,6 +76,8 @@ export class WaterSystem {
   private readonly seedF: number[] = []
   private readonly done: number[] = []
   private readonly group: number[] = []
+  private gTotal = 0
+  private gEligible = 0
   private readonly seedOf: Int32Array
   private readonly targets: number[] = []
   private readonly edit: EditColumn = { floor: 0, depth: 0 }
@@ -224,8 +226,8 @@ export class WaterSystem {
       done.push(0)
     }
     pending.clear()
-    for (let s0 = 0; s0 < sc.length; s0++) {
-      if (done[s0] === 1) continue
+    for (let first = 0; first < sc.length; first++) {
+      if (done[first] === 1) continue
       const gen = ++this.gen
       q.length = 0
       dist.length = 0
@@ -233,22 +235,10 @@ export class WaterSystem {
       fl.length = 0
       sd.length = 0
       group.length = 0
-      let total = 0, eligible = 0
-      const join = (i: number, d: number): void => {
-        const c = sc[i]!
-        done[i] = 1
-        group.push(i)
-        total += sv[i]!
-        stamp[c] = gen
-        q.push(c)
-        dist.push(d)
-        from.push(ss[i]!)
-        fl.push(sf[i]!)
-        sd.push(1)
-        if (floor[c]! * SUB < ss[i]!) eligible++
-      }
-      join(s0, 0)
-      for (let i = 0; i < q.length && eligible < Math.ceil(total / DISPLACE_SHARE); i++) {
+      this.gTotal = 0
+      this.gEligible = 0
+      this.joinSeed(first, gen)
+      for (let i = 0; i < q.length && this.gEligible < Math.ceil(this.gTotal / DISPLACE_SHARE); i++) {
         const d = dist[i]!
         if (d >= DISPLACE_RADIUS) continue
         const cc = q[i]!, cx = cc % sx, cz = (cc - cx) / sx, f = from[i]!, fc = fl[i]! * SUB
@@ -262,7 +252,7 @@ export class WaterSystem {
           if ((si >= 0 ? sf[si]! : floor[n]!) * SUB >= f) continue
           if (si >= 0 && done[si] === 0) {
             if (fc >= ss[si]!) continue
-            join(si, d + 1)
+            this.joinSeed(si, gen) // a source is at distance 0: the radius counts from the nearest one
           } else {
             const sn = si >= 0 ? ss[si]! : cols.surface(n)
             if (fc >= sn) continue
@@ -272,12 +262,12 @@ export class WaterSystem {
             from.push(sn)
             fl.push(floor[n]!)
             sd.push(0)
-            eligible++
+            this.gEligible++
           }
         }
       }
       if (q.length === group.length) continue // no wet column besides the sources: the water stays on top
-      const want = Math.ceil(total / DISPLACE_SHARE), targets = this.targets
+      const total = this.gTotal, want = Math.ceil(total / DISPLACE_SHARE), targets = this.targets
       targets.length = 0
       for (let i = 0; i < q.length && targets.length < want; i++) {
         if (sd[i] === 0 || floor[q[i]!]! * SUB < from[i]!) targets.push(q[i]!)
@@ -291,6 +281,21 @@ export class WaterSystem {
       }
     }
     for (const c of sc) seedOf[c] = 0
+  }
+
+  /** Adds source i to the current group of spreadDisplaced's search at distance 0. */
+  private joinSeed(i: number, gen: number): void {
+    const c = this.seedC[i]!
+    this.done[i] = 1
+    this.group.push(i)
+    this.gTotal += this.seedV[i]!
+    this.stamp[c] = gen
+    this.queue.push(c)
+    this.dist.push(0)
+    this.from.push(this.seedS[i]!)
+    this.fl.push(this.seedF[i]!)
+    this.sd.push(1)
+    if (this.cols.floor[c]! * SUB < this.seedS[i]!) this.gEligible++
   }
 
   /** One physics step (spec §3): springs, flow over the awake tiles, the sea. Not called while paused. */
