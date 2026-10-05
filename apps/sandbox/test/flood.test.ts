@@ -119,13 +119,16 @@ describe('flood scene simulation', () => {
       for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) s += sim.water.column(x, z).depth
       return s
     }
-    const lake0 = sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)
+    // The lake is brim-full: a wave overshoot leaves a film (a few 1/SUB) on its north, south and east rim (the dam top).
+    const rim = () => sum(LAKE.x0, LAKE.z0 - 1, LAKE.x1 + 1, LAKE.z0 - 1) + sum(LAKE.x0, LAKE.z1 + 1, LAKE.x1 + 1, LAKE.z1 + 1) + sum(LAKE.x1 + 1, LAKE.z0, LAKE.x1 + 1, LAKE.z1)
+    const lake0 = sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1), rim0 = rim()
     digCommands().forEach((c, i) => sim.submit(0, i, c))
-    // 1500 ticks: the channel (20 × 4 columns) has filled by then and the lake drop equals what it holds at every tick
-    for (let t = 0; t < 1500; t++) sim.step()
+    // 600 ticks: the channel (20 × 4 columns) holds over 3 blocks a column by then; the lake drop is what the channel and the rim gained.
+    // (Longer, the faster water lets the river's film reach the lake's corner and a few 1/SUB cross in from outside.)
+    for (let t = 0; t < 600; t++) sim.step()
     const channel = sum(CHANNEL.x0, CHANNEL.z0, CHANNEL.x1, CHANNEL.z1)
     const area = (CHANNEL.x1 - CHANNEL.x0 + 1) * (CHANNEL.z1 - CHANNEL.z0 + 1)
     expect(channel).toBeGreaterThan(area * 3 * SUB)
-    expect(lake0 - sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)).toBe(channel)
+    expect(lake0 - sum(LAKE.x0, LAKE.z0, LAKE.x1, LAKE.z1)).toBe(channel + rim() - rim0)
   }, 180_000)
 })
