@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
 import {
   ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, SPLASH_LIFT, arcPoint, backPoint, flareAmount, flareCode, flareOpen, packFlux, splashCode,
-  splashHalfOf, splashSlopeOf,
+  lipCode, splashHalfOf, splashSlopeOf,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { curtainVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
@@ -197,20 +197,29 @@ function wgsl(mesh: THREE.Mesh): { vertex: string; fragment: string } {
 
 /**
  * Evaluates a TSL node graph on the CPU for given attribute values (each a number[]), component-wise: just the nodes the
- * curtain's position uses. A node it does not know fails the test rather than being guessed.
+ * curtain's position uses. A node it does not know fails the test rather than being guessed. Each node is evaluated once per
+ * call (`done`): the graph shares its nodes widely.
  */
-function evaluate(node: unknown, attributes: Record<string, number[]>): number[] {
+function evaluate(node: unknown, attributes: Record<string, number[]>, done = new Map<unknown, number[]>()): number[] {
+  const known = done.get(node)
+  if (known) return known
+  const value = evaluateNode(node, attributes, done)
+  done.set(node, value)
+  return value
+}
+
+function evaluateNode(node: unknown, attributes: Record<string, number[]>, done: Map<unknown, number[]>): number[] {
   const n = node as Record<string, unknown> & { constructor: { name: string } }
   const at = (v: number[], i: number) => v[v.length === 1 ? 0 : i]!
   const zip = (a: number[], b: number[], f: (x: number, y: number) => number) =>
     Array.from({ length: Math.max(a.length, b.length) }, (_, i) => f(at(a, i), at(b, i)))
-  const e = (k: string) => evaluate(n[k], attributes)
+  const e = (k: string) => evaluate(n[k], attributes, done)
   switch (n.constructor.name) {
     case 'VarNode': case 'VaryingNode': case 'SubBuildNode': return e('node')
-    case 'ConstNode': return [n.value as number]
+    case 'ConstNode': { const c = n.value as number | { toArray(): number[] }; return typeof c === 'number' ? [c] : c.toArray() }
     case 'UniformNode': return [n.value as number]
     case 'AttributeNode': return attributes[n._attributeName as string]!
-    case 'JoinNode': return (n.nodes as unknown[]).flatMap((m) => evaluate(m, attributes))
+    case 'JoinNode': return (n.nodes as unknown[]).flatMap((m) => evaluate(m, attributes, done))
     case 'SplitNode': { const v = e('node'); return [...(n.components as string)].map((c) => v['xyzw'.indexOf(c)]!) }
     case 'ConditionalNode': return e('condNode')[0] ? e('ifNode') : e('elseNode')
     case 'OperatorNode': {
@@ -230,6 +239,9 @@ function evaluate(node: unknown, attributes: Record<string, number[]>): number[]
         case 'abs': return a.map(Math.abs)
         case 'min': return zip(a, e('bNode'), Math.min)
         case 'max': return zip(a, e('bNode'), Math.max)
+        case 'step': return zip(a, e('bNode'), (edge, x) => +(x >= edge))
+        case 'smoothstep': { const b = e('bNode'), c = e('cNode'); return c.map((x, i) => { const t = Math.min(1, Math.max(0, (x - at(a, i)) / (at(b, i) - at(a, i)))); return t * t * (3 - 2 * t) }) }
+        case 'normalize': { const l = Math.hypot(...a); return a.map((x) => x / l) }
         case 'mix': { const b = e('bNode'), c = e('cNode'); return zip(a, b, (x) => x).map((x, i) => x + (at(b, i) - x) * at(c, i)) }
         default: throw new Error(`math ${n.method as string}`)
       }
@@ -253,7 +265,9 @@ describe('curtainVertex', () => {
           [[flareCode(1, 0.5), flareCode(0.4, 0.1), flareCode(0, 0), flareCode(0, 0)], [splashCode(0, 0), splashCode(0.4, 0.125)]],
         ] as [number[], number[]][]) {
           const prev = [7, 7.5, 3, 3.25], cur = [6, 6.5, 2.5, 2], reach = [0.4, 0.9, 2.2, 1.6], thick = [0.1, 0.4, 0.3, 0.5]
-          const info = [5, 9, dir + 4 * (37 + 256 * 2), packFlux(50, splash[0]!, splash[1]!)] // water at end B only
+          // Column (5, 9), its ends' brinks 0.75 and 1.25 blocks deep; water at end B only.
+          const lips = [0.75, 1.25]
+          const info = [lipCode(5, lips[0]!), lipCode(9, lips[1]!), dir + 4 * (37 + 256 * 2), packFlux(50, splash[0]!, splash[1]!)]
           const mixed = (a: number, b: number) => a + (b - a) * alpha
           waterAlpha.value = alpha
           const ox = [1, -1, 0, 0][dir]!, oz = [0, 0, 1, -1][dir]!
@@ -278,11 +292,11 @@ describe('curtainVertex', () => {
               y = foot + splashSlopeOf(byte) * (u - land) + SPLASH_LIFT
               along = amount
             } else {
-              // A side face's back edge is only as thick as it is open; the front is the arc itself.
-              backPoint(top, foot, r, face === 0 ? 0 : kind === 1 ? t * open : t, s, p, 0)
-              arcPoint(top, foot, r, s, q, 0)
+              // A side face's back edge is only as thick and as deep under the arc as it is open; the front is the arc itself.
+              const shut = kind === 1 ? open : 1
+              backPoint(top, foot, r, face === 0 ? 0 : t * shut, s, p, 0, face === 0 ? 0 : lips[end]! * shut)
               u = p[0]!
-              y = q[1]!
+              y = p[1]!
               along = amount * s
             }
             const [ex, ez] = corner(end), [fx, fz] = corner(1 - end)
@@ -315,6 +329,57 @@ describe('curtainVertex', () => {
       expect(splash(7, 1)).toBeGreaterThan(0.5) // arrived
     } finally { waterAlpha.value = before }
   })
+
+  it('has no conditional node: three builds a node shared with a select() branch inside it, unset elsewhere', () => {
+    // r186 drew curtain bodies black: this end's light was first needed inside the splash's select() branch.
+    const v = curtainVertex()
+    const seen = new Set<unknown>(), kinds = new Set<string>()
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object' || seen.has(n)) return
+      seen.add(n)
+      if (Array.isArray(n)) { n.forEach(walk); return }
+      if (!(n as { isNode?: boolean }).isNode) return
+      kinds.add((n as object).constructor.name)
+      for (const value of Object.values(n)) walk(value)
+    }
+    for (const output of Object.values(v)) walk(output)
+    expect(kinds.has('AttributeNode')).toBe(true) // the walk reaches the attributes
+    expect(kinds.has('ConditionalNode')).toBe(false)
+  })
+
+  it('winds every triangle of the body and the splash toward the side its normal lights', () => {
+    const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
+    const ws = new WaterSurface(32, view, mat(), mat())
+    ws.update()
+    const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const strip = cgeo.getAttribute('strip'), index = [...cgeo.getIndex()!.array]
+    const { position, normal } = curtainVertex()
+    const before = waterAlpha.value
+    let checked = 0
+    try {
+      waterAlpha.value = 1
+      for (let dir = 0; dir < 4; dir++) {
+        // Both ends free (open, flared) and thick, so no face collapses; water under both.
+        const attributes = (v: number) => ({
+          strip: [strip.getX(v), strip.getY(v), strip.getZ(v), strip.getW(v)], cPrev: [7, 7, 3, 3], cCur: [7, 7, 3, 3],
+          cReach: [1.5, 1.5, 1.5, 1.5], cThick: [0.4, 0.4, 0.4, 0.4], cFlare: [flareCode(1, 0.3), flareCode(1, 0.3), flareCode(1, 0.3), flareCode(1, 0.3)],
+          cInfo: [5, 9, dir + 4 * (240 + 256 * 3), packFlux(100, splashCode(0.5, 0), splashCode(0.5, 0))],
+        })
+        const p = (v: number) => evaluate(position, attributes(v)), nrm = (v: number) => evaluate(normal, attributes(v))
+        for (let t = 0; t < index.length; t += 3) {
+          const [a, b, c] = [p(index[t]!), p(index[t + 1]!), p(index[t + 2]!)]
+          const u = [0, 1, 2].map((i) => b[i]! - a[i]!), w = [0, 1, 2].map((i) => c[i]! - a[i]!)
+          const wound = [u[1]! * w[2]! - u[2]! * w[1]!, u[2]! * w[0]! - u[0]! * w[2]!, u[0]! * w[1]! - u[1]! * w[0]!]
+          if (Math.hypot(...wound) < 1e-6) continue // the splash's row −1 can fold onto row 0 at the landing column's side
+          const lit = [index[t]!, index[t + 1]!, index[t + 2]!].map(nrm).reduce((s, n) => s.map((x, i) => x + n[i]!))
+          const kind = strip.getW(index[t]!), face = strip.getZ(index[t]!)
+          expect(wound[0]! * lit[0]! + wound[1]! * lit[1]! + wound[2]! * lit[2]!, `dir ${dir} triangle ${t / 3} kind ${kind} face ${face}`).toBeGreaterThan(0)
+          checked++
+        }
+      }
+    } finally { waterAlpha.value = before }
+    expect(checked).toBeGreaterThanOrEqual(4 * 2 * 2 * 2 * ARC_SEGMENTS) // every body triangle: front, back, both sides
+  })
 })
 
 describe('WaterMaterial', () => {
@@ -339,8 +404,9 @@ describe('WaterMaterial', () => {
 
   it('builds the voxel, surface and curtain materials, stylised and plain', () => {
     const m = new WaterMaterial(createLightUniforms(), true)
-    expect(m.curtain.side).toBe(THREE.DoubleSide)
-    expect(m.plainCurtain.side).toBe(THREE.DoubleSide)
+    // A curtain's body is closed, every face wound outward: front faces alone draw it, one layer of water deep.
+    expect(m.curtain.side).toBe(THREE.FrontSide)
+    expect(m.plainCurtain.side).toBe(THREE.FrontSide)
     expect(m.surface.transparent).toBe(true)
     expect(m.voxel.depthWrite).toBe(false)
     m.dispose()

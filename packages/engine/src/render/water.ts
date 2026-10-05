@@ -18,6 +18,12 @@ const RIPPLE = 0.15
 const FLOW_SPEED = 1.2
 /** How far (blocks) a flow ripple sample drifts before it fades out and restarts: the drift never exceeds it. */
 const FLOW_PERIOD = 1.5
+/** The water depth (blocks) a curtain's colour is taken at: a thin falling sheet, shallow-coloured whatever lies behind it. */
+const CURTAIN_DEPTH = 0.4
+/** Blocks per second the streaks run down a curtain at fall factor 1 (WaterVertex.fall: 1 to 4 with the flux). */
+const CURTAIN_FALL_SPEED = 2.5
+/** How white a curtain's aerated streaks get at most. */
+const CURTAIN_STREAK = 0.55
 
 function createUniforms() {
   return {
@@ -36,8 +42,12 @@ function createUniforms() {
 }
 type WaterUniforms = ReturnType<typeof createUniforms>
 
-/** Ripples, depth colour, shore foam, white water, sun glint and sky fresnel, for any water vertex source. */
-function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean, edits = false): void {
+/**
+ * Ripples, depth colour, shore foam, white water, sun glint and sky fresnel, for any water vertex source. A curtain has air
+ * behind it, not water: it gets no depth colour or shore foam (the scene behind a waterfall is metres away and would paint it
+ * deep-water dark), but aerated streaks running down it instead.
+ */
+function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean, edits = false, curtain = false): void {
   m.positionNode = v.position
   m.transparent = true
   m.depthWrite = false
@@ -61,7 +71,7 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   const flat = normalize(ripple.add(v.normal).sub(vec3(0, 1, 0)))
   const n = select(v.isTop, edit ? tiltedNormal(flat, edit) : flat, v.normal)
 
-  const thickness = depthEffects
+  const thickness = curtain ? float(CURTAIN_DEPTH) : depthEffects
     ? positionView.z.sub(perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar)).max(0)
     : float(2)
   const depthT = float(1).sub(thickness.div(u.depthScale).negate().exp())
@@ -73,13 +83,19 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   const band = float(1).sub(smoothstep(0, max(u.foamWidth.mul(foamNoise.mul(0.8).add(0.6)), 1e-3), thickness))
   const lap = smoothstep(0.75, 1.0, fract(thickness.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
     .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
-  const foam = depthEffects ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)).mul(smoothstep(0.2, 0.6, v.surface)) : float(0)
+  const foam = depthEffects && !curtain ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)).mul(smoothstep(0.2, 0.6, v.surface)) : float(0)
   // White water breaks up with the same noise as the foam, so fast water churns rather than turning flat white.
   const streaks = max(foam, v.white.mul(foamNoise.mul(0.6).add(0.55)).min(1))
-  const white = edit ? max(streaks, edit.z) : streaks
-  const streak = select(v.isTop, float(0), mx_noise_float(vec3(wp.x.add(wp.z).mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(v.fall)), 0)).mul(0.12))
-  const albedo = mix(mix(u.shallow, u.deep, depthT).add(streak), vec3(1), white)
-  m.colorNode = vec4(albedo, mix(mix(float(0.66), float(0.94), depthT), float(1), white).mul(v.alpha))
+  // A curtain's aerated streaks: noise stretched down the fall (fine across it, long along it) scrolling down at its speed.
+  const along = wp.x.add(wp.z), down = wp.y.add(time.mul(v.fall).mul(CURTAIN_FALL_SPEED))
+  const aerated = smoothstep(0.05, 0.55, mx_noise_float(vec3(along.mul(2.3), down.mul(0.22), 0.5))
+    .add(mx_noise_float(vec3(along.mul(5.3), down.mul(0.45), 1.7)).mul(0.5)))
+  const fallWhite = curtain ? max(streaks, aerated.mul(CURTAIN_STREAK)) : streaks
+  const white = edit ? max(fallWhite, edit.z) : fallWhite
+  const streak = select(v.isTop, float(0), mx_noise_float(vec3(along.mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(v.fall)), 0)).mul(0.12))
+  const albedo = mix(mix(u.shallow, u.deep, depthT).add(curtain ? float(0) : streak), vec3(1), white)
+  const opacity = curtain ? mix(float(0.7), float(0.95), white) : mix(mix(float(0.66), float(0.94), depthT), float(1), white)
+  m.colorNode = vec4(albedo, opacity.mul(v.alpha))
   voxelLit(m, { normal: n, sky: v.sky, blk: v.blk, ao: float(1), albedo }, lights)
 
   const view = cameraPosition.sub(wp).normalize()
@@ -110,18 +126,18 @@ export class WaterMaterial {
   private readonly u = createUniforms()
 
   constructor(lights: LightUniforms, depthEffects: boolean) {
-    const make = (v: WaterVertex, edits = false): VoxelNodeMaterial => {
+    const make = (v: WaterVertex, edits = false, curtain = false): VoxelNodeMaterial => {
       const m = new VoxelNodeMaterial(v.sky)
-      shade(m, v, this.u, lights, depthEffects, edits)
+      shade(m, v, this.u, lights, depthEffects, edits, curtain)
       return m
     }
     this.voxel = make(voxelWaterVertex())
     this.surface = make(surfaceVertex(), true)
-    this.curtain = make(curtainVertex())
-    this.curtain.side = THREE.DoubleSide
+    this.curtain = make(curtainVertex(), false, true)
+    this.curtain.side = THREE.FrontSide
     this.plainSurface = plain(surfaceVertex(), this.u, lights)
     this.plainCurtain = plain(curtainVertex(), this.u, lights)
-    this.plainCurtain.side = THREE.DoubleSide
+    this.plainCurtain.side = THREE.FrontSide
   }
 
   setParams(p: WaterParams): void {

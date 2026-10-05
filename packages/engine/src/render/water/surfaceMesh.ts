@@ -1,3 +1,4 @@
+import { ARC_GAP, ARC_GRAVITY, ARC_REACH } from '../../sim/water/fall.ts'
 import { SUB } from '../../world/waterBuffers.ts'
 
 /** Neighbours whose surfaces lie within this of each other share corners; a larger drop gets a curtain (spec §5: ~1 block). */
@@ -54,42 +55,12 @@ export const CURTAIN_TOP: readonly (readonly [number, number])[] = [[1, 2], [3, 
 /** …and the lower neighbour's corners at the same ends. */
 export const CURTAIN_BOTTOM: readonly (readonly [number, number])[] = [[0, 3], [2, 1], [1, 0], [3, 2]]
 
-/**
- * Waterfall curtains are ballistic arcs. A curtain's end leaves its edge level at the exit speed v = exitSpeed(flux) and
- * falls under ARC_GRAVITY: it would come down `drop` blocks at v · √(2 drop / g) in front of its wall (layArc finds where
- * over the ground ahead). The exit speed compresses the flow (its square root), calibrated on the flood scene's measured
- * curtains (flux in 1/SUB block per step at 20 steps per second; reach over flat ground):
- *
- * | flow                         | flux | drop (blocks) | reach (blocks) |
- * |------------------------------|------|---------------|----------------|
- * | a trickle                    |    8 |             4 |           0.22 |
- * | one removed dam block        |  110 |            15 |           1.61 |
- * | the 10-wide breach           |  210 |            14 |           2.14 |
- * | a dam column (the most seen) |  480 |            12 |           3.00 |
- *
- * so a small flow trickles close to its wall, a big one arcs out, and ARC_REACH is only a guard.
- */
-export const ARC_GRAVITY = 20
-/** The farthest (blocks) a curtain lands from its wall: a guard, so the arc never reaches into geometry farther away. */
-export const ARC_REACH = 3
-/** The least distance (blocks) a curtain hangs in front of its wall's plane below its top, even with no flow. */
-export const ARC_GAP = 1 / 16
+/** Waterfall curtains are ballistic arcs, laid by the step's own physics (sim/water/fall.ts: calibration, exitSpeed). */
+export { ARC_GAP, ARC_GRAVITY, ARC_REACH, exitSpeed } from '../../sim/water/fall.ts'
 /** Segments of a curtain's strip, evenly spaced in fall time. */
 export const ARC_SEGMENTS = 8
 /** Columns a curtain may cross or land on along its side: its neighbour (0), then up to ARC_REACH + ARC_GAP more. */
 export const ARC_COLUMNS = 1 + Math.floor(ARC_REACH + ARC_GAP)
-/** The discharge (blocks² per second through a one-block edge) that leaves at 1 block/s (see exitSpeed). */
-const EXIT_DISCHARGE = 5
-
-/**
- * Exit speed (blocks/s) of the water pouring over an edge that moves `flux` (1/SUB block per step through its one-block
- * width) at `stepHz` steps per second: √(q / EXIT_DISCHARGE) with q = flux · stepHz / SUB the discharge, i.e. 0.125 · √flux
- * at 20 steps per second (see ARC_GRAVITY for the calibration). The upper column's depth is no help: the outflow limiter
- * drains a brink column every step, so flux / depth sits at one column per step whatever the flow.
- */
-export function exitSpeed(flux: number, stepHz: number): number {
-  return Math.sqrt((Math.max(0, flux) * stepHz) / SUB / EXIT_DISCHARGE)
-}
 
 /**
  * Lays one end of a curtain, at exit speed v from height `top`, over the columns along its side: `levels[i]` the level
@@ -148,6 +119,9 @@ export function arcPoint(top: number, foot: number, r: number, s: number, out: F
  * with the square root of the flux): about 0.1 block for a trickle, 0.37 for one removed dam block, BODY_MAX from a flux of
  * about 200. The back face is clamped to ARC_GAP · min(1, 8 s) in front of the wall's plane (the arc's own gap), so the body
  * starts at the edge and never reaches the wall it pours from; a fall with no reach has no body to speak of.
+ * The back face is also the fall's underside: it leaves the brink at the bottom of the water pouring over it, `lip` blocks
+ * under the top (the brink's floor, or the water below when that is higher), and closes in on the arc as it falls, lip · (1 − s)²
+ * under it, so the sheet fills the opening it pours from and thins as it speeds up.
  */
 export const BODY_PER_SPEED = 0.28
 export const BODY_MIN = 0.04
@@ -161,6 +135,12 @@ export const SPLASH_PER_SPEED = 0.56
 export const SPLASH_LIFT = 0.02
 /** Candidate thicknesses are tried this far inside the limits that bound them (the ground tests are exact). */
 const BODY_EPS = 1e-7
+/** The deepest brink (blocks) a curtain's underside starts under its top; a deeper column pours as one this deep. */
+export const LIP_MAX = 8
+/** A brink depth is stored in 1/LIP_UNITS block (see lipCode). */
+export const LIP_UNITS = 64
+/** Halvings layLip searches a brink depth with. */
+const LIP_STEPS = 10 // 8 / 2^10: finer than the 1/LIP_UNITS a brink depth is stored in
 
 /** The thickness (blocks) of a curtain thrown at exit speed v: 0 with no flow. */
 export function bodyThickness(v: number): number {
@@ -218,23 +198,35 @@ export function splashOf(packed: number, end: number): number { return Math.floo
  * (arcPoint) moved `thick` toward the wall, but never nearer to the wall's plane than the arc's own ARC_GAP, into out[o]
  * (distance in front of the plane) and out[o + 1] (height). The curtain vertex shader lays its back face by the same formula.
  */
-export function backPoint(top: number, foot: number, r: number, thick: number, s: number, out: Float64Array, o: number): void {
+export function backPoint(top: number, foot: number, r: number, thick: number, s: number, out: Float64Array, o: number, lip = 0): void {
   arcPoint(top, foot, r, s, out, o)
   out[o] = Math.max(out[o]! - thick, ARC_GAP * Math.min(1, s * ARC_SEGMENTS))
+  out[o + 1] = out[o + 1]! - lip * (1 - s) * (1 - s)
 }
+
+/** A curtain's cInfo.x / .y: its column's local coordinate (0–31) and one end's brink depth (lip, blocks), in 1/LIP_UNITS. */
+export function lipCode(local: number, lip: number): number {
+  // Rounded down: a shallower brink only raises the underside, which stays clear of the ground.
+  return local + 32 * Math.floor(Math.min(LIP_MAX, Math.max(0, lip)) * LIP_UNITS)
+}
+/** The local coordinate (0–31) of a cInfo.x / .y. */
+export function localOf(code: number): number { return code % 32 }
+/** The brink depth (blocks) of a cInfo.x / .y. */
+export function lipOf(code: number): number { return Math.floor(code / 32) / LIP_UNITS }
 
 /**
  * How far (blocks) the back face of a curtain (backPoint, thickness `thick`; 0 is the arc itself) clears the ground `bed[i]`
- * (blocks) of the columns it is over (0 the column past the wall's plane), from `top` down to `foot` with reach r: the least
- * height it has over any of them, negative where it lies under one. The back face descends as it goes out, so its lowest
- * point over a column is where it leaves it, and over the last the foot.
+ * (blocks) of the columns it is over (0 the column past the wall's plane), from `top` down to `foot` with reach r, its
+ * underside starting `lip` under the top: the least height it has over any of them, negative where it lies under one. The
+ * back face goes out as it falls and its height is concave in the fall fraction (top − drop s² − lip (1 − s)²), so its lowest
+ * point over a column is where it enters or leaves it: the brink (s = 0) over the first, the foot over the last.
  */
-export function bodyMargin(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): number {
+export function bodyMargin(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number, lip = 0): number {
   const end = Math.max(ARC_GAP + r - thick, ARC_GAP), last = Math.min(bed.length - 1, Math.floor(end)), drop = top - foot
-  let margin = foot - bed[last]!
+  let margin = Math.min(foot - bed[last]!, top - lip - bed[0]!)
   for (let m = 1; m <= last; m++) {
     const s = (m + thick - ARC_GAP) / r // where the back face crosses the face between columns m − 1 and m
-    margin = Math.min(margin, top - drop * s * s - bed[m - 1]!)
+    margin = Math.min(margin, top - drop * s * s - lip * (1 - s) * (1 - s) - Math.max(bed[m - 1]!, bed[m]!))
   }
   return margin
 }
@@ -245,31 +237,48 @@ export function bodyMargin(bed: ArrayLike<number>, top: number, foot: number, r:
  * counts as clear by its distance to the face of the next column whose ground is above the foot, so the flare fades out
  * before the landing steps onto higher ground instead of flipping off.
  */
-export function flareMargin(flank: ArrayLike<number>, top: number, foot: number, r: number, thick: number): number {
+export function flareMargin(flank: ArrayLike<number>, top: number, foot: number, r: number, thick: number, lip = 0): number {
   const end = Math.max(ARC_GAP + r - thick, ARC_GAP), last = Math.min(flank.length - 1, Math.floor(end)), drop = top - foot
-  let margin = flank[last]! > foot ? foot - flank[last]! : Infinity
+  // The body's lowest point: the foot, or the underside at the brink when it starts lower.
+  const low = Math.min(foot, top - lip)
+  let margin = flank[last]! > low ? foot - flank[last]! : Infinity
+  if (flank[0]! > low) margin = Math.min(margin, top - lip - flank[0]!)
   for (let m = 1; m <= last; m++) {
     const s = (m + thick - ARC_GAP) / r
-    margin = Math.min(margin, top - drop * s * s - flank[m - 1]!)
+    const ground = Math.max(flank[m - 1]!, m < last || flank[m]! > low ? flank[m]! : -Infinity)
+    margin = Math.min(margin, top - drop * s * s - lip * (1 - s) * (1 - s) - ground)
   }
   const u = ARC_GAP + r, k = Math.min(flank.length - 1, Math.floor(u))
-  if (k + 1 < flank.length && flank[k + 1]! > foot) margin = Math.min(margin, k + 1 - u)
+  if (k + 1 < flank.length && flank[k + 1]! > low) margin = Math.min(margin, k + 1 - u)
   return margin
 }
 
 /** Whether the back face lies on or above the ground of every column it is over (bodyMargin is not negative). */
-export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): boolean {
-  return bodyMargin(bed, top, foot, r, thick) >= 0
+export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number, lip = 0): boolean {
+  return bodyMargin(bed, top, foot, r, thick, lip) >= 0
+}
+
+/**
+ * The brink depth (blocks) of a curtain end's underside: the largest not above `want` (at most LIP_MAX) for which the back face
+ * with no thickness clears the ground `bed` (bodyClears); 0 (the arc itself) always does.
+ */
+export function layLip(want: number, top: number, foot: number, r: number, bed: ArrayLike<number>): number {
+  const w = Math.min(LIP_MAX, Math.max(0, want))
+  if (w === 0 || bodyClears(bed, top, foot, r, 0, w)) return w
+  let lo = 0, hi = w
+  for (let k = 0; k < LIP_STEPS; k++) { const mid = (lo + hi) / 2; if (bodyClears(bed, top, foot, r, 0, mid)) lo = mid; else hi = mid }
+  return lo
 }
 
 /**
  * The thickness of a curtain end's body: the largest not above `want` for which its back face clears the ground `bed` (see
- * bodyClears). The front arc clears it (layArc), so 0 always does. The limits that bound a thickness are the foot's column
- * changing and the back face reaching a column's far face; the candidates are those, just inside, and `want`.
+ * bodyClears), its underside starting `lip` under the top (a lip that clears with no thickness: layLip). The limits that bound
+ * a thickness are the foot's column changing and the back face reaching a column's far face; the candidates are those, just
+ * inside, and `want`.
  */
-export function layBody(want: number, top: number, foot: number, r: number, bed: ArrayLike<number>): number {
+export function layBody(want: number, top: number, foot: number, r: number, bed: ArrayLike<number>, lip = 0): number {
   if (want <= 0) return 0
-  if (bodyClears(bed, top, foot, r, want)) return want
+  if (bodyClears(bed, top, foot, r, want, lip)) return want
   const end = ARC_GAP + r, drop = top - foot, candidates: number[] = []
   for (let m = 0; m <= bed.length; m++) {
     candidates.push(end - m - BODY_EPS, end - m + BODY_EPS)
@@ -277,7 +286,7 @@ export function layBody(want: number, top: number, foot: number, r: number, bed:
     if (r > 0 && drop > 0 && b < top) candidates.push(r * Math.sqrt(Math.min(1, (top - b) / drop)) - m + ARC_GAP - BODY_EPS)
   }
   candidates.sort((a, b) => b - a)
-  for (const t of candidates) if (t > 0 && t < want && bodyClears(bed, top, foot, r, t)) return t
+  for (const t of candidates) if (t > 0 && t < want && bodyClears(bed, top, foot, r, t, lip)) return t
   return 0
 }
 

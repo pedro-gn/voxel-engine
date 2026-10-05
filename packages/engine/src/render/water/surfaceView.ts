@@ -5,7 +5,7 @@ import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
   ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX, JOIN, OUTSIDE,
   SINK, boreWhite, bodyThickness, curtainAt, effective, exitSpeed, flareAmount, flareCode, flareMargin, flareOpen, froude, layArc,
-  layBody, level, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares,
+  layBody, layLip, level, lipCode, localOf, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
 /**
@@ -160,11 +160,13 @@ export class SurfaceView {
   /** …the ground (blocks) under those columns and under the row beside the end, and the end's laid result (see layEnd). */
   private readonly bedH = new Float64Array(ARC_COLUMNS)
   private readonly sideH = new Float64Array(ARC_COLUMNS)
-  private readonly arc = new Float64Array(6)
+  private readonly arc = new Float64Array(7)
   /** The corners (blocks) on the end's line of the column groundBeside last looked at, and the splash bytes of the ends laid last. */
   private besideNear = 0
   private besideFar = 0
   private readonly endSplash = new Int32Array(2)
+  /** The current step's brink depth of each end (layEnd arc[6]), for cInfo.x / .y. */
+  private readonly endLip = new Float64Array(2)
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -528,9 +530,8 @@ export class SurfaceView {
     let curBits = 0
     if ((sm[vi]! & sm[vi + 1]! & sm[vi + vw]! & sm[vi + vw + 1]! & 2) === 0) {
       curBits = edgeBits(this.eC, h, hw)
-      // White water at the foot of a curtain falling into c, from the water it carries toward c…
-      white = Math.max(white, this.foot(h - 1, ec, west), this.foot(h + 1, ec, -east), this.foot(h - hw, ec, north), this.foot(h + hw, ec, -south))
-      // …and where c runs onto dry ground (a front), from its Froude number.
+      // White water where c runs onto dry ground (a front), from its Froude number. A curtain falling into c gets none here:
+      // its splash whitens the water where its arc lands, which is past c when it is thrown out.
       if (this.front(h + 1, ec, east) || this.front(h - 1, ec, -west) || this.front(h + hw, ec, south) || this.front(h - hw, ec, -north)) {
         white = Math.max(white, boreWhite(fr))
       }
@@ -540,13 +541,6 @@ export class SurfaceView {
     d.info[o + 3] = (l & 15) * 16 + (l >> 4) + 256 * white
     d.curtainMask[i] = prevBits | (curBits << 4)
     if (a >= 0) this.track(c)
-  }
-
-  /** White water (0–15) at the foot of a curtain from halo cell j onto a column at effective value ec, carrying `into`. */
-  private foot(j: number, ec: number, into: number): number {
-    const ej = this.eC[j]!
-    if (into <= 0 || ej < 0 || ej - level(ec) <= JOIN) return 0
-    return Math.min(15, into >> 4)
   }
 
   /**
@@ -569,7 +563,7 @@ export class SurfaceView {
     const tag = this.carryTag, val = this.carryVal, token = carry >= 0 ? ++this.carryToken : 0
     if (carry >= 0) {
       for (let k = 0; k < cs.count; k++) {
-        const o = k * 4, key = (cs.info[o]! + cs.info[o + 1]! * 32) * 4 + (cs.info[o + 2]! % 4), v = key * CARRY
+        const o = k * 4, key = (localOf(cs.info[o]!) + localOf(cs.info[o + 1]!) * 32) * 4 + (cs.info[o + 2]! % 4), v = key * CARRY
         tag[key] = token
         for (let j = 0; j < 4; j++) val[v + j] = cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * carry
         for (let e = 0; e < 2; e++) {
@@ -611,8 +605,8 @@ export class SurfaceView {
             cs.flare[o + e] = val[key * CARRY + 8 + e]!
           }
         }
-        cs.info[o] = lx
-        cs.info[o + 1] = lz
+        cs.info[o] = lipCode(lx, this.endLip[0]!)
+        cs.info[o + 1] = lipCode(lz, this.endLip[1]!)
         cs.info[o + 2] = dir + 4 * ((packed % 256) + 256 * water)
         cs.info[o + 3] = packFlux(flux, this.endSplash[0]!, this.endSplash[1]!)
         n++
@@ -634,6 +628,7 @@ export class SurfaceView {
       if (!on) {
         out[o + 2 + end] = out[o + end]!; cs.reach[r + end] = 0; cs.thick[r + end] = 0; cs.flare[r + end] = flareCode(1, 0)
         this.endSplash[end] = 0
+        this.endLip[end] = 0
         continue
       }
       this.layEnd(out[o + end]!, cur, x, z, dir, end, v)
@@ -643,14 +638,16 @@ export class SurfaceView {
       cs.flare[r + end] = a[3]!
       water |= a[4]! << end
       this.endSplash[end] = a[5]!
+      this.endLip[end] = a[6]!
     }
     return water
   }
 
   /**
    * Lays end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in a step, from height `top`, into arc:
-   * [0] its reach and [1] its foot (layArc), [2] its body's thickness (layBody), [3] its flare and [4] whether it lands on
-   * drawn water. The curtain beside that end on the same side, when one hangs there in the step, shares the end: it is thrown
+   * [0] its reach and [1] its foot (layArc), [2] its body's thickness (layBody), [3] its flare, [4] whether it lands on
+   * drawn water, [5] its splash byte and [6] its brink depth (layLip): its underside leaves the brink at the column's floor (the
+   * higher of both rows' when shared), or at the water below the brink when that is higher. The curtain beside that end on the same side, when one hangs there in the step, shares the end: it is thrown
    * at the mean of both curtains' exit speeds (v is this one's) over the higher of both rows' levels and ground, so both lay
    * the same arc, foot and body there, which do not flare (flareCode(0, 0)). It lands on this row's columns: their corners at the
    * end's line (near and far from the wall) when drawn, their ground otherwise. A free end flares when the row beside it
@@ -688,13 +685,16 @@ export class SurfaceView {
       }
     }
     layArc(speed, top, levels, near, far, arc)
-    const r = arc[0]!, foot = arc[1]!, want = bodyThickness(speed), thick = layBody(want, top, foot, r, bed)
+    const c = x + z * sx, brink = shared ? Math.max(this.floor[c]!, this.floor[c + side]!) : this.floor[c]!
+    const r = arc[0]!, foot = arc[1]!, lip = layLip(top - Math.max(brink, levels[0]!), top, foot, r, bed)
+    const want = bodyThickness(speed), thick = layBody(want, top, foot, r, bed, lip)
     arc[2] = thick
+    arc[6] = lip
     // A free end flares as far as its flux gives it body and the row beside it lets it: the less the arc clears that row's
     // ground, the less it widens, so the flare follows the flux smoothly.
     let amount = 0
     if (!shared && beside && want > 0) {
-      const margin = Math.min(flareMargin(flank, top, foot, r, 0), flareMargin(flank, top, foot, r, thick))
+      const margin = Math.min(flareMargin(flank, top, foot, r, 0, lip), flareMargin(flank, top, foot, r, thick, lip))
       amount = FLARE_MAX * Math.min(1, want / BODY_MAX) * Math.min(1, Math.max(0, margin / FLARE_FADE))
     }
     arc[3] = flareCode(shared ? 0 : 1, amount)

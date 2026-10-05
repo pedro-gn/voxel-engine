@@ -68,7 +68,8 @@ function baseBody(height: number): THREE.InstancedBufferGeometry {
     }
     for (let end = 0; end < 2; end++) {
       const a = SIDE(end, k, 0), b = SIDE(end, k, 1), c = SIDE(end, k + 1, 1), d = SIDE(end, k + 1, 0)
-      index.push(...(end === 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]))
+      // Wound to face out of the body, away from the other end (the material draws front faces only).
+      index.push(...(end === 0 ? [a, c, b, a, d, c] : [a, b, c, a, c, d]))
     }
   }
   for (let row = 0; row < 2; row++) index.push(SPLASH(row, 0), SPLASH(row, 1), SPLASH(row + 1, 1), SPLASH(row, 0), SPLASH(row + 1, 1), SPLASH(row + 1, 0))

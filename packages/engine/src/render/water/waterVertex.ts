@@ -1,7 +1,7 @@
 import type * as THREE from 'three/webgpu'
-import { attribute, bool, float, instanceIndex, mix, normalize, select, smoothstep, uniform, varying, vec2, vec3 } from 'three/tsl'
+import { attribute, bool, float, instanceIndex, mix, normalize, select, smoothstep, step, uniform, varying, vec2, vec3 } from 'three/tsl'
 import { chunkVertex } from '../chunkVertex.ts'
-import { ARC_GAP, ARC_SEGMENTS, FLARE_OPEN_STEPS, SLOPE_UNITS, SPLASH_LIFT, SPLASH_UNITS } from './surfaceMesh.ts'
+import { ARC_GAP, ARC_SEGMENTS, FLARE_OPEN_STEPS, LIP_UNITS, SLOPE_UNITS, SPLASH_LIFT, SPLASH_UNITS } from './surfaceMesh.ts'
 
 /** Loose TSL node type (see voxelLighting.ts). */
 type N = any
@@ -99,11 +99,12 @@ export function surfaceVertex(): WaterVertex {
  *   front (face 0) and back (face 1) at s; 2 for the splash at the foot, whose s is the signed row (−1, 0, 1) across it.
  * - cPrev/cCur hold (top A, top B, foot A, foot B); cReach, cThick and cFlare hold per end (A, B in the previous step, then
  *   A, B in the current one) its reach, the thickness of its body and its flare. Each is mixed by waterAlpha.
- * - cInfo is (lx, lz, dir + 4 × (light + 256 × water), packFlux(flux, splash A, splash B)), water flagging (bit 0 A, bit 1 B)
- *   the ends that land on water.
+ * - cInfo is (lipCode(lx, lip A), lipCode(lz, lip B), dir + 4 × (light + 256 × water), packFlux(flux, splash A, splash B)),
+ *   water flagging (bit 0 A, bit 1 B) the ends that land on water, lip the depth (blocks) under the top at which an end's
+ *   underside leaves the brink.
  * Each end's front point lies arcPoint(top, foot, reach, s) (surfaceMesh.ts) away: in front of the wall's plane along `dir`
  * (by ARC_GAP at least below the top, so it never meets the wall it pours from), and down from the top; its back point
- * backPoint(…, thick, s) that much nearer the wall. A flare (flareCode) says how open an end is and how far it moves out
+ * backPoint(…, thick, s, lip) that much nearer the wall and lip · (1 − s)² lower. A flare (flareCode) says how open an end is and how far it moves out
  * along the edge (by its amount × s); an end shared with the curtain beside it is closed: it does not flare, and its side
  * face collapses (no seam where bodies join), both mixing smoothly with the other steps.
  * The splash is a white strip across the foot at the landing point, as wide as its end's speed gives it (its splash byte),
@@ -111,6 +112,10 @@ export function surfaceVertex(): WaterVertex {
  * the drawn foot has settled onto the current one.
  */
 export function curtainVertex(): WaterVertex {
+  // Branch-free on purpose: three's TSL compiles a select() into if/else and builds a node shared between its branches and
+  // the rest of the graph where it first meets it, so a value first needed inside one branch (this end's light, the flux)
+  // is left unset everywhere else (r186: a curtain's body read sky light 0 and drew black). Every choice below is a mix by
+  // a 0/1 factor, so each value is computed once, for every vertex.
   const strip = attribute('strip', 'vec4')
   const cp = attribute('cPrev', 'vec4'), cc = attribute('cCur', 'vec4'), info = attribute('cInfo', 'vec4')
   const reach = attribute('cReach', 'vec4'), thick = attribute('cThick', 'vec4'), flare = attribute('cFlare', 'vec4')
@@ -120,18 +125,24 @@ export function curtainVertex(): WaterVertex {
   const lightWater = info.z.div(4).floor()
   const water = lightWater.div(256).floor()
   const light = lightWater.sub(water.mul(256))
-  const isB = strip.y.greaterThan(0.5)
+  // 0/1 factors: this vertex's end is B; it is on a side face, on the splash, on the back face.
+  const isB: N = strip.y
   const face = strip.z, kind = strip.w
-  const isSide = kind.greaterThan(0.5).and(kind.lessThan(1.5))
-  const isSplash = kind.greaterThan(1.5)
-  const one = float(1), zero = float(0)
+  const isSplash: N = step(1.5, kind)
+  const isSide: N = step(0.5, kind).sub(isSplash)
+  const back: N = step(0.5, face)
+  /** Per end: a at end A, b at end B. */
+  const byEnd = (x: N, y: N): N => mix(x, y, isB)
   // The fall fraction (the splash lies at the foot) and the splash's row.
-  const s = select(isSplash, one, strip.x)
+  const s = mix(strip.x, float(1), isSplash)
   const row = strip.x
-  const r = select(isB, mix(reach.y, reach.w, a), mix(reach.x, reach.z, a))
-  const t = select(isB, mix(thick.y, thick.w, a), mix(thick.x, thick.z, a))
+  // cInfo.x / .y: the column's local x / z (0–31) + 32 × the brink depth of end A / B in 1/LIP_UNITS (lipCode).
+  const localX = info.x.mod(32), localZ = info.y.mod(32)
+  const lip = byEnd(info.x.sub(localX), info.y.sub(localZ)).div(32 * LIP_UNITS)
+  const r = byEnd(mix(reach.x, reach.z, a), mix(reach.y, reach.w, a))
+  const t = byEnd(mix(thick.x, thick.z, a), mix(thick.y, thick.w, a))
   // A flare is stored as round(open × 255) + amount (flareCode): both mix between the steps on their own.
-  const flareP = select(isB, flare.y, flare.x), flareC = select(isB, flare.w, flare.z)
+  const flareP = byEnd(flare.x, flare.y), flareC = byEnd(flare.z, flare.w)
   const openP = flareP.floor(), openC = flareC.floor()
   const flareAmount = mix(flareP.sub(openP), flareC.sub(openC), a)
   const open = mix(openP, openC, a).div(FLARE_OPEN_STEPS)
@@ -139,58 +150,61 @@ export function curtainVertex(): WaterVertex {
   const flux = info.w.mod(256)
   const splashes = info.w.sub(flux).div(256)
   const splashA = splashes.mod(256)
-  const code = select(isB, splashes.sub(splashA).div(256), splashA)
+  const code = byEnd(splashA, splashes.sub(splashA).div(256))
   const codeLow = code.mod(16), codeSlope = code.sub(codeLow).div(16)
   const half = codeLow.div(SPLASH_UNITS)
-  const slope = select(codeSlope.greaterThanEqual(8), codeSlope.sub(16), codeSlope).div(SLOPE_UNITS)
-  const d0 = dir.lessThan(0.5), d1 = dir.lessThan(1.5), d2 = dir.lessThan(2.5)
-  const ax = select(d0, one, select(d1, zero, select(d2, one, zero)))
-  const az = select(d0, zero, select(d1, one, select(d2, one, zero)))
-  const bx = select(d0, one, select(d1, zero, select(d2, zero, one)))
-  const bz = select(d0, one, select(d1, zero, select(d2, one, zero)))
+  const slope = codeSlope.sub(step(8, codeSlope).mul(16)).div(SLOPE_UNITS)
+  // One-hot direction (0 +x, 1 −x, 2 +z, 3 −z), then the edge's ends A (ax, az) and B (bx, bz) on the upper column's side.
+  const e1: N = step(0.5, dir).sub(step(1.5, dir)), e2: N = step(1.5, dir).sub(step(2.5, dir)), e3: N = step(2.5, dir)
+  const e0: N = float(1).sub(step(0.5, dir))
+  const ax = e0.add(e2), az = e1.add(e2), bx = e0.add(e3), bz = e0.add(e2)
   // Outward: the direction the water leaves its column in; along: from this end out past the edge (the flare's direction).
-  const ox = select(d0, one, select(d1, float(-1), zero))
-  const oz = select(d1, zero, select(d2, one, float(-1)))
-  const lx = select(isB, bx.sub(ax), ax.sub(bx)), lz = select(isB, bz.sub(az), az.sub(bz))
-  const top = select(isB, h.y, h.x), drop = top.sub(select(isB, h.w, h.z))
+  const ox = e0.sub(e1), oz = e2.sub(e3)
+  const sign = float(1).sub(isB.mul(2))
+  const lx = ax.sub(bx).mul(sign), lz = az.sub(bz).mul(sign)
+  const top = byEnd(h.x, h.y), drop = top.sub(byEnd(h.z, h.w))
   const gap = s.mul(ARC_SEGMENTS).min(1).mul(ARC_GAP)
   const front = r.mul(s).add(gap)
   // The back face is `t` nearer the wall, but not nearer than the arc's gap; a side face's back edge is only as far as it is open.
-  const back = face.greaterThan(0.5)
-  const depth = select(back, select(isSide, t.mul(open), t), zero)
+  const depth = back.mul(mix(t, t.mul(open), isSide))
+  // The underside leaves the brink lip under the top and closes in on the arc as it falls (a side face's as far as it is open).
+  const fallLeft = float(1).sub(s)
+  const under = back.mul(mix(float(1), open, isSide)).mul(lip).mul(fallLeft.mul(fallLeft))
   const arc = front.sub(depth).max(gap)
   // The splash lies across the landing column (floor(ARC_GAP + r) out): ± its half extent about the landing point.
   const land = r.add(ARC_GAP)
   const landBase = land.floor()
   const across = land.add(row.mul(half)).min(landBase.add(1)).max(landBase.max(ARC_GAP))
-  const u = select(isSplash, across, arc)
+  const u = mix(arc, across, isSplash)
   // The splash lies on the surface of the landing column: the foot, then the slope along the fall from the landing point.
-  const y = top.sub(drop.mul(s.mul(s))).add(select(isSplash, slope.mul(across.sub(land)).add(SPLASH_LIFT), zero))
+  const y = top.sub(drop.mul(s.mul(s))).sub(under).add(isSplash.mul(slope.mul(across.sub(land)).add(SPLASH_LIFT)))
   const spread = flareAmount.mul(s)
   // Normal of the arc (u, y) = (r s, top − drop s²): perpendicular to its tangent (r, −2 drop s), facing out and up. With no
   // reach it faces straight out, like a flat curtain. The back face looks the other way.
   const out = drop.max(0).mul(s).mul(2).add(0.001)
   const arcNormal = normalize(vec3(ox.mul(out), r, oz.mul(out)))
-  const faceNormal = select(back, arcNormal.mul(-1), arcNormal)
-  const normal = select(isSplash, vec3(0, 1, 0), select(isSide, vec3(lx, 0, lz), faceNormal))
+  const faceNormal = arcNormal.mul(float(1).sub(back.mul(2)))
+  const normal = mix(mix(faceNormal, vec3(lx, 0, lz), isSide), vec3(0, 1, 0), isSplash)
   const { sky, blk } = unpack(light)
   const fade = mix(float(0.45), float(1), smoothstep(0, 24, flux))
   // The splash shows at the ends that land on water, once the curtain has unrolled, and fades out toward its rows' edges.
-  const wet = select(isB, water.div(2).floor(), water.sub(water.div(2).floor().mul(2)))
+  const wetB = water.div(2).floor()
+  const wet = byEnd(water.sub(wetB.mul(2)), wetB)
   // It also waits for the foot to settle: while the curtain unrolls (or the water under it moves) the drawn foot is far from
   // the current one, and a splash there would hang in the air.
-  const footNow = select(isB, cc.w, cc.z), settled = float(1).sub(top.sub(drop).sub(footNow).abs().mul(4)).max(0)
+  const footNow = byEnd(cc.z, cc.w), settled = float(1).sub(top.sub(drop).sub(footNow).abs().mul(4)).max(0)
   const splashFade = mix(float(0.45), float(1), half.div(0.4).min(1))
   const splash = splashFade.mul(wet).mul(drop.max(0).min(1)).mul(settled).mul(float(1).sub(row.abs()))
   return {
-    position: vec3(info.x.add(select(isB, bx, ax)).add(ox.mul(u)).add(lx.mul(spread)), y, info.y.add(select(isB, bz, az)).add(oz.mul(u)).add(lz.mul(spread))),
+    position: vec3(localX.add(byEnd(ax, bx)).add(ox.mul(u)).add(lx.mul(spread)), y, localZ.add(byEnd(az, bz)).add(oz.mul(u)).add(lz.mul(spread))),
     normal: varying(normal),
-    isTop: varying(select(isSplash, one, zero)).greaterThan(0.5),
+    isTop: (varying(isSplash) as N).greaterThan(0.5),
     sky, blk,
     flow: vec3(0, 0, 0),
     surface: float(1),
-    white: varying(select(isSplash, one, smoothstep(8, 64, flux).mul(0.6))),
+    // A fall whitens as it goes down: it takes in air on the way.
+    white: varying(mix(smoothstep(8, 64, flux).mul(s.mul(0.4).add(0.3)), float(1), isSplash)),
     fall: varying(float(1).add(flux.div(32).min(3))),
-    alpha: varying(select(isSplash, splash, fade)),
+    alpha: varying(mix(fade, splash, isSplash)) as N,
   }
 }
