@@ -93,24 +93,52 @@ function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, sou
   if (north >= 0 && flux[north]! < 0) flux[north] = -scaled(-flux[north]!, d, out)
 }
 
-/** The column transfer's last fall landed its water on (−1: it landed beside the edge, or moved none). */
-let thrown = -1
+/** The columns transfer's last fall landed its water on (spot[0..spots)) and what each took. */
+const spot = new Int32Array(4), spotTook = new Int32Array(4)
+let spots = 0
+
+/** Gives column c `amount` of a fall's water and lists it (spot). */
+function land(depth: Int32Array, c: number, amount: number): void {
+  depth[c] = depth[c]! + amount
+  spot[spots] = c
+  spotTook[spots++] = amount
+}
+
+/**
+ * Lands \`n\` of a fall's water around column c, falling toward \`step\` (±1 along x, ±sx along z): a quarter on each of the
+ * columns ahead of it and beside it, the rest on c. A plunging jet spreads where it hits: landed on one column, with no
+ * momentum to carry it on, the water would pile up there (half a block and more over a dry floor) until its head pushed
+ * it out. Never behind (toward the wall) nor onto higher ground; the floors decide, so the order edges move in does not.
+ */
+function plunge(depth: Int32Array, floor: Int16Array, sx: number, sz: number, c: number, step: number, n: number): void {
+  const x = c % sx, z = (c - x) / sx, along = step === 1 || step === -1, sign = step > 0 ? 1 : -1, q = n >> 2
+  let rest = n
+  const spread = (ok: boolean, d: number): void => {
+    if (!ok || q === 0 || floor[c + d]! > floor[c]!) return
+    land(depth, c + d, q)
+    rest -= q
+  }
+  spread(along ? x + sign >= 0 && x + sign < sx : z + sign >= 0 && z + sign < sz, step)
+  spread(along ? z > 0 : x > 0, along ? -sx : -1)
+  spread(along ? z + 1 < sz : x + 1 < sx, along ? sx : 1)
+  land(depth, c, rest)
+}
 
 /**
  * Step 4 for edge e (a → b, b = a + stride): moves its water; returns the amount (≥ 0). A fall's water flies over the
- * columns its arc crosses and lands on the one fallColumn gives (thrown), as its curtain is drawn.
+ * columns its arc crosses and lands on the one fallColumn gives, as its curtain is drawn, spreading there (plunge).
  */
-function transfer(depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, stride: number): number {
-  thrown = -1
+function transfer(depth: Int32Array, flux: Int32Array, fall: Uint16Array, floor: Int16Array, e: number, a: number, b: number, stride: number, sx: number, sz: number): number {
+  spots = 0
   const m = moved(flux[e]!)
   if (m === 0) return 0
   const n = m < 0 ? -m : m, code = fall[e]!
   if (code !== 0) {
     const k = fallColumn(n, ((code >> 2) * SUB) / FALL_DROP_UNITS, code & 3)
+    // Thrown out: the sender loses it; the columns the arc crosses (the receiver beside the edge first) are flown over. A
+    // trickle that lands at the foot of its wall (k 0) just runs down into the receiver.
     if (k > 0) {
-      // The sender loses it; the receiver beside the edge is flown over.
-      if (m > 0) { depth[a] = depth[a]! - n; thrown = b + k * stride } else { depth[b] = depth[b]! - n; thrown = a - k * stride }
-      depth[thrown] = depth[thrown]! + n
+      if (m > 0) { depth[a] = depth[a]! - n; plunge(depth, floor, sx, sz, b + k * stride, stride, n) } else { depth[b] = depth[b]! - n; plunge(depth, floor, sx, sz, a - k * stride, -stride, n) }
       return n
     }
   }
@@ -318,7 +346,7 @@ export class WaterColumns {
    * does a fall's water landing in one (landed).
    */
   private transferAll(): void {
-    const depth = this.depth, flux = this.flux, fall = this.falls, sx = this.sx, sz = this.sz, tx = this.tiles.tx
+    const depth = this.depth, flux = this.flux, fall = this.falls, floor = this.floor, sx = this.sx, sz = this.sz, tx = this.tiles.tx
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!, o = this.open[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
@@ -327,29 +355,29 @@ export class WaterColumns {
       for (let z = z0; z < z1; z++) {
         const row = z * sx
         for (let x = x0; x < xe; x++) {
-          const c = x + row, m = transfer(depth, flux, fall, c * 2, c, c + 1, 1)
+          const c = x + row, m = transfer(depth, flux, fall, floor, c * 2, c, c + 1, 1, sx, sz)
           if (m > most) most = m
           if (m > 0 && x + 1 === x1 && (o & EAST) !== 0) this.reach(t + 1, m)
-          if (thrown >= 0) this.landed(thrown, m)
+          for (let i = 0; i < spots; i++) this.landed(spot[i]!, spotTook[i]!)
         }
         if (z < ze) for (let x = x0; x < x1; x++) {
-          const c = x + row, m = transfer(depth, flux, fall, c * 2 + 1, c, c + sx, sx)
+          const c = x + row, m = transfer(depth, flux, fall, floor, c * 2 + 1, c, c + sx, sx, sx, sz)
           if (m > most) most = m
           if (m > 0 && z + 1 === z1 && (o & SOUTH) !== 0) this.reach(t + tx, m)
-          if (thrown >= 0) this.landed(thrown, m)
+          for (let i = 0; i < spots; i++) this.landed(spot[i]!, spotTook[i]!)
         }
       }
       if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
-        const c = x0 - 1 + z * sx, m = transfer(depth, flux, fall, c * 2, c, c + 1, 1)
+        const c = x0 - 1 + z * sx, m = transfer(depth, flux, fall, floor, c * 2, c, c + 1, 1, sx, sz)
         if (m > most) most = m
         if (m > 0) this.reach(t - 1, m)
-        if (thrown >= 0) this.landed(thrown, m)
+        for (let i = 0; i < spots; i++) this.landed(spot[i]!, spotTook[i]!)
       }
       if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
-        const c = x + (z0 - 1) * sx, m = transfer(depth, flux, fall, c * 2 + 1, c, c + sx, sx)
+        const c = x + (z0 - 1) * sx, m = transfer(depth, flux, fall, floor, c * 2 + 1, c, c + sx, sx, sx, sz)
         if (m > most) most = m
         if (m > 0) this.reach(t - tx, m)
-        if (thrown >= 0) this.landed(thrown, m)
+        for (let i = 0; i < spots; i++) this.landed(spot[i]!, spotTook[i]!)
       }
       this.most[k] = most
     }

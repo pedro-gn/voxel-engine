@@ -328,15 +328,34 @@ describe('WaterColumns falls', () => {
   }
   const row = (g: WaterColumns, x: number) => g.depth[x + z * sx]!
 
-  it('lands the water a fall moves where its arc does, flying over the column at the foot of the wall', () => {
+  it('lands the water a fall moves where its arc does, flying over the column at the foot of the wall, and spreads it there', () => {
     const g = ledge(), v0 = g.total()
     g.step(CAP, null, 0)
     expect(g.total()).toBe(v0)
-    const east = [11, 12, 13, 14].map((x) => row(g, x)), m = east.reduce((a, b) => a + b)
-    const k = fallColumn(m, (12 + 2 - 2) * SUB, 3) // from the brink's surface down to the open ground
+    const at = (x: number, zz: number) => g.depth[x + zz * sx]!
+    let m = 0
+    for (let zz = 6; zz <= 10; zz++) for (let x = 11; x <= 16; x++) m += at(x, zz)
+    const k = fallColumn(m, (12 + 2 - 2) * SUB, 3), t = 11 + k, q = m >> 2 // from the brink's surface down to the open ground
     expect(m).toBeGreaterThan(0)
     expect(k).toBeGreaterThan(0)
-    expect(east).toEqual(east.map((_, i) => (i === k ? m : 0)))
+    // A quarter ahead and on each side of where it lands, the rest there; nothing behind it, at the foot of the wall.
+    const want = new Map([[`${t},8`, m - 3 * q], [`${t + 1},8`, q], [`${t},7`, q], [`${t},9`, q]])
+    for (let zz = 6; zz <= 10; zz++) for (let x = 11; x <= 16; x++) expect(at(x, zz), `(${x}, ${zz})`).toBe(want.get(`${x},${zz}`) ?? 0)
+  })
+
+  it('keeps the pool a fall plunges into level: its landing never piles up over the water around it', () => {
+    // A lake 4 deep behind a dam at 26 with a one-wide notch at 24 (z = 8), over a dry floor at 9.
+    const g = grid(48, sz, (x, zz) => (x <= 9 ? 21 : x === 10 ? (zz === z ? 24 : 26) : 9), (x) => (x <= 9 ? 4 * SUB + 100 : 0))
+    const at = (x: number, zz: number) => g.depth[x + zz * 48]!
+    let worst = 0
+    for (let i = 0; i < 200; i++) {
+      g.step(CAP, null, 0)
+      for (let x = 12; x < 16; x++) {
+        const around = Math.max(at(x - 1, z), at(x + 1, z), at(x, z - 1), at(x, z + 1))
+        if (around > 0) worst = Math.max(worst, at(x, z) - around)
+      }
+    }
+    expect(worst).toBeLessThan(SUB / 4) // landed on one column it stood 0.6 block over its neighbours, at times a whole block
   })
 
   it('stops a fall at ground ahead higher than where it falls to', () => {
