@@ -142,6 +142,81 @@ export function arcPoint(top: number, foot: number, r: number, s: number, out: F
   out[o + 1] = top - (top - foot) * s * s
 }
 
+/**
+ * A curtain has a body: behind the arc (the front face) lies a back face, `thick` blocks nearer the wall at the same height
+ * (backPoint), and at the curtain's free ends the two are joined by side faces. The thickness grows with the exit speed (so
+ * with the square root of the flux): about 0.1 block for a trickle, 0.37 for one removed dam block, BODY_MAX from a flux of
+ * about 200. The back face is clamped to ARC_GAP · min(1, 8 s) in front of the wall's plane (the arc's own gap), so the body
+ * starts at the edge and never reaches the wall it pours from; a fall with no reach has no body to speak of.
+ */
+export const BODY_PER_SPEED = 0.28
+export const BODY_MIN = 0.04
+export const BODY_MAX = 0.5
+/** While falling, a free end of a curtain widens sideways by flare · s (s the fall fraction), at most FLARE_MAX at the foot. */
+export const FLARE_MAX = 0.5
+/** The flare value of an end shared with the curtain beside it: no flare, and no side face (the two bodies join there). */
+export const FLARE_SHARED = -1
+/** The splash at a curtain's foot spans ± min(SPLASH_MAX, SPLASH_PER_ROOT · √flux) blocks along the fall's direction… */
+export const SPLASH_MAX = 0.75
+export const SPLASH_PER_ROOT = 0.07
+/** …and lies this far (blocks) above the water it lands on. */
+export const SPLASH_LIFT = 0.02
+/** Candidate thicknesses are tried this far inside the limits that bound them (the ground tests are exact). */
+const BODY_EPS = 1e-7
+
+/** The thickness (blocks) of a curtain thrown at exit speed v: 0 with no flow. */
+export function bodyThickness(v: number): number {
+  return v > 0 ? Math.min(BODY_MAX, Math.max(BODY_MIN, BODY_PER_SPEED * v)) : 0
+}
+
+/** The splash's half extent (blocks) at a curtain's foot for a flux (1/SUB block per step). */
+export function splashHalf(flux: number): number {
+  return Math.min(SPLASH_MAX, SPLASH_PER_ROOT * Math.sqrt(Math.max(0, flux)))
+}
+
+/**
+ * The point at fall fraction s of the back face of a curtain from `top` to `foot` with reach r and thickness `thick`: the arc
+ * (arcPoint) moved `thick` toward the wall, but never nearer to the wall's plane than the arc's own ARC_GAP, into out[o]
+ * (distance in front of the plane) and out[o + 1] (height). The curtain vertex shader lays its back face by the same formula.
+ */
+export function backPoint(top: number, foot: number, r: number, thick: number, s: number, out: Float64Array, o: number): void {
+  arcPoint(top, foot, r, s, out, o)
+  out[o] = Math.max(out[o]! - thick, ARC_GAP * Math.min(1, s * ARC_SEGMENTS))
+}
+
+/**
+ * Whether the back face of a curtain (backPoint, thickness `thick`; 0 is the arc itself) lies on or above the ground `bed[i]`
+ * (blocks) of every column i it is over (0 the column past the wall's plane), from `top` down to `foot` with reach r. The
+ * back face descends as it goes out, so its lowest point over a column is where it leaves it, and over the last the foot.
+ */
+export function bodyClears(bed: ArrayLike<number>, top: number, foot: number, r: number, thick: number): boolean {
+  const end = Math.max(ARC_GAP + r - thick, ARC_GAP), last = Math.min(bed.length - 1, Math.floor(end)), drop = top - foot
+  for (let m = 1; m <= last; m++) {
+    const s = (m + thick - ARC_GAP) / r // where the back face crosses the face between columns m − 1 and m
+    if (top - drop * s * s < bed[m - 1]!) return false
+  }
+  return foot >= bed[last]!
+}
+
+/**
+ * The thickness of a curtain end's body: the largest not above `want` for which its back face clears the ground `bed` (see
+ * bodyClears). The front arc clears it (layArc), so 0 always does. The limits that bound a thickness are the foot's column
+ * changing and the back face reaching a column's far face; the candidates are those, just inside, and `want`.
+ */
+export function layBody(want: number, top: number, foot: number, r: number, bed: ArrayLike<number>): number {
+  if (want <= 0) return 0
+  if (bodyClears(bed, top, foot, r, want)) return want
+  const end = ARC_GAP + r, drop = top - foot, candidates: number[] = []
+  for (let m = 0; m <= bed.length; m++) {
+    candidates.push(end - m - BODY_EPS, end - m + BODY_EPS)
+    const b = m > 0 ? bed[m - 1]! : Infinity
+    if (r > 0 && drop > 0 && b < top) candidates.push(r * Math.sqrt(Math.min(1, (top - b) / drop)) - m + ARC_GAP - BODY_EPS)
+  }
+  candidates.sort((a, b) => b - a)
+  for (const t of candidates) if (t > 0 && t < want && bodyClears(bed, top, foot, r, t)) return t
+  return 0
+}
+
 /** The level (1/SUB block) a published value stands for: a wet column's surface, a dry one's ground. */
 export function level(v: number): number { return v >= 0 ? v : ~v }
 

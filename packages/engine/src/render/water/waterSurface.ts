@@ -36,26 +36,44 @@ function baseQuad(height: number): THREE.InstancedBufferGeometry {
   return g
 }
 
+/** Rows of a curtain's strips (top to foot), and the first vertex of its front, back, side and splash vertices (see baseBody). */
+const ROWS = ARC_SEGMENTS + 1
+const FACE = (face: number, k: number, end: number): number => face * ROWS * 2 + k * 2 + end
+const SIDE = (end: number, k: number, face: number): number => 4 * ROWS + end * ROWS * 2 + k * 2 + face
+const SPLASH = (row: number, end: number): number => 8 * ROWS + row * 2 + end
+const BODY_VERTICES = 8 * ROWS + 6
+
 /**
- * A curtain's base strip: ARC_SEGMENTS segments, rows 0..ARC_SEGMENTS from its top to its foot. Vertex 2k + end has
- * `strip` = (k / ARC_SEGMENTS, end), end 0 at the edge's end A and 1 at B; segment k is the quad between rows k and k + 1,
- * so neighbouring segments share their row of vertices.
+ * A curtain's base geometry: its body and its splash, `strip` = (s, end, face, kind) per vertex (see curtainVertex).
+ * - The front (face 0) and back (face 1) faces are strips of ARC_SEGMENTS segments, rows 0..ARC_SEGMENTS from the top to the
+ *   foot, with `end` 0 at the edge's end A and 1 at B; segment k is the quad between rows k and k + 1, so neighbouring
+ *   segments share their row of vertices. The back face has the opposite winding.
+ * - Each end has a side face: a strip of the same rows between the front and the back (kind 1).
+ * - The splash is two quads across the foot (kind 2): rows −1, 0, 1 by the two ends.
  */
-function baseStrip(height: number): THREE.InstancedBufferGeometry {
+function baseBody(height: number): THREE.InstancedBufferGeometry {
   const g = new THREE.InstancedBufferGeometry()
-  const rows = ARC_SEGMENTS + 1, strip = new Float32Array(rows * 4), index: number[] = []
-  for (let k = 0; k < rows; k++) {
-    strip[k * 4] = k / ARC_SEGMENTS
-    strip[k * 4 + 1] = 0
-    strip[k * 4 + 2] = k / ARC_SEGMENTS
-    strip[k * 4 + 3] = 1
+  const strip = new Float32Array(BODY_VERTICES * 4), index: number[] = []
+  const put = (v: number, s: number, end: number, face: number, kind: number): void => { strip.set([s, end, face, kind], v * 4) }
+  for (let k = 0; k < ROWS; k++) for (let end = 0; end < 2; end++) for (let face = 0; face < 2; face++) {
+    put(FACE(face, k, end), k / ARC_SEGMENTS, end, face, 0)
+    put(SIDE(end, k, face), k / ARC_SEGMENTS, end, face, 1)
   }
+  for (let row = 0; row < 3; row++) for (let end = 0; end < 2; end++) put(SPLASH(row, end), row - 1, end, 0, 2)
   for (let k = 0; k < ARC_SEGMENTS; k++) {
-    const a = 2 * k, b = a + 1, c = a + 3, d = a + 2 // top A, top B, foot B, foot A of the segment
-    index.push(a, b, c, a, c, d)
+    // top A, top B, foot B, foot A of the segment
+    for (let face = 0; face < 2; face++) {
+      const a = FACE(face, k, 0), b = FACE(face, k, 1), c = FACE(face, k + 1, 1), d = FACE(face, k + 1, 0)
+      index.push(...(face === 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]))
+    }
+    for (let end = 0; end < 2; end++) {
+      const a = SIDE(end, k, 0), b = SIDE(end, k, 1), c = SIDE(end, k + 1, 1), d = SIDE(end, k + 1, 0)
+      index.push(...(end === 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]))
+    }
   }
-  g.setAttribute('strip', new THREE.BufferAttribute(strip, 2))
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rows * 2 * 3), 3))
+  for (let row = 0; row < 2; row++) index.push(SPLASH(row, 0), SPLASH(row, 1), SPLASH(row + 1, 1), SPLASH(row, 0), SPLASH(row + 1, 1), SPLASH(row + 1, 0))
+  g.setAttribute('strip', new THREE.BufferAttribute(strip, 4))
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BODY_VERTICES * 3), 3))
   g.setIndex(index)
   bound(g, height, CURTAIN_MARGIN)
   return g
@@ -71,7 +89,7 @@ function instanced(array: Float32Array, size = 4): THREE.InstancedBufferAttribut
 
 /** The view's curtain arrays, by attribute name. */
 const CURTAIN_ATTRIBUTES: readonly (readonly [string, (cs: ColumnData['curtains']) => Float32Array, number])[] = [
-  ['cPrev', (cs) => cs.prev, 4], ['cCur', (cs) => cs.cur, 4], ['cReach', (cs) => cs.reach, 4], ['cInfo', (cs) => cs.info, 4],
+  ['cPrev', (cs) => cs.prev, 4], ['cCur', (cs) => cs.cur, 4], ['cReach', (cs) => cs.reach, 4], ['cThick', (cs) => cs.thick, 4], ['cFlare', (cs) => cs.flare, 4], ['cInfo', (cs) => cs.info, 4],
 ]
 
 function wireCurtains(g: THREE.InstancedBufferGeometry, cs: ColumnData['curtains']): void {
@@ -174,7 +192,7 @@ export class WaterSurface {
     geo.setAttribute('info', attrs[2]!)
     geo.instanceCount = 1024
     const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${cc}`)
-    const cgeo = baseStrip(this.height)
+    const cgeo = baseBody(this.height)
     wireCurtains(cgeo, d.curtains)
     cgeo.instanceCount = 0
     const curtains = this.mesh(cgeo, this.curtainMaterial, ox, oz, `water-${cc}-curtains`)

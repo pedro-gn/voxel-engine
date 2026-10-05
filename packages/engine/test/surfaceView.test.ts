@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  ARC_COLUMNS, ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, JOIN, SINK, arcPoint,
-  cornerHeights, curtainAt, exitSpeed, layArc, level, quantizeFlow, shows,
+  ARC_COLUMNS, ARC_GAP, ARC_REACH, ARC_SEGMENTS, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_MAX,
+  FLARE_SHARED, JOIN, SINK, arcPoint, backPoint, bodyClears, bodyThickness, cornerHeights, curtainAt, exitSpeed, layArc, layBody,
+  level, quantizeFlow, shows,
 } from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
@@ -71,7 +72,7 @@ describe('SurfaceView', () => {
     const k = [...Array(cs.count).keys()].find((i) => cs.info[i * 4] === 10 && cs.info[i * 4 + 1] === 5)!
     expect([...cs.cur.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
     expect([...cs.prev.subarray(k * 4, k * 4 + 4)]).toEqual([7, 7, 3, 3])
-    expect([...cs.info.subarray(k * 4, k * 4 + 4)]).toEqual([10, 5, 0 + 4 * LIT, 20])
+    expect([...cs.info.subarray(k * 4, k * 4 + 4)]).toEqual([10, 5, 4 * (LIT + 256 * 3), 20]) // dir 0 + 4 × (light + 256 × both ends on water)
     const r = Math.fround(flat(exitSpeed(20, 20), 7, 3)[0])
     expect(r).toBeGreaterThan(0)
     expect([...cs.reach.subarray(k * 4, k * 4 + 4)]).toEqual([r, r, r, r]) // thrown out with the flow: both ends, both steps
@@ -372,6 +373,180 @@ describe('curtain arcs', () => {
   })
 })
 
+/** The water flags of a curtain end's landing (bit 0 end A, bit 1 end B), packed in its info after dir + 4 × (light + 256 × flags). */
+function wetBits(cs: { info: Float32Array }, k: number): number {
+  return Math.floor(Math.floor(cs.info[k * 4 + 2]! / 4) / 256)
+}
+
+describe('curtain bodies', () => {
+  /** A plateau (floor 6, x ≤ 10) over the rows of `flux` (z → flux) above a lake (floor 2, a block deep): curtains over its +x edge. */
+  function plateau(flux: Record<number, number>, wall: (x: number, z: number) => boolean = () => false) {
+    const s = scene(32, 32, (x, z) => (wall(x, z) ? 20 : x <= 10 && z in flux ? 6 : 2), (x, z) => (wall(x, z) ? 0 : SUB))
+    for (const z of Object.keys(flux)) s.cols.flux[2 * (10 + Number(z) * 32)] = 16 * flux[Number(z)]!
+    s.publish()
+    return s
+  }
+
+  it('thickens a curtain with its flux, from a thin trickle to BODY_MAX', () => {
+    expect(bodyThickness(0)).toBe(0)
+    const t = [8, 32, 110, 210, 480, 5000].map((f) => bodyThickness(exitSpeed(f, 20)))
+    for (let i = 1; i < t.length; i++) expect(t[i]).toBeGreaterThanOrEqual(t[i - 1]!)
+    expect(t[0]).toBeLessThan(0.12) // a trickle stays thin
+    expect(t[2]).toBeGreaterThan(0.3) // one removed dam block has a real body
+    expect(t[5]).toBe(BODY_MAX)
+    expect(BODY_MAX).toBeLessThanOrEqual(0.5)
+    const s = plateau({ 5: 8, 6: 8, 20: 400, 21: 400 })
+    const cs = s.view.column(0)!.curtains, weak = curtainIndex(s.view, 0, 10, 5), strong = curtainIndex(s.view, 0, 10, 20)
+    const trickle = Math.fround(bodyThickness(exitSpeed(8, 20)))
+    expect([...cs.thick.subarray(weak * 4 + 2, weak * 4 + 4)]).toEqual([trickle, trickle])
+    expect([...cs.thick.subarray(strong * 4 + 2, strong * 4 + 4)]).toEqual([BODY_MAX, BODY_MAX])
+    expect([...cs.thick.subarray(strong * 4, strong * 4 + 2)]).toEqual([BODY_MAX, BODY_MAX]) // and the previous step, with the same flux
+  })
+
+  it('keeps the back face off the wall: ARC_GAP in front of its plane below the top, where the body starts at the edge', () => {
+    const s = plateau({ 5: 8, 6: 8, 20: 400, 21: 400, 12: 110 })
+    const cs = s.view.column(0)!.curtains, p = new Float64Array(2), q = new Float64Array(2)
+    let ends = 0
+    for (let k = 0; k < cs.count; k++) for (let step = 0; step < 2; step++) for (let end = 0; end < 2; end++) {
+      const heights = step ? cs.cur : cs.prev, o = k * 4 + step * 2 + end, top = heights[k * 4 + end]!, foot = heights[k * 4 + 2 + end]!
+      for (let i = 0; i <= ARC_SEGMENTS; i++) {
+        const sf = i / ARC_SEGMENTS
+        backPoint(top, foot, cs.reach[o]!, cs.thick[o]!, sf, p, 0)
+        arcPoint(top, foot, cs.reach[o]!, sf, q, 0)
+        expect(p[0]).toBeGreaterThanOrEqual(ARC_GAP * Math.min(1, sf * ARC_SEGMENTS) - 1e-12) // never on or behind the wall's plane
+        if (sf >= 1 / ARC_SEGMENTS) expect(p[0]).toBeGreaterThanOrEqual(ARC_GAP - 1e-12)
+        expect(p[0]).toBeLessThanOrEqual(q[0]! + 1e-12) // behind the front face
+        expect(q[0]! - p[0]!).toBeLessThanOrEqual(cs.thick[o]! + 1e-12)
+        if (i === 0) expect([...p]).toEqual([...q]) // one point at the edge: the body starts there
+      }
+      ends++
+    }
+    expect(ends).toBe(cs.count * 4)
+  })
+
+  it('thins the body where ground rises under its back face, and keeps it clear of that ground', () => {
+    // Top 7, foot 3, landing 1.64 out (column 1), the back face ending in column 1.
+    const r = over(exitSpeed(400, 20), 7, [3, 3, 3, 3])[0]!
+    expect(layBody(BODY_MAX, 7, 3, r, [2, 3, 2, 2])).toBe(BODY_MAX)
+    const high = [3.9, 3, 2, 2] // ground 3.9 under column 0: the back face must cross into column 1 above it
+    const t = layBody(BODY_MAX, 7, 3, r, high)
+    expect(t).toBeGreaterThan(0.4)
+    expect(t).toBeLessThan(BODY_MAX)
+    expect(bodyClears(high, 7, 3, r, t)).toBe(true)
+    expect(bodyClears(high, 7, 3, r, t + 1e-4)).toBe(false) // the largest that clears
+    expect(layBody(BODY_MAX, 7, 3, r, [Infinity, 3, 2, 2])).toBeLessThan(0.7 * ARC_GAP) // ground right under the wall: nearly no body
+    expect(layBody(0, 7, 3, r, [2, 3, 2, 2])).toBe(0)
+  })
+
+  it('never puts a point of the body inside the ground, over random ground and falls', () => {
+    let seed = 99
+    const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32 }
+    const p = new Float64Array(2), out = new Float64Array(2)
+    let thin = 0
+    const N = 60_000
+    for (let n = 0; n < N; n++) {
+      const top = 4 + rand() * 20, levels = Array.from({ length: ARC_COLUMNS }, () => (rand() < 0.04 ? Infinity : top - rand() * 20))
+      const bed = levels.map((l) => l - (rand() < 0.5 ? 0 : rand() * 3))
+      layArc(exitSpeed(rand() * 600, 20), top, levels, levels, levels, out)
+      const r = out[0]!, foot = out[1]!
+      const want = rand() * BODY_MAX, t = layBody(want, top, foot, r, bed)
+      expect(t).toBeGreaterThanOrEqual(0)
+      expect(t).toBeLessThanOrEqual(want)
+      if (t < want) thin++
+      for (let k = 0; k <= 512; k++) {
+        backPoint(top, foot, r, t, k / 512, p, 0)
+        const i = Math.floor(p[0]!)
+        if (i < bed.length && p[1]! < bed[i]! - 1e-9) {
+          expect.fail(`case ${n}: u ${p[0]} y ${p[1]} under ground ${bed[i]} (top ${top} foot ${foot} r ${r} t ${t})`)
+        }
+      }
+    }
+    expect(thin).toBeGreaterThan(N / 100) // the ground does limit the body in a fair share of the cases
+  }, 30_000)
+
+  it('flares the free ends of a fall and leaves the ends shared with a neighbouring curtain alone', () => {
+    const s = plateau({ 20: 400, 21: 400 })
+    const cs = s.view.column(0)!.curtains, a = curtainIndex(s.view, 0, 10, 20), b = curtainIndex(s.view, 0, 10, 21)
+    for (const step of [0, 2]) {
+      expect(cs.flare[a * 4 + step]).toBe(FLARE_MAX) // end A of the first, free: a fan, the full flare at this flux
+      expect(cs.flare[a * 4 + step + 1]).toBe(FLARE_SHARED) // end B, shared with the second
+      expect(cs.flare[b * 4 + step]).toBe(FLARE_SHARED)
+      expect(cs.flare[b * 4 + step + 1]).toBe(FLARE_MAX)
+    }
+    // A trickle fans out less than a torrent.
+    const w = plateau({ 5: 8 }), cw = w.view.column(0)!.curtains, k = curtainIndex(w.view, 0, 10, 5)
+    expect(cw.flare[k * 4 + 2]).toBeGreaterThan(0)
+    expect(cw.flare[k * 4 + 2]).toBeLessThan(0.15)
+    // The shared ends match to the bit, thickness and all: the two bodies join there.
+    expect(cs.thick[a * 4 + 3]).toBe(cs.thick[b * 4 + 2])
+    expect(cs.reach[a * 4 + 3]).toBe(cs.reach[b * 4 + 2])
+  })
+
+  it('does not flare into a wall beside the fall', () => {
+    // A wall in the row beside end A of the fall at row 20, along its whole length ahead.
+    const s = plateau({ 20: 400 }, (x, z) => z === 19 && x >= 11)
+    const cs = s.view.column(0)!.curtains, k = curtainIndex(s.view, 0, 10, 20)
+    expect(cs.flare[k * 4 + 2]).toBe(0)
+    expect(cs.flare[k * 4 + 3]).toBe(FLARE_MAX) // the other side is open
+  })
+
+  it('keeps the body and its flare out of the ground beside and below, over random terrain', () => {
+    let seed = 5
+    const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32 }
+    const p = new Float64Array(2)
+    let ends = 0, flared = 0, samples = 0
+    for (let round = 0; round < 6; round++) {
+      const S = 64
+      const s = scene(S, S, (x, z) => 2 + Math.floor(rand() * 4) * (((x >> 2) + (z >> 1) + round) % 3 === 0 ? 3 : 1), () => 0)
+      for (let c = 0; c < S * S; c++) s.cols.depth[c] = rand() < 0.5 ? Math.floor((0.3 + rand() * 4) * SUB) : 0
+      for (let c = 0; c < S * S; c++) { s.cols.flux[2 * c] = Math.floor((rand() - 0.3) * 4000); s.cols.flux[2 * c + 1] = Math.floor((rand() - 0.3) * 4000) }
+      s.publish()
+      const { view } = s
+      for (let cc = 0; cc < view.cx * view.cz; cc++) {
+        const cs = view.column(cc)?.curtains
+        if (!cs) continue
+        const x0 = (cc % view.cx) * 32, z0 = Math.floor(cc / view.cx) * 32
+        for (let k = 0; k < cs.count; k++) {
+          const x: number = x0 + cs.info[k * 4]!, z: number = z0 + cs.info[k * 4 + 1]!, dir: number = cs.info[k * 4 + 2]! % 4
+          for (let end = 0; end < 2; end++) {
+            const top: number = cs.cur[k * 4 + end]!, foot: number = cs.cur[k * 4 + 2 + end]!, r: number = cs.reach[k * 4 + 2 + end]!
+            const t: number = cs.thick[k * 4 + 2 + end]!, f: number = cs.flare[k * 4 + 2 + end]!
+            ends++
+            if (f > 0) flared++
+            // The rows its points can be over: its own, and the one beside this end when it flares.
+            const rows = [[0, 0]]
+            if (f > 0) rows.push([END_X[dir]![end]!, END_Z[dir]![end]!])
+            for (const [bx, bz] of rows) for (const face of [0, t] as number[]) for (let i = 0; i <= 128; i++) {
+              backPoint(top, foot, r, face, i / 128, p, 0)
+              const col = Math.floor(p[0]!), e = bx === 0 && bz === 0 ? end : 1 - end // the row beside sees the line from its other end
+              const ground = groundAt(view, s.cols.floor, view.cur, x + bx! + DIR_X[dir]! * (col + 1), z + bz! + DIR_Z[dir]! * (col + 1), CURTAIN_BOTTOM[dir]![e]!, CURTAIN_TOP[dir]![e]!)
+              samples++
+              if (p[1]! < ground - 1e-6) {
+                expect.fail(`(${x}, ${z}) dir ${dir} end ${end} row ${bx},${bz} face ${face}: u ${p[0]} y ${p[1]} under ${ground} (top ${top} foot ${foot} r ${r} t ${t})`)
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(ends).toBeGreaterThan(300)
+    expect(flared).toBeGreaterThan(30)
+    expect(samples).toBeGreaterThan(100_000)
+  }, 60_000)
+
+  it('flags the water a fall lands on for its splash, and nothing over dry ground', () => {
+    const wet = plateau({ 5: 110, 6: 110 })
+    expect(wetBits(wet.view.column(0)!.curtains, curtainIndex(wet.view, 0, 10, 5))).toBe(3)
+    // The same fall over dry ground (the lake is gone past x = 10): no splash.
+    const s = scene(32, 32, (x, z) => (x <= 10 && (z === 5 || z === 6) ? 6 : 2), (x) => (x <= 10 ? SUB : 0))
+    for (const z of [5, 6]) s.cols.flux[2 * (10 + z * 32)] = 16 * 110
+    s.publish()
+    const cd = s.view.column(0)!.curtains
+    expect(wetBits(cd, curtainIndex(s.view, 0, 10, 5))).toBe(0)
+    expect(wetBits(cd, curtainIndex(s.view, 0, 10, 6))).toBe(0)
+  })
+})
+
 describe('SurfaceView, white water', () => {
   /** White water (0–15) of column (10, 5) of a uniform sheet `depth` sub deep, running toward +x at `speed` blocks/s. */
   function whiteOf(depth: number, speed: number, dryPast = 32): number {
@@ -504,6 +679,29 @@ describe('SurfaceView, displayed alpha', () => {
     expect([...cs.reach.subarray(k * 4 + 2, k * 4 + 4)]).toEqual([r, r])
   })
 
+  it('carries a curtain\'s body and flare from where they are drawn when its flow changes, shared ends staying shared', () => {
+    const s = scene(32, 32, (x, z) => (x <= 10 && (z === 20 || z === 21) ? 6 : 2), () => SUB)
+    const flow = (f: number, alpha?: number) => {
+      for (const z of [20, 21]) s.cols.flux[2 * (10 + z * 32)] = 16 * f
+      expect(s.view.apply(s.pub.publish([0, 1, 2, 3], s.cols)!, alpha)).toBe(true)
+    }
+    flow(8)
+    flow(32, 0.6)
+    const cs = s.view.column(0)!.curtains
+    let k = curtainIndex(s.view, 0, 10, 20)
+    expect(cs.thick[k * 4]).toBeLessThan(cs.thick[k * 4 + 2]!) // thickening with the stronger flow
+    expect(cs.flare[k * 4]).toBeLessThan(cs.flare[k * 4 + 2]!) // and fanning out more at its free end A
+    const thick = [0, 1].map((e) => cs.thick[k * 4 + e]! + (cs.thick[k * 4 + 2 + e]! - cs.thick[k * 4 + e]!) * 0.6)
+    const flare = cs.flare[k * 4]! + (cs.flare[k * 4 + 2]! - cs.flare[k * 4]!) * 0.6
+    flow(64, 0.6)
+    k = curtainIndex(s.view, 0, 10, 20)
+    expect([...cs.thick.subarray(k * 4, k * 4 + 2)]).toEqual(thick.map(Math.fround)) // no jump at the publish
+    expect(cs.flare[k * 4]).toBe(Math.fround(flare))
+    expect([cs.flare[k * 4 + 1], cs.flare[k * 4 + 3]]).toEqual([FLARE_SHARED, FLARE_SHARED]) // end B joins the curtain beside it
+    const t = Math.fround(bodyThickness(exitSpeed(64, 20)))
+    expect([...cs.thick.subarray(k * 4 + 2, k * 4 + 4)]).toEqual([t, t])
+  })
+
   it('never moves backwards or past the newest step when two publishes come in one frame', () => {
     const { view, step } = rising(false)
     const before = drawn(view, 10, 10, 0.6)[0]!
@@ -604,15 +802,16 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
         const j = jx + jz * sx, was = curtainAt(prev, floor, c, j), now = curtainAt(cur, floor, c, j)
         if (!was && !now) continue
         const [ta, tb] = CURTAIN_TOP[dir]!
-        // Expected (top A, top B, foot A, foot B, reach A, reach B) in a step; an absent curtain rolls up to its top.
-        const lay = (s: Int32Array, o: number, on: boolean): number[] => {
+        // Expected (top A, top B, foot A, foot B, reach A, reach B, thick A, thick B, flare A, flare B) in a step, and which ends
+        // land on drawn water; an absent curtain rolls up to its top.
+        const lay = (s: Int32Array, o: number, on: boolean): [number[], number] => {
           const a = k[o + ta]!, b = k[o + tb]!
-          if (!on) return [a, b, a, b, 0, 0]
-          const [ra, fa] = expectedEnd(view, floor, s, x, z, dir, 0, a), [rb, fb] = expectedEnd(view, floor, s, x, z, dir, 1, b)
-          return [a, b, fa!, fb!, ra!, rb!]
+          if (!on) return [[a, b, a, b, 0, 0, 0, 0, 0, 0], 0]
+          const [ra, fa, ta2, la, wa] = expectedEnd(view, floor, s, x, z, dir, 0, a), [rb, fb, tb2, lb, wb] = expectedEnd(view, floor, s, x, z, dir, 1, b)
+          return [[a, b, fa!, fb!, ra!, rb!, ta2!, tb2!, la!, lb!], wa! + 2 * wb!]
         }
-        const p = lay(prev, 0, was), q = lay(cur, 4, now)
-        want.push(`${lx},${lz},${dir}: ${p.join(' ')} | ${q.join(' ')}`)
+        const [p] = lay(prev, 0, was), [q, water] = lay(cur, 4, now)
+        want.push(`${lx},${lz},${dir}: ${p.join(' ')} | ${q.join(' ')} | ${water}`)
       }
     }
     const got: string[] = []
@@ -620,8 +819,10 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
       const cs = d.curtains
       for (let n = 0; n < cs.count; n++) {
         const o = n * 4
-        const p = [...cs.prev.subarray(o, o + 4), ...cs.reach.subarray(o, o + 2)], q = [...cs.cur.subarray(o, o + 4), ...cs.reach.subarray(o + 2, o + 4)]
-        got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${p.join(' ')} | ${q.join(' ')}`)
+        const step = (h: Float32Array, a: number) => [
+          ...h.subarray(o, o + 4), ...cs.reach.subarray(o + a, o + a + 2), ...cs.thick.subarray(o + a, o + a + 2), ...cs.flare.subarray(o + a, o + a + 2),
+        ]
+        got.push(`${cs.info[o]},${cs.info[o + 1]},${cs.info[o + 2]! % 4}: ${step(cs.prev, 0).join(' ')} | ${step(cs.cur, 2).join(' ')} | ${wetBits(cs, n)}`)
       }
     }
     if (got.join('/') !== want.join('/')) bad.push(`curtains of ${cc}: ${got.join('/')} vs ${want.join('/')}`)
@@ -630,7 +831,19 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
 }
 
 /**
- * [reach, foot] of end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in step `s`, from scratch: thrown
+ * The ground (blocks) a curtain must clear over column (ax, az) of the surfaces `s`: Infinity outside the world; its level when
+ * it is not drawn; else its floor, but no higher than its drawn corners `ca`, `cb` (the drawn surface may dip under the floor).
+ */
+function groundAt(view: SurfaceView, floor: Int16Array, s: Int32Array, ax: number, az: number, ca: number, cb: number): number {
+  const { sx, sz } = view
+  if (ax < 0 || az < 0 || ax >= sx || az >= sz) return Infinity
+  const c = ax + az * sx, corners = new Float32Array(4)
+  if (!cornerHeights(s, floor, sx, sz, ax, az, corners, 0)) return level(s[c]!) / SUB
+  return Math.min(floor[c]!, corners[ca]!, corners[cb]!)
+}
+
+/**
+ * [reach, foot, thick, flare, wet] of end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in step `s`, from scratch: thrown
  * at the mean exit speed of it and the curtain beside that end on the same side (if one hangs there in the step), over the
  * higher level of their two rows, onto this row's columns (their corners, or their ground when not drawn).
  */
@@ -645,8 +858,13 @@ function expectedEnd(view: SurfaceView, floor: Int16Array, s: Int32Array, x: num
   const shared = inside(nx, nz) && curtainAt(s, floor, nx + nz * sx, nx + dx + (nz + dz) * sx)
   const v = shared ? (speed(x + z * sx) + speed(nx + nz * sx)) / 2 : speed(x + z * sx)
   const levels: number[] = [], near: number[] = [], far: number[] = [], corners = new Float32Array(4)
+  // The ground under the columns of this row, of the row beside the end, and (shared) the higher of the two rows.
+  const bed: number[] = [], flank: number[] = []
   for (let i = 0; i < ARC_COLUMNS; i++) {
     const ax = x + dx * (i + 1), az = z + dz * (i + 1)
+    flank.push(groundAt(view, floor, s, ax + ox, az + oz, CURTAIN_BOTTOM[dir]![1 - end]!, CURTAIN_TOP[dir]![1 - end]!))
+    const own = groundAt(view, floor, s, ax, az, CURTAIN_BOTTOM[dir]![end]!, CURTAIN_TOP[dir]![end]!)
+    bed.push(shared ? Math.max(own, flank[i]!) : own)
     if (!inside(ax, az)) { levels.push(Infinity); near.push(0); far.push(0); continue }
     const g = level(s[ax + az * sx]!) / SUB
     levels.push(shared ? Math.max(g, level(s[ax + ox + (az + oz) * sx]!) / SUB) : g)
@@ -656,7 +874,12 @@ function expectedEnd(view: SurfaceView, floor: Int16Array, s: Int32Array, x: num
   }
   const out = new Float64Array(2)
   layArc(v, top, levels, near, far, out)
-  return [Math.fround(out[0]!), Math.fround(out[1]!)]
+  const r = out[0]!, foot = out[1]!, want = bodyThickness(v), thick = layBody(want, top, foot, r, bed)
+  const open = inside(nx, nz) && want > 0 && bodyClears(flank, top, foot, r, 0) && bodyClears(flank, top, foot, r, thick)
+  const flare = shared ? FLARE_SHARED : open ? FLARE_MAX * Math.min(1, want / BODY_MAX) : 0
+  const land = Math.min(ARC_COLUMNS - 1, Math.floor(ARC_GAP + r)), lc = x + dx * (land + 1) + (z + dz * (land + 1)) * sx
+  const wet = inside(x + dx * (land + 1), z + dz * (land + 1)) && shows(s[lc]!, floor[lc]!) ? 1 : 0
+  return [r, foot, thick, flare, wet].map(Math.fround)
 }
 
 /** Edge-adjacent drawn columns within JOIN of each other whose shared corners differ: "x,z +x|+z: a vs b". */
@@ -729,7 +952,7 @@ describe('SurfaceView.relight', () => {
   it('re-lights the curtains hanging from a re-lit column', () => {
     let torch = 0
     const { view, d } = ledge((x) => SKY15 | ((x === 10 ? torch : 0) << 4))
-    const curtainLight = () => [...d.curtains.info.subarray(2, 4 * d.curtains.count)].filter((_, i) => i % 4 === 0)
+    const curtainLight = () => [...d.curtains.info.subarray(2, 4 * d.curtains.count)].filter((_, i) => i % 4 === 0).map((v) => v % 1024) // without the water flags
     expect(d.curtains.count).toBe(32)
     expect(curtainLight().every((v) => v === 4 * LIT)).toBe(true) // dir 0 (+x) + 4 × light
     torch = 9

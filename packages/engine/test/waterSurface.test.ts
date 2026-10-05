@@ -1,7 +1,9 @@
 import * as THREE from 'three/webgpu'
 import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
-import { ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, arcPoint } from '../src/render/water/surfaceMesh.ts'
+import {
+  ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, FLARE_SHARED, SPLASH_LIFT, arcPoint, backPoint, splashHalf,
+} from '../src/render/water/surfaceMesh.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { curtainVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
 import { WaterSurface } from '../src/render/water/waterSurface.ts'
@@ -59,7 +61,7 @@ describe('WaterSurface', () => {
     const geo = (ws.group.getObjectByName('water-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     for (const name of ['hPrev', 'hCur', 'info']) expect((geo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
     const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
-    for (const name of ['cPrev', 'cCur', 'cInfo', 'cReach']) expect((cgeo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
+    for (const name of ['cPrev', 'cCur', 'cInfo', 'cReach', 'cThick', 'cFlare']) expect((cgeo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
   })
 
   it('merges the rows of several updates into one range until three uploads them', () => {
@@ -96,6 +98,8 @@ describe('WaterSurface', () => {
     expect(cgeo.getAttribute('cCur').array).toBe(d.curtains.cur)
     expect(cgeo.getAttribute('cInfo').array).toBe(d.curtains.info)
     expect(cgeo.getAttribute('cReach').array).toBe(d.curtains.reach)
+    expect(cgeo.getAttribute('cThick').array).toBe(d.curtains.thick)
+    expect(cgeo.getAttribute('cFlare').array).toBe(d.curtains.flare)
     expect(cgeo.getAttribute('cReach').itemSize).toBe(4)
     expect(cgeo.instanceCount).toBe(32)
     expect(curtains.visible).toBe(true)
@@ -129,24 +133,34 @@ describe('WaterSurface', () => {
     expect(curtains.visible).toBe(true)
   })
 
-  it('draws each curtain as a strip of ARC_SEGMENTS segments that share their vertices, bounded past its chunk column by the reach', () => {
+  it('draws each curtain as a body: front and back faces and a side face at each end, of ARC_SEGMENTS segments that share their vertices, and a splash, bounded past its chunk column by the reach', () => {
     const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
     const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     const strip = cgeo.getAttribute('strip')
-    expect(strip.itemSize).toBe(2)
-    expect(strip.count).toBe(2 * (ARC_SEGMENTS + 1))
+    const rows = ARC_SEGMENTS + 1
+    expect(strip.itemSize).toBe(4)
+    expect(strip.count).toBe(8 * rows + 6)
     expect(cgeo.getAttribute('position').count).toBe(strip.count)
-    for (let k = 0; k <= ARC_SEGMENTS; k++) for (let side = 0; side < 2; side++) {
-      expect([strip.getX(2 * k + side), strip.getY(2 * k + side)]).toEqual([k / ARC_SEGMENTS, side]) // (fall fraction, end A or B)
+    const vertex = (v: number) => [strip.getX(v), strip.getY(v), strip.getZ(v), strip.getW(v)] // (s, end, face, kind)
+    for (let k = 0; k < rows; k++) for (let end = 0; end < 2; end++) for (let face = 0; face < 2; face++) {
+      expect(vertex(face * rows * 2 + k * 2 + end)).toEqual([k / ARC_SEGMENTS, end, face, 0]) // front, back
+      expect(vertex(4 * rows + end * rows * 2 + k * 2 + face)).toEqual([k / ARC_SEGMENTS, end, face, 1]) // sides, front edge then back edge
     }
+    for (let row = 0; row < 3; row++) for (let end = 0; end < 2; end++) expect(vertex(8 * rows + row * 2 + end)).toEqual([row - 1, end, 0, 2])
     const index = [...cgeo.getIndex()!.array]
-    expect(index.length).toBe(6 * ARC_SEGMENTS)
+    expect(index.length).toBe(6 * ARC_SEGMENTS * 4 + 12)
+    const quad = (n: number) => [...new Set(index.slice(6 * n, 6 * n + 6))].sort((a, b) => a - b)
     for (let k = 0; k < ARC_SEGMENTS; k++) {
-      // Segment k spans rows k and k + 1, both ends: its lower row is the next segment's upper row (no gap between them).
-      expect([...new Set(index.slice(6 * k, 6 * k + 6))].sort((a, b) => a - b)).toEqual([2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 3])
+      // Segment k of each face spans rows k and k + 1, both ends: its lower row is the next segment's upper row (no gap).
+      const front = [2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 3], back = front.map((v) => v + 2 * rows)
+      const sideA = [0, 1, 2, 3].map((v) => 4 * rows + 2 * k + v), sideB = sideA.map((v) => v + 2 * rows)
+      expect([quad(4 * k), quad(4 * k + 1), quad(4 * k + 2), quad(4 * k + 3)]).toEqual([front, back, sideA, sideB])
     }
+    // The splash: two quads across the foot, rows −1, 0 and 0, 1.
+    const splash = (row: number) => [8 * rows + 2 * row, 8 * rows + 2 * row + 1, 8 * rows + 2 * row + 2, 8 * rows + 2 * row + 3]
+    expect([quad(4 * ARC_SEGMENTS), quad(4 * ARC_SEGMENTS + 1)]).toEqual([splash(0), splash(1)])
     const box = cgeo.boundingBox!
     expect(box.min.x).toBeLessThanOrEqual(-ARC_REACH - 1)
     expect(box.max.z).toBeGreaterThanOrEqual(32 + ARC_REACH + 1)
@@ -211,6 +225,7 @@ function evaluate(node: unknown, attributes: Record<string, number[]>): number[]
       const a = e('aNode')
       switch (n.method) {
         case 'floor': return a.map(Math.floor)
+        case 'sqrt': return a.map(Math.sqrt)
         case 'min': return zip(a, e('bNode'), Math.min)
         case 'max': return zip(a, e('bNode'), Math.max)
         case 'mix': { const b = e('bNode'), c = e('cNode'); return zip(a, b, (x) => x).map((x, i) => x + (at(b, i) - x) * at(c, i)) }
@@ -222,25 +237,55 @@ function evaluate(node: unknown, attributes: Record<string, number[]>): number[]
 }
 
 describe('curtainVertex', () => {
-  it('lays each end where arcPoint does: in front of the wall along its side, from its top down to its foot', () => {
+  it('lays every vertex of the body and the splash where the CPU formulas do', () => {
     const position = curtainVertex().position
-    const p = new Float64Array(2)
+    const p = new Float64Array(2), q = new Float64Array(2)
     const before = waterAlpha.value
+    let checked = 0
     try {
-      for (let dir = 0; dir < 4; dir++) for (const alpha of [0, 0.3, 1]) for (let k = 0; k <= ARC_SEGMENTS; k++) for (let end = 0; end < 2; end++) {
-        const s = k / ARC_SEGMENTS
-        const prev = [7, 7.5, 3, 3.25], cur = [6, 6.5, 2.5, 2], reach = [0.4, 0.9, 2.2, 1.6], info = [5, 9, dir + 4 * 37, 50]
-        waterAlpha.value = alpha
-        const got = evaluate(position, { strip: [s, end], cPrev: prev, cCur: cur, cReach: reach, cInfo: info })
-        const mix = (a: number, b: number) => a + (b - a) * alpha
-        arcPoint(mix(prev[end]!, cur[end]!), mix(prev[2 + end]!, cur[2 + end]!), mix(reach[end]!, reach[2 + end]!), s, p, 0)
-        // The end's corner of the upper column (CURTAIN_TOP): its x and z offsets in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z).
-        const corner = CURTAIN_TOP[dir]![end]!, ex = corner === 1 || corner === 2 ? 1 : 0, ez = corner >= 2 ? 1 : 0
-        const ox = [1, -1, 0, 0][dir]!, oz = [0, 0, 1, -1][dir]!
-        const want = [5 + ex + ox * p[0]!, p[1]!, 9 + ez + oz * p[0]!]
-        for (let i = 0; i < 3; i++) expect(got[i], `dir ${dir} α ${alpha} s ${s} end ${end}`).toBeCloseTo(want[i]!, 5)
+      for (let dir = 0; dir < 4; dir++) for (const alpha of [0, 0.3, 1]) {
+        for (const flare of [[0.5, 0.3, 0.4, 0.1], [FLARE_SHARED, 0, FLARE_SHARED, 0.5], [0.5, FLARE_SHARED, 0, FLARE_SHARED]]) {
+          const prev = [7, 7.5, 3, 3.25], cur = [6, 6.5, 2.5, 2], reach = [0.4, 0.9, 2.2, 1.6], thick = [0.1, 0.4, 0.3, 0.5]
+          const info = [5, 9, dir + 4 * (37 + 256 * 2), 50] // water at end B only
+          const mixed = (a: number, b: number) => a + (b - a) * alpha
+          waterAlpha.value = alpha
+          const ox = [1, -1, 0, 0][dir]!, oz = [0, 0, 1, -1][dir]!
+          // The ends' corners of the upper column (CURTAIN_TOP), in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z).
+          const corner = (end: number) => { const c = CURTAIN_TOP[dir]![end]!; return [c === 1 || c === 2 ? 1 : 0, c >= 2 ? 1 : 0] as const }
+          const vertices: number[][] = [] // (s, end, face, kind)
+          for (let k = 0; k <= ARC_SEGMENTS; k++) for (let end = 0; end < 2; end++) for (let face = 0; face < 2; face++) {
+            vertices.push([k / ARC_SEGMENTS, end, face, 0], [k / ARC_SEGMENTS, end, face, 1])
+          }
+          for (let row = -1; row <= 1; row++) for (let end = 0; end < 2; end++) vertices.push([row, end, 0, 2])
+          for (const [s, end, face, kind] of vertices as [number, number, number, number][]) {
+            const got = evaluate(position, { strip: [s, end, face, kind], cPrev: prev, cCur: cur, cReach: reach, cThick: thick, cFlare: flare, cInfo: info })
+            const top = mixed(prev[end]!, cur[end]!), foot = mixed(prev[2 + end]!, cur[2 + end]!), r = mixed(reach[end]!, reach[2 + end]!)
+            const t = mixed(thick[end]!, thick[2 + end]!), fp = flare[end]!, fc = flare[2 + end]!
+            const open = mixed(+(fp >= 0), +(fc >= 0)), amount = mixed(Math.max(fp, 0), Math.max(fc, 0))
+            let u: number, y: number, along: number
+            if (kind === 2) {
+              // The splash: across the landing column, about the landing point, as wide as the flux gives it; at the foot, a little up.
+              const land = ARC_GAP + r, base = Math.floor(land)
+              u = Math.min(base + 1, Math.max(Math.max(base, ARC_GAP), land + s * splashHalf(50)))
+              y = foot + SPLASH_LIFT
+              along = amount
+            } else {
+              // A side face's back edge is only as thick as it is open; the front is the arc itself.
+              backPoint(top, foot, r, face === 0 ? 0 : kind === 1 ? t * open : t, s, p, 0)
+              arcPoint(top, foot, r, s, q, 0)
+              u = p[0]!
+              y = q[1]!
+              along = amount * s
+            }
+            const [ex, ez] = corner(end), [fx, fz] = corner(1 - end)
+            const want = [5 + ex + ox * u + (ex - fx) * along, y, 9 + ez + oz * u + (ez - fz) * along]
+            for (let i = 0; i < 3; i++) expect(got[i], `dir ${dir} α ${alpha} s ${s} end ${end} face ${face} kind ${kind} [${i}]`).toBeCloseTo(want[i]!, 5)
+            checked++
+          }
+        }
       }
     } finally { waterAlpha.value = before }
+    expect(checked).toBe(4 * 3 * 3 * (9 * 2 * 2 * 2 + 6))
   })
 })
 

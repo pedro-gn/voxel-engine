@@ -3,21 +3,27 @@ import { mergeTiles, type WaterTick } from '../../sim/water/publish.ts'
 import type { WorldSize } from '../../world/layout.ts'
 import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
 import {
-  ARC_COLUMNS, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, JOIN, OUTSIDE, SINK, boreWhite, curtainAt, effective,
-  exitSpeed, froude, layArc, level, quantizeFlow, shows, surfaceWhite, vertexShares,
+  ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_MAX, FLARE_SHARED, JOIN, OUTSIDE,
+  SINK, boreWhite, bodyClears, bodyThickness, curtainAt, effective, exitSpeed, froude, layArc, layBody, level, quantizeFlow, shows,
+  surfaceWhite, vertexShares,
 } from './surfaceMesh.ts'
 
 /**
  * The curtains of one chunk column, per curtain:
  * - `prev`, `cur` (4 floats): (top A, top B, foot A, foot B) heights in blocks;
- * - `reach` (4 floats): how far (blocks) its ends A and B land past ARC_GAP in front of its wall, previous step then current;
- * - `info` (4 floats): (lx, lz, dir + 4 × light, flux).
+ * - `reach`, `thick`, `flare` (4 floats each): per end, (A, B) of the previous step then (A, B) of the current one: how far
+ *   (blocks) it lands past ARC_GAP in front of its wall, how thick its body is behind the arc, and how far (blocks, at the
+ *   foot) it widens sideways (FLARE_SHARED: it joins the curtain beside it there, with no side face);
+ * - `info` (4 floats): (lx, lz, dir + 4 × (light + 256 × water), flux), `water` flagging (bit 0 end A, bit 1 end B) the ends
+ *   that land on drawn water, where the splash goes.
  */
 export class Curtains {
   count = 0
   prev = new Float32Array(64)
   cur = new Float32Array(64)
   reach = new Float32Array(64)
+  thick = new Float32Array(64)
+  flare = new Float32Array(64)
   info = new Float32Array(64)
   /** Bumped whenever the arrays are replaced: the renderer then rebuilds its attributes. */
   generation = 0
@@ -30,6 +36,8 @@ export class Curtains {
     this.prev = grow(this.prev, cap)
     this.cur = grow(this.cur, cap)
     this.reach = grow(this.reach, cap)
+    this.thick = grow(this.thick, cap)
+    this.flare = grow(this.flare, cap)
     this.info = grow(this.info, cap)
     this.generation++
   }
@@ -148,7 +156,10 @@ export class SurfaceView {
   private readonly levels = new Float64Array(ARC_COLUMNS)
   private readonly nearH = new Float64Array(ARC_COLUMNS)
   private readonly farH = new Float64Array(ARC_COLUMNS)
-  private readonly arc = new Float64Array(2)
+  /** …the ground (blocks) under those columns and under the row beside the end, and the end's laid result (see layEnd). */
+  private readonly bedH = new Float64Array(ARC_COLUMNS)
+  private readonly sideH = new Float64Array(ARC_COLUMNS)
+  private readonly arc = new Float64Array(5)
 
   /** `light(x, y, z)`: packed voxel light (sky | block << 4). `stepHz`: water steps per second (the tick rate). */
   constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz = 20) {
@@ -549,8 +560,13 @@ export class SurfaceView {
         const o = k * 4, key = (cs.info[o]! + cs.info[o + 1]! * 32) * 4 + (cs.info[o + 2]! % 4), v = key * CARRY
         tag[key] = token
         for (let j = 0; j < 4; j++) val[v + j] = cs.prev[o + j]! + (cs.cur[o + j]! - cs.prev[o + j]!) * carry
-        val[v + 4] = cs.reach[o]! + (cs.reach[o + 2]! - cs.reach[o]!) * carry
-        val[v + 5] = cs.reach[o + 1]! + (cs.reach[o + 3]! - cs.reach[o + 1]!) * carry
+        for (let e = 0; e < 2; e++) {
+          val[v + 4 + e] = cs.reach[o + e]! + (cs.reach[o + 2 + e]! - cs.reach[o + e]!) * carry
+          val[v + 6 + e] = cs.thick[o + e]! + (cs.thick[o + 2 + e]! - cs.thick[o + e]!) * carry
+          const fp = cs.flare[o + e]!, fc = cs.flare[o + 2 + e]!
+          // An end that is shared in one step and free in the other changes its kind at once: the side face has no middle.
+          val[v + 8 + e] = fp < 0 !== fc < 0 ? fc : fp + (fc - fp) * carry
+        }
       }
     }
     const x0 = (cc % this.cx) * 32, z0 = Math.floor(cc / this.cx) * 32
@@ -572,17 +588,20 @@ export class SurfaceView {
         cs.cur[o] = d.hCur[o4 + ta]!
         cs.cur[o + 1] = d.hCur[o4 + tb]!
         // The edges' fluxes now stand for both steps: the view keeps only the current ones.
-        this.lay(cs.prev, cs.reach, o, 0, was, false, x, z, dir, v)
-        this.lay(cs.cur, cs.reach, o, 2, now, true, x, z, dir, v)
+        this.lay(cs, o, false, was, x, z, dir, v)
+        const water = this.lay(cs, o, true, now, x, z, dir, v)
         const key = i * 4 + dir
         if (token !== 0 && tag[key] === token) {
           for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * CARRY + j]!
-          cs.reach[o] = val[key * CARRY + 4]!
-          cs.reach[o + 1] = val[key * CARRY + 5]!
+          for (let e = 0; e < 2; e++) {
+            cs.reach[o + e] = val[key * CARRY + 4 + e]!
+            cs.thick[o + e] = val[key * CARRY + 6 + e]!
+            cs.flare[o + e] = val[key * CARRY + 8 + e]!
+          }
         }
         cs.info[o] = lx
         cs.info[o + 1] = lz
-        cs.info[o + 2] = dir + 4 * (packed % 256)
+        cs.info[o + 2] = dir + 4 * ((packed % 256) + 256 * water)
         cs.info[o + 3] = flux
         n++
       }
@@ -591,36 +610,49 @@ export class SurfaceView {
   }
 
   /**
-   * Lays one step of the curtain from column (x, z) through its side `dir`, whose tops (top A, top B) are already in out[o],
-   * out[o + 1]: its feet into out[o + 2], out[o + 3] and its ends' reaches into reach[o + r], reach[o + r + 1] (layEnd). A
-   * curtain absent in the step (`on` false) is rolled up to its top, with no reach.
+   * Lays one step of the curtain at cs[o / 4] from column (x, z) through its side `dir`, whose tops (top A, top B) are already
+   * in cs.prev / cs.cur (`cur`) [o], [o + 1]: its feet into [o + 2], [o + 3] and its ends' reach, thickness and flare into
+   * cs.reach / thick / flare at [o + 2 × cur + end] (layEnd). A curtain absent in the step (`on` false) is rolled up to its
+   * top, with no reach, body or flare. Returns which ends land on drawn water (bit 0 end A, bit 1 end B).
    */
-  private lay(out: Float32Array, reach: Float32Array, o: number, r: number, on: boolean, cur: boolean, x: number, z: number, dir: number, v: number): void {
+  private lay(cs: Curtains, o: number, cur: boolean, on: boolean, x: number, z: number, dir: number, v: number): number {
+    const out = cur ? cs.cur : cs.prev, r = cur ? o + 2 : o, a = this.arc
+    let water = 0
     for (let end = 0; end < 2; end++) {
-      if (!on) { out[o + 2 + end] = out[o + end]!; reach[o + r + end] = 0; continue }
-      reach[o + r + end] = this.layEnd(out[o + end]!, cur, x, z, dir, end, v)
-      out[o + 2 + end] = this.arc[1]!
+      if (!on) { out[o + 2 + end] = out[o + end]!; cs.reach[r + end] = 0; cs.thick[r + end] = 0; cs.flare[r + end] = 0; continue }
+      this.layEnd(out[o + end]!, cur, x, z, dir, end, v)
+      cs.reach[r + end] = a[0]!
+      out[o + 2 + end] = a[1]!
+      cs.thick[r + end] = a[2]!
+      cs.flare[r + end] = a[3]!
+      water |= a[4]! << end
     }
+    return water
   }
 
   /**
-   * Lays end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in a step, from height `top` (layArc):
-   * returns its reach, and leaves its foot in arc[1]. The curtain beside that end on the same side, when one hangs there in
-   * the step, shares the end: it is thrown at the mean of both curtains' exit speeds (v is this one's) over the higher of
-   * both rows' levels, so both lay the same arc there. It lands on this row's columns: their corners at the end's line
-   * (near and far from the wall) when drawn, their ground otherwise.
+   * Lays end `end` (0 A, 1 B) of the curtain from column (x, z) through side `dir` in a step, from height `top`, into arc:
+   * [0] its reach and [1] its foot (layArc), [2] its body's thickness (layBody), [3] its flare and [4] whether it lands on
+   * drawn water. The curtain beside that end on the same side, when one hangs there in the step, shares the end: it is thrown
+   * at the mean of both curtains' exit speeds (v is this one's) over the higher of both rows' levels and ground, so both lay
+   * the same arc and body there, which do not flare (FLARE_SHARED). It lands on this row's columns: their corners at the
+   * end's line (near and far from the wall) when drawn, their ground otherwise. A free end flares when the row beside it
+   * (in the world) is clear of the arc and the body, as far as its flux gives it body.
    */
-  private layEnd(top: number, cur: boolean, x: number, z: number, dir: number, end: number, v: number): number {
+  private layEnd(top: number, cur: boolean, x: number, z: number, dir: number, end: number, v: number): void {
     const s = cur ? this.cur : this.prev, sx = this.sx, sz = this.sz, dx = DIR_X[dir]!, dz = DIR_Z[dir]!
     const ox = END_X[dir]![end]!, oz = END_Z[dir]![end]!, nx = x + ox, nz = z + oz
     // When the column beside lies in the world, so does its neighbour through `dir` (beside this one's).
-    const shared = nx >= 0 && nz >= 0 && nx < sx && nz < sz && curtainAt(s, this.floor, nx + nz * sx, nx + dx + (nz + dz) * sx)
+    const beside = nx >= 0 && nz >= 0 && nx < sx && nz < sz
+    const shared = beside && curtainAt(s, this.floor, nx + nz * sx, nx + dx + (nz + dz) * sx)
     const speed = shared ? (v + exitSpeed(Math.max(0, this.edgeFlux(nx + nz * sx, dir)), this.stepHz)) / 2 : v
     const levels = this.levels, near = this.nearH, far = this.farH, nc = CURTAIN_BOTTOM[dir]![end]!, fc = CURTAIN_TOP[dir]![end]!
-    const side = ox + oz * sx
+    const bed = this.bedH, side = ox + oz * sx, flank = this.sideH, arc = this.arc
+    // The corners on the end's line, seen from the row beside it, are that row's other end's.
+    const nc2 = CURTAIN_BOTTOM[dir]![1 - end]!, fc2 = CURTAIN_TOP[dir]![1 - end]!
     for (let i = 0; i < ARC_COLUMNS; i++) {
       const ax = x + dx * (i + 1), az = z + dz * (i + 1)
-      if (ax < 0 || az < 0 || ax >= sx || az >= sz) { levels[i] = Infinity; near[i] = 0; far[i] = 0; continue }
+      if (ax < 0 || az < 0 || ax >= sx || az >= sz) { levels[i] = Infinity; near[i] = 0; far[i] = 0; bed[i] = Infinity; flank[i] = Infinity; continue }
       const a = ax + az * sx, w = s[a]!, g = level(w) * PER_SUB
       levels[i] = shared ? Math.max(g, level(s[a + side]!) * PER_SUB) : g
       const da = this.data[(ax >> 5) + (az >> 5) * this.cx]
@@ -628,10 +660,31 @@ export class SurfaceView {
         const h = cur ? da.hCur : da.hPrev, oa = ((ax & 31) + (az & 31) * 32) * 4
         near[i] = h[oa + nc]!
         far[i] = h[oa + fc]!
-      } else { near[i] = g; far[i] = g }
+        bed[i] = Math.min(this.floor[a]!, near[i]!, far[i]!)
+      } else { near[i] = g; far[i] = g; bed[i] = g }
+      if (beside) flank[i] = this.groundBeside(s, cur, ax + ox, az + oz, nc2, fc2)
+      if (shared) bed[i] = Math.max(bed[i]!, flank[i]!)
     }
-    layArc(speed, top, levels, near, far, this.arc)
-    return this.arc[0]!
+    layArc(speed, top, levels, near, far, arc)
+    const r = arc[0]!, foot = arc[1]!, want = bodyThickness(speed), thick = layBody(want, top, foot, r, bed)
+    arc[2] = thick
+    arc[3] = shared ? FLARE_SHARED : beside && want > 0 && bodyClears(flank, top, foot, r, 0) && bodyClears(flank, top, foot, r, thick) ? FLARE_MAX * Math.min(1, want / BODY_MAX) : 0
+    const land = Math.min(ARC_COLUMNS - 1, Math.floor(ARC_GAP + r)), ax = x + dx * (land + 1), az = z + dz * (land + 1)
+    arc[4] = ax >= 0 && az >= 0 && ax < sx && az < sz && shows(s[ax + az * sx]!, this.floor[ax + az * sx]!) ? 1 : 0
+  }
+
+  /**
+   * The ground (blocks) a curtain must clear in column (ax, az), in the row beside its end: a column that is drawn has its
+   * floor, but no higher than its drawn corners `ca`, `cb` on the end's line (the drawn surface may dip under the floor there,
+   * where the arc lands); a column that is not drawn has its level.
+   */
+  private groundBeside(s: Int32Array, cur: boolean, ax: number, az: number, ca: number, cb: number): number {
+    const a = ax + az * this.sx, w = s[a]!
+    if (!shows(w, this.floor[a]!)) return level(w) * PER_SUB
+    const da = this.data[(ax >> 5) + (az >> 5) * this.cx]
+    if (da === undefined) return this.floor[a]!
+    const h = cur ? da.hCur : da.hPrev, oa = ((ax & 31) + (az & 31) * 32) * 4
+    return Math.min(this.floor[a]!, h[oa + ca]!, h[oa + cb]!)
   }
 
   /** Water leaving column c through its side `dir` (1/SUB block per step; negative: coming in). */
@@ -648,21 +701,32 @@ export class SurfaceView {
 /** Heights (blocks) closer than this to their end are snapped to it in alpha mode (SurfaceView.settleRest). */
 const SETTLED = 1 / 256
 
-/** Floats a carried curtain keeps (SurfaceView.buildCurtains): its four heights and its two ends' reaches. */
-const CARRY = 6
+/** Floats a carried curtain keeps (SurfaceView.buildCurtains): its four heights, and its two ends' reaches, thicknesses and flares. */
+const CARRY = 10
 
-/** Snaps the curtains within SETTLED of their end, heights and reach (prev ← cur); returns whether any is still farther. */
+/**
+ * Snaps the curtains within SETTLED of their end, heights, reach, thickness and flare (prev ← cur); returns whether any is
+ * still farther. An end whose flare changes between shared (negative) and free is not counted: it is carried across at once.
+ */
 function settleCurtains(cs: Curtains): boolean {
   let moving = false
   for (let n = 0; n < cs.count; n++) {
     const o = n * 4
-    let far = Math.abs(cs.reach[o + 2]! - cs.reach[o]!) >= SETTLED || Math.abs(cs.reach[o + 3]! - cs.reach[o + 1]!) >= SETTLED
+    let far = false
+    for (let e = 0; e < 2; e++) {
+      const fp = cs.flare[o + e]!, fc = cs.flare[o + 2 + e]!
+      if (Math.abs(cs.reach[o + 2 + e]! - cs.reach[o + e]!) >= SETTLED || Math.abs(cs.thick[o + 2 + e]! - cs.thick[o + e]!) >= SETTLED) far = true
+      if (fp < 0 === fc < 0 && Math.abs(fc - fp) >= SETTLED) far = true
+    }
     for (let k = o; k < o + 4; k++) if (Math.abs(cs.cur[k]! - cs.prev[k]!) >= SETTLED) far = true
     if (far) moving = true
     else {
       for (let k = o; k < o + 4; k++) cs.prev[k] = cs.cur[k]!
-      cs.reach[o] = cs.reach[o + 2]!
-      cs.reach[o + 1] = cs.reach[o + 3]!
+      for (let e = 0; e < 2; e++) {
+        cs.reach[o + e] = cs.reach[o + 2 + e]!
+        cs.thick[o + e] = cs.thick[o + 2 + e]!
+        cs.flare[o + e] = cs.flare[o + 2 + e]!
+      }
     }
   }
   return moving
