@@ -14,7 +14,7 @@ import { rebuildColumns, waterKinds } from './rebuild.ts'
 /** A displaced volume spreads over columns that each take at most this much (1/16 block). */
 const DISPLACE_SHARE = SUB / 16
 /** The farthest a displaced volume looks for wet columns, in columns. */
-const DISPLACE_RADIUS = 16
+const DISPLACE_RADIUS = 32
 
 export interface WaterOptions {
   /** Awake tiles stepped per tick, in tile order, round robin; the rest wait (spec §6 safety net). Integer ≥ 1. Default 1024. */
@@ -61,6 +61,15 @@ export class WaterSystem {
   private readonly port: WaterPort
   private readonly layout: Layout
   private readonly height: number
+  /** Columns where a wall raised a wet floor since the last spread: the floor and surface before the first wall. Insertion order. */
+  private readonly pending = new Map<number, { f0: number; s0: number }>()
+  private gen = 0
+  private readonly stamp: Int32Array
+  private readonly queue: number[] = []
+  private readonly dist: number[] = []
+  private readonly from: number[] = []
+  private readonly vols: number[] = []
+  private readonly targets: number[] = []
   private readonly edit: EditColumn = { floor: 0, depth: 0 }
   private ex = 0
   private ez = 0
@@ -86,6 +95,7 @@ export class WaterSystem {
     this.cols.floor.fill(0) // an empty world: every column dry on the world floor
     this.cycle = new WaterCycle(sx * sz)
     this.mirror = new WaterMirror(sx * sz)
+    this.stamp = new Int32Array(sx * sz)
     this.publisher = new WaterPublisher(port.buffers)
     this.get = (x, y, z) => port.get(x, y, z)
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
@@ -168,54 +178,86 @@ export class WaterSystem {
     T.dirty[T.of(x, z)] = 1
     if (this.wetAround(x, z)) T.wakeAround(x, z)
     if (col.floor !== f0) this.floorMoved(x, z, c, f0, col.floor)
-    // A wall that raised a wet column's floor displaced water: spread it over the lake around at once.
-    if (nk === KIND.WALL && col.floor > f0 && d0 > 0) this.displace(x, z, c, f0 * SUB + d0, Math.min(d0, (col.floor - f0) * SUB))
+    // A wall that raised a wet column's floor displaced water: spreadDisplaced moves it to the lake around before the next step.
+    if (nk === KIND.WALL && col.floor > f0 && d0 > 0 && !this.pending.has(c)) this.pending.set(c, { f0, s0: f0 * SUB + d0 })
   }
 
   /**
-   * The wall placed at column c displaced `vol` sub-units of water (applyEdit raised the floor and kept the depth). Moves them
-   * to the connected wet columns around: a breadth-first search through wet, unblocked neighbours (order -x +x -z +z, radius
-   * DISPLACE_RADIUS) picks the first ceil(vol / DISPLACE_SHARE) columns, and each gets an equal integer share; the first
-   * `vol mod n` get one more. c itself is one of them while its floor is still under the old surface. With no wet neighbour
-   * nothing moves: the water rides on top of the wall. Σ depth is unchanged.
+   * Spreads the volume that walls placed since the last call displaced (see `pending`) in one multi-source breadth-first
+   * search. Each source column displaced min(depth, rise × SUB) of water, taken out of its depth (applyEdit raised the floor and
+   * kept the depth). The search starts from all sources at once (queue order: insertion order of the sources, then -x +x -z +z)
+   * through wet neighbours that can exchange water, to at most DISPLACE_RADIUS columns from the nearest source. It picks the
+   * first ceil(total / DISPLACE_SHARE) columns, a source among them while its floor is still under its old surface, and each gets
+   * an equal integer share; the first `total mod n` get one more. Without a wet neighbour nothing moves: the water rides on top
+   * of the wall. If a huge edit finds fewer columns than that within the radius, their shares exceed 1/16 block and normal flow
+   * levels it. Σ depth is unchanged. Runs before the step and before the mirror flush, so edits within a tick spread together.
    */
-  private displace(x: number, z: number, c: number, s0: number, vol: number): void {
+  private spreadDisplaced(): void {
+    const pending = this.pending
+    if (pending.size === 0) return
     const cols = this.cols, { floor, depth, sx, sz } = cols, T = cols.tiles
-    const want = Math.ceil(vol / DISPLACE_SHARE)
-    const self = floor[c]! * SUB < s0
-    const found: number[] = [c], dist = [0], seen = new Set<number>([c])
-    for (let i = 0; i < found.length && found.length < want + 1; i++) {
+    const q = this.queue, dist = this.dist, from = this.from, stamp = this.stamp
+    const gen = ++this.gen
+    q.length = 0
+    dist.length = 0
+    from.length = 0
+    let total = 0, eligible = 0
+    for (const [c, e] of pending) {
+      const vol = Math.min(depth[c]!, (floor[c]! - e.f0) * SUB)
+      if (vol <= 0) continue
+      total += vol
+      stamp[c] = gen
+      q.push(c)
+      dist.push(0)
+      from.push(e.s0)
+      this.vols.push(vol)
+      if (floor[c]! * SUB < e.s0) eligible++
+    }
+    pending.clear()
+    const seeds = q.length
+    const want = Math.ceil(total / DISPLACE_SHARE)
+    for (let i = 0; i < q.length && eligible < want; i++) {
       const d = dist[i]!
       if (d >= DISPLACE_RADIUS) continue
-      const cc = found[i]!, cx = cc % sx, cz = (cc - cx) / sx
-      const from = i === 0 ? s0 : cols.surface(cc)
+      const cc = q[i]!, cx = cc % sx, cz = (cc - cx) / sx, f = from[i]!
       for (let k = 0; k < 4; k++) {
         const nx = cx + (k === 0 ? -1 : k === 1 ? 1 : 0), nz = cz + (k === 2 ? -1 : k === 3 ? 1 : 0)
         if (nx < 0 || nz < 0 || nx >= sx || nz >= sz) continue
         const n = nx + nz * sx
-        if (seen.has(n) || depth[n]! <= 0 || floor[n]! * SUB >= from) continue
-        if (i > 0 && floor[cc]! * SUB >= cols.surface(n)) continue
-        seen.add(n)
-        found.push(n)
+        if (stamp[n] === gen || depth[n]! <= 0 || floor[n]! * SUB >= f) continue
+        if (floor[cc]! * SUB >= cols.surface(n)) continue
+        stamp[n] = gen
+        q.push(n)
         dist.push(d + 1)
+        from.push(cols.surface(n))
+        eligible++
       }
     }
-    const targets = (self ? found : found.slice(1)).slice(0, want)
-    if (found.length < 2 || targets.length === 0) return
-    const n = targets.length, share = Math.floor(vol / n), extra = vol - share * n
-    depth[c] = depth[c]! - vol
-    for (let i = 0; i < n; i++) {
-      const t = targets[i]!, tx = t % sx, tz = (t - tx) / sx
-      depth[t] = depth[t]! + share + (i < extra ? 1 : 0)
-      T.wake(T.of(tx, tz))
+    if (q.length > seeds) {
+      // targets: the eligible queue entries in order, at most `want`
+      const targets = this.targets
+      targets.length = 0
+      for (let i = 0; i < q.length && targets.length < want; i++) {
+        const c = q[i]!
+        if (i >= seeds || floor[c]! * SUB < from[i]!) targets.push(c)
+      }
+      const n = targets.length, share = Math.floor(total / n), extra = total - share * n
+      let k = 0
+      for (let i = 0; i < seeds; i++) { depth[q[i]!] = depth[q[i]!]! - this.vols[i]!; T.dirty[T.of(q[i]! % sx, Math.floor(q[i]! / sx))] = 1 }
+      for (let i = 0; i < n; i++, k++) {
+        const t = targets[i]!, tx = t % sx
+        depth[t] = depth[t]! + share + (i < extra ? 1 : 0)
+        T.wake(T.of(tx, (t - tx) / sx))
+      }
     }
-    T.dirty[T.of(x, z)] = 1
+    this.vols.length = 0
   }
 
   /** One physics step (spec §3): springs, flow over the awake tiles, the sea. Not called while paused. */
   step(): void {
     if (this.water === 0) return
     if (this.needsRebuild) this.rebuild()
+    this.spreadDisplaced()
     this.steps++
     const cy = this.cycle
     cy.runSprings(this.cols, this.layout, this.get, this.port.registry.source)
@@ -233,6 +275,7 @@ export class WaterSystem {
   flush(): number[] {
     this.published = null
     const out: number[] = []
+    if (!this.needsRebuild) this.spreadDisplaced()
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
     const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror
@@ -266,6 +309,7 @@ export class WaterSystem {
    */
   rebuild(): void {
     this.needsRebuild = false
+    this.pending.clear()
     if (this.water === 0) return
     const [sx, , sz] = this.layout.size, cols = this.cols, cy = this.cycle
     cols.tiles.clear()
@@ -290,6 +334,7 @@ export class WaterSystem {
    */
   rebuildChunkColumns(ccs: readonly (readonly [number, number])[]): number[] {
     if (this.water === 0 || ccs.length === 0) return []
+    this.spreadDisplaced()
     const cols = this.cols, cy = this.cycle, T = cols.tiles, L = this.layout
     const remesh = new Set<number>()
     const regenerated = new Set(ccs.map(([cx, cz]) => cx + cz * L.cx))

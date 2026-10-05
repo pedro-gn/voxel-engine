@@ -80,7 +80,7 @@ describe('water in the world', () => {
     expect(sim.store.getVoxel(5, 7, 5) & 0xfff).toBe(B.water)
     sim.submit(0, 2, { type: 'setBlock', pos: [5, 6, 5], voxel: AIR })
     sim.step()
-    expect(sim.store.getVoxel(5, 4, 5) & 0xfff).toBe(B.water)
+    expect(sim.store.getVoxel(5, 6, 5) & 0xfff).toBe(B.water)
     expect(sim.water.total()).toBe(sim.water.expected)
   })
 
@@ -417,12 +417,12 @@ describe('water in the world: edits and rebuilds', () => {
     sim.setPaused(true)
     sim.submit(0, 0, { type: 'setBlock', pos: [5, 2, 5], voxel: B.stone }) // a wall in the water
     sim.submit(0, 1, { type: 'setBlock', pos: [25, 10, 25], voxel: w(7) }) // water in the air over dry ground
-    sim.submit(0, 2, { type: 'setBlock', pos: [3, 4, 3], voxel: AIR }) // a water cell taken out
+    sim.submit(0, 2, { type: 'setBlock', pos: [8, 4, 8], voxel: AIR }) // a water cell taken out, outside the spread
     sim.step()
-    // the wall displaced 2 blocks of water: 32 columns around take 1/16 block each, the wall's own column too; so does (3, 3), a lake cell then comes out of it
+    // the wall displaced 2 blocks of water: 32 columns around take 1/16 block each, the wall's own column too
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 3, depth: 2 * SUB + SUB / 16, surface: 5 * SUB + SUB / 16 })
     expect(sim.water.column(25, 25)).toMatchObject({ floor: 1, depth: SUB })
-    expect(sim.water.column(3, 3)).toMatchObject({ floor: 1, depth: 3 * SUB + SUB / 16 })
+    expect(sim.water.column(8, 8)).toMatchObject({ floor: 1, depth: 3 * SUB })
     expect(sim.water.expected).toBe(LAKE)
     // The mirror follows while paused: the pocket under the wall is empty, the column over it stands as high as the lake, the
     // placed cell lies on the ground, and above the lake nothing is left.
@@ -430,8 +430,8 @@ describe('water in the world: edits and rebuilds', () => {
     expect(sim.store.getVoxel(5, 4, 5) & 0xfff).toBe(B.water)
     expect(sim.store.getVoxel(25, 10, 25)).toBe(AIR)
     expect(sim.store.getVoxel(25, 1, 25) & 0xfff).toBe(B.water)
-    expect(sim.store.getVoxel(3, 4, 3) & 0xfff).toBe(B.water) // the lake's top cell: only a sliver (its 1/16 share) is left
-    expect(sim.store.getVoxel(3, 5, 3)).toBe(AIR)
+    expect(sim.store.getVoxel(8, 4, 8)).toBe(AIR)
+    expect(sim.store.getVoxel(8, 3, 8) & 0xfff).toBe(B.water)
     const steps = sim.water.stepCount
     run(sim, 20)
     expect(sim.water.stepCount).toBe(steps)
@@ -485,7 +485,7 @@ describe('a block placed in water spreads its displaced volume at once', () => {
   })
 
   it('a block in a one-column hole keeps the old behaviour: the water rides on top', () => {
-    // stone to y = 3 with a single hole at (5, 5) that is full of water above y = 1 (4 deep, at y 1..2... under the rim)
+    // stone to y = 6 with a single hole at (5, 5): water at y 1..4, the rim above it
     const sim = waterSim((x, y, z) => (y <= 6 && !(x === 5 && z === 5 && y >= 1) ? B.stone : y >= 1 && y <= 4 && x === 5 && z === 5 ? w(7) : AIR))
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 1, depth: 4 * SUB })
     sim.submit(0, 0, { type: 'setBlock', pos: [5, 1, 5], voxel: B.stone })
@@ -504,5 +504,65 @@ describe('a block placed in water spreads its displaced volume at once', () => {
       return h
     }
     expect(hash()).toBe(hash())
+  })
+
+  it('a whole command spreads once: a 6 × 6 × 2 block on the floor lifts the lake evenly, volume exact', () => {
+    const sim = waterSim(big(4), { water: { debug: true } })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [8, 1, 8], max: [13, 2, 13], voxel: B.stone })
+    sim.step()
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    // 36 columns × 2 blocks displaced over all 400 columns of the lake (fewer than wanted): 46 or 47 each
+    for (let z = 1; z <= 20; z++) for (let x = 1; x <= 20; x++) {
+      if (x >= 8 && x <= 13 && z >= 8 && z <= 13) continue
+      const d = sim.water.column(x, z).depth - 4 * SUB
+      expect(d === 46 || d === 47).toBe(true)
+    }
+  })
+
+  it('skips a wet neighbour on a higher step: its floor is at or above the source surface', () => {
+    const base = lake(4, 13, 8)
+    const sim = waterSim((x, y, z) => (x === 11 && z > 0 && z < 12 && y >= 1 ? (y <= 5 ? B.stone : y <= 7 ? w(7) : AIR) : base(x, y, z)))
+    sim.setPaused(true) // no physics: only the spread moves water
+    expect(sim.water.column(11, 5)).toMatchObject({ floor: 6, depth: 2 * SUB })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'setBlock', pos: [10, 1, 5], voxel: B.stone })
+    sim.step()
+    expect(sim.water.column(11, 5).depth).toBe(2 * SUB)
+    expect(sim.water.column(10, 5).floor).toBe(2)
+    expect(sim.water.total()).toBe(total)
+  })
+
+  it('a sea column can take a share: the pin credits it back to the sea and the account stays exact', () => {
+    const sim = waterSim((x, y) => (y === 0 ? B.stone : y <= 3 ? w(7) : AIR), { seaLevel: 4, water: { debug: true } })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'setBlock', pos: [16, 1, 16], voxel: B.stone })
+    run(sim, 30)
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    expect(sim.water.column(15, 16).depth).toBe(3 * SUB) // pinned to the sea level again
+  })
+
+  it('works at the world border', () => {
+    const sim = waterSim((x, y) => (y === 0 ? B.stone : y <= 3 ? w(7) : AIR), { water: { debug: true } })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'setBlock', pos: [0, 1, 0], voxel: B.stone })
+    sim.step()
+    expect(sim.water.column(0, 0).floor).toBe(2)
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    expect(sim.water.column(1, 0).depth).toBeGreaterThan(3 * SUB)
+  })
+
+  it('a volume too big for the radius is still spread exactly (shares exceed 1/16 block, normal flow levels it)', () => {
+    const sim = waterSim(lake(24, 128, 30), { size: [128, 32, 128], water: { debug: true } })
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [40, 23, 40], max: [79, 23, 79], voxel: B.stone })
+    sim.step()
+    expect(sim.water.total()).toBe(total)
+    expect(sim.water.check()).toEqual([])
+    expect(sim.water.column(35, 60).depth).toBeGreaterThan(24 * SUB)
+    expect(sim.water.column(1, 1).depth).toBe(24 * SUB) // far outside the radius: untouched
   })
 })
