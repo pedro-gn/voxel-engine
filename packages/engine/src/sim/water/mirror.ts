@@ -5,6 +5,40 @@ import { KIND, SUB } from './constants.ts'
 export function quantize(s: number): number { return (s + SUB / 16) >> 5 }
 
 /**
+ * Makes one segment's cells match its water (spec §4 The voxel mirror; 3d: bounded by `ceil`): full cells under the
+ * quantized surface, a partial cell at it, air above where water was, and air in cells a risen floor left under it (from
+ * min(lo, floor)). Walls and springs are never written; nothing at or above `ceil` is touched. `lo`/`q` hold the segment's
+ * mirror state at index i (WaterMirror's arrays for a top segment, UnderSegments.mirrorLo / mirrorQ for a lower one).
+ */
+export function mirrorRun(lo: Int16Array, q: Int32Array, i: number, x: number, z: number, floor: number, ceil: number, depth: number,
+  water: number, kind: Uint8Array, get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void): boolean {
+  const nq = depth > 0 ? quantize(floor * SUB + depth) : floor * 8
+  const oq = q[i]!, force = oq < 0, extent = force ? ~oq : oq
+  const ol = lo[i]!
+  if (!force && nq === oq && floor === ol) return false
+  const from = Math.min(ol, floor)
+  const to = Math.min(ceil, Math.max((extent + 7) >> 3, (nq + 7) >> 3))
+  const full = nq >> 3, part = nq & 7
+  let wrote = false
+  for (let y = from; y < to; y++) {
+    const v = get(x, y, z), k = kind[v & 0xfff]!
+    if (k === KIND.WALL) continue
+    let want = AIR
+    if (y >= floor) {
+      if (y < full) want = water | (7 << 12)
+      else if (y === full && part > 0) want = water | ((part - 1) << 12)
+    }
+    if (want === AIR ? k === KIND.WATER : v !== want) {
+      set(x, y, z, want)
+      wrote = true
+    }
+  }
+  lo[i] = floor
+  q[i] = nq
+  return wrote
+}
+
+/**
  * Water voxels as a mirror of the heightfield (spec §4 The voxel mirror). Per column it remembers what the voxels hold, so a
  * flush writes only columns whose quantized water changed, and only the cells that differ.
  */
@@ -32,30 +66,7 @@ export class WaterMirror {
    */
   flush(c: number, x: number, z: number, floor: number, depth: number, water: number, kind: Uint8Array, height: number,
     get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void): boolean {
-    const nq = depth > 0 ? quantize(floor * SUB + depth) : floor * 8
-    const oq = this.q[c]!, force = oq < 0, extent = force ? ~oq : oq
-    const ol = this.lo[c]!
-    if (!force && nq === oq && floor === ol) return false
-    const from = Math.min(ol, floor)
-    const to = Math.min(height, Math.max((extent + 7) >> 3, (nq + 7) >> 3))
-    const full = nq >> 3, part = nq & 7
-    let wrote = false
-    for (let y = from; y < to; y++) {
-      const v = get(x, y, z), k = kind[v & 0xfff]!
-      if (k === KIND.WALL) continue
-      let want = AIR
-      if (y >= floor) {
-        if (y < full) want = water | (7 << 12)
-        else if (y === full && part > 0) want = water | ((part - 1) << 12)
-      }
-      if (want === AIR ? k === KIND.WATER : v !== want) {
-        set(x, y, z, want)
-        wrote = true
-      }
-    }
-    this.lo[c] = floor
-    this.q[c] = nq
-    return wrote
+    return mirrorRun(this.lo, this.q, c, x, z, floor, height, depth, water, kind, get, set)
   }
 
   mixState(mix: (v: number) => void): void {

@@ -5,6 +5,7 @@ import { WaterMirror, quantize } from '../src/sim/water/mirror.ts'
 import { waterKinds } from '../src/sim/water/rebuild.ts'
 import { AIR, packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
+import { mirrorRun } from '../src/sim/water/mirror.ts'
 
 const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
 const kind = waterKinds(reg, ID.water)
@@ -80,5 +81,26 @@ describe('WaterMirror', () => {
     m.touch(0, 10)
     expect(m.flush(0, 0, 0, 2, SUB, ID.water, kind, 32, w.get, w.set)).toBe(true)
     expect([...w.cells.keys()]).toEqual([2])
+  })
+})
+
+
+describe('mirrorRun', () => {
+  it('writes a lower segment cells only inside [floor, ceil): never the cells of the segment above', () => {
+    const w = column()
+    w.cells.set(5, ID.stone) // the roof of [2, 5)
+    w.cells.set(6, water(7)) // the segment above holds water
+    const lo = new Int16Array([2]), q = new Int32Array([~(5 * 8)])
+    mirrorRun(lo, q, 0, 0, 0, 2, 5, 3 * SUB, ID.water, kind, w.get, w.set)
+    expect([2, 3, 4, 5, 6].map((y) => w.get(0, y, 0))).toEqual([water(7), water(7), water(7), ID.stone, water(7)])
+    expect(q[0]).toBe(5 * 8)
+  })
+
+  it('clears a drained lower segment cells and leaves its partial top at the right level', () => {
+    const w = column()
+    for (const y of [2, 3, 4]) w.cells.set(y, water(7))
+    const lo = new Int16Array([2]), q = new Int32Array([5 * 8])
+    mirrorRun(lo, q, 0, 0, 0, 2, 5, SUB + SUB / 2, ID.water, kind, w.get, w.set)
+    expect([2, 3, 4].map((y) => w.get(0, y, 0))).toEqual([water(7), water(3), AIR])
   })
 })
