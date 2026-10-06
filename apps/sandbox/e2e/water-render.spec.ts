@@ -15,9 +15,9 @@ test('the flood scene draws its lake and sea as heightfield water, with no conso
     return !!water && water.children.length > 0
   }, null, { timeout: 30_000 })
   // The lake starts asleep, so only the first publish after generation (every tile once) brings it to the main thread:
-  // column (60, 60) of chunk column 1 + 1 × 8 is drawn at the lake's surface (25 blocks), not dry at y = 0.
+  // column (60, 60) of chunk column 1 + 1 × 8 (draw layer 0) is drawn at the lake's surface (25 blocks), not dry at y = 0.
   const lake = await page.evaluate(() => {
-    const mesh = (window as W).__elovox!.engine.scene.getObjectByName('water-9') as unknown as {
+    const mesh = (window as W).__elovox!.engine.scene.getObjectByName('water-0-9') as unknown as {
       geometry: { getAttribute(name: string): { array: Float32Array } }
     } | undefined
     if (!mesh) return null

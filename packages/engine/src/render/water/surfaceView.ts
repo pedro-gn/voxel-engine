@@ -235,6 +235,21 @@ export class SurfaceView {
     return shows(v, this.floor[c]!) ? v * PER_SUB : null
   }
 
+  /** The drawn surface (blocks) of column (x, z) nearest to height y among its slots, within 2 blocks; null when none. */
+  surfaceNear(x: number, z: number, y: number): number | null {
+    if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
+    const c = x + z * this.sx
+    let best: number | null = null
+    for (let r = 0; r < RANKS; r++) {
+      if (r > 0 && !this.layers.has(c, r)) continue
+      const v = r === 0 ? this.cur[c]! : this.layers.cur(c, r), f = r === 0 ? this.floor[c]! : this.layers.floor(c, r)
+      if (!shows(v, f)) continue
+      const s = v * PER_SUB
+      if (Math.abs(s - y) <= 2 && (best === null || Math.abs(s - y) < Math.abs(best - y))) best = s
+    }
+    return best
+  }
+
   /**
    * Keys (r × ccCount + cc) whose data changed since the last call, in index order. The array is reused: it stays valid until
    * the next call, and the caller must not keep or modify it.
@@ -691,8 +706,9 @@ export class SurfaceView {
   }
 
   /**
-   * Lists a chunk column's curtains from its curtain masks and the corners refreshed this apply. `carry` ≥ 0: a curtain the
-   * list already had starts from its heights and reach drawn at alpha `carry` (see apply); negative: from its previous step.
+   * Lists the curtains of chunk column cc in draw layer r from its curtain masks and the corners refreshed this apply.
+   * `carry` ≥ 0: a curtain the list already had starts from its heights and reach drawn at alpha `carry` (see apply);
+   * negative: from its previous step.
    */
   private buildCurtains(cc: number, d: ColumnData, carry: number, r = 0): void {
     const cs = d.curtains, sx = this.sx, mask = d.curtainMask
@@ -722,7 +738,9 @@ export class SurfaceView {
         const was = ((m >> dir) & 1) === 1, now = ((m >> (dir + 4)) & 1) === 1
         if (!was && !now) continue
         const [ta, tb] = CURTAIN_TOP[dir]!
-        const flux = Math.max(0, this.edgeFlux(c, dir)), v = exitSpeed(flux, this.stepHz)
+        // A curtain in a lower layer, or near one (any link that is not the default in its span), hangs straight (plan decision 15).
+        const straight = r > 0 || !this.spanDefault(x, z, dir)
+        const flux = Math.max(0, straight ? this.slotEdgeFlux(c, r, x, z, dir) : this.edgeFlux(c, dir)), v = exitSpeed(flux, this.stepHz)
         cs.reserve(n + 1)
         const o = n * 4
         cs.prev[o] = d.hPrev[o4 + ta]!
@@ -730,8 +748,9 @@ export class SurfaceView {
         cs.cur[o] = d.hCur[o4 + ta]!
         cs.cur[o + 1] = d.hCur[o4 + tb]!
         // The edges' fluxes now stand for both steps: the view keeps only the current ones.
-        this.lay(cs, o, false, was, x, z, dir, v)
-        const water = this.lay(cs, o, true, now, x, z, dir, v)
+        if (straight) this.layStraight(cs, o, false, was, x, z, r, dir, v)
+        else this.lay(cs, o, false, was, x, z, dir, v)
+        const water = straight ? this.layStraight(cs, o, true, now, x, z, r, dir, v) : this.lay(cs, o, true, now, x, z, dir, v)
         const key = i * 4 + dir
         if (token !== 0 && tag[key] === token) {
           for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * CARRY + j]!
@@ -750,6 +769,49 @@ export class SurfaceView {
     }
     cs.count = n
   }
+
+  /** Whether a curtain from (x, z) through `dir` sees only default links: its column, the ARC_COLUMNS ahead and the rows beside them. */
+  private spanDefault(x: number, z: number, dir: number): boolean {
+    const dx = DIR_X[dir]!, dz = DIR_Z[dir]!, sx = this.sx, sz = this.sz
+    for (let i = 0; i <= ARC_COLUMNS; i++) for (let s = -1; s <= 1; s++) {
+      const ax = x + dx * i + (dz !== 0 ? s : 0), az = z + dz * i + (dx !== 0 ? s : 0)
+      if (ax < 0 || az < 0 || ax >= sx || az >= sz) continue
+      if (this.layers.has(ax + az * sx, 0)) return false
+    }
+    return true
+  }
+
+  /** Water leaving slot (c, r) at (x, z) through `dir` (1/SUB block per step): its own +x / +z flux, or minus its resolved neighbour's. */
+  private slotEdgeFlux(c: number, r: number, x: number, z: number, dir: number): number {
+    if (r === 0 && (dir === 0 || dir === 2)) return dir === 0 ? this.fluxX[c]! : this.fluxZ[c]!
+    if (dir === 0) return this.layers.fluxX(c, r)
+    if (dir === 2) return this.layers.fluxZ(c, r)
+    resolve(this.src, x, z, r, dir, true)
+    if (hit.c < 0) return 0
+    const f = dir === 1 ? (hit.r === 0 ? this.fluxX[hit.c]! : this.layers.fluxX(hit.c, hit.r)) : hit.r === 0 ? this.fluxZ[hit.c]! : this.layers.fluxZ(hit.c, hit.r)
+    return -f
+  }
+
+  /**
+   * A straight curtain (plan decision 15) for one step: both ends drop to the level of the slot's resolved neighbour through
+   * `dir`, with no reach, body or lip and a closed flare; a splash where that neighbour is drawn water. Returns which ends
+   * land on drawn water, as lay does.
+   */
+  private layStraight(cs: Curtains, o: number, cur: boolean, on: boolean, x: number, z: number, r: number, dir: number, v: number): number {
+    const out = cur ? cs.cur : cs.prev, rr = cur ? o + 2 : o
+    resolve(this.src, x, z, r, dir, cur)
+    const foot = hit.e === OUTSIDE ? null : level(hit.e) * PER_SUB, wet = on && hit.c >= 0 && hit.e >= 0
+    for (let end = 0; end < 2; end++) {
+      out[o + 2 + end] = on && foot !== null ? Math.min(out[o + end]!, foot) : out[o + end]!
+      cs.reach[rr + end] = 0
+      cs.thick[rr + end] = 0
+      cs.flare[rr + end] = flareCode(1, 0)
+      this.endSplash[end] = wet ? splashCode(splashHalf(v), 0) : 0
+      this.endLip[end] = 0
+    }
+    return wet ? 3 : 0
+  }
+
 
   /**
    * Lays one step of the curtain at cs[o / 4] from column (x, z) through its side `dir`, whose tops (top A, top B) are already

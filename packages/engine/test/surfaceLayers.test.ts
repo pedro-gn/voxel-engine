@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { RippleSet, editRipples } from '../src/render/water/ripples.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB } from '../src/sim/water/constants.ts'
@@ -17,6 +18,20 @@ const diff = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
   if (x.length !== y.length) return -2
   for (let i = 0; i < x.length; i++) if (!Object.is(x[i], y[i])) return i
   return -1
+}
+
+/** The bridged channel of Task 9's tests, published with its layers into a view. */
+function bridgedView() {
+  const w = layered((x, y, z) => {
+    if (y < 2 || x === 0 || x === 31 || z === 0 || z >= 4) return STONE
+    if (x === 15 && y === 7) return STONE
+    return y <= 5 ? wv(7) : AIR
+  })
+  w.edges.ensure(w.cols, w.under, 32)
+  const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
+  const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+  const publish = () => view.apply(pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+  return { w, view, publish }
 }
 
 describe('the layered refresh path', () => {
@@ -53,20 +68,6 @@ describe('the layered refresh path', () => {
     }
   })
 
-  /** The bridged channel of Task 9's tests, published with its layers into a view. */
-  function bridgedView() {
-    const w = layered((x, y, z) => {
-      if (y < 2 || x === 0 || x === 31 || z === 0 || z >= 4) return STONE
-      if (x === 15 && y === 7) return STONE
-      return y <= 5 ? wv(7) : AIR
-    })
-    w.edges.ensure(w.cols, w.under, 32)
-    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
-    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
-    const publish = () => view.apply(pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!)
-    return { w, view, publish }
-  }
-
   it('the water under a bridge is drawn in layer 1 and meets the lake in layer 0 with no seam', () => {
     const { view, publish } = bridgedView()
     publish()
@@ -88,5 +89,52 @@ describe('the layered refresh path', () => {
     publish()
     publish()
     expect(corners(view, 15, 2, 1, 'info')[3]).toBeLessThan(0)
+  })
+})
+
+describe('curtains and ripples in layers', () => {
+  it('water falling inside a cave hangs a straight curtain: no reach, no flare, foot at the water below', () => {
+    // a cave (y 2–6) under a roof at y 7; a ledge (x 8–15 floor 4) above a lower pool (x 16–30 floor 2), both in the cave
+    const w = layered((x, y, z) => {
+      if (y < 2 || y >= 7 || x === 0 || x === 31 || z === 0 || z >= 4) return STONE
+      if (x <= 15 && y < 4) return STONE
+      if (x <= 15) return y === 4 ? wv(7) : AIR
+      return y === 2 ? wv(4) : AIR
+    })
+    w.edges.ensure(w.cols, w.under, 32)
+    for (let k = 0; k < 4; k++) w.step() // the ledge starts pouring
+    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    view.apply(pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    const d = view.column(0, 1)!, cs = d.curtains
+    expect(cs.count).toBeGreaterThan(0)
+    for (let k = 0; k < cs.count; k++) {
+      expect(cs.reach[k * 4 + 2]).toBe(0)
+      expect(cs.reach[k * 4 + 3]).toBe(0)
+      expect(cs.thick[k * 4 + 2]).toBe(0)
+      expect(cs.cur[k * 4 + 2]!).toBeLessThan(cs.cur[k * 4]!) // the foot is below the top
+    }
+  })
+
+  it('surfaceNear finds the slot at the edit height: the lake under a bridge, not the dry deck above', () => {
+    const { view, publish } = bridgedView()
+    publish()
+    expect(view.surfaceNear(15, 2, 5)).toBeCloseTo(6, 6)
+    expect(view.surfaceNear(15, 2, 20)).toBeNull()
+  })
+
+  it('a block dropped at the lake level under a wide deck rings on the lake, though every column around it is dry on top', () => {
+    const w = layered((x, y, z) => {
+      if (y < 2 || x === 0 || x === 31 || z === 0 || z >= 6) return STONE
+      if (x >= 12 && x <= 18 && y === 7) return STONE // a deck 7 blocks wide over the whole channel
+      return y <= 5 ? wv(7) : AIR
+    })
+    w.edges.ensure(w.cols, w.under, 32)
+    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    const set = new RippleSet()
+    editRipples(view, set, { type: 'setBlock', pos: [15, 5, 3], voxel: STONE }, () => AIR)
+    expect(set.count).toBe(1)
+    expect(set.y[0]).toBeCloseTo(6, 6) // the lake under the deck: 2 + 4 blocks
   })
 })

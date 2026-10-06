@@ -77,6 +77,10 @@ export interface EngineStats {
   fallingBodies: number
   /** Awake water tiles (16 × 16 columns), wet columns in them, and queued region jobs, as of the last tick. */
   waterTiles: number; waterColumns: number; regionJobs: number
+  /** Water bodies with a boundary in an awake tile, as of the last tick. */
+  waterBodies: number
+  /** Wet segments ranked past the 4 draw layers (not drawn), as of the last tick. */
+  waterLayersHidden: number
   /** True while a water tile was awake, a region job queued or a block falling after the last tick. */
   physicsBusy: boolean
   /** Main-thread cost (ms) of reading a water publish into the surface view: the last one and the p95 of the last 200. */
@@ -376,7 +380,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
-  let physicsStats = { waterTiles: 0, waterColumns: 0, jobs: 0, busy: false }
+  let physicsStats = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
   const waterApply = new CostMeter(200)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
@@ -599,6 +603,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
         fallingBodies: falling.size, waterTiles: physicsStats.waterTiles, waterColumns: physicsStats.waterColumns, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
+        waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
       }
     },

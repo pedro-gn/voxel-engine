@@ -39,7 +39,8 @@ export function rippleHeightWeight(dy: number): number {
 export function waterLineSurface(view: SurfaceView, x: number, y: number, z: number): number | null {
   let best: number | null = null
   for (let k = 0; k < 5; k++) {
-    const s = view.surfaceAt(k === 1 ? x - 1 : k === 2 ? x + 1 : x, k === 3 ? z - 1 : k === 4 ? z + 1 : z)
+    // The slot nearest the block (3d: under a bridge, the lake, not the deck above it).
+    const s = view.surfaceNear(k === 1 ? x - 1 : k === 2 ? x + 1 : x, k === 3 ? z - 1 : k === 4 ? z + 1 : z, y + 0.5)
     if (s === null || Math.max(0, y - s, s - (y + 1)) > RIPPLE_RANGE) continue
     if (best === null || Math.abs(s - (y + 0.5)) < Math.abs(best - (y + 0.5))) best = s
   }
@@ -79,12 +80,8 @@ export function editRipples(view: SurfaceView, set: RippleSet, cmd: EditCommand,
   // Those at a water line (own column or a wet neighbour, as for one block) where the fill changes something.
   const at: [number, number, number][] = []
   for (const [x, z] of ring) {
-    let lo = Infinity, hi = -Infinity
-    for (let k = 0; k < 5; k++) {
-      const s = view.surfaceAt(k === 1 ? x - 1 : k === 2 ? x + 1 : x, k === 3 ? z - 1 : k === 4 ? z + 1 : z)
-      if (s !== null) { lo = Math.min(lo, s); hi = Math.max(hi, s) }
-    }
-    for (let y = Math.max(y0, Math.ceil(lo - 1 - RIPPLE_RANGE)); y <= Math.min(y1, Math.floor(hi + RIPPLE_RANGE)); y++) {
+    // Every cell of the shell column, bottom-up: a column may hold water lines at several heights (3d layers).
+    for (let y = y0; y <= y1; y++) {
       if (get(x, y, z) === cmd.voxel) continue
       const s = waterLineSurface(view, x, y, z)
       if (s === null) continue
