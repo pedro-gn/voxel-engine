@@ -4658,3 +4658,14 @@ git commit -m "docs(plan): multi-layer water 3d checkpoint results"
 ## Checkpoint results
 
 *(Filled in during Tasks 0, 13 and 15.)*
+
+### 3c baseline (Task 0)
+
+`npm run bench:dam` on `5defe84` (desktop, Node):
+
+```
+dam break, 3000 ticks in 9.8 s; Σ depth + sea off on 0 ticks
+  sim tick        p50 3.42  p95 4.62  max 10.07 ms
+  water step      p50 2.05  p95 2.82  max 6.04 ms
+  mirror+publish  p50 0.96  p95 1.51  max 6.23 ms
+```
