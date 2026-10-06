@@ -733,7 +733,7 @@ describe('SurfaceView, incremental', () => {
       for (const t of queue.splice(0)) if (t && view.apply(t)) { expect(fromScratch(view, cols.floor)).toEqual([]); checks++ }
     }
     expect(checks).toBeGreaterThan(50)
-  }, 20_000)
+  }, 60_000) // ~18 s alone; the from-scratch reference with lips runs past 20 s beside the parallel suite
 })
 
 describe('SurfaceView, displayed alpha', () => {
