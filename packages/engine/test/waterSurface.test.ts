@@ -45,7 +45,7 @@ describe('WaterSurface', () => {
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
     expect(ws.meshCount).toBe(1)
-    const mesh = ws.group.getObjectByName('water-0') as THREE.Mesh
+    const mesh = ws.group.getObjectByName('water-0-0') as THREE.Mesh
     const geo = mesh.geometry as THREE.InstancedBufferGeometry
     expect(geo.instanceCount).toBe(1024)
     expect(geo.getAttribute('hCur').array).toBe(view.column(0)!.hCur)
@@ -59,9 +59,9 @@ describe('WaterSurface', () => {
     const { view } = world(() => 2, SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const geo = (ws.group.getObjectByName('water-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const geo = (ws.group.getObjectByName('water-0-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     for (const name of ['hPrev', 'hCur', 'info']) expect((geo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
-    const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const cgeo = (ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     for (const name of ['cPrev', 'cCur', 'cInfo', 'cReach', 'cThick', 'cFlare']) expect((cgeo.getAttribute(name) as THREE.BufferAttribute).usage).toBe(THREE.StaticDrawUsage)
   })
 
@@ -70,7 +70,7 @@ describe('WaterSurface', () => {
     publish([]) // the settling pass
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const hCur = ((ws.group.getObjectByName('water-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry).getAttribute('hCur') as THREE.BufferAttribute
+    const hCur = ((ws.group.getObjectByName('water-0-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry).getAttribute('hCur') as THREE.BufferAttribute
     hCur.clearUpdateRanges() // as three does once it has uploaded them
     for (let z = 16; z < 32; z++) for (let x = 0; x < 16; x++) cols.depth[x + z * 32] = 2 * SUB
     publish([2]) // tile (0, 1): rows 15..31 (its ring row 15 included)
@@ -88,7 +88,7 @@ describe('WaterSurface', () => {
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
     const d = view.column(0)!, before = d.curtains.generation
-    const curtains = ws.group.getObjectByName('water-0-curtains') as THREE.Mesh
+    const curtains = ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh
     expect(curtains.visible).toBe(false)
     set((x) => (x <= 10 ? 6 : 2), () => SUB) // a ledge: 32 curtains, more than the 16 the arrays hold
     publish()
@@ -110,7 +110,7 @@ describe('WaterSurface', () => {
     const { view, publish, set } = world(() => 2, SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const surface = ws.group.getObjectByName('water-0') as THREE.Mesh
+    const surface = ws.group.getObjectByName('water-0-0') as THREE.Mesh
     expect(surface.visible).toBe(true)
     set(() => 2, () => 0)
     publish()
@@ -129,7 +129,7 @@ describe('WaterSurface', () => {
     const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const curtains = ws.group.getObjectByName('water-0-curtains') as THREE.Mesh
+    const curtains = ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh
     expect((curtains.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(32)
     expect(curtains.visible).toBe(true)
   })
@@ -138,7 +138,7 @@ describe('WaterSurface', () => {
     const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const cgeo = (ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     const strip = cgeo.getAttribute('strip')
     const rows = ARC_SEGMENTS + 1
     expect(strip.itemSize).toBe(4)
@@ -178,8 +178,8 @@ describe('WaterSurface', () => {
     ws.update()
     const a = mat(), b = mat()
     ws.setMaterials(a, b)
-    expect((ws.group.getObjectByName('water-0') as THREE.Mesh).material).toBe(a)
-    expect((ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).material).toEqual([b]) // over both groups
+    expect((ws.group.getObjectByName('water-0-0') as THREE.Mesh).material).toBe(a)
+    expect((ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh).material).toEqual([b]) // over both groups
   })
 })
 
@@ -355,7 +355,7 @@ describe('curtainVertex', () => {
     const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
-    const cgeo = (ws.group.getObjectByName('water-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
+    const cgeo = (ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     const strip = cgeo.getAttribute('strip'), index = [...cgeo.getIndex()!.array]
     const { position, normal } = curtainVertex()
     const before = waterAlpha.value
@@ -394,13 +394,13 @@ describe('WaterMaterial', () => {
       const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
       const ws = new WaterSurface(32, view, m.surface, m.curtain)
       ws.update()
-      for (const name of ['water-0', 'water-0-curtains']) {
+      for (const name of ['water-0-0', 'water-0-0-curtains']) {
         const { vertex, fragment } = wgsl(ws.group.getObjectByName(name) as THREE.Mesh)
         expect(vertex).toContain('@vertex')
         expect(fragment).toContain('@fragment')
       }
       ws.setMaterials(m.plainSurface, m.plainCurtain)
-      wgsl(ws.group.getObjectByName('water-0-curtains') as THREE.Mesh)
+      wgsl(ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh)
       expect(warn).not.toHaveBeenCalled() // e.g. "Vertex attribute … not found on geometry"
       m.dispose()
     } finally { warn.mockRestore() }

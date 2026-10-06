@@ -155,11 +155,12 @@ export class WaterSurface {
     }
   }
 
-  /** Uploads every chunk column the view changed since the last call. */
+  /** Uploads every (draw layer, chunk column) the view changed since the last call. */
   update(): void {
-    for (const cc of this.view.takeDirty()) {
-      const d = this.view.column(cc)
-      if (d) this.sync(cc, d)
+    const n = this.view.ccCount
+    for (const key of this.view.takeDirty()) {
+      const cc = key % n, r = (key - cc) / n, d = this.view.column(cc, r)
+      if (d) this.sync(key, cc, r, d)
     }
   }
 
@@ -169,8 +170,9 @@ export class WaterSurface {
     this.group.clear()
   }
 
-  private sync(cc: number, d: ColumnData): void {
-    const s = this.slots.get(cc) ?? this.create(cc, d)
+  /** Key r × ccCount + cc: chunk column cc of draw layer r. */
+  private sync(key: number, cc: number, r: number, d: ColumnData): void {
+    const s = this.slots.get(key) ?? this.create(key, cc, r, d)
     if (d.rowLo <= d.rowHi) {
       const start = d.rowLo * 32 * 4, count = (d.rowHi - d.rowLo + 1) * 32 * 4
       for (const a of s.attrs) uploadRows(a, start, count)
@@ -190,7 +192,7 @@ export class WaterSurface {
     s.curtains.visible = cs.count > 0
   }
 
-  private create(cc: number, d: ColumnData): Slot {
+  private create(key: number, cc: number, r: number, d: ColumnData): Slot {
     const ox = (cc % this.view.cx) * 32, oz = Math.floor(cc / this.view.cx) * 32
     const geo = baseQuad(this.height)
     const attrs = [instanced(d.hPrev), instanced(d.hCur), instanced(d.info)]
@@ -198,14 +200,14 @@ export class WaterSurface {
     geo.setAttribute('hCur', attrs[1]!)
     geo.setAttribute('info', attrs[2]!)
     geo.instanceCount = 1024
-    const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${cc}`)
+    const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${r}-${cc}`)
     const cgeo = baseBody(this.height)
     wireCurtains(cgeo, d.curtains)
     cgeo.instanceCount = 0
-    const curtains = this.mesh(cgeo, [this.curtainMaterial], ox, oz, `water-${cc}-curtains`)
+    const curtains = this.mesh(cgeo, [this.curtainMaterial], ox, oz, `water-${r}-${cc}-curtains`)
     curtains.visible = false
     const slot: Slot = { surface, geo, attrs, curtains, cgeo, generation: d.curtains.generation }
-    this.slots.set(cc, slot)
+    this.slots.set(key, slot)
     return slot
   }
 
