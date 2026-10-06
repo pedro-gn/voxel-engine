@@ -109,3 +109,46 @@ describe('the world hash', () => {
     expect(a.hash()).not.toBe(b.hash())
   })
 })
+
+/** Random ground 3–9 high with caves (random air pockets inside it), stone slabs floating over it, and water to y 6. */
+function caved(seed: number): Fill {
+  const rng = new Pcg32(seed)
+  const h = Array.from({ length: 32 * 32 }, () => 3 + rng.nextInt(7))
+  const cave = Array.from({ length: 32 * 32 * 12 }, () => rng.nextInt(5) === 0)
+  const slab = Array.from({ length: 32 * 32 }, () => (rng.nextInt(6) === 0 ? 8 + rng.nextInt(4) : -1))
+  return (x, y, z) => {
+    const c = x + z * 32, top = h[c]!
+    if (y === 0) return B.stone
+    if (y < top) return y < 12 && cave[c * 12 + y] ? (y <= 6 ? w(7) : AIR) : B.stone
+    if (y === slab[c]) return B.stone
+    return y <= 6 ? w(7) : AIR
+  }
+}
+
+describe('water conservation in layers', () => {
+  it('keeps the total exact and the debug check quiet under random edits on caved terrain, and a replay matches', () => {
+    for (const seed of [4, 5, 6]) {
+      const logs: string[] = []
+      const sim = waterSim(caved(seed), { seed, water: { debug: true }, log: (m) => logs.push(m) })
+      const rng = new Pcg32(seed * 131)
+      let seq = 0
+      for (let t = 0; t < 400; t++) {
+        for (let k = 0; k < 3; k++) {
+          const c = command(rng)
+          if (c) sim.submit(0, seq++, c)
+        }
+        sim.step()
+        expect(sim.water.total()).toBe(sim.water.expected)
+      }
+      expect(sim.water.check()).toEqual([])
+      expect(logs).toEqual([])
+      const replay = waterSim(caved(seed), { seed, water: { debug: true } })
+      let i = 0
+      for (let t = 0; t < 400; t++) {
+        while (i < sim.commandLog.length && sim.commandLog[i]!.tick === t) { const c = sim.commandLog[i++]!; replay.submit(c.clientId, c.seq, c.cmd) }
+        replay.step()
+      }
+      expect(replay.hash()).toBe(sim.hash())
+    }
+  }, 180_000)
+})

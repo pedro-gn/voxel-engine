@@ -4669,3 +4669,18 @@ dam break, 3000 ticks in 9.8 s; Σ depth + sea off on 0 ticks
   water step      p50 2.05  p95 2.82  max 6.04 ms
   mirror+publish  p50 0.96  p95 1.51  max 6.23 ms
 ```
+
+### 3d bench (Task 13)
+
+First run on `dbf2605`: tick p95 10.92 ms, water step p95 3.88, mirror+publish p95 6.66 — the publish's layer records (`records`) took 3.3 ms p50 of the 4.0 ms publish, building per-column closures in every published tile. **Optimisation:** a tile with no lower segment in it or in the columns just outside its four sides publishes an empty block at once (records only ever come from such columns). `records` p50 3.29 → 0.09 ms. The under phases of the step cost ~10 µs per step in all.
+
+The Task 0 baseline ran on a quieter machine, so 3c and 3d were then run alternately under the same load (3c from a worktree at `5defe84`):
+
+```
+3c run 1   sim tick p50 3.57  p95 5.57   water step p50 2.12  p95 3.38   mirror+publish p50 1.06  p95 1.71
+3d run 1   sim tick p50 4.20  p95 6.43   water step p50 2.52  p95 3.92   mirror+publish p50 1.21  p95 1.98
+3c run 2   sim tick p50 3.57  p95 5.64   water step p50 2.10  p95 3.45   mirror+publish p50 1.08  p95 1.74
+3d run 2   sim tick p50 4.01  p95 6.38   water step p50 2.35  p95 3.81   mirror+publish p50 1.19  p95 1.99
+```
+
+Ratio 3d / 3c: tick p95 **1.14×** (p50 1.15×), within the spec's 1.2×. Σ depth + sea off on 0 ticks.

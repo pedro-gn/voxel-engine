@@ -107,6 +107,12 @@ export class WaterPublisher {
       this.push(t)
       const at = this.recN
       this.push(0)
+      // Records only come from a column with a lower segment or beside one: a tile with none in it or its ring has none.
+      if (!this.anyLower(x0, z0, sx, sz, U)) {
+        this.hidden -= this.hiddenOf.get(t) ?? 0
+        this.hiddenOf.delete(t)
+        continue
+      }
       let count = 0, hidden = 0
       for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
         for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
@@ -157,6 +163,19 @@ export class WaterPublisher {
       else this.hiddenOf.delete(t)
     }
     return this.rec.slice(0, this.recN)
+  }
+
+  /** Whether a column of the tile at (x0, z0), or of the columns just outside its four sides, has a lower segment. */
+  private anyLower(x0: number, z0: number, sx: number, sz: number, U: UnderSegments): boolean {
+    const first = U.first
+    for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) if (first[c]! >= 0) return true
+    for (let i = 0; i < TILE; i++) {
+      if (x0 > 0 && first[x0 - 1 + (z0 + i) * sx]! >= 0) return true
+      if (x0 + TILE < sx && first[x0 + TILE + (z0 + i) * sx]! >= 0) return true
+      if (z0 > 0 && first[x0 + i + (z0 - 1) * sx]! >= 0) return true
+      if (z0 + TILE < sz && first[x0 + i + (z0 + TILE) * sx]! >= 0) return true
+    }
+    return false
   }
 
   /** Whether a neighbour column of (x, z) has a lower segment: only then can a top's links differ from the default. */
