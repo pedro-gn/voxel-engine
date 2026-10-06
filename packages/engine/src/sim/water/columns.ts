@@ -1,6 +1,8 @@
 import * as K from './constants.ts'
 import { ARC_GAP, ARC_REACH, FALL_MIN, fallColumn } from './fall.ts'
 import { WaterTiles } from './tiles.ts'
+import type { TileEdges, WaterEdges } from './edges.ts'
+import type { UnderSegments } from './under.ts'
 
 // Plain module constants: Vitest's module transform turns imported bindings into property reads, several times slower in
 // the step's loops.
@@ -78,19 +80,52 @@ function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall
   fall[e] = code
 }
 
-/** Step 3 for column c: scales its outflows (east, south, west, north edges; −1 where none) to move at most its depth. */
-function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, south: number, west: number, north: number): void {
-  let out = 0
+/** What bodies (Task 6) plug into the step; null until then. */
+export interface StepHooks {
+  /** Rebuild dirty bodies (after the edges). */
+  ensure(): void
+  /** Set every boundary edge of each body with an edge collected this step. */
+  step(stepping: Uint8Array, gain: number): void
+  /** After the transfer: redistribute each stepped body's water; list members to leave. */
+  rebalance(): void
+  /** A free lower segment reached its capacity this step. */
+  filled(i: number): void
+  /** Water held as bodies' excess. */
+  excessTotal(): number
+  mixState(mix: (v: number) => void): void
+}
+
+/**
+ * Step 2 for under edge e of E: 3c's accelerate without a fall code (plan decision 5); the opening's floor `lo` stands where
+ * 3c reads the receiver's floor. Refs below n are top segments.
+ */
+function accelerateUnder(E: TileEdges, e: number, n: number, floor: Int16Array, depth: Int32Array, uf: Int16Array, ud: Int32Array, gain: number): void {
+  const a = E.a[e]!, b = E.b[e]!
+  const da = a < n ? depth[a]! : ud[a - n]!, db = b < n ? depth[b]! : ud[b - n]!
+  const sa = (a < n ? floor[a]! : uf[a - n]!) * SUB + da, sb = (b < n ? floor[b]! : uf[b - n]!) * SUB + db
+  const lo = E.lo[e]! * SUB
+  let h = sa - sb
+  if (h > MAX_HEAD) h = MAX_HEAD
+  else if (h < -MAX_HEAD) h = -MAX_HEAD
+  let f = damp(E.flux[e]!) + h * gain
+  if (f > 0) { if (da < MIN_FLOW || sa <= lo) f = 0 } else if (f < 0) { if (db < MIN_FLOW || sb <= lo) f = 0 }
+  E.flux[e] = f
+}
+
+/** Step 3 for column c: scales its outflows (east, south, west, north edges; −1 where none; `extra`: its outflow over under edges) to move at most its depth. Returns the total outflow when it scaled, else 0. */
+function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, south: number, west: number, north: number, extra: number): number {
+  let out = extra
   if (east >= 0 && flux[east]! > 0) out += flux[east]! >> FLUX_FP
   if (south >= 0 && flux[south]! > 0) out += flux[south]! >> FLUX_FP
   if (west >= 0 && flux[west]! < 0) out += -flux[west]! >> FLUX_FP
   if (north >= 0 && flux[north]! < 0) out += -flux[north]! >> FLUX_FP
   const d = depth[c]!
-  if (out <= d) return
+  if (out <= d) return 0
   if (east >= 0 && flux[east]! > 0) flux[east] = scaled(flux[east]!, d, out)
   if (south >= 0 && flux[south]! > 0) flux[south] = scaled(flux[south]!, d, out)
   if (west >= 0 && flux[west]! < 0) flux[west] = -scaled(-flux[west]!, d, out)
   if (north >= 0 && flux[north]! < 0) flux[north] = -scaled(-flux[north]!, d, out)
+  return out
 }
 
 /** The columns transfer's last fall landed its water on (spot[0..spots)) and what each took. */
@@ -210,6 +245,36 @@ export class WaterColumns {
   /** The surfaces of the line runLive scans. */
   private readonly line = new Int32Array(TILE + 2)
   private cursor = 0
+  /** Lower segments, their edges and the world's height (attach); null: a single-layer world, stepped exactly as 3c. */
+  under: UnderSegments | null = null
+  edges: WaterEdges | null = null
+  height = 0
+  /** Bodies' level for a member ref (set by WaterBodies, Task 6): the surface the quiet test reads for it. */
+  bodyLevel: ((ref: number) => number) | null = null
+  /** Increments every step: stamps the per-step marks below and TileEdges.seen. */
+  stepNo = 0
+  private hook: StepHooks | null = null
+  /** The under edges this step moves: their tile list (uT) and index there (uE); stepped tile k's run from uStart[k]. */
+  private readonly uT = new IntList()
+  private readonly uE = new IntList()
+  private uStart = new Int32Array(65)
+  /** Per top column (n) / lower segment (pool size): outflow over under edges this step, the step that set it, and a sender's scale (depth, outflow) when it was scaled. */
+  private topOut = new Int32Array(0)
+  private topMark = new Int32Array(0)
+  private topLimited = new Int32Array(0)
+  private topScaleD = new Int32Array(0)
+  private topScaleOut = new Int32Array(0)
+  private topScaleMark = new Int32Array(0)
+  private underOut = new Int32Array(0)
+  private underMark = new Int32Array(0)
+  private underScaleD = new Int32Array(0)
+  private underScaleOut = new Int32Array(0)
+  private underScaleMark = new Int32Array(0)
+  private underIn = new Int32Array(0)
+  private underInMark = new Int32Array(0)
+  private readonly sendersTop = new IntList()
+  private readonly sendersUnder = new IntList()
+  private readonly receivers = new IntList()
 
   constructor(sx: number, sz: number, floor: Int16Array) {
     if (floor.length !== sx * sz) throw new RangeError(`floor has ${floor.length} columns, expected ${sx * sz}`)
@@ -228,10 +293,27 @@ export class WaterColumns {
 
   surface(c: number): number { return this.floor[c]! * SUB + this.depth[c]! }
 
-  /** Σ depth. */
+  /** Steps lower segments too (3d). Without it the step is 3c's. */
+  attach(under: UnderSegments, edges: WaterEdges, height: number): void {
+    this.under = under
+    this.edges = edges
+    this.height = height
+    this.topOut = new Int32Array(this.n)
+    this.topMark = new Int32Array(this.n)
+    this.topLimited = new Int32Array(this.n)
+    this.topScaleD = new Int32Array(this.n)
+    this.topScaleOut = new Int32Array(this.n)
+    this.topScaleMark = new Int32Array(this.n)
+  }
+
+  hooks(h: StepHooks | null): void { this.hook = h }
+
+  /** Σ depth, with lower segments, their excess and bodies' excess (3d). */
   total(): number {
     let s = 0
     for (let c = 0; c < this.n; c++) s += this.depth[c]!
+    if (this.under !== null) s += this.under.total()
+    if (this.hook !== null) s += this.hook.excessTotal()
     return s
   }
 
@@ -243,6 +325,9 @@ export class WaterColumns {
       if (T.awake[t] !== 1) continue
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) if (depth[c]! > 0) n++
+      if (this.under !== null) for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
+        for (let i = this.under.first[c]!; i >= 0; i = this.under.next[i]!) if (this.under.depth[i]! > 0) n++
+      }
     }
     return n
   }
@@ -253,12 +338,28 @@ export class WaterColumns {
    * Returns what the sea columns gave the sea account (negative: what they took from it).
    */
   step(cap: number, sea: Uint8Array | null, seaSurface: number): number {
+    const U = this.under
+    this.stepNo++
+    if (U) {
+      this.edges!.ensure(this, U, this.height)
+      this.hook?.ensure()
+      this.sizeUnder(U)
+    }
     this.collect(cap)
+    if (U) this.collectUnder(U)
     // The cap left awake tiles out: their borders advance out of phase, which only a lower gain keeps stable.
     const throttled = this.list.length >= cap && this.tiles.awakeCount() > this.list.length
-    this.accelerateAll(throttled ? THROTTLED_GAIN : GAIN)
+    const gain = throttled ? THROTTLED_GAIN : GAIN
+    this.accelerateAll(gain)
+    if (U) {
+      this.accelerateUnderAll(U, gain)
+      this.hook?.step(this.stepping, gain)
+      this.sumUnderOut(U)
+    }
     this.limitAll()
+    if (U) { this.limitUnder(U); this.scaleUnder(U); this.inflowUnder(U) }
     this.transferAll()
+    if (U) { this.transferUnder(U); this.hook?.rebalance() }
     const credit = sea ? this.pinAll(sea, seaSurface) : 0
     this.settle()
     for (let k = 0; k < this.list.length; k++) this.stepping[this.list.data[k]!] = 0
@@ -271,6 +372,7 @@ export class WaterColumns {
       mix(this.floor[c]!); mix(this.depth[c]!); mix(this.last[c]!)
       mix(this.flux[2 * c]!); mix(this.flux[2 * c + 1]!)
     }
+    this.under?.mixState(mix); this.edges?.mixState(mix); this.hook?.mixState(mix)
     this.tiles.mixState(mix)
   }
 
@@ -332,12 +434,175 @@ export class WaterColumns {
       const t = this.list.data[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
-        limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1)
+        this.limitTop(c, limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c)))
       }
     }
     for (let k = 0; k < this.ring.length; k++) {
       const c = this.ring.data[k]!, x = c % sx, z = (c - x) / sx
-      limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1)
+      this.limitTop(c, limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c)))
+    }
+  }
+
+  /** Column c's outflow over under edges this step (0 in a single-layer world). */
+  private extraOut(c: number): number { return this.under !== null && this.topMark[c] === this.stepNo ? this.topOut[c]! : 0 }
+
+  /** After limit for column c: remember it was limited, and its scale when it scaled (its under edges are scaled alike). */
+  private limitTop(c: number, out: number): void {
+    if (this.under === null) return
+    this.topLimited[c] = this.stepNo
+    if (out > 0) { this.topScaleD[c] = this.depth[c]!; this.topScaleOut[c] = out; this.topScaleMark[c] = this.stepNo }
+  }
+
+  /** Grows the per-lower-segment scratch to the pool's size. */
+  private sizeUnder(U: UnderSegments): void {
+    const m = U.col.length
+    if (this.underOut.length >= m) return
+    this.underOut = new Int32Array(m); this.underMark = new Int32Array(m)
+    this.underScaleD = new Int32Array(m); this.underScaleOut = new Int32Array(m); this.underScaleMark = new Int32Array(m)
+    this.underIn = new Int32Array(m); this.underInMark = new Int32Array(m)
+  }
+
+  /** The column holding segment ref. */
+  private colOf(ref: number, U: UnderSegments): number { return ref < this.n ? ref : U.col[ref - this.n]! }
+
+  /**
+   * Every under edge of each stepped tile, plus, on a side whose neighbour tile does not step, that tile's edges reaching
+   * into this one (as 3c's border edges). Stamps each collected edge (TileEdges.seen).
+   */
+  private collectUnder(U: UnderSegments): void {
+    const E = this.edges!, sx = this.sx, tx = this.tiles.tx, no = this.stepNo
+    this.uT.clear(); this.uE.clear()
+    if (this.uStart.length < this.list.length + 1) this.uStart = new Int32Array(this.list.length * 2 + 1)
+    const take = (t: number, e: number) => { this.uT.push(t); this.uE.push(e); E.tiles[t]!.seen[e] = no }
+    for (let k = 0; k < this.list.length; k++) {
+      const t = this.list.data[k]!, o = this.open[k]!
+      this.uStart[k] = this.uT.length
+      const own = E.tiles[t]
+      if (own) for (let e = 0; e < own.count; e++) take(t, e)
+      const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
+      const w = (o & WEST) !== 0 ? E.tiles[t - 1] : null
+      if (w) for (let e = 0; e < w.count; e++) if (w.axis[e] === 0 && this.colOf(w.a[e]!, U) % sx === x0 - 1) take(t - 1, e)
+      const nt = (o & NORTH) !== 0 ? E.tiles[t - tx] : null
+      if (nt) for (let e = 0; e < nt.count; e++) if (nt.axis[e] === 1 && Math.floor(this.colOf(nt.a[e]!, U) / sx) === z0 - 1) take(t - tx, e)
+    }
+    this.uStart[this.list.length] = this.uT.length
+  }
+
+  /**
+   * Accelerates every collected under edge but a body's: a boundary edge is set by its body, an edge inside one carries
+   * nothing. An edge stored in a tile that does not step that moved water marks it dirty.
+   */
+  private accelerateUnderAll(U: UnderSegments, gain: number): void {
+    const E = this.edges!, n = this.n, dirty = this.tiles.dirty, stepping = this.stepping
+    for (let k = 0; k < this.uT.length; k++) {
+      const t = this.uT.data[k]!, e = this.uE.data[k]!, T = E.tiles[t]!, a = T.a[e]!, b = T.b[e]!
+      const ma = a >= n && U.body[a - n]! >= 0, mb = b >= n && U.body[b - n]! >= 0
+      if (ma || mb) { if (ma && mb) T.flux[e] = 0; continue } // inside a body nothing flows; a boundary edge is the body's
+      if (stepping[t] === 0 && moved(T.flux[e]!) !== 0) dirty[t] = 1
+      accelerateUnder(T, e, n, this.floor, this.depth, U.floor, U.depth, gain)
+    }
+  }
+
+  /** Sums each free sender's outflow over the collected under edges (a body caps its own outflow). */
+  private sumUnderOut(U: UnderSegments): void {
+    const E = this.edges!, n = this.n, no = this.stepNo
+    this.sendersTop.clear(); this.sendersUnder.clear()
+    for (let k = 0; k < this.uT.length; k++) {
+      const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, f = T.flux[e]!
+      if (f === 0) continue
+      const s = f > 0 ? T.a[e]! : T.b[e]!, m = (f > 0 ? f : -f) >> FLUX_FP
+      if (s < n) {
+        if (this.topMark[s] !== no) { this.topMark[s] = no; this.topOut[s] = 0; this.sendersTop.push(s) }
+        this.topOut[s] = this.topOut[s]! + m
+      } else {
+        const i = s - n
+        if (U.body[i]! >= 0) continue
+        if (this.underMark[i] !== no) { this.underMark[i] = no; this.underOut[i] = 0; this.sendersUnder.push(i) }
+        this.underOut[i] = this.underOut[i]! + m
+      }
+    }
+  }
+
+  /** Senders limitAll did not cover (lower segments, top columns outside the stepped tiles and their ring): scaled on their under outflow alone. */
+  private limitUnder(U: UnderSegments): void {
+    const no = this.stepNo
+    for (let k = 0; k < this.sendersTop.length; k++) {
+      const c = this.sendersTop.data[k]!
+      if (this.topLimited[c] === no) continue
+      const out = this.topOut[c]!, d = this.depth[c]!
+      if (out > d) { this.topScaleD[c] = d; this.topScaleOut[c] = out; this.topScaleMark[c] = no }
+    }
+    for (let k = 0; k < this.sendersUnder.length; k++) {
+      const i = this.sendersUnder.data[k]!, out = this.underOut[i]!, d = U.depth[i]!
+      if (out > d) { this.underScaleD[i] = d; this.underScaleOut[i] = out; this.underScaleMark[i] = no }
+    }
+  }
+
+  /** Scales every collected under edge whose sender was scaled, as limit scaled that sender's dense edges. */
+  private scaleUnder(U: UnderSegments): void {
+    const E = this.edges!, n = this.n, no = this.stepNo
+    for (let k = 0; k < this.uT.length; k++) {
+      const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, f = T.flux[e]!
+      if (f === 0) continue
+      const s = f > 0 ? T.a[e]! : T.b[e]!, af = f > 0 ? f : -f
+      let g = af
+      if (s < n) { if (this.topScaleMark[s] === no) g = scaled(af, this.topScaleD[s]!, this.topScaleOut[s]!) }
+      else if (this.underScaleMark[s - n] === no) g = scaled(af, this.underScaleD[s - n]!, this.underScaleOut[s - n]!)
+      if (g !== af) T.flux[e] = f > 0 ? g : -g
+    }
+  }
+
+  /** A free lower segment never takes more than its room (cap − depth): its inflows are scaled down together. */
+  private inflowUnder(U: UnderSegments): void {
+    const E = this.edges!, n = this.n, no = this.stepNo
+    this.receivers.clear()
+    for (let k = 0; k < this.uT.length; k++) {
+      const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, f = T.flux[e]!
+      if (f === 0) continue
+      const r = f > 0 ? T.b[e]! : T.a[e]!
+      if (r < n || U.body[r - n]! >= 0) continue
+      const i = r - n
+      if (this.underInMark[i] !== no) { this.underInMark[i] = no; this.underIn[i] = 0; this.receivers.push(i) }
+      this.underIn[i] = this.underIn[i]! + ((f > 0 ? f : -f) >> FLUX_FP)
+    }
+    let any = false
+    for (let k = 0; k < this.receivers.length; k++) {
+      const i = this.receivers.data[k]!
+      if (this.underIn[i]! > Math.max(0, U.cap(i) - U.depth[i]!)) any = true
+      else this.underInMark[i] = 0 // not over: no scaling
+    }
+    if (!any) return
+    for (let k = 0; k < this.uT.length; k++) {
+      const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, f = T.flux[e]!
+      if (f === 0) continue
+      const r = f > 0 ? T.b[e]! : T.a[e]!
+      if (r < n || this.underInMark[r - n] !== no) continue
+      const i = r - n, af = f > 0 ? f : -f, g = scaled(af, Math.max(0, U.cap(i) - U.depth[i]!), this.underIn[i]!)
+      T.flux[e] = f > 0 ? g : -g
+    }
+  }
+
+  /**
+   * Moves the water of every collected under edge. Water reaching a tile that does not step reaches it (wakes it, or is a
+   * trickle), and a tile that does not step that loses water is mirrored and published (dirty), as in 3c.
+   */
+  private transferUnder(U: UnderSegments): void {
+    const E = this.edges!, n = this.n, T = this.tiles, sx = this.sx, tx = T.tx, stepping = this.stepping
+    const tileOf = (c: number) => { const x = c % sx; return Math.floor(x / TILE) + Math.floor((c - x) / sx / TILE) * tx }
+    for (let k = 0, kk = 0; k < this.uT.length; k++) {
+      while (kk + 1 < this.list.length && this.uStart[kk + 1]! <= k) kk++
+      const L = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, m = moved(L.flux[e]!)
+      if (m === 0) continue
+      const a = L.a[e]!, b = L.b[e]!
+      if (a < n) this.depth[a] = this.depth[a]! - m; else U.depth[a - n] = U.depth[a - n]! - m
+      if (b < n) this.depth[b] = this.depth[b]! + m; else U.depth[b - n] = U.depth[b - n]! + m
+      const am = m < 0 ? -m : m
+      if (am > this.most[kk]!) this.most[kk] = am
+      const recv = m > 0 ? b : a, send = m > 0 ? a : b
+      const tr = tileOf(this.colOf(recv, U)), ts = tileOf(this.colOf(send, U))
+      if (stepping[tr] === 0) this.reach(tr, am)
+      if (stepping[ts] === 0) T.dirty[ts] = 1
+      if (recv >= n && U.body[recv - n]! < 0 && U.depth[recv - n]! >= U.cap(recv - n)) this.hook?.filled(recv - n)
     }
   }
 
@@ -431,6 +696,19 @@ export class WaterColumns {
         last[c] = d
         if (dd > DEPTH_EPS || -dd > DEPTH_EPS) live = true
       }
+      if (this.under !== null) {
+        const U = this.under
+        for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
+          for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
+            const d = U.depth[i]!, dd = d - U.last[i]!
+            if (dd === 0) continue
+            changed = true
+            U.last[i] = d
+            if (dd > DEPTH_EPS || -dd > DEPTH_EPS) live = true
+          }
+        }
+        if (!live) live = this.underLive(k)
+      }
       if (!live) live = !this.flat(t)
       // Publish what changed: a depth, or an edge that moves water now or did at the last step (its flux may have stopped).
       const moving = this.most[k]! > 0 ? 1 : 0
@@ -448,6 +726,28 @@ export class WaterColumns {
       if (T.awake[t] === 0 && !this.flat(t)) T.wake(t)
     }
     trickled.clear()
+  }
+
+  /**
+   * Plan decision 6: stepped tile k is live when one of its collected under edges moved FLUX_EPS or more, or when connected
+   * water across one of them (the higher side can send: at least MIN_FLOW deep, and one side shows) differs by more than
+   * HEAD_EPS. A body member shows its body's level and counts as deep.
+   */
+  private underLive(k: number): boolean {
+    const E = this.edges!, U = this.under!, n = this.n
+    for (let j = this.uStart[k]!; j < this.uStart[k + 1]!; j++) {
+      const L = E.tiles[this.uT.data[j]!]!, e = this.uE.data[j]!, f = L.flux[e]!
+      if (f >= LOUD || -f >= LOUD) return true
+      const a = L.a[e]!, b = L.b[e]!
+      const ma = a >= n && U.body[a - n]! >= 0, mb = b >= n && U.body[b - n]! >= 0
+      const da = ma ? SUB : a < n ? this.depth[a]! : U.depth[a - n]!
+      const db = mb ? SUB : b < n ? this.depth[b]! : U.depth[b - n]!
+      const sa = ma && this.bodyLevel ? this.bodyLevel(a) : (a < n ? this.floor[a]! : U.floor[a - n]!) * SUB + (a < n ? this.depth[a]! : U.depth[a - n]!)
+      const sb = mb && this.bodyLevel ? this.bodyLevel(b) : (b < n ? this.floor[b]! : U.floor[b - n]!) * SUB + (b < n ? this.depth[b]! : U.depth[b - n]!)
+      const up = sa > sb ? da : sb > sa ? db : da > db ? da : db
+      if (up >= MIN_FLOW && (da >= SHOWN || db >= SHOWN) && (sa - sb > HEAD_EPS || sb - sa > HEAD_EPS)) return true
+    }
+    return false
   }
 
   /**
@@ -535,6 +835,25 @@ export class WaterColumns {
     }
     if (x0 > 0 && awake[t - 1] === 0) for (let z = z0; z < z1; z++) this.zeroEdge((x0 - 1 + z * sx) * 2, t - 1)
     if (z0 > 0 && awake[t - T.tx] === 0) for (let x = x0; x < x1; x++) this.zeroEdge((x + (z0 - 1) * sx) * 2 + 1, t - T.tx)
+    if (this.edges !== null) {
+      const E = this.edges, U = this.under!, own = E.tiles[t]
+      if (own) for (let e = 0; e < own.count; e++) {
+        const bc = this.colOf(own.b[e]!, U), bx = bc % sx, tb = Math.floor(bx / TILE) + Math.floor((bc - bx) / sx / TILE) * T.tx
+        if (tb !== t && awake[tb] === 1) continue // a border edge whose other tile is awake: that tile moves it from now on
+        own.flux[e] = 0
+      }
+      for (const nb of [x0 > 0 ? t - 1 : -1, z0 > 0 ? t - T.tx : -1]) {
+        if (nb < 0 || awake[nb] === 1) continue
+        const L = E.tiles[nb]
+        if (!L) continue
+        for (let e = 0; e < L.count; e++) {
+          const bc = this.colOf(L.b[e]!, U), bx = bc % sx, tb = Math.floor(bx / TILE) + Math.floor((bc - bx) / sx / TILE) * T.tx
+          if (tb !== t) continue
+          if (moved(L.flux[e]!) !== 0) T.dirty[nb] = 1
+          L.flux[e] = 0
+        }
+      }
+    }
     T.dirty[t] = 1
   }
 
