@@ -4706,3 +4706,16 @@ Ratio 3d / 3c: tick p95 **1.14×** (p50 1.15×), within the spec's 1.2×. Σ dep
     - The earlier "light with shadows off" reading was taken while the hole's level had moved.
   - **Change:** `lightCell` keeps a lower slot's light cell under its ceiling (`refreshSlot` and `relight`). Rank 0 is 3c's, unchanged.
   - **Result:** both holes, and a one-block hole that always read its roof, draw light like the notch.
+
+### A block placed over water (Task 15, 2026-10-06)
+
+- **User:** every block placed above water, however high, made the water under it vanish and come back.
+- **Cause:**
+  - The block splits the column: the lake becomes a lower run and moves from draw layer 0 to layer 1.
+  - A new slot rose from its floor (design notes: LayerStore), so for one step the column's quad dived to the lake bed (measured: corners 19.98 → 28 in one step).
+  - Removing the block made the slot sink to the bed the same way.
+- **Change:** `LayerStore.commit` gets the view's dense prev/cur.
+  - A new slot whose run holds the column's previous rank-0 water starts from that water.
+  - A slot no longer named whose run holds the current rank-0 water goes at once and hands its level to rank 0.
+  - Cave pools that really appear or dry out still rise and sink.
+- **Result (measured):** the water stays at 28.00 through both edits; only its layer changes.

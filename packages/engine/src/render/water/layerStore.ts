@@ -47,8 +47,15 @@ export class LayerStore {
     }
   }
 
-  /** Applies tile t's staged records, if any. `first`: the tile is read for the first time (its slots start where they are). Returns whether a slot changed. */
-  commit(t: number, first: boolean): boolean {
+  /**
+   * Applies tile t's staged records, if any. `first`: the tile is read for the first time (its slots start where they are).
+   * `prev` / `cur`: the dense (rank 0) encoded surfaces of the previous and current step, as SurfaceView holds them. Water
+   * that only changes layer keeps its level: a new slot whose run holds the column's previous rank-0 water (a block placed
+   * over a lake: the lake is now a lower run) starts at that water, not at its floor; a slot no longer named whose run holds
+   * the current rank-0 water (the block removed again) goes at once and hands its level to rank 0 (`prev` is written).
+   * Returns whether a slot changed.
+   */
+  commit(t: number, first: boolean, prev?: Int32Array, cur?: Int32Array): boolean {
     const recs = this.staged.get(t)
     if (recs === undefined) return false
     this.staged.delete(t)
@@ -69,7 +76,8 @@ export class LayerStore {
       if (r > 0) {
         const v = recs[o + 1]!, fl = recs[o + 2]! & 0xffff, ce = recs[o + 2]! >>> 16
         const fx = (recs[o + 3]! << 16) >> 16, fz = recs[o + 3]! >> 16
-        const pv = first ? v : s.present[k] === 1 ? s.cur[k]! : ~(fl * SUB)
+        const dv = prev ? prev[this.column(t, head & 0xff)]! : -1
+        const pv = first ? v : s.present[k] === 1 ? s.cur[k]! : dv >= fl * SUB && dv <= ce * SUB ? dv : ~(fl * SUB)
         if (s.present[k] === 0 || s.cur[k] !== v || s.prev[k] !== pv || s.fluxX[k] !== fx || s.fluxZ[k] !== fz || s.floor[k] !== fl || s.ceil[k] !== ce) changed = true
         s.prev[k] = pv; s.cur[k] = v; s.floor[k] = fl; s.ceil[k] = ce; s.fluxX[k] = fx; s.fluxZ[k] = fz
       }
@@ -80,6 +88,14 @@ export class LayerStore {
       if (s.present[k] === 0 || s.named[k] === 1) continue
       changed = true
       if (k % RANKS === 0) { s.present[k] = 0; continue } // a top back to default links
+      if (cur) {
+        const c = this.column(t, (k / RANKS) | 0), dc = cur[c]!
+        if (dc >= s.floor[k]! * SUB && dc <= s.ceil[k]! * SUB) { // its water is the top's again
+          if (prev && s.cur[k]! >= 0) prev[c] = s.cur[k]!
+          s.present[k] = 0
+          continue
+        }
+      }
       const dry = ~(s.floor[k]! * SUB)
       if (s.cur[k] === dry && s.prev[k] === dry) { s.present[k] = 0; continue }
       s.prev[k] = s.cur[k]!
@@ -88,6 +104,12 @@ export class LayerStore {
       s.fluxZ[k] = 0
     }
     return changed
+  }
+
+  /** The column index of local column `local` (x + z × 16) of tile t. */
+  private column(t: number, local: number): number {
+    const tx = t % this.tx, tz = (t - tx) / this.tx
+    return tx * 16 + (local & 15) + (tz * 16 + (local >> 4)) * this.sx
   }
 
   /** Whether tile t ever held a slot (it then stays on the layered refresh path). */

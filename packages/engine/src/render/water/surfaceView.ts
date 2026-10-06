@@ -324,7 +324,7 @@ export class SurfaceView {
         this.changed[c] = e
         any = true
       }
-      if (this.layers.commit(tile, first)) { any = true; this.slotChanged[tile] = e }
+      if (this.layers.commit(tile, first, this.prev, this.cur)) { any = true; this.slotChanged[tile] = e }
       if (any) this.tileChanged[tile] = e
       this.tileListed[tile] = e
       if (first) this.tileFresh[tile] = e

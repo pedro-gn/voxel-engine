@@ -38,6 +38,26 @@ describe('LayerStore', () => {
     expect(L.has(3, 1)).toBe(false)
   })
 
+  it('a new slot that continues the top water (a block placed over a lake) starts where that water was drawn, not at its floor', () => {
+    const L = new LayerStore(32, 32)
+    const prev = new Int32Array(32 * 32).fill(~(5 * SUB)), cur = new Int32Array(32 * 32)
+    L.stage(block(0, [])); L.commit(0, true, prev, cur) // the tile seen once, no slot yet
+    prev[3] = 5 * SUB // column 3 drew the lake at 5 blocks in layer 0 …
+    L.stage(block(0, [[3, 1, 5 * SUB, 2, 7, 0, 0, 0, 0]])) // … now a deck at y 7 over it: the lake is the lower run [2, 7)
+    L.commit(0, false, prev, cur)
+    expect([L.prev(3, 1), L.cur(3, 1)]).toEqual([5 * SUB, 5 * SUB])
+  })
+
+  it('a slot whose water goes back to the top (the block over it removed) hands its level to the top at once, with no sink', () => {
+    const L = new LayerStore(32, 32)
+    const prev = new Int32Array(32 * 32).fill(~(8 * SUB)), cur = new Int32Array(32 * 32).fill(~(8 * SUB))
+    L.stage(block(0, [[3, 1, 5 * SUB, 2, 7, 0, 0, 0, 0]])); L.commit(0, true, prev, cur)
+    prev[3] = ~(8 * SUB); cur[3] = 5 * SUB // the deck is gone: the top holds the lake again
+    L.stage(block(0, [])); L.commit(0, false, prev, cur)
+    expect(L.has(3, 1)).toBe(false)
+    expect(prev[3]).toBe(5 * SUB) // the top starts from the slot's level
+  })
+
   it('keeps the latest staged block per tile, and links default to the neighbour top without a record', () => {
     const L = new LayerStore(32, 32)
     L.stage(block(0, [[3, 0, 0, 1, 32, 1, 0, LINK_WALL, 0]]))
