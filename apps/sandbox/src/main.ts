@@ -4,6 +4,7 @@ import { spawnCharacter } from './character.ts'
 import { createControls } from './controls.ts'
 import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
+import { CAVES_SIZE, digTunnelCommands, openCanalCommands, openDamCommands, pierceRoofCommands } from './scenes/caves.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
 import { FLOOD_SIZE, breachCommands, digCommands, dropCommands, stopSpringCommands, stressCommands } from './scenes/flood.ts'
 import { paintTextures } from './textures.ts'
@@ -15,7 +16,7 @@ import { createTerrainPanel } from './terrainPanel.ts'
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' ? sceneParam : 'world'
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' ? sceneParam : 'world'
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
   const v = Number(raw ?? 1024)
@@ -31,6 +32,7 @@ const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
 const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
+  : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
   : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
   : [n, 128, n]
@@ -47,10 +49,12 @@ const engine = await createEngine({
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'flood'
       ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
+    : sceneName === 'caves'
+      ? () => new Worker(new URL('./caves.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'terrain'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
-  terrain: sceneName === 'flood' ? { scene: 'flood' } : terrainDoc,
+  terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' } : terrainDoc,
   genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
@@ -85,6 +89,13 @@ if (sceneName === 'flood') {
   for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 128; s.target[1] = 20; s.target[2] = 128
     s.distance = 320
+    s.pitch = 0.8
+  }
+}
+if (sceneName === 'caves') {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = 64; s.target[1] = 26; s.target[2] = 64
+    s.distance = 200
     s.pitch = 0.8
   }
 }
@@ -136,4 +147,12 @@ const flood = sceneName === 'flood'
       stress: () => stressCommands(packVoxel(engine.blocks.id('water'), 7)).forEach((c) => engine.submit(c)),
     }
   : null
-Object.assign(window, { __elovox: { engine, bean, editor, flood, ready: true } })
+const caves = sceneName === 'caves'
+  ? {
+      digTunnel: () => digTunnelCommands().forEach((c) => engine.submit(c)),
+      pierceRoof: () => pierceRoofCommands().forEach((c) => engine.submit(c)),
+      openDam: () => openDamCommands().forEach((c) => engine.submit(c)),
+      openCanal: () => openCanalCommands().forEach((c) => engine.submit(c)),
+    }
+  : null
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, ready: true } })
