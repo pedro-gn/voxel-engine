@@ -4697,3 +4697,12 @@ Ratio 3d / 3c: tick p95 **1.14×** (p50 1.15×), within the spec's 1.2×. Σ dep
   - Curtains under a ceiling or inside a cave stay straight.
   - The hole's jet now leaves the dam about 2 blocks out, with a body, streaks and a splash.
   - The side face turned from the sun stays in shade, as the terrain's faces do.
+- **Second pass (same day):**
+  - **User:** still dark. A hole with blocks above it drew black, a notch dug to the top drew light, side by side.
+  - **The cause, corrected:** the darkness was the curtain's light, not a shadow.
+    - A slot takes its light from the cell holding its surface, `ceil(s)`.
+    - A hole under pressure runs with its surface in its top cell, so that cell was the block over the hole: light 0. The curtain carries its slot's light.
+    - Measured in the browser: the curtain's `cInfo` held light 0; the notch's held 15.
+    - The earlier "light with shadows off" reading was taken while the hole's level had moved.
+  - **Change:** `lightCell` keeps a lower slot's light cell under its ceiling (`refreshSlot` and `relight`). Rank 0 is 3c's, unchanged.
+  - **Result:** both holes, and a one-block hole that always read its roof, draw light like the notch.

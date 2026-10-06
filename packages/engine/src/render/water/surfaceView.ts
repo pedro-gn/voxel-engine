@@ -365,7 +365,7 @@ export class SurfaceView {
         if (packed < 0) continue
         const x = x0 + (i & 31), z = z0 + (i >> 5), c = x + z * this.sx
         if (r > 0 && !this.layers.has(c, r)) continue
-        const y = Math.ceil(level(r === 0 ? this.cur[c]! : this.layers.cur(c, r)) * PER_SUB)
+        const y = r === 0 ? Math.ceil(level(this.cur[c]!) * PER_SUB) : this.lightCell(c, r, level(this.layers.cur(c, r)))
         if (y < y0 || y >= y1) continue
         const l = this.light(x, y, z), lit = packed - (packed % 256) + (l & 15) * 16 + (l >> 4)
         if (lit === packed) continue
@@ -621,7 +621,7 @@ export class SurfaceView {
       curBits = edgeBits(pC, 4, 3)
       if (frontIn(pC, 5, ec, east) || frontIn(pC, 3, ec, -west) || frontIn(pC, 7, ec, south) || frontIn(pC, 1, ec, -north)) white = Math.max(white, boreWhite(fr))
     }
-    const l = this.light(x, Math.ceil(s * PER_SUB), z)
+    const l = this.light(x, this.lightCell(c, r, s), z)
     d.info[o + 2] = depth * PER_SUB
     d.info[o + 3] = (l & 15) * 16 + (l >> 4) + 256 * white
     d.curtainMask[i] = prevBits | (curBits << 4)
@@ -772,6 +772,16 @@ export class SurfaceView {
       }
     }
     cs.count = n
+  }
+
+  /**
+   * The cell whose light slot (c, r) at surface level `s` (1/SUB block) takes: the one holding its surface, but never at or
+   * above a lower slot's ceiling. Water standing in a run's top cell (a hole through a dam, under pressure) would otherwise
+   * read the block over the run (light 0), and the slot and its curtain would draw black.
+   */
+  private lightCell(c: number, r: number, s: number): number {
+    const y = Math.ceil(s * PER_SUB)
+    return r === 0 ? y : Math.min(y, this.layers.ceil(c, r) - 1)
   }
 
   /** Whether slot (x, z, r) meets a top through `dir`: its water pours out into the open. */

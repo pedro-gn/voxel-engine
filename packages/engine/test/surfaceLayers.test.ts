@@ -134,6 +134,27 @@ describe('curtains and ripples in layers', () => {
     expect(thrown).toBe(4) // the hole's four columns, each thrown out (+z) away from the dam
   })
 
+  it('a slot full to its ceiling takes its light from inside its run, never from the block above it (its curtain is not black)', () => {
+    // a hole one block high (y 9, x 12–15) through a dam (z 10) mid-way down a lake (y 2–13): its surface is always in its
+    // only cell, so ceil() of it is the roof (y 10)
+    const w = layered((x, y, z) => {
+      if (y < 2 || x === 0 || x === 31 || z === 0 || z === 31) return STONE
+      if (z <= 9) return y <= 13 ? wv(7) : AIR
+      if (z === 10) return x >= 12 && x <= 15 && y === 9 ? AIR : y <= 20 ? STONE : AIR
+      return AIR
+    })
+    w.edges.ensure(w.cols, w.under, 32)
+    for (let k = 0; k < 6; k++) w.step()
+    const lightOf = (x: number, y: number, z: number) => ((w.store.getVoxel(x, y, z) & 0xfff) === STONE ? 0 : 15) // sky 15 in the open, 0 in rock
+    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, lightOf)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    expect(w.segs(13, 10)[0]!.depth).toBeGreaterThan(0)
+    const d = view.column(0, 1)!, packed = d.info[(13 + 10 * 32) * 4 + 3]!
+    expect(packed % 256 >> 4).toBe(15) // sky light of the hole, not the roof's 0
+    const cs = d.curtains
+    for (let k = 0; k < cs.count; k++) expect((Math.floor(cs.info[k * 4 + 2]! / 4) % 256) >> 4).toBe(15)
+  })
+
   it('surfaceNear finds the slot at the edit height: the lake under a bridge, not the dry deck above', () => {
     const { view, publish } = bridgedView()
     publish()
