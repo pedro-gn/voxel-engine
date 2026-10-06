@@ -211,14 +211,14 @@ describe('liquid groups and springs', () => {
 })
 
 describe('static and simulated water', () => {
-  it('leaves water at or above its column\'s floor to the heightfield and meshes the static water below it', () => {
+  it('never meshes the simulated water of a column the sim owns, at any height; still meshes it where no sim owns it (NO_FLOOR)', () => {
     expect(tables.waterGroup).toBe(ID.water)
     const s = emptySnap()
-    put(s, 4, 3, 4, water(7)) // below the floor: static
-    put(s, 4, 6, 4, water(7)) // at the floor: simulated, not meshed here
-    put(s, 9, 6, 9, water(7)) // a column with no floor (NO_FLOOR): static
+    put(s, 4, 3, 4, water(7)) // below the floor: a lower segment's water, simulated since 3d
+    put(s, 4, 6, 4, water(7)) // at the floor: the top segment's
+    put(s, 9, 6, 9, water(7)) // a column with no floor (NO_FLOOR): no sim owns it
     s.floor[(4 + 1) + (4 + 1) * PAD] = 5
-    expect(mesh(s).n).toBe(12) // two lone static cells, 6 faces each
+    expect(mesh(s).n).toBe(6) // only the lone cell of the column nobody simulates
   })
   it('still meshes a spring above its column\'s floor', () => {
     const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])

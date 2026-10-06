@@ -104,7 +104,6 @@ export class Simulation {
       layout: this.layout, registry: this.registry, store: this.store, buffers: o.buffers.water,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       setQuiet: (x, y, z, v) => { if (sim.store.setVoxelQuiet(x, y, z, v)) sim.epochs[sim.layout.chunkOf(x, y, z)]!++ },
-      remesh: (ci) => sim.store.markDirty(ci),
       log: (m) => sim.log(m),
     }, o.water)
     this.gravity = new GravitySystem({
@@ -232,8 +231,8 @@ export class Simulation {
         if (L.chunkInBounds(cx + dx, cy + dy, cz + dz)) out.add(L.chunkIndex(cx + dx, cy + dy, cz + dz))
       })
     }
-    // The water of the regenerated chunk columns, rebuilt now even while paused; chunks whose static water changed hands remesh.
-    for (const ci of this.water.rebuildChunkColumns(regenerated)) out.add(ci)
+    // The water of the regenerated chunk columns, rebuilt now even while paused.
+    this.water.rebuildChunkColumns(regenerated)
     return [...out].sort((a, b) => a - b)
   }
 

@@ -36,8 +36,6 @@ export interface WaterPort {
   get(x: number, y: number, z: number): number
   /** A mirror write: under the chunk seqlock, with no remesh, no relight and no write hooks. */
   setQuiet(x: number, y: number, z: number, v: number): void
-  /** Chunk ci must be remeshed at the next commit: static water in it became the heightfield's. */
-  remesh(ci: number): void
   log(message: string): void
 }
 
@@ -416,8 +414,8 @@ export class WaterSystem {
    * Only those chunk columns: one between two regenerated ones keeps its columns, flux and films. No chunk needs a remesh:
    * water is never meshed (3d).
    */
-  rebuildChunkColumns(ccs: readonly (readonly [number, number])[]): number[] {
-    if (this.water === 0 || ccs.length === 0) return []
+  rebuildChunkColumns(ccs: readonly (readonly [number, number])[]): void {
+    if (this.water === 0 || ccs.length === 0) return
     this.spreadDisplaced()
     const cols = this.cols, cy = this.cycle, T = cols.tiles, L = this.layout
     const regenerated = new Set(ccs.map(([cx, cz]) => cx + cz * L.cx))
@@ -443,7 +441,6 @@ export class WaterSystem {
       this.wakeUnsettled(Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(cols.sx, x0 + 33), Math.min(cols.sz, z0 + 33))
     }
     this.expected = this.total()
-    return []
   }
 
   mixState(mix: (v: number) => void): void {

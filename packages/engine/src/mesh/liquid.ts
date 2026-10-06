@@ -1,6 +1,7 @@
 import { LAYER } from '../blocks/registry.ts'
 import { OUTSIDE, PAD, padIndex, type ChunkSnapshot } from '../world/reader.ts'
 import { AIR, voxelId, voxelState } from '../world/voxel.ts'
+import { NO_FLOOR } from '../world/waterBuffers.ts'
 import { AXES, REVERSE, STRIDE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
@@ -81,8 +82,8 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     const out = layer === LAYER.LIQUID ? liquidOut : translucent
     const liquid = t.liquid[id] === 1
     const group = liquid ? t.liquidGroup[id]! : 0
-    // Water at or above its column's floor is the heightfield's (render/water): only static water is meshed here.
-    if (liquid && id === t.waterGroup && y >= s.floor[x + 1 + (z + 1) * PAD]!) continue
+    // Every water voxel of a column the sim owns (floor ≠ NO_FLOOR) is a segment's, drawn by render/water (3d: no static water).
+    if (liquid && id === t.waterGroup && s.floor[x + 1 + (z + 1) * PAD]! !== NO_FLOOR) continue
     if (liquid) cornerHeights(s, t, pi, group)
     // Water over water: its top-row vertices carry LIQUID_DEEP, so foam treats the surface as full height however thin
     // the top layer is.
