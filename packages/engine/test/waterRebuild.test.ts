@@ -3,13 +3,12 @@ import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB, UNIT } from '../src/sim/water/constants.ts'
 import { WaterMirror, quantize } from '../src/sim/water/mirror.ts'
-import { rebuildColumns, waterKinds } from '../src/sim/water/rebuild.ts'
+import { rebuildSegments, waterKinds } from '../src/sim/water/rebuild.ts'
+import { UnderSegments } from '../src/sim/water/under.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
 import { AIR, packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
-import { rebuildSegments } from '../src/sim/water/rebuild.ts'
-import { UnderSegments } from '../src/sim/water/under.ts'
 
 const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
 const kind = waterKinds(reg, ID.water)
@@ -27,12 +26,12 @@ function world(fill: (x: number, y: number, z: number) => number, size: [number,
   store.commit()
   const cols = new WaterColumns(size[0], size[2], new Int16Array(buffers.water.floor))
   const mirror = new WaterMirror(cols.n)
-  rebuildColumns(store, kind, cols, mirror, 0, 0, size[0], size[2])
+  rebuildSegments(store, kind, cols, new UnderSegments(cols.n), mirror, 0, 0, size[0], size[2])
   const at = (x: number, z: number) => ({ floor: cols.floor[x + z * size[0]]!, depth: cols.depth[x + z * size[0]]! })
   return { store, cols, mirror, at, buffers }
 }
 
-describe('rebuildColumns', () => {
+describe('rebuildSegments: the top segment', () => {
   it('reads a lake (partial top cell included), a dry column and an empty one', () => {
     const { at, mirror, buffers } = world((x, y, z) => {
       if (x === 31 && z === 31) return AIR
@@ -45,18 +44,6 @@ describe('rebuildColumns', () => {
     expect(at(20, 2)).toEqual({ floor: 3, depth: 0 })
     expect(at(31, 31)).toEqual({ floor: 0, depth: 0 })
     expect(new Int16Array(buffers.water.floor)[2 + 2 * 32]).toBe(3) // the shared floor the mesh workers read
-  })
-
-  it('looks through a thin floating run (a bridge) but not through a thick roof: water under a roof is static', () => {
-    const { at } = world((x, y) => {
-      if (y < 3) return ID.stone
-      if (y <= 5) return water(7)
-      if (x === 4 && y >= 8 && y <= 10) return ID.stone // a 3-thick bridge over air
-      if (x === 6 && y >= 6 && y <= 14) return ID.stone // a 9-thick roof right on the water
-      return AIR
-    })
-    expect(at(4, 4)).toEqual({ floor: 3, depth: 3 * SUB })
-    expect(at(6, 4)).toEqual({ floor: 15, depth: 0 })
   })
 
   it('reads a chunk that is all water (a uniform chunk)', () => {
@@ -90,18 +77,7 @@ describe('rebuildColumns', () => {
     expect(at(5, 5)).toEqual({ floor: 4, depth: 2 * SUB })
   })
 
-  it('reports the floors that moved and zeroes the rebuilt columns\' fluxes', () => {
-    const { store, cols, mirror } = world((_x, y) => (y < 3 ? ID.stone : AIR))
-    cols.flux.fill(160)
-    store.setVoxel(7, 3, 7, ID.stone)
-    store.commit()
-    const moved: number[][] = []
-    rebuildColumns(store, kind, cols, mirror, 0, 0, 32, 32, (x, z, from, to) => moved.push([x, z, from, to]))
-    expect(moved).toEqual([[7, 7, 3, 4]])
-    expect(cols.flux.every((f) => f === 0)).toBe(true)
-  })
 })
-
 
 function segWorld(fill: (x: number, y: number, z: number) => number, size: [number, number, number] = [32, 64, 32]) {
   const buffers = createWorldBuffers(size)

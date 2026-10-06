@@ -72,9 +72,9 @@ export class WaterBodies implements StepHooks {
     b.members = []
   }
 
-  /** Drops every body (a rebuild from the voxels follows; their excess is discarded with the old segments). */
+  /** Drops every body, handing each one's excess back to its first member; a full rebuild then frees those segments anyway. */
   dropAll(): void {
-    for (const b of this.list) for (const m of b.members) this.under.body[m] = -1
+    for (let id = 0; id < this.list.length; id++) this.dropBody(id)
     this.list = []
     this.seeds = []
   }

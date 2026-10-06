@@ -1,6 +1,7 @@
 import type { Layout } from '../../world/layout.ts'
 import type { WaterColumns } from './columns.ts'
 import { SPRING_RATES, SPRING_SCALE, SUB } from './constants.ts'
+import type { UnderSegments } from './under.ts'
 
 /** The water cycle (spec §3 Sea and springs; plan decisions 7–9). */
 export class WaterCycle {
@@ -48,20 +49,31 @@ export class WaterCycle {
   }
 
   /**
-   * Each spring that is its column's floor block adds its rate to the column, at most what the sea holds when the world has
-   * a sea level, and the sea pays for it. A position that no longer holds a spring is forgotten.
+   * Each spring adds its rate to the segment resting on it (its floor is the spring's top: the top segment or a lower one,
+   * plan decision 10), at most what the sea holds when the world has a sea level, and at most a lower segment's room; the
+   * sea pays for it. `filled(i)` hears of a lower segment it filled. A position that no longer holds a spring is forgotten.
    */
-  runSprings(cols: WaterColumns, layout: Layout, get: (x: number, y: number, z: number) => number, source: Uint8Array): void {
+  runSprings(cols: WaterColumns, under: UnderSegments, layout: Layout, get: (x: number, y: number, z: number) => number, source: Uint8Array,
+    filled: (i: number) => void): void {
     for (const s of this.springs) {
       const [x, y, z] = layout.voxelCoords(s)
       const v = get(x, y, z)
       if (source[v & 0xfff] !== 1) { this.springs.delete(s); continue }
       const c = x + z * cols.sx
-      if (cols.floor[c] !== y + 1) continue
+      let low = -1
+      if (cols.floor[c] !== y + 1) {
+        for (let i = under.first[c]!; i >= 0; i = under.next[i]!) if (under.floor[i] === y + 1) { low = i; break }
+        if (low < 0) continue
+      }
       let rate = SPRING_RATES[(v >>> 12) & 15]! * SPRING_SCALE
       if (this.seaLevel > 0) rate = Math.min(rate, Math.max(0, this.sea))
+      if (low >= 0) rate = Math.min(rate, Math.max(0, under.cap(low) - under.depth[low]!))
       if (rate <= 0) continue
-      cols.depth[c] = cols.depth[c]! + rate
+      if (low < 0) cols.depth[c] = cols.depth[c]! + rate
+      else {
+        under.depth[low] = under.depth[low]! + rate
+        if (under.depth[low]! >= under.cap(low)) filled(low)
+      }
       this.sea -= rate
       cols.tiles.wake(cols.tiles.of(x, z))
     }

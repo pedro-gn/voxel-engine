@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SPRING_RATES, SPRING_SCALE, SUB } from '../src/sim/water/constants.ts'
 import { WaterCycle } from '../src/sim/water/cycle.ts'
+import { UnderSegments } from '../src/sim/water/under.ts'
 import { Layout } from '../src/world/layout.ts'
 import { AIR, packVoxel } from '../src/world/voxel.ts'
 
@@ -63,12 +64,12 @@ describe('springs', () => {
     cy.springs.add(layout.voxelIndex(5, 3, 5))
     const get = at(3, packVoxel(SPRING_ID, 0)) // rate 1 × 16 per step
     const rate = SPRING_RATES[0]! * SPRING_SCALE
-    cy.runSprings(g, layout, get, source)
+    cy.runSprings(g, new UnderSegments(g.n), layout, get, source, () => {})
     expect([g.depth[5 + 5 * 32], cy.sea]).toEqual([rate, 40 - rate])
     expect(g.tiles.awake[0]).toBe(1)
-    cy.runSprings(g, layout, get, source)
-    cy.runSprings(g, layout, get, source)
-    cy.runSprings(g, layout, get, source)
+    cy.runSprings(g, new UnderSegments(g.n), layout, get, source, () => {})
+    cy.runSprings(g, new UnderSegments(g.n), layout, get, source, () => {})
+    cy.runSprings(g, new UnderSegments(g.n), layout, get, source, () => {})
     expect([g.depth[5 + 5 * 32], cy.sea]).toEqual([40, 0])
   })
 
@@ -76,7 +77,7 @@ describe('springs', () => {
     const g = grid(32, 32, () => 4, () => 0)
     const cy = new WaterCycle(g.n)
     cy.springs.add(layout.voxelIndex(5, 3, 5))
-    for (let i = 0; i < 3; i++) cy.runSprings(g, layout, at(3, packVoxel(SPRING_ID, 4)), source)
+    for (let i = 0; i < 3; i++) cy.runSprings(g, new UnderSegments(g.n), layout, at(3, packVoxel(SPRING_ID, 4)), source, () => {})
     expect(g.depth[5 + 5 * 32]).toBe(3 * SPRING_RATES[4]! * SPRING_SCALE)
     expect(g.total() + cy.sea).toBe(0)
   })
@@ -85,10 +86,10 @@ describe('springs', () => {
     const g = grid(32, 32, () => 9, () => 0) // floor 9: something sits on the spring at y = 3
     const cy = new WaterCycle(g.n)
     cy.springs.add(layout.voxelIndex(5, 3, 5))
-    cy.runSprings(g, layout, at(3, packVoxel(SPRING_ID, 4)), source)
+    cy.runSprings(g, new UnderSegments(g.n), layout, at(3, packVoxel(SPRING_ID, 4)), source, () => {})
     expect(g.total()).toBe(0)
     expect(cy.springs.size).toBe(1)
-    cy.runSprings(g, layout, () => AIR, source)
+    cy.runSprings(g, new UnderSegments(g.n), layout, () => AIR, source, () => {})
     expect(cy.springs.size).toBe(0)
   })
 })

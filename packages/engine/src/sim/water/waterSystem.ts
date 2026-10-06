@@ -1,15 +1,18 @@
 import { waterGroupOf, type BlockRegistry } from '../../blocks/registry.ts'
 import type { ChunkStore } from '../../world/chunkStore.ts'
 import type { Layout } from '../../world/layout.ts'
-import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
+import { voxelId, voxelState } from '../../world/voxel.ts'
 import type { WaterBuffers } from '../../world/waterBuffers.ts'
 import { WaterColumns } from './columns.ts'
 import { KIND, MIN_FLOW, SUB, TILE } from './constants.ts'
 import { WaterCycle } from './cycle.ts'
-import { applyEdit, type ColumnCells, type EditColumn } from './edits.ts'
-import { WaterMirror } from './mirror.ts'
+import { WaterBodies } from './bodies.ts'
+import { WaterEdges } from './edges.ts'
+import { WaterMirror, mirrorRun } from './mirror.ts'
 import { WaterPublisher, type WaterTick } from './publish.ts'
-import { rebuildColumns, waterKinds } from './rebuild.ts'
+import { rebuildSegments, waterKinds } from './rebuild.ts'
+import { resegment, type Seg } from './resegment.ts'
+import { UnderSegments } from './under.ts'
 
 /** A displaced volume spreads over columns that each take at most this much (1/16 block). */
 const DISPLACE_SHARE = SUB / 16
@@ -48,6 +51,9 @@ export class WaterSystem {
   readonly cols: WaterColumns
   readonly cycle: WaterCycle
   readonly mirror: WaterMirror
+  readonly under: UnderSegments
+  readonly edges: WaterEdges
+  readonly bodies: WaterBodies
   /** Set by a failed debug check or a physics error: the next step rebuilds every column from the voxels. */
   needsRebuild = false
   /** Σ depth + sea as physics must keep it; only edits and rebuilds move it. The debug check compares against it. */
@@ -56,13 +62,11 @@ export class WaterSystem {
   published: WaterTick | null = null
   private readonly publisher: WaterPublisher
   private steps = 0
-  /** Whether a full rebuild ran (generation). */
-  private built = false
   private readonly port: WaterPort
   private readonly layout: Layout
   private readonly height: number
-  /** Columns where a wall raised a wet floor since the last spread: the floor and surface before the first wall. Insertion order. */
-  private readonly pending = new Map<number, { f0: number; s0: number }>()
+  /** Columns whose top segment a wall displaced water from since the last spread: the first wall's cell, the surface before it and the volume displaced. Insertion order. */
+  private readonly pending = new Map<number, { f0: number; s0: number; vol: number }>()
   private gen = 0
   private readonly stamp: Int32Array
   private readonly queue: number[] = []
@@ -80,10 +84,11 @@ export class WaterSystem {
   private gEligible = 0
   private readonly seedOf: Int32Array
   private readonly targets: number[] = []
-  private readonly edit: EditColumn = { floor: 0, depth: 0 }
   private ex = 0
   private ez = 0
-  private readonly cells: ColumnCells
+  /** KIND of cell y of the column being edited (ex, ez), as the store holds it after the write. */
+  private readonly kindAt: (y: number) => number
+  private readonly segScratch: Seg[] = []
   private readonly get: (x: number, y: number, z: number) => number
   private readonly set: (x: number, y: number, z: number, v: number) => void
 
@@ -103,6 +108,10 @@ export class WaterSystem {
     const [sx, , sz] = port.layout.size
     this.cols = new WaterColumns(sx, sz, new Int16Array(port.buffers.floor))
     this.cols.floor.fill(0) // an empty world: every column dry on the world floor
+    this.under = new UnderSegments(sx * sz)
+    this.edges = new WaterEdges(this.cols.tiles.count)
+    this.cols.attach(this.under, this.edges, this.height)
+    this.bodies = new WaterBodies(this.cols, this.under, this.edges)
     this.cycle = new WaterCycle(sx * sz)
     this.mirror = new WaterMirror(sx * sz)
     this.stamp = new Int32Array(sx * sz)
@@ -111,14 +120,7 @@ export class WaterSystem {
     this.get = (x, y, z) => port.get(x, y, z)
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
     const sys = this
-    this.cells = {
-      height: this.height,
-      kind: (y) => sys.kind[voxelId(port.get(sys.ex, y, sys.ez))]!,
-      units: (y) => {
-        const v = port.get(sys.ex, y, sys.ez)
-        return sys.kind[voxelId(v)] === KIND.WATER ? (voxelState(v) & 7) + 1 : 0
-      },
-    }
+    this.kindAt = (y) => sys.kind[voxelId(port.get(sys.ex, y, sys.ez))]!
   }
 
   get enabled(): boolean { return this.water !== 0 }
@@ -144,15 +146,24 @@ export class WaterSystem {
   /** Σ depth + sea. */
   total(): number { return this.cols.total() + this.cycle.sea }
 
-  /** Awake tiles and the wet columns in them. */
-  stats(): { tiles: number; columns: number } {
-    return { tiles: this.cols.tiles.awakeCount(), columns: this.cols.wetAwake() }
-  }
-
   /** Column (x, z): floor, depth and surface. For tests and tools. */
   column(x: number, z: number): { floor: number; depth: number; surface: number } {
     const c = x + z * this.cols.sx
     return { floor: this.cols.floor[c]!, depth: this.cols.depth[c]!, surface: this.cols.surface(c) }
+  }
+
+  /** Column (x, z) bottom-up: its lower segments, then its top (ceil = the world's height, body −1). For tests and tools. */
+  segments(x: number, z: number): { floor: number; ceil: number; depth: number; body: number }[] {
+    const U = this.under, c = x + z * this.cols.sx, out: { floor: number; ceil: number; depth: number; body: number }[] = []
+    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) out.push({ floor: U.floor[i]!, ceil: U.ceil[i]!, depth: U.depth[i]!, body: U.body[i]! })
+    out.push({ floor: this.cols.floor[c]!, ceil: this.height, depth: this.cols.depth[c]!, body: -1 })
+    return out
+  }
+
+  /** Awake tiles, the wet segments in them, and the bodies with a boundary in an awake tile. */
+  stats(): { tiles: number; columns: number; bodies: number } {
+    const T = this.cols.tiles
+    return { tiles: T.awakeCount(), columns: this.cols.wetAwake(), bodies: this.bodies.activeCount(T.awake) }
   }
 
   /** Every voxel write except the mirror's comes here, after the store took it (Simulation.applySet), paused or not. */
@@ -163,39 +174,65 @@ export class WaterSystem {
     if (reg.source[voxelId(v)] === 1) this.cycle.springs.add(this.layout.voxelIndex(x, y, z))
     const ok = this.kind[voxelId(old)]!, nk = this.kind[voxelId(v)]!
     if (ok === nk && nk !== KIND.WATER) return // wall for wall: nothing for water
-    const cols = this.cols, c = x + z * cols.sx
+    const cols = this.cols, U = this.under, c = x + z * cols.sx, T = cols.tiles
+    // A body holding a segment of this column regroups after the edit; its excess goes back to its members first.
+    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (U.body[i]! >= 0) this.bodies.dropBody(U.body[i]!)
+    const prior = this.segScratch
+    prior.length = 0
+    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) prior.push({ floor: U.floor[i]!, ceil: U.ceil[i]!, depth: U.depth[i]! + U.excess[i]!, id: i })
     const f0 = cols.floor[c]!, d0 = cols.depth[c]!
-    const col = this.edit
-    col.floor = f0
-    col.depth = d0
+    prior.push({ floor: f0, ceil: this.height, depth: d0, id: -2 })
     this.ex = x
     this.ez = z
-    applyEdit(col, y, ok, nk, nk === KIND.WATER ? (voxelState(v) & 7) + 1 : 0, this.cells)
-    const T = cols.tiles
-    if (col.floor === f0 && col.depth === d0) {
-      // No column change, but a cell in or above the water did change (a removed block in the water, a stray voxel): re-mirror.
-      if (y >= f0) { this.mirror.touch(c, y); T.dirty[T.of(x, z)] = 1 }
+    const r = resegment(prior, this.height, this.kindAt, y, ok, nk, nk === KIND.WATER ? (voxelState(v) & 7) + 1 : 0)
+    const runs = r.runs, top = runs[runs.length - 1]!
+    if (runs.length === prior.length && runs.every((q, k) => q.floor === prior[k]!.floor && q.ceil === prior[k]!.ceil && q.depth === prior[k]!.depth)) {
+      // No segment changed, but a cell did (a stray water voxel, a removed block in the water): re-mirror the segment holding it.
+      if (y >= f0) this.mirror.touch(c, y)
+      for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (y >= U.floor[i]! && y < U.ceil[i]!) U.mirrorQ[i] = ~(U.ceil[i]! * 8)
+      T.dirty[T.of(x, z)] = 1
       return
     }
-    // A wall in the water pushed the water under it up: those cells are now under the floor and hold nothing. Clear them
-    // before any later write this tick reads them (a dug-out floor would count them again).
-    if (nk === KIND.WALL) for (let yy = f0; yy < col.floor - 1; yy++) {
-      if (this.kind[voxelId(this.port.get(x, yy, z))] === KIND.WATER) this.set(x, yy, z, AIR)
+    let before = 0, after = 0
+    for (const s of prior) before += s.depth
+    for (const q of runs) after += q.depth
+    this.expected += after - before
+    cols.floor[c] = top.floor
+    cols.depth[c] = top.depth
+    // The top's mirror rewrites from its floor: cells below a split belong to the lower run now (never cleared as 3c's push-up did).
+    this.mirror.lo[c] = top.floor
+    this.mirror.touch(c, Math.max(y, top.floor))
+    const kept = new Set<number>(), chain: number[] = []
+    for (let k = 0; k < runs.length - 1; k++) {
+      const q = runs[k]!
+      let i = q.id
+      if (i >= 0) { U.floor[i] = q.floor; U.ceil[i] = q.ceil; kept.add(i) } else i = U.alloc(c, q.floor, q.ceil, 0)
+      const cap = (q.ceil - q.floor) * SUB
+      U.depth[i] = Math.min(q.depth, cap)
+      U.excess[i] = Math.max(0, q.depth - cap)
+      U.mirrorLo[i] = q.floor
+      U.mirrorQ[i] = ~(q.ceil * 8)
+      chain.push(i)
+      if (q.depth >= cap) this.bodies.seed(i)
     }
-    cols.floor[c] = col.floor
-    cols.depth[c] = col.depth
-    this.expected += col.depth - d0
-    this.mirror.touch(c, y)
+    for (const s of prior) if (s.id >= 0 && !kept.has(s.id)) U.release(s.id)
+    U.setChain(c, chain)
     T.dirty[T.of(x, z)] = 1
     if (this.wetAround(x, z)) T.wakeAround(x, z)
-    if (col.floor !== f0) this.floorMoved(x, z, c, f0, col.floor)
-    // A wall that raised a wet column's floor displaced water: spreadDisplaced moves it to the lake around before the next step.
-    if (nk === KIND.WALL && col.floor > f0 && d0 > 0 && !this.pending.has(c)) this.pending.set(c, { f0, s0: f0 * SUB + d0 })
+    this.edges.markColumn(x, z, cols)
+    if (top.floor !== f0) this.floorMoved(x, z, c, f0, top.floor)
+    for (const i of chain) this.springAt(x, U.floor[i]! - 1, z)
+    // Water a wall displaced in the top segment spreads before the next step (3c's spreadDisplaced; plan decision 8).
+    if (r.topDisplaced > 0) {
+      const e = this.pending.get(c)
+      if (e) e.vol += r.topDisplaced
+      else this.pending.set(c, { f0: y, s0: f0 * SUB + d0, vol: r.topDisplaced })
+    }
   }
 
   /**
    * Spreads the volume that walls placed since the last call displaced (see `pending`). Each source column displaced
-   * min(depth, rise × SUB) of water, taken out of its depth (applyEdit raised the floor and kept the depth). Sources are
+   * `vol` (what resegment reported for the walls placed in its top segment since the last spread), at most its depth. Sources are
    * handled per connected group, in insertion order: a breadth-first search from the first source not yet handled goes through
    * wet neighbours that can exchange water (order -x +x -z +z) to at most DISPLACE_RADIUS columns from the nearest source; sources
    * it reaches join the group. The group's volume goes to the first ceil(volume / DISPLACE_SHARE) columns the search found (a
@@ -216,7 +253,7 @@ export class WaterSystem {
     sf.length = 0
     done.length = 0
     for (const [c, e] of pending) {
-      const vol = Math.min(depth[c]!, (floor[c]! - e.f0) * SUB)
+      const vol = Math.min(depth[c]!, e.vol)
       if (vol <= 0) continue
       seedOf[c] = sc.length + 1
       sc.push(c)
@@ -305,7 +342,7 @@ export class WaterSystem {
     this.spreadDisplaced()
     this.steps++
     const cy = this.cycle
-    cy.runSprings(this.cols, this.layout, this.get, this.port.registry.source)
+    cy.runSprings(this.cols, this.under, this.layout, this.get, this.port.registry.source, (i) => this.bodies.seed(i))
     cy.sea += this.cols.step(this.o.tileCap, cy.seaLevel > 0 ? cy.mask : null, cy.seaLevel * SUB)
     if (this.o.debug) {
       const bad = this.check()
@@ -323,7 +360,7 @@ export class WaterSystem {
     if (!this.needsRebuild) this.spreadDisplaced()
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
-    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror
+    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
       T.dirty[t] = 0
@@ -331,6 +368,7 @@ export class WaterSystem {
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
         mirror.flush(c, x, z, floor[c]!, depth[c]!, this.water, this.kind, this.height, this.get, this.set)
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set)
       }
     }
     this.published = this.publisher.publish(out, cols)
@@ -342,16 +380,18 @@ export class WaterSystem {
     const out: string[] = []
     const d = this.cols.depth
     for (let c = 0; c < this.cols.n && out.length < 3; c++) if (d[c]! < 0) out.push(`column ${c} has depth ${d[c]}`)
+    const U = this.under
+    for (let c = 0; c < this.cols.n && out.length < 3; c++) for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
+      if (U.depth[i]! < 0 || U.depth[i]! > U.cap(i)) out.push(`lower segment ${i} (column ${c}) has depth ${U.depth[i]} of ${U.cap(i)}`)
+      if (U.excess[i]! < 0) out.push(`lower segment ${i} has excess ${U.excess[i]}`)
+    }
+    for (const b of this.bodies.list) if (b.excess < 0) out.push(`a body has excess ${b.excess}`)
     const t = this.total()
     if (t !== this.expected) out.push(`Σ depth + sea is ${t}, expected ${this.expected}`)
     return out
   }
 
-  /**
-   * Drops all water state and rebuilds every column from the voxels (generation, recovery). After the first (generation,
-   * where every chunk is meshed anyway), chunks whose static water became the heightfield's or the other way round are
-   * remeshed, as after a regeneration.
-   */
+  /** Drops all water state and rebuilds every segment from the voxels (generation, recovery). There is no static water left to remesh. */
   rebuild(): void {
     this.needsRebuild = false
     this.pending.clear()
@@ -359,11 +399,10 @@ export class WaterSystem {
     const [sx, , sz] = this.layout.size, cols = this.cols, cy = this.cycle
     cols.tiles.clear()
     cy.springs.clear()
-    const remesh = (ci: number) => this.port.remesh(ci)
-    rebuildColumns(this.port.store, this.kind, cols, this.mirror, 0, 0, sx, sz, this.built
-      ? (x, z, from, to) => this.waterChunks(x, z, Math.min(from, to), Math.max(from, to), remesh)
-      : undefined)
-    this.built = true
+    this.bodies.dropAll()
+    rebuildSegments(this.port.store, this.kind, cols, this.under, this.mirror, 0, 0, sx, sz)
+    this.edges.markAll()
+    this.bodies.seedFull()
     this.findSprings(0, 0, sx, sz)
     cy.findSea(cols)
     cy.sea = cy.seaDepth(cols)
@@ -374,27 +413,26 @@ export class WaterSystem {
 
   /**
    * Rebuilds the columns of chunk columns `ccs` ([cx, cz] pairs) after a regeneration, paused or not (plan decision 10).
-   * Only those chunk columns: one between two regenerated ones keeps its columns, flux and films. Returns the chunks whose
-   * static water became the heightfield's or the other way round (they need a remesh even if their voxels did not change).
+   * Only those chunk columns: one between two regenerated ones keeps its columns, flux and films. No chunk needs a remesh:
+   * water is never meshed (3d).
    */
   rebuildChunkColumns(ccs: readonly (readonly [number, number])[]): number[] {
     if (this.water === 0 || ccs.length === 0) return []
     this.spreadDisplaced()
     const cols = this.cols, cy = this.cycle, T = cols.tiles, L = this.layout
-    const remesh = new Set<number>()
     const regenerated = new Set(ccs.map(([cx, cz]) => cx + cz * L.cx))
     for (const s of [...cy.springs]) {
       const [x, , z] = L.voxelCoords(s)
       if (regenerated.has((x >> 5) + (z >> 5) * L.cx)) cy.springs.delete(s)
     }
     const seaBefore = cy.seaDepth(cols)
-    const moved = (x: number, z: number, from: number, to: number) => {
-      this.waterChunks(x, z, Math.min(from, to), Math.max(from, to), (ci) => remesh.add(ci))
-    }
+    this.bodies.dropAll()
     for (const [cx, cz] of ccs) {
-      rebuildColumns(this.port.store, this.kind, cols, this.mirror, cx * 32, cz * 32, cx * 32 + 32, cz * 32 + 32, moved)
+      rebuildSegments(this.port.store, this.kind, cols, this.under, this.mirror, cx * 32, cz * 32, cx * 32 + 32, cz * 32 + 32)
       this.findSprings(cx * 32, cz * 32, cx * 32 + 32, cz * 32 + 32)
+      for (let z = cz * 32; z < cz * 32 + 32; z++) for (let x = cx * 32; x < cx * 32 + 32; x++) this.edges.markColumn(x, z, cols)
     }
+    this.bodies.seedFull()
     // The sea account follows the sea's water (plan decision 7): a column that joins the sea brings its depth, one that
     // leaves takes the depth it held before the rebuild, and a regenerated sea column adds what its depth changed by.
     cy.findSea(cols)
@@ -405,7 +443,7 @@ export class WaterSystem {
       this.wakeUnsettled(Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(cols.sx, x0 + 33), Math.min(cols.sz, z0 + 33))
     }
     this.expected = this.total()
-    return [...remesh].sort((a, b) => a - b)
+    return []
   }
 
   mixState(mix: (v: number) => void): void {
@@ -416,28 +454,21 @@ export class WaterSystem {
     this.mirror.mixState(mix)
   }
 
-  /** Whether column (x, z) or one of its four neighbours holds water: only then can an edit there move any. */
+  /** Whether a segment of column (x, z) or of one of its four neighbours holds water: only then can an edit there move any. */
   private wetAround(x: number, z: number): boolean {
-    const { depth, sx, sz } = this.cols, c = x + z * sx
-    return depth[c]! > 0 || (x > 0 && depth[c - 1]! > 0) || (x + 1 < sx && depth[c + 1]! > 0) ||
-      (z > 0 && depth[c - sx]! > 0) || (z + 1 < sz && depth[c + sx]! > 0)
+    const { sx, sz } = this.cols
+    const wet = (c: number) => {
+      if (this.cols.depth[c]! > 0) return true
+      for (let i = this.under.first[c]!; i >= 0; i = this.under.next[i]!) if (this.under.depth[i]! > 0) return true
+      return false
+    }
+    const c = x + z * sx
+    return wet(c) || (x > 0 && wet(c - 1)) || (x + 1 < sx && wet(c + 1)) || (z > 0 && wet(c - sx)) || (z + 1 < sz && wet(c + sx))
   }
 
   private floorMoved(x: number, z: number, c: number, from: number, to: number): void {
     if (to >= this.cycle.seaLevel) this.cycle.mask[c] = 0
     this.springAt(x, to - 1, z)
-    // Static water the floor uncovered was the voxel mesher's: remesh its chunks now that the heightfield draws it.
-    if (to < from) this.waterChunks(x, z, to, from, (ci) => this.port.remesh(ci))
-  }
-
-  /** Calls `out` once per chunk of column (x, z) that holds water in [y0, y1). */
-  private waterChunks(x: number, z: number, y0: number, y1: number, out: (ci: number) => void): void {
-    let last = -1
-    for (let y = Math.max(0, y0); y < Math.min(this.height, y1); y++) {
-      if (this.kind[voxelId(this.port.get(x, y, z))] !== KIND.WATER) continue
-      const cy = y >> 5
-      if (cy !== last) { out(this.layout.chunkIndex(x >> 5, cy, z >> 5)); last = cy }
-    }
   }
 
   /** Remembers a spring at (x, y, z) if there is one (a column's floor block). */
@@ -447,15 +478,25 @@ export class WaterSystem {
   }
 
   private findSprings(x0: number, z0: number, x1: number, z1: number): void {
-    const { floor, sx } = this.cols
-    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) this.springAt(x, floor[x + z * sx]! - 1, z)
+    const { floor, sx } = this.cols, U = this.under
+    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
+      const c = x + z * sx
+      this.springAt(x, floor[c]! - 1, z)
+      for (let i = U.first[c]!; i >= 0; i = U.next[i]!) this.springAt(x, U.floor[i]! - 1, z)
+    }
   }
 
-  /** Wakes the tile of every wet, non-sea column in the range that stands above a neighbour it can flow to. */
+  /**
+   * Wakes the tile of every wet, non-sea column in the range that stands above a neighbour it can flow to, and of every
+   * column with a lower segment holding at least MIN_FLOW.
+   */
   private wakeUnsettled(x0: number, z0: number, x1: number, z1: number): void {
-    const { floor, depth, sx, sz, tiles } = this.cols, mask = this.cycle.mask
+    const { floor, depth, sx, sz, tiles } = this.cols, mask = this.cycle.mask, U = this.under
     for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
       const c = x + z * sx, d = depth[c]!
+      let low = false
+      for (let i = U.first[c]!; i >= 0 && !low; i = U.next[i]!) low = U.depth[i]! >= MIN_FLOW
+      if (low) { tiles.wake(tiles.of(x, z)); continue }
       if (d < MIN_FLOW || mask[c] === 1) continue
       const s = floor[c]! * SUB + d
       if ((x > 0 && s > this.cols.surface(c - 1)) || (x + 1 < sx && s > this.cols.surface(c + 1)) ||

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { SUB } from '../src/sim/water/constants.ts'
 import { AIR } from '../src/world/voxel.ts'
 import { B, depthSum, fillGenerator, lake, run, settle, spring, surfaceSum, w, waterSim, type Fill } from './waterHelpers.ts'
@@ -28,20 +28,22 @@ describe('water in the world', () => {
     expect(sim.water.total()).toBe(LAKE)
   })
 
-  it('a wall dropped into the water pushes the water trapped under it up', () => {
+  it('a wall dropped mid-water keeps the water under it and displaces only its own cell', () => {
     const sim = waterSim(lake(4))
     const s0 = surfaceSum(sim, 1, 1, 10, 10)
     sim.submit(0, 0, { type: 'setBlock', pos: [5, 2, 5], voxel: B.stone })
     sim.step()
     expect(sim.water.column(5, 5).floor).toBe(3)
-    expect(sim.store.getVoxel(5, 1, 5)).toBe(AIR) // the pocket under the wall emptied
-    expect(surfaceSum(sim, 1, 1, 10, 10) - s0).toBe(2 * SUB)
+    expect(sim.water.segments(5, 5)[0]).toEqual({ floor: 1, ceil: 2, depth: SUB, body: 0 }) // full: the world's only body
+    expect(sim.store.getVoxel(5, 1, 5) & 0xfff).toBe(B.water) // the water under the wall stays
+    expect(surfaceSum(sim, 1, 1, 10, 10) - s0).toBe(SUB)
     expect(sim.water.total()).toBe(LAKE)
   })
 
-  it('digging out a floor drops it to the next wall, and static water on the way joins the column', () => {
+  it('digging down into a water pocket merges it into the column', () => {
     const sim = waterSim((x, y, z) => (y < 12 ? (x === 5 && z === 5 && y === 3 ? w(7) : B.stone) : AIR))
-    expect(sim.water.column(5, 5)).toMatchObject({ floor: 12, depth: 0 }) // the cave cell is static
+    expect(sim.water.segments(5, 5)[0]).toEqual({ floor: 3, ceil: 4, depth: SUB, body: expect.any(Number) }) // a full pocket
+    expect(sim.water.expected).toBe(SUB)
     sim.submit(0, 0, { type: 'fillRegion', min: [5, 4, 5], max: [5, 11, 5], voxel: AIR })
     sim.step()
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 3, depth: SUB })
@@ -68,11 +70,12 @@ describe('water in the world', () => {
     expect(sim.water.expected).toBe(LAKE - SUB)
   })
 
-  it('a block above the surface is a bridge: the floor stays, rising water never overwrites it, and removing it lets water in', () => {
+  it('a block above the surface splits the column: the lake runs on under it, rising water never overwrites it, and removing it lets water in', () => {
     const sim = waterSim(lake(4, 12, 12))
     sim.submit(0, 0, { type: 'setBlock', pos: [5, 6, 5], voxel: B.stone })
     sim.step()
-    expect(sim.water.column(5, 5).floor).toBe(1)
+    expect(sim.water.column(5, 5).floor).toBe(7)
+    expect(sim.water.segments(5, 5)[0]).toEqual({ floor: 1, ceil: 6, depth: 4 * SUB, body: -1 })
     sim.submit(0, 1, { type: 'fillRegion', min: [1, 9, 1], max: [10, 11, 10], voxel: w(7) }) // 3 more blocks over the lake
     settle(sim)
     expect(sim.store.getVoxel(5, 6, 5)).toBe(B.stone)
@@ -194,7 +197,7 @@ describe('water in the world: edits and rebuilds', () => {
     expect(sim.water.total()).toBe(sim.water.expected)
   })
 
-  it('a floor dug out over static water remeshes the chunk that water is in, even with no write there', () => {
+  it('digging the roof over a cave pool merges it into the column; water is never meshed', () => {
     // Static water 25..31 (chunk y 0) under a thick glass roof 33..40 (chunk y 1); glass lets the sky through, so no light changes.
     const sim = waterSim((x, y, z) => {
       if (y < 25) return B.stone
@@ -203,16 +206,14 @@ describe('water in the world: edits and rebuilds', () => {
       return y <= 40 && x === 5 && z === 5 ? B.glass : AIR
     }, { size: [32, 64, 32] })
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 41, depth: 0 })
-    const spy = vi.spyOn(sim.store, 'markDirty')
+    expect(sim.water.segments(5, 5)[0]).toMatchObject({ floor: 25, ceil: 33, depth: 7 * SUB })
+    expect(sim.water.expected).toBe(7 * SUB)
     sim.submit(0, 0, { type: 'fillRegion', min: [5, 33, 5], max: [5, 40, 5], voxel: AIR })
-    const r = sim.step()
+    sim.step()
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 25, depth: 7 * SUB })
-    const low = sim.layout.chunkIndex(0, 0, 0)
-    expect(spy).toHaveBeenCalledWith(low)
-    expect(r.dirtyChunks).toContain(low)
   })
 
-  it('a regenerated region remeshes the chunks whose static water became the heightfield\'s', () => {
+  it('a regenerated region rebuilds its segments; nothing is static', () => {
     const roofed: Fill = (x, y, z) => {
       if (y < 25) return B.stone
       if (y <= 31) return x === 5 && z === 5 ? w(7) : B.stone
@@ -223,14 +224,13 @@ describe('water in the world: edits and rebuilds', () => {
     const sim = waterSim(roofed, { size: [32, 64, 32] })
     const data = new Uint16Array(32 * 32 * 64)
     sim.generateColumnData(fillGenerator(open), 0, 0, data)
-    expect(sim.water.expected).toBe(0) // the cave water is static: not the heightfield's
-    const out = sim.replaceColumns([{ cx: 0, cz: 0, data }])
+    expect(sim.water.expected).toBe(7 * SUB) // the cave pool is a lower segment
+    sim.replaceColumns([{ cx: 0, cz: 0, data }])
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 25, depth: 7 * SUB })
-    expect(out).toContain(sim.layout.chunkIndex(0, 0, 0))
-    expect(sim.water.expected).toBe(7 * SUB) // it joined the heightfield's running total
+    expect(sim.water.expected).toBe(7 * SUB)
   })
 
-  it('a healing rebuild remeshes the chunks whose static water became the heightfield\'s', () => {
+  it('a healing rebuild reads the cave pool as segments', () => {
     const sim = waterSim((x, y, z) => {
       if (y < 25) return B.stone
       if (y <= 31) return x === 5 && z === 5 ? w(7) : B.stone
@@ -241,9 +241,8 @@ describe('water in the world: edits and rebuilds', () => {
     // The roof goes behind the water system's back (as after a physics error), and the next step heals from the voxels.
     for (let y = 33; y <= 40; y++) sim.store.setVoxelQuiet(5, y, 5, AIR)
     sim.water.needsRebuild = true
-    const r = sim.step()
+    sim.step()
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 25, depth: 7 * SUB })
-    expect(r.dirtyChunks).toContain(sim.layout.chunkIndex(0, 0, 0))
   })
 
   it('a regeneration rebuilds only the regenerated chunk columns: one between two of them keeps its flow', () => {
@@ -396,7 +395,7 @@ describe('water in the world: edits and rebuilds', () => {
       return AIR
     }
     const sim = waterSim(dammed, { water: { debug: true } })
-    expect(sim.water.column(9, 5)).toMatchObject({ floor: 2, depth: 0 }) // the gap: the block over it floats
+    expect(sim.water.segments(9, 5)).toEqual([{ floor: 2, ceil: 3, depth: 0, body: -1 }, { floor: 5, ceil: 32, depth: 0, body: -1 }]) // the gap under the floating block
     const lake0 = sim.water.total()
     sim.submit(0, 0, { type: 'fillRegion', min: [9, 2, 1], max: [9, 2, 10], voxel: B.stone }) // filled before any step
     sim.step()
@@ -419,14 +418,14 @@ describe('water in the world: edits and rebuilds', () => {
     sim.submit(0, 1, { type: 'setBlock', pos: [25, 10, 25], voxel: w(7) }) // water in the air over dry ground
     sim.submit(0, 2, { type: 'setBlock', pos: [8, 4, 8], voxel: AIR }) // a water cell taken out, outside the spread
     sim.step()
-    // the wall displaced 2 blocks of water: 32 columns around take 1/16 block each, the wall's own column too
+    // the wall displaced 1 block of water: 16 columns around take 1/16 block each, the wall's own column too
     expect(sim.water.column(5, 5)).toMatchObject({ floor: 3, depth: 2 * SUB + SUB / 16, surface: 5 * SUB + SUB / 16 })
     expect(sim.water.column(25, 25)).toMatchObject({ floor: 1, depth: SUB })
     expect(sim.water.column(8, 8)).toMatchObject({ floor: 1, depth: 3 * SUB })
     expect(sim.water.expected).toBe(LAKE)
     // The mirror follows while paused: the pocket under the wall is empty, the column over it stands as high as the lake, the
     // placed cell lies on the ground, and above the lake nothing is left.
-    expect(sim.store.getVoxel(5, 1, 5)).toBe(AIR)
+    expect(sim.store.getVoxel(5, 1, 5) & 0xfff).toBe(B.water) // the trapped cell stays
     expect(sim.store.getVoxel(5, 4, 5) & 0xfff).toBe(B.water)
     expect(sim.store.getVoxel(25, 10, 25)).toBe(AIR)
     expect(sim.store.getVoxel(25, 1, 25) & 0xfff).toBe(B.water)
@@ -473,12 +472,13 @@ describe('a block placed in water spreads its displaced volume at once', () => {
     expect(sim.water.total()).toBe(total)
   })
 
-  it('a block floating in the water pushes only the trapped water, and that spreads too', () => {
+  it('a block floating in the water keeps the water under it and spreads only its own cell', () => {
     const sim = waterSim(big(4), { water: { debug: true } })
     const total = sim.water.total()
     sim.submit(0, 0, { type: 'setBlock', pos: [10, 3, 10], voxel: B.stone })
     sim.step()
     expect(sim.water.column(10, 10).floor).toBe(4)
+    expect(sim.water.segments(10, 10)[0]).toMatchObject({ floor: 1, ceil: 3, depth: 2 * SUB })
     expect(maxStep(sim)).toBeLessThanOrEqual(SUB / 16)
     expect(sim.water.total()).toBe(total)
     expect(sim.water.check()).toEqual([])
@@ -566,12 +566,13 @@ describe('a block placed in water spreads its displaced volume at once', () => {
     expect(sim.water.column(1, 1).depth).toBe(24 * SUB) // far outside the radius: untouched
   })
 
-  it('a block filling the top water cell leaves no pillar either: the whole column is spread', () => {
+  it('a block filling the top water cell traps the water under it and spreads only its cell', () => {
     const sim = waterSim(big(4), { water: { debug: true } })
     const total = sim.water.total()
     sim.submit(0, 0, { type: 'setBlock', pos: [10, 4, 10], voxel: B.stone })
     sim.step()
     expect(sim.water.column(10, 10).floor).toBe(5)
+    expect(sim.water.segments(10, 10)[0]).toMatchObject({ floor: 1, ceil: 4, depth: 3 * SUB })
     expect(maxStep(sim)).toBeLessThanOrEqual(SUB / 16)
     expect(sim.water.total()).toBe(total)
     expect(sim.water.check()).toEqual([])

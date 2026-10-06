@@ -50,8 +50,6 @@ export const HEAD_EPS = 6
  * a gentle slope would fall asleep as it is. At 1/16 a 256-column channel ends within one mirror level (measured 25–29).
  */
 export const SLOPE_SHIFT = 4
-/** At rebuild, a wall run at most this thick that floats over air or water (a bridge, a canopy) hides no water below it. */
-export const OVERHANG = 6
 /** One liquid unit (1/8 block, a voxel level step) in 1/SUB block. */
 export const UNIT = SUB / 8
 /** A spring's flow per step, per its state (flow index): 3a's units per 10 Hz fluid step, × SPRING_SCALE. */

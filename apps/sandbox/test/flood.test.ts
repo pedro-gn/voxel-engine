@@ -72,7 +72,8 @@ describe('flood scene simulation', () => {
     sim.configure(floodGenerator, {})
     sim.generate(floodGenerator)
     expect(sim.water.column(60, 60)).toMatchObject({ floor: LAKE.floor, depth: (LAKE.top + 1 - LAKE.floor) * SUB })
-    expect(sim.water.column(70, 70)).toMatchObject({ floor: LAKE.floor }) // the sand pillar on planks floats over the lake
+    // the pillar's planks over the lake split its column: the lake runs on under them
+    expect(sim.water.segments(70, 70)[0]).toMatchObject({ floor: LAKE.floor, ceil: PILLARS[1].base, depth: (LAKE.top + 1 - LAKE.floor) * SUB })
     expect(sim.water.cycle.mask[50 + 230 * FLOOD_SIZE[0]]).toBe(1)
     expect(sim.water.cycle.springs.size).toBe(1)
     const lake0 = sim.water.column(LAKE.x1, 75).depth
@@ -117,7 +118,8 @@ describe('flood scene simulation', () => {
     sim.generate(floodGenerator)
     const sum = (x0: number, z0: number, x1: number, z1: number) => {
       let s = 0
-      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) s += sim.water.column(x, z).depth
+      // every segment: the lake runs on under the pillars' planks as lower segments
+      for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) for (const g of sim.water.segments(x, z)) s += g.depth
       return s
     }
     // The lake is brim-full: a wave overshoot leaves a film (a few 1/SUB) on its north, south and east rim (the dam top).
