@@ -48,7 +48,7 @@ export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
   | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
-  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; physics: { waterTiles: number; waterColumns: number; jobs: number; busy: boolean }; water: WaterTick | null; slotsUsed: number; tickMs: number }
+  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean }; water: WaterTick | null; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
   | { type: 'terrain'; id: number; ok: false; message: string }

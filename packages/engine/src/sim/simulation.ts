@@ -45,7 +45,7 @@ export interface TickResult {
   /** Bodies that landed this tick, with their chunk's version after commit. */
   landed: Landing[]
   /** Awake water tiles, the wet columns in them and queued region jobs after this tick; busy: a tile is awake, a job is queued or a body falls. */
-  physics: { waterTiles: number; waterColumns: number; jobs: number; busy: boolean }
+  physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean }
   /** The heightfield tiles published this tick (null: none changed); the main thread reads them from shared memory. */
   water: WaterTick | null
 }
@@ -308,7 +308,7 @@ export class Simulation {
     const landed = this.gravity.landed
     for (const l of landed) l.version = this.store.versions[l.chunk]!
     const ws = this.water.stats(), jobs = this.jobs.size
-    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 }
+    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 }
     const events = this.events
     this.events = []
     return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published }

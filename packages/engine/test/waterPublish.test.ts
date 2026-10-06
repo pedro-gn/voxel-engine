@@ -17,13 +17,13 @@ describe('WaterPublisher', () => {
     cols.flux[1] = -16 * 3
     const p = new WaterPublisher(b)
     const surface = new Int32Array(b.surface), flux = new Int16Array(b.flux), stamp = new Int32Array(b.stamp)
-    expect(p.publish([0], cols)).toEqual({ seq: 1, parity: 1, tiles: [0] })
+    expect(p.publish([0], cols)).toEqual({ seq: 1, parity: 1, tiles: [0], layers: null })
     expect(surface[1024 + 0]).toBe(2 * SUB + 300)
     expect(surface[1024 + 1]).toBe(~(2 * SUB)) // dry: its ground
     expect([flux[2 * 1024], flux[2 * 1024 + 1]]).toEqual([5, -3])
     expect([...stamp]).toEqual([-1, 1])
-    expect(p.publish([1], cols)).toEqual({ seq: 2, parity: 0, tiles: [0, 1] })
-    expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [1] })
+    expect(p.publish([1], cols)).toEqual({ seq: 2, parity: 0, tiles: [0, 1], layers: null })
+    expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [1], layers: null })
     expect(p.publish([], cols)).toBeNull()
   })
 
@@ -77,7 +77,7 @@ describe('WaterPublisher', () => {
     p.publish([0], cols)
     cols.depth[0] = 200 // B
     p.publish([0], cols)
-    expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [0] })
+    expect(p.publish([], cols)).toEqual({ seq: 3, parity: 1, tiles: [0], layers: null })
     expect([surface[0], surface[1024]]).toEqual([200, 200])
   })
 

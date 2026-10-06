@@ -158,10 +158,10 @@ export class WaterSystem {
     return out
   }
 
-  /** Awake tiles, the wet segments in them, and the bodies with a boundary in an awake tile. */
-  stats(): { tiles: number; columns: number; bodies: number } {
+  /** Awake tiles, the wet segments in them, the bodies with a boundary in an awake tile, and wet segments past the draw layers. */
+  stats(): { tiles: number; columns: number; bodies: number; layersHidden: number } {
     const T = this.cols.tiles
-    return { tiles: T.awakeCount(), columns: this.cols.wetAwake(), bodies: this.bodies.activeCount(T.awake) }
+    return { tiles: T.awakeCount(), columns: this.cols.wetAwake(), bodies: this.bodies.activeCount(T.awake), layersHidden: this.publisher.hidden }
   }
 
   /** Every voxel write except the mirror's comes here, after the store took it (Simulation.applySet), paused or not. */
@@ -369,7 +369,7 @@ export class WaterSystem {
         for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set)
       }
     }
-    this.published = this.publisher.publish(out, cols)
+    this.published = this.publisher.publish(out, cols, { under: this.under, edges: this.edges, height: this.height })
     return out
   }
 

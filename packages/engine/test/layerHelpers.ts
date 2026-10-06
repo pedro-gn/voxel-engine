@@ -61,5 +61,5 @@ export function layered(fill: LFill, size: [number, number, number] = [32, 32, 3
     out.push({ floor: cols.floor[c]!, ceil: H, depth: cols.depth[c]! })
     return out
   }
-  return { store, cols, under, edges, bodies, mirror, step, settle, segs, total: () => cols.total(), wakeWet }
+  return { store, buffers, cols, under, edges, bodies, mirror, step, settle, segs, total: () => cols.total(), wakeWet }
 }
