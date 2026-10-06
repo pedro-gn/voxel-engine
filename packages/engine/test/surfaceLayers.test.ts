@@ -138,3 +138,38 @@ describe('curtains and ripples in layers', () => {
     expect(set.y[0]).toBeCloseTo(6, 6) // the lake under the deck: 2 + 4 blocks
   })
 })
+
+describe('what a body looks like from the free side (final review I1, I2)', () => {
+  /** Task 6's U-tube, full and settled: a lake (x 1–20), a full tunnel (x 21–40, y 12–13, z 5–6) under the hill, a shaft (x 41–42). */
+  function uTubeView() {
+    const w = layered((x, y, z) => {
+      if (y < 10) return STONE
+      if (x >= 1 && x <= 20 && z >= 1 && z <= 10) return y <= 19 ? wv(7) : AIR
+      if (z >= 5 && z <= 6 && y >= 12 && y <= 13 && x >= 21 && x <= 40) return wv(7)
+      if (z >= 5 && z <= 6 && x >= 41 && x <= 42 && y >= 12) return y <= 19 ? wv(7) : AIR
+      return y <= 24 ? STONE : AIR
+    }, [64, 32, 32])
+    w.settle(60_000)
+    w.edges.ensure(w.cols, w.under, 32)
+    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([64, 32, 32], w.buffers.water, () => 15)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    return { w, view }
+  }
+  const mask = (view: SurfaceView, x: number, z: number, r: number) => {
+    const d = view.column((x >> 5) + (z >> 5) * view.cx, r)
+    return d ? d.curtainMask[(x & 31) + (z & 31) * 32]! : 0
+  }
+
+  it('hangs no curtain on the rock face above a full tunnel mouth: the lake and the shaft meet a wall there', () => {
+    const { view } = uTubeView()
+    expect(mask(view, 20, 5, 0)).toBe(0)
+    expect(mask(view, 41, 5, 0)).toBe(0)
+  })
+
+  it('draws no quad for a full tunnel: its water has no free surface', () => {
+    const { w, view } = uTubeView()
+    expect(w.under.body[w.under.first[25 + 5 * 64]!]).toBeGreaterThanOrEqual(0)
+    const d = view.column(0, 1)
+    expect(d ? d.info[((25 & 31) + 5 * 32) * 4 + 3]! : -1).toBeLessThan(0)
+  })
+})

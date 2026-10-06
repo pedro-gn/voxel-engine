@@ -19,11 +19,12 @@ export function rankOf(ref: number, n: number, under: UnderSegments): number { r
 /**
  * The link of segment `ref` of column c on side dir, the neighbour column lying in the world (plan decision 13): among the
  * neighbour's segments overlapping ref's run, the one with the highest floor below ref's surface, else the lowest; its rank
- * when it is a top or drawn (`shown`), LINK_GROUND | its floor when it is a dry lower one, LINK_WALL when none overlaps or
- * the one met ranks past RANKS − 1.
+ * when it is a top or drawn (`shown`), LINK_GROUND | its floor when it is a dry lower one, LINK_WALL when none overlaps, the
+ * one met ranks past RANKS − 1, its ceiling is at or under ref's surface (the face at the water line is rock: no curtain is
+ * hung on it), or it is a lower segment full to its ceiling or in a body (`hidden`: its water has no free surface).
  */
 export function linkOf(ref: number, c: number, dir: number, cols: WaterColumns, under: UnderSegments, height: number,
-  shown: (ref: number) => boolean, scratch: number[]): number {
+  shown: (ref: number) => boolean, scratch: number[], hidden: (ref: number) => boolean = () => false): number {
   const nc = c + SIDE_X[dir]! + SIDE_Z[dir]! * cols.sx
   const f = floorOf(ref, cols, under), ce = ceilOf(ref, cols, under, height), S = f * SUB + depthOf(ref, cols, under)
   segmentsOf(nc, under, scratch)
@@ -37,7 +38,7 @@ export function linkOf(ref: number, c: number, dir: number, cols: WaterColumns, 
   const m = best >= 0 ? best : low
   if (m < 0) return LINK_WALL
   const rank = rankOf(m, cols.n, under)
-  if (rank >= RANKS) return LINK_WALL
+  if (rank >= RANKS || ceilOf(m, cols, under, height) * SUB <= S || hidden(m)) return LINK_WALL
   if (m < cols.n || shown(m)) return rank
   return LINK_GROUND | floorOf(m, cols, under)
 }

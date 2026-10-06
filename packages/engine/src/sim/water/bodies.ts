@@ -1,5 +1,5 @@
 import { damp, moved, type StepHooks, type WaterColumns } from './columns.ts'
-import { BISECT_ROUNDS, FLUX_FP, LEAVE, MAX_HEAD, MIN_FLOW, SUB } from './constants.ts'
+import { BISECT_ROUNDS, FLUX_EPS, FLUX_FP, HEAD_EPS, LEAVE, MAX_HEAD, MIN_FLOW, SUB } from './constants.ts'
 import type { TileEdges, WaterEdges } from './edges.ts'
 import type { UnderSegments } from './under.ts'
 
@@ -133,7 +133,6 @@ export class WaterBodies implements StepHooks {
       for (let k = 0; k < b.bTile.length && !active; k++) active = this.edges.tiles[b.bTile[k]!]!.seen[b.bEdge[k]!] === no
       if (!active) continue
       b.stepped = no
-      for (const t of b.tiles) if (T.awake[t] === 0) T.wake(t) // pressure reaches every opening: the far side steps next
       let V = b.excess, hiS = -Infinity
       for (const m of b.members) V += U.depth[m]!
       for (let k = 0; k < b.bTile.length; k++) {
@@ -161,6 +160,14 @@ export class WaterBodies implements StepHooks {
       }
       this.inflow(b, H, gain, true)
       b.level = H
+      // Pressure reaches every opening: a sleeping tile whose boundary edge is live at H (as underLive judges it) steps next.
+      // Only those: waking every boundary tile would keep two quiet tiles waking each other forever.
+      for (let k = 0; k < b.bTile.length; k++) {
+        const t = b.bTile[k]!
+        if (T.awake[t] === 1) continue
+        const L = this.edges.tiles[t]!, e = b.bEdge[k]!
+        if (L.seen[e] !== no && this.liveAt(L, e, b.bSide[k]!, H, gain)) T.wake(t)
+      }
       // A body never sends more than it holds.
       let out = 0
       for (let k = 0; k < b.bTile.length; k++) {
@@ -251,6 +258,24 @@ export class WaterBodies implements StepHooks {
       net += side > 0 ? moved(f) : -moved(f)
     }
     return net
+  }
+
+  /**
+   * Whether boundary edge e (not collected this step) is live at level H: its flux at H moves FLUX_EPS or more, or the side
+   * that can send stands more than HEAD_EPS above the other (the body sends while H is over the opening's floor; the free
+   * side while it is at least MIN_FLOW deep and over it), as WaterColumns.underLive keeps a tile awake.
+   */
+  private liveAt(L: TileEdges, e: number, side: number, H: number, gain: number): boolean {
+    const cols = this.cols, U = this.under, n = cols.n, free = side > 0 ? L.a[e]! : L.b[e]!, lo = L.lo[e]! * SUB
+    const df = free < n ? cols.depth[free]! : U.depth[free - n]!
+    const sf = (free < n ? cols.floor[free]! : U.floor[free - n]!) * SUB + df
+    let h = side > 0 ? sf - H : H - sf
+    if (h > MAX_HEAD) h = MAX_HEAD
+    else if (h < -MAX_HEAD) h = -MAX_HEAD
+    const f = damp(L.flux[e]!) + h * gain
+    if (moved(f >= 0 ? f : -f) >= FLUX_EPS) return true
+    if (H > sf) return H - sf > HEAD_EPS && H > lo
+    return sf - H > HEAD_EPS && df >= MIN_FLOW && sf > lo
   }
 
   /** The surface of the free side of a boundary edge. */

@@ -108,3 +108,40 @@ describe('water in layers', () => {
     expect(sim.water.total()).toBe(sim.water.expected)
   })
 })
+
+describe('openings into a body (final review C1)', () => {
+  it('digging the plug at the far end of a full tunnel while the lake sleeps lifts the shaft (Review Focus 2)', () => {
+    // a lake (x 1–20, z 1–10, water y 10–19), a full tunnel (x 21–40, z 5–6, y 12–13), a plug at x 41, a shaft (x 42–43) open from y 12
+    const sim = waterSim((x, y, z) => {
+      if (y < 10) return B.stone
+      if (x >= 1 && x <= 20 && z >= 1 && z <= 10) return y <= 19 ? w(7) : AIR
+      if (z >= 5 && z <= 6 && y >= 12 && y <= 13 && x >= 21 && x <= 40) return w(7)
+      if (z >= 5 && z <= 6 && x >= 42 && x <= 43 && y >= 12) return AIR
+      return y <= 24 ? B.stone : AIR
+    }, { size: [64, 32, 32], water: { debug: true } })
+    settle(sim, 60_000)
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [41, 12, 5], max: [41, 13, 6], voxel: AIR })
+    settle(sim, 60_000)
+    expect(sim.water.column(42, 5).surface).toBeGreaterThan(14 * SUB) // above the tunnel's roof: pressure lifted it
+    expect(Math.abs(sim.water.column(42, 5).surface - sim.water.column(10, 5).surface)).toBeLessThanOrEqual(2 * HEAD_EPS)
+    expect(sim.water.total()).toBe(total)
+  })
+
+  it('digging into a sealed full chamber from the side lets its water out into a pit', () => {
+    const sim = waterSim((x, y, z) => {
+      if (x >= 3 && x <= 8 && z >= 3 && z <= 8 && y >= 4 && y <= 6) return w(7) // the sealed chamber
+      if (x >= 10 && x <= 12 && z >= 3 && z <= 8 && y >= 2) return AIR // an open pit beside it
+      return y <= 12 ? B.stone : AIR
+    }, { water: { debug: true } })
+    run(sim, 5) // the chamber is grouped into a sealed body first
+    expect(sim.water.segments(5, 5)[0]!.body).toBeGreaterThanOrEqual(0)
+    const total = sim.water.total()
+    sim.submit(0, 0, { type: 'fillRegion', min: [9, 4, 5], max: [9, 6, 5], voxel: AIR })
+    run(sim, 600)
+    let pit = 0
+    for (let z = 3; z <= 8; z++) for (let x = 10; x <= 12; x++) pit += sim.water.column(x, z).depth
+    expect(pit).toBeGreaterThan(10 * SUB)
+    expect(sim.water.total()).toBe(total)
+  })
+})

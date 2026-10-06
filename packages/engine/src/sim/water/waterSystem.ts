@@ -173,8 +173,13 @@ export class WaterSystem {
     const ok = this.kind[voxelId(old)]!, nk = this.kind[voxelId(v)]!
     if (ok === nk && nk !== KIND.WATER) return // wall for wall: nothing for water
     const cols = this.cols, U = this.under, c = x + z * cols.sx, T = cols.tiles
-    // A body holding a segment of this column regroups after the edit; its excess goes back to its members first.
-    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (U.body[i]! >= 0) this.bodies.dropBody(U.body[i]!)
+    // A body holding a segment of this column or of a neighbour (an edit only changes the edges to those columns: a new
+    // opening into a body from beside it) regroups after the edit; its excess goes back to its members first.
+    const sx = cols.sx, sz = cols.sz
+    for (const nc of [c, x > 0 ? c - 1 : -1, x + 1 < sx ? c + 1 : -1, z > 0 ? c - sx : -1, z + 1 < sz ? c + sx : -1]) {
+      if (nc < 0) continue
+      for (let i = U.first[nc]!; i >= 0; i = U.next[i]!) if (U.body[i]! >= 0) this.bodies.dropBody(U.body[i]!)
+    }
     const prior = this.segScratch
     prior.length = 0
     for (let i = U.first[c]!; i >= 0; i = U.next[i]!) prior.push({ floor: U.floor[i]!, ceil: U.ceil[i]!, depth: U.depth[i]! + U.excess[i]!, id: i })

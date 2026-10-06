@@ -272,6 +272,12 @@ export class WaterColumns {
   private underScaleMark = new Int32Array(0)
   private underIn = new Int32Array(0)
   private underInMark = new Int32Array(0)
+  /** Per scaled receiver: room not yet given (inflowUnder); per collected edge: its whole inflow before scaling, −1 when not scaled. */
+  private underLeft = new Int32Array(0)
+  private inWhole = new Int32Array(0)
+  /** Per scaled edge: its receiver (lower segment index) and the sign of its flux toward it. */
+  private inRecv = new Int32Array(0)
+  private inSign = new Int8Array(0)
   private readonly sendersTop = new IntList()
   private readonly sendersUnder = new IntList()
   private readonly receivers = new IntList()
@@ -459,7 +465,7 @@ export class WaterColumns {
     if (this.underOut.length >= m) return
     this.underOut = new Int32Array(m); this.underMark = new Int32Array(m)
     this.underScaleD = new Int32Array(m); this.underScaleOut = new Int32Array(m); this.underScaleMark = new Int32Array(m)
-    this.underIn = new Int32Array(m); this.underInMark = new Int32Array(m)
+    this.underIn = new Int32Array(m); this.underInMark = new Int32Array(m); this.underLeft = new Int32Array(m)
   }
 
   /** The column holding segment ref. */
@@ -552,7 +558,12 @@ export class WaterColumns {
     }
   }
 
-  /** A free lower segment never takes more than its room (cap − depth): its inflows are scaled down together. */
+  /**
+   * A free lower segment never takes more than its room (cap − depth): its inflows are scaled down together, and the room
+   * left by rounding each share down goes 1/SUB at a time to its inflows in collection order, so the shares fill the room
+   * exactly. Rounded down alone, several inflows into the last few 1/SUB of room each round to 0: the segment would stop
+   * one short of full forever, never join a body, and cap the pressure behind it at its ceiling.
+   */
   private inflowUnder(U: UnderSegments): void {
     const E = this.edges!, n = this.n, no = this.stepNo
     this.receivers.clear()
@@ -567,18 +578,34 @@ export class WaterColumns {
     }
     let any = false
     for (let k = 0; k < this.receivers.length; k++) {
-      const i = this.receivers.data[k]!
-      if (this.underIn[i]! > Math.max(0, U.cap(i) - U.depth[i]!)) any = true
-      else this.underInMark[i] = 0 // not over: no scaling
+      const i = this.receivers.data[k]!, room = Math.max(0, U.cap(i) - U.depth[i]!)
+      if (this.underIn[i]! > room) { any = true; this.underLeft[i] = room } else this.underInMark[i] = 0 // not over: no scaling
     }
     if (!any) return
+    if (this.inWhole.length < this.uT.length) {
+      this.inWhole = new Int32Array(this.uT.length * 2); this.inRecv = new Int32Array(this.uT.length * 2); this.inSign = new Int8Array(this.uT.length * 2)
+    }
     for (let k = 0; k < this.uT.length; k++) {
+      this.inWhole[k] = -1
       const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, f = T.flux[e]!
       if (f === 0) continue
       const r = f > 0 ? T.b[e]! : T.a[e]!
       if (r < n || this.underInMark[r - n] !== no) continue
       const i = r - n, af = f > 0 ? f : -f, g = scaled(af, Math.max(0, U.cap(i) - U.depth[i]!), this.underIn[i]!)
       T.flux[e] = f > 0 ? g : -g
+      this.underLeft[i] = this.underLeft[i]! - (g >> FLUX_FP)
+      this.inWhole[k] = af >> FLUX_FP
+      this.inRecv[k] = i
+      this.inSign[k] = f > 0 ? 1 : -1
+    }
+    for (let k = 0; k < this.uT.length; k++) {
+      const whole = this.inWhole[k]!
+      if (whole < 0) continue
+      const T = E.tiles[this.uT.data[k]!]!, e = this.uE.data[k]!, i = this.inRecv[k]!, sign = this.inSign[k]!, f = T.flux[e]!
+      if (this.underLeft[i]! > 0 && ((f > 0 ? f : -f) >> FLUX_FP) < whole) {
+        T.flux[e] = f + sign * (1 << FLUX_FP)
+        this.underLeft[i] = this.underLeft[i]! - 1
+      }
     }
   }
 

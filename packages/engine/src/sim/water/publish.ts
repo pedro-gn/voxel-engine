@@ -102,6 +102,8 @@ export class WaterPublisher {
     this.recN = 0
     const n = cols.n, T = cols.tiles, sx = cols.sx, sz = cols.sz
     const shown = (r: number) => (r < n ? this.shown[r] === 1 : U.shown[r - n] === 1)
+    // A lower segment full to its ceiling, or in a body, has no free surface: never drawn (spec §6), and a wall to its neighbours.
+    const noSurface = (r: number) => r >= n && (U.body[r - n]! >= 0 || U.depth[r - n]! >= U.cap(r - n))
     for (const t of tiles) {
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       this.push(t)
@@ -134,7 +136,7 @@ export class WaterPublisher {
         const fz = (r: number) => clamp16((r < n ? moved(cols.flux[2 * c + 1]!) : 0) + (this.fz.get(r) ?? 0))
         const link = (r: number, dir: number) => {
           const nx = x + (dir === 0 ? 1 : dir === 1 ? -1 : 0), nz = z + (dir === 2 ? 1 : dir === 3 ? -1 : 0)
-          return nx < 0 || nz < 0 || nx >= sx || nz >= sz ? 0 : linkOf(r, c, dir, cols, U, height, shown, this.segs)
+          return nx < 0 || nz < 0 || nx >= sx || nz >= sz ? 0 : linkOf(r, c, dir, cols, U, height, shown, this.segs, noSurface)
         }
         const record = (r: number, rank: number, surface: number, floor: number, ceil: number) => {
           const l0 = link(r, 0), l1 = link(r, 1), l2 = link(r, 2), l3 = link(r, 3)
@@ -153,6 +155,7 @@ export class WaterPublisher {
           const i = chain[j]!, rank = k - j
           if (U.shown[i] !== 1) continue
           if (rank >= RANKS) { hidden++; continue }
+          if (U.body[i]! >= 0 || U.depth[i]! >= U.cap(i)) continue // no free surface: its slot sinks away like a dried one
           const d = U.depth[i]!
           record(n + i, rank, U.floor[i]! * SUB + (d < SHOW_DEPTH ? SHOW_DEPTH : d), U.floor[i]!, U.ceil[i]!)
         }

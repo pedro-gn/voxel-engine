@@ -56,17 +56,18 @@ describe('layer records', () => {
     expect(beside.slice(7, 9)).toEqual([1, 0]) // +x: the slot under the deck; −x: the next lake column's top
   })
 
-  it('a dry lower segment met by wet water links as ground at its floor', () => {
-    // a dry cave (y 2–3) under a roof beside a lake: the lake's side links to the cave's floor
+  it('a dry lower segment met by wet water links as ground at its floor when its mouth is open above the water, as a wall when its roof is under it', () => {
+    // a lake (surface 6) beside two dry caves under a roof: z 1–2 a tall one (y 2–7, roof at 8), z 3 a low one (y 2–3, roof at 4)
     const w = layered((x, y, z) => {
       if (y < 2 || z === 0 || z >= 4 || x >= 20) return STONE
       if (x <= 9) return y <= 5 ? wv(7) : AIR
-      return y <= 3 ? AIR : STONE
+      return y <= (z === 3 ? 3 : 7) ? AIR : STONE
     })
-    w.under.depth.fill(0) // keep the cave dry for this publish
+    w.under.depth.fill(0) // keep the caves dry for this publish
     const { recs } = publish(w)
-    const edge = recs.get(0)!.find((r) => r[0] === 9 + 2 * 16 && r[1] === 0)!
-    expect(edge[7]).toBe(LINK_GROUND | 2)
+    const at = (z: number) => recs.get(0)!.find((r) => r[0] === 9 + z * 16 && r[1] === 0)!
+    expect(at(1)[7]).toBe(LINK_GROUND | 2) // the water runs into the tall cave's mouth
+    expect(at(3)[7]).toBe(LINK_WALL) // the low cave's roof is a rock face at the water line: no curtain on it
   })
 
   it('a wet segment ranked past the draw layers is counted as hidden, never published (Review Focus 4)', () => {

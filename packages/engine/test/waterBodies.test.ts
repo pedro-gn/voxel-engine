@@ -100,7 +100,7 @@ describe('pressurized bodies', () => {
     expect(w.cols.surface(41 + 5 * 64)).toBeGreaterThanOrEqual(shaft0)
   })
 
-  it('a body woken on one side wakes the far side: raising the lake lifts the sleeping shaft (Review Focus 2)', () => {
+  it('a body woken on one side wakes the far side: raising the lake lifts the sleeping shaft', () => {
     const w = layered(uTube(true, 19), [64, 32, 32])
     w.settle(60_000)
     expect(w.cols.tiles.awakeCount()).toBe(0)
@@ -112,5 +112,14 @@ describe('pressurized bodies', () => {
     for (let k = 0; k < 200; k++) { w.step(); if (w.cols.tiles.awake[shaftTile] === 1) woke = true }
     expect(woke).toBe(true)
     expect(w.cols.surface(41 + 5 * 64)).toBeGreaterThan(s0)
+  })
+
+  it('a settled body woken on one side goes back to sleep: its boundary tiles never wake each other forever (final review C2)', () => {
+    const w = layered(uTube(true, 19), [64, 32, 32])
+    w.settle(60_000)
+    const total = w.total()
+    w.cols.tiles.wake(w.cols.tiles.of(41, 5)) // a lone wake on the shaft side (an edit, sand, a spring nearby)
+    expect(w.settle(200)).toBeLessThan(200)
+    expect(w.total()).toBe(total)
   })
 })
