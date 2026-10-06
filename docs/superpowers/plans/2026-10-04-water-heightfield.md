@@ -5144,3 +5144,25 @@ This task is interactive. The controller drives it with the user, who runs the a
 *(Filled in during Task 13.)*
 
 **Desktop Node baseline (Task 12), `npm run bench:dam settle`:** 151 458 ticks in 530.7 s; Σ depth + sea exact on every tick; sim tick p50 3.43 / p95 5.31 / max 41.46 ms; water step p50 2.24 / p95 3.35 ms; mirror+publish p50 0.97 / p95 1.85 ms; all tiles asleep at tick 151 458; lake surfaces spread 23 sub. The browser bench (`BENCH=1`, laptop) is pending for Task 13; headless SwiftShader runs are waived as meaningless.
+
+**Checkpoint 1, dam break (2026-10-04/05).** User feedback drove these changes, each reviewed or checked against the user's screenshots before commit:
+- Curtains arc forward with the flow (`v = 0.125·√flux`, `ARC_REACH` 3, `ARC_GRAVITY` 20), never through the wall or the ground ahead.
+- Curtains have a body: thickness by flux, flare at free ends, a splash at the foot. They are lit and translucent with downward streaks, and the underside leaves the brink at its floor (lip).
+- The "obsidian" body was a three r186 TSL `select()` compile bug; `curtainVertex` is now branch-free.
+- A wide fall's splash runs along its whole foot: splashes are drawn before bodies, in a separate geometry group.
+- The sim lands a fall's water where its arc lands (`fallColumn`, brink rule) and spreads the plunge (¼ ahead, ¼ each side), so there is no mound at the wall or at the foot.
+- A block placed in water spreads its displaced volume across the connected lake at once (batched multi-source search, radius 16).
+- Ripple rings appear on the water when a block is placed or removed at the water line.
+- Shoreline films are published with hysteresis (show ≥ SUB/16, hide < SUB/32), so the edge stops jittering as the water rises.
+
+A hole under a solid top does not drain. This is the one-layer limit, and it moves to sub-project 3d (multi-layer water).
+
+**Checkpoint 2, speed.** `GAIN` 2 → 3, `FLUX_EPS` 3. A throttled step (tile cap binding) keeps `GAIN` 2, because GAIN 3 leaves a border limit cycle there. Dam settle went from 151 458 to 55 069 ticks; the channel reaches 90 % in 198 ticks instead of 321.
+
+**Checkpoints 1–5 approved by the user on 2026-10-05**, with further improvements deferred to follow-ups. The laptop measurements of checkpoint 5 were not recorded. Open follow-ups:
+- the throttled border cycle in deep water (in-phase border stepping or a soft cap);
+- main-thread `SurfaceView.apply` at ~6–7 ms p50 on desktop (spread over frames if the laptop misses 45 fps);
+- the phantom column under a removed deck block (not reproduced with stone);
+- ~0.02-block surface ringing;
+- `surfaceVertex` and ripples still use `select()`;
+- a wide breach throws no farther than one notch (reach is per unit width).
