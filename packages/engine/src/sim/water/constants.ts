@@ -60,3 +60,10 @@ export const SPRING_RATES: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32
 export const SPRING_SCALE = 16
 /** What a voxel is to water. */
 export const KIND = { AIR: 0, WATER: 1, WALL: 2 } as const
+
+/** A body member leaves its body when its deficit (cap − depth) exceeds this (1/8 block): hysteresis against flicker (3d). */
+export const LEAVE = SUB / 8
+/** Draw layers per column: segments counted from the top (rank 0 is the top segment). */
+export const RANKS = 4
+/** Guard on a body's level bisection (bodies.ts): the range halves every round. */
+export const BISECT_ROUNDS = 32
