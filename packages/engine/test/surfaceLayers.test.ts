@@ -66,7 +66,7 @@ describe('the layered refresh path', () => {
           diff(s.curtains.cur.subarray(0, s.curtains.count * 4), a.curtains.cur.subarray(0, a.curtains.count * 4))]).toEqual([tick, cc, -1, -1, -1, -1, -1])
       }
     }
-  })
+  }, 30_000) // ~1.5 s alone; give it room beside the parallel suite
 
   it('the water under a bridge is drawn in layer 1 and meets the lake in layer 0 with no seam', () => {
     const { view, publish } = bridgedView()
@@ -114,6 +114,24 @@ describe('curtains and ripples in layers', () => {
       expect(cs.thick[k * 4 + 2]).toBe(0)
       expect(cs.cur[k * 4 + 2]!).toBeLessThan(cs.cur[k * 4]!) // the foot is below the top
     }
+  })
+
+  it('water leaving a lower layer into the open (a dam hole) is thrown out in an arc, not stuck to the wall', () => {
+    // a lake (z 1–9, water y 6–13) behind a dam (z 10, solid to y 20) with a hole at y 6–7, x 12–15; a valley (floor 2) beyond it
+    const w = layered((x, y, z) => {
+      if (y < 2 || x === 0 || x === 31 || z === 0 || z === 31) return STONE
+      if (z <= 9) return y < 6 ? STONE : y <= 13 ? wv(7) : y <= 20 ? AIR : AIR
+      if (z === 10) return x >= 12 && x <= 15 && (y === 6 || y === 7) ? AIR : y <= 20 ? STONE : AIR
+      return AIR
+    })
+    w.edges.ensure(w.cols, w.under, 32)
+    for (let k = 0; k < 6; k++) w.step() // the hole pours
+    const pub = new WaterPublisher(w.buffers.water), view = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    const cs = view.column(0, 1)!.curtains
+    let thrown = 0
+    for (let k = 0; k < cs.count; k++) if (cs.info[k * 4 + 2]! % 4 === 2 && cs.reach[k * 4 + 2]! > 0) thrown++
+    expect(thrown).toBe(4) // the hole's four columns, each thrown out (+z) away from the dam
   })
 
   it('surfaceNear finds the slot at the edit height: the lake under a bridge, not the dry deck above', () => {

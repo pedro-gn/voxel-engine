@@ -4684,3 +4684,16 @@ The Task 0 baseline ran on a quieter machine, so 3c and 3d were then run alterna
 ```
 
 Ratio 3d / 3c: tick p95 **1.14×** (p50 1.15×), within the spec's 1.2×. Σ depth + sea off on 0 ticks.
+
+### Checkpoint 1: the dam hole (Task 15, 2026-10-06)
+
+- **User:** it drains, but the hole's water came out dark and stuck to the dam's face.
+- **Cause, found in the browser:**
+  - Every curtain from a lower layer was straight (plan decision 15).
+  - Laid `ARC_GAP` in front of the face, it sat within the shadow map's bias, so the dam's shadow fell on it (light with shadows off, dark with them on, depending on the view).
+  - Its thin outer side faces, in shade, read as dark strips.
+- **Change:**
+  - A curtain from a lower layer that meets a top through its side pours into the open. It is now laid with 3c's arc (`opensOut`), its brink and the curtain beside it read in its own layer (`lay(…, rank)`, `slotHangs`).
+  - Curtains under a ceiling or inside a cave stay straight.
+  - The hole's jet now leaves the dam about 2 blocks out, with a body, streaks and a splash.
+  - The side face turned from the sun stays in shade, as the terrain's faces do.

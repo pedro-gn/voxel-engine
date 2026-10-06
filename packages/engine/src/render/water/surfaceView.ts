@@ -738,9 +738,13 @@ export class SurfaceView {
         const was = ((m >> dir) & 1) === 1, now = ((m >> (dir + 4)) & 1) === 1
         if (!was && !now) continue
         const [ta, tb] = CURTAIN_TOP[dir]!
-        // A curtain in a lower layer, or near one (any link that is not the default in its span), hangs straight (plan decision 15).
-        const straight = r > 0 || !this.spanDefault(x, z, dir)
-        const flux = Math.max(0, straight ? this.slotEdgeFlux(c, r, x, z, dir) : this.edgeFlux(c, dir)), v = exitSpeed(flux, this.stepHz)
+        // A curtain from a lower layer pouring into the open (it meets a top: a hole in a dam) is thrown in an arc like 3c's:
+        // over tops nothing but ground stops it. Any other curtain in a lower layer, or near one (a link that is not the
+        // default in its span), hangs straight (plan decision 15; Task 15: straight against a dam's face it read as stuck to
+        // the wall, and the wall's shadow fell on it).
+        const thrown = r > 0 && this.opensOut(x, z, r, dir)
+        const straight = !thrown && (r > 0 || !this.spanDefault(x, z, dir))
+        const flux = Math.max(0, r > 0 || straight ? this.slotEdgeFlux(c, r, x, z, dir) : this.edgeFlux(c, dir)), v = exitSpeed(flux, this.stepHz)
         cs.reserve(n + 1)
         const o = n * 4
         cs.prev[o] = d.hPrev[o4 + ta]!
@@ -749,8 +753,8 @@ export class SurfaceView {
         cs.cur[o + 1] = d.hCur[o4 + tb]!
         // The edges' fluxes now stand for both steps: the view keeps only the current ones.
         if (straight) this.layStraight(cs, o, false, was, x, z, r, dir, v)
-        else this.lay(cs, o, false, was, x, z, dir, v)
-        const water = straight ? this.layStraight(cs, o, true, now, x, z, r, dir, v) : this.lay(cs, o, true, now, x, z, dir, v)
+        else this.lay(cs, o, false, was, x, z, dir, v, r)
+        const water = straight ? this.layStraight(cs, o, true, now, x, z, r, dir, v) : this.lay(cs, o, true, now, x, z, dir, v, r)
         const key = i * 4 + dir
         if (token !== 0 && tag[key] === token) {
           for (let j = 0; j < 4; j++) cs.prev[o + j] = val[key * CARRY + j]!
@@ -768,6 +772,21 @@ export class SurfaceView {
       }
     }
     cs.count = n
+  }
+
+  /** Whether slot (x, z, r) meets a top through `dir`: its water pours out into the open. */
+  private opensOut(x: number, z: number, r: number, dir: number): boolean {
+    resolve(this.src, x, z, r, dir, true)
+    return hit.c >= 0 && hit.r === 0
+  }
+
+  /** Whether slot (x, z, r) hangs a curtain through `dir` in the step (its curtain mask: `cur`, else the previous step). */
+  private slotHangs(x: number, z: number, r: number, dir: number, cur: boolean): boolean {
+    const c = x + z * this.sx
+    if (!this.layers.has(c, r)) return false
+    const d = this.data[r]![(x >> 5) + (z >> 5) * this.cx]
+    if (!d) return false
+    return ((d.curtainMask[(x & 31) + (z & 31) * 32]! >> (cur ? dir + 4 : dir)) & 1) === 1
   }
 
   /** Whether a curtain from (x, z) through `dir` sees only default links: its column, the ARC_COLUMNS ahead and the rows beside them. */
@@ -817,9 +836,10 @@ export class SurfaceView {
    * Lays one step of the curtain at cs[o / 4] from column (x, z) through its side `dir`, whose tops (top A, top B) are already
    * in cs.prev / cs.cur (`cur`) [o], [o + 1]: its feet into [o + 2], [o + 3] and its ends' reach, thickness and flare into
    * cs.reach / thick / flare at [o + 2 × cur + end] (layEnd). A curtain absent in the step (`on` false) is rolled up to its
-   * top, with no reach, body or flare. Returns which ends land on drawn water (bit 0 end A, bit 1 end B).
+   * top, with no reach, body or flare. Returns which ends land on drawn water (bit 0 end A, bit 1 end B). `rank` > 0: a slot of
+   * that draw layer pouring into the open (opensOut): its brink and the curtain beside it are read in that layer.
    */
-  private lay(cs: Curtains, o: number, cur: boolean, on: boolean, x: number, z: number, dir: number, v: number): number {
+  private lay(cs: Curtains, o: number, cur: boolean, on: boolean, x: number, z: number, dir: number, v: number, rank = 0): number {
     const out = cur ? cs.cur : cs.prev, r = cur ? o + 2 : o, a = this.arc
     let water = 0
     for (let end = 0; end < 2; end++) {
@@ -829,7 +849,7 @@ export class SurfaceView {
         this.endLip[end] = 0
         continue
       }
-      this.layEnd(out[o + end]!, cur, x, z, dir, end, v)
+      this.layEnd(out[o + end]!, cur, x, z, dir, end, v, rank)
       cs.reach[r + end] = a[0]!
       out[o + 2 + end] = a[1]!
       cs.thick[r + end] = a[2]!
@@ -851,13 +871,14 @@ export class SurfaceView {
    * end's line (near and far from the wall) when drawn, their ground otherwise. A free end flares when the row beside it
    * (in the world) is clear of the arc and the body, as far as its flux gives it body.
    */
-  private layEnd(top: number, cur: boolean, x: number, z: number, dir: number, end: number, v: number): void {
+  private layEnd(top: number, cur: boolean, x: number, z: number, dir: number, end: number, v: number, rank = 0): void {
     const s = cur ? this.cur : this.prev, sx = this.sx, sz = this.sz, dx = DIR_X[dir]!, dz = DIR_Z[dir]!
     const ox = END_X[dir]![end]!, oz = END_Z[dir]![end]!, nx = x + ox, nz = z + oz
     // When the column beside lies in the world, so does its neighbour through `dir` (beside this one's).
     const beside = nx >= 0 && nz >= 0 && nx < sx && nz < sz
-    const shared = beside && curtainAt(s, this.floor, nx + nz * sx, nx + dx + (nz + dz) * sx)
-    const speed = shared ? (v + exitSpeed(Math.max(0, this.edgeFlux(nx + nz * sx, dir)), this.stepHz)) / 2 : v
+    const shared = beside && (rank === 0 ? curtainAt(s, this.floor, nx + nz * sx, nx + dx + (nz + dz) * sx) : this.slotHangs(nx, nz, rank, dir, cur))
+    const bf = !shared ? 0 : rank === 0 ? this.edgeFlux(nx + nz * sx, dir) : this.slotEdgeFlux(nx + nz * sx, rank, nx, nz, dir)
+    const speed = shared ? (v + exitSpeed(Math.max(0, bf), this.stepHz)) / 2 : v
     const levels = this.levels, near = this.nearH, far = this.farH, nc = CURTAIN_BOTTOM[dir]![end]!, fc = CURTAIN_TOP[dir]![end]!
     const bed = this.bedH, side = ox + oz * sx, flank = this.sideH, arc = this.arc
     // The corners on the end's line, seen from the row beside it, are that row's other end's.
@@ -883,7 +904,8 @@ export class SurfaceView {
       }
     }
     layArc(speed, top, levels, near, far, arc)
-    const c = x + z * sx, brink = shared ? Math.max(this.floor[c]!, this.floor[c + side]!) : this.floor[c]!
+    const c = x + z * sx, fl = (k: number) => (rank === 0 ? this.floor[k]! : this.layers.floor(k, rank))
+    const brink = shared ? Math.max(fl(c), fl(c + side)) : fl(c)
     const r = arc[0]!, foot = arc[1]!, lip = layLip(top - Math.max(brink, levels[0]!), top, foot, r, bed)
     const want = bodyThickness(speed), thick = layBody(want, top, foot, r, bed, lip)
     arc[2] = thick
