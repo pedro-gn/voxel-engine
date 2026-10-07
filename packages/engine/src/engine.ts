@@ -13,6 +13,8 @@ import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
 import { FallingTrack } from './render/fallingTrack.ts'
+import { FragmentTrack } from './render/fragmentTrack.ts'
+import type { ChunkMeshData } from './mesh/mesher.ts'
 import { SimClock, stepAlpha } from './render/simClock.ts'
 import { SurfaceView } from './render/water/surfaceView.ts'
 import { CostMeter } from './render/costMeter.ts'
@@ -75,6 +77,9 @@ export interface EngineStats {
   decorationInstances: number; decorationDraws: number
   /** Falling blocks being drawn (in the air or waiting for their chunk mesh). */
   fallingBodies: number
+  /** Structural checks pending and fragments/cells currently in motion. */
+  collapseChecks: number; collapseFragments: number; collapseCells: number
+  collapseVisited: number; collapseMutations: number
   /** Awake water tiles (16 × 16 columns), wet columns in them, and queued region jobs, as of the last tick. */
   waterTiles: number; waterColumns: number; regionJobs: number
   /** Water bodies with a boundary in an awake tile, as of the last tick. */
@@ -186,6 +191,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   /** The smoothed sim clock falling cubes and the water surface are drawn on (spec §5). */
   const clock = new SimClock(tickMs)
   const falling = new FallingTrack(tickMs, clock)
+  const fragments = new FragmentTrack(clock)
+  const stagedSources = new Map<number, ChunkMeshData>()
   // Made before the sim starts, so it reads the first publish after generation, which lists every tile once.
   const waterView = new SurfaceView(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs)
   /** The sim tick of the last water publish applied: the surface moves from the step before it to it (stepAlpha). */
@@ -247,7 +254,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(world.get, registry.solid, size, x, z) })
   const detachControls = controls.attach(canvas)
   const visuals = new Visuals({
-    renderer, scene, camera, backend, texture: tex.texture, layout,
+    renderer, scene, camera, backend, texture: tex.texture, layout, registry,
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     viewDistance: () => controls.current.distance,
     decorations,
@@ -380,7 +387,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
-  let physicsStats = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
+  let physicsStats: Extract<FromSim, { type: 'tick' }>['physics'] = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
   const waterApply = new CostMeter(200)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
@@ -405,6 +412,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         slotsUsed = m.slotsUsed
         markTick(m, CLIENT_ID, ghosts, markDirty)
         falling.update(m.tick, m.falling, m.landed, performance.now())
+        fragments.update(m.tick, m.collapse, performance.now())
         if (m.water) {
           // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
           const t0 = performance.now(), applied = waterView.apply(m.water, waterShown)
@@ -475,7 +483,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const start = performance.now()
     while (results.length > 0 && performance.now() - start < UPLOAD_BUDGET_MS) {
       const r = results.shift()!
-      if (queue.accept(r.chunk, r.version)) visuals.applyMesh(r.chunk, r.data)
+      if (queue.accept(r.chunk, r.version)) {
+        if (fragments.holdsChunk(r.chunk) || stagedSources.has(r.chunk)) stagedSources.set(r.chunk, r.data)
+        else visuals.applyMesh(r.chunk, r.data)
+      }
+    }
+    // Replace all source meshes and show debris together; a partially updated multi-chunk source leaves holes.
+    if (fragments.sourcesReady(ci => queue.appliedVersion(ci))) {
+      for (const [ci, data] of stagedSources) visuals.applyMesh(ci, data)
+      stagedSources.clear(); fragments.releaseSources()
     }
   }
   let last = performance.now(), fpsT = last, frames = 0, fps = 0, frameMs = 0
@@ -491,6 +507,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     upload()
     // FallingTrack.frame advances the shared clock for this frame; the water reads it after.
     visuals.drawFalling(falling.frame(performance.now(), (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
+    visuals.drawFragments(fragments.frame(performance.now(), ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     waterShown = waterTick === null ? 1 : stepAlpha(clock.due, waterTick)
     visuals.setWaterAlpha(waterShown)
     visuals.frame(dt)
@@ -604,6 +621,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         slotsUsed, meshes: visuals.chunks.meshCount, drawCalls: renderer.info.render.drawCalls, backend,
         shadowCasters: vs.shadowCasters, decorationInstances: vs.decorationInstances, decorationDraws: vs.decorationDraws, gpuMs,
         fallingBodies: falling.size, waterTiles: physicsStats.waterTiles, waterColumns: physicsStats.waterColumns, regionJobs: physicsStats.jobs, physicsBusy: physicsStats.busy,
+        collapseChecks: physicsStats.collapse?.checks ?? 0, collapseFragments: physicsStats.collapse?.fragments ?? 0, collapseCells: physicsStats.collapse?.cells ?? 0,
+        collapseVisited: physicsStats.collapse?.visited ?? 0, collapseMutations: physicsStats.collapse?.mutations ?? 0,
         waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
       }

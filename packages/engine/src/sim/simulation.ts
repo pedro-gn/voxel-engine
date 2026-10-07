@@ -10,6 +10,7 @@ import {
 import { diffMask, forNeighbours } from './chunkDiff.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
 import { GravitySystem, type FallingBodyState, type Landing } from './gravity.ts'
+import { CollapseSystem, FragmentOverlapError, type CollapseOptions, type CollapseStats, type CollapseTick } from './collapse.ts'
 import { LightEngine, RELIGHT_MARGIN } from './light.ts'
 import { JobRunner } from './jobs.ts'
 import { Pcg32, hash32 } from './rng.ts'
@@ -28,6 +29,7 @@ export interface SimulationOptions {
   jobCap?: number
   /** Heightfield water options (tile cap, debug check). */
   water?: Partial<WaterOptions>
+  collapse?: CollapseOptions
   /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
   regenLightDiffLimit?: number
   randomTicksPerChunk?: number
@@ -44,8 +46,9 @@ export interface TickResult {
   falling: FallingBodyState[]
   /** Bodies that landed this tick, with their chunk's version after commit. */
   landed: Landing[]
+  collapse?: CollapseTick
   /** Awake water tiles, the wet columns in them and queued region jobs after this tick; busy: a tile is awake, a job is queued or a body falls. */
-  physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean }
+  physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }
   /** The heightfield tiles published this tick (null: none changed); the main thread reads them from shared memory. */
   water: WaterTick | null
 }
@@ -66,6 +69,8 @@ export class Simulation {
   readonly jobs: JobRunner
   readonly water: WaterSystem
   readonly gravity: GravitySystem
+  readonly collapse: CollapseSystem
+  private collapseWrite = false
   private isPaused = false
   private readonly jobCap: number
 
@@ -110,7 +115,16 @@ export class Simulation {
       layout: this.layout, registry: this.registry,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       write: (x, y, z, v) => sim.applySet(x, y, z, v, true),
+      floorAt: (x, z, from, to) => sim.collapse.floor(x, z, from, to),
     })
+    this.collapse = new CollapseSystem({
+      layout: this.layout, registry: this.registry,
+      get: (x, y, z) => sim.store.getVoxel(x, y, z),
+      write: (x, y, z, v) => { sim.collapseWrite = true; try { sim.applySet(x, y, z, v, true) } finally { sim.collapseWrite = false } },
+      prepare: chunks => sim.store.prepareChunks(chunks),
+      touch: chunks => sim.store.touchChunks(chunks),
+      fallingFloor: (x, z, from, to) => sim.gravity.floorAt(x, z, from, to),
+    }, o.collapse)
     this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
@@ -158,7 +172,9 @@ export class Simulation {
     const L = this.layout
     if (column.length !== 32 * 32 * L.size[1]) throw new RangeError(`column has ${column.length} voxels, expected ${32 * 32 * L.size[1]}`)
     for (let cy = 0; cy < L.cy; cy++) {
-      this.store.writeChunkDense(L.chunkIndex(cx, cy, cz), column.subarray(cy * 32768, (cy + 1) * 32768))
+      const ci = L.chunkIndex(cx, cy, cz), data = column.subarray(cy * 32768, (cy + 1) * 32768)
+      this.store.writeChunkDense(ci, data)
+      this.collapse.replaceChunk(ci, data, true)
     }
   }
 
@@ -187,6 +203,7 @@ export class Simulation {
     const regenerated: [number, number][] = []
     let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
     for (const c of cols) {
+      if (this.collapse.overlapsColumn(c.cx, c.cz)) throw new FragmentOverlapError('regeneration overlaps a falling structural fragment')
       if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
       for (let cy = 0; cy < L.cy; cy++) {
         const ci = L.chunkIndex(c.cx, cy, c.cz)
@@ -210,7 +227,7 @@ export class Simulation {
     for (let cy = 0; cy < L.cy; cy++) for (let cz = rz0; cz <= rz1; cz++) for (let cx = rx0; cx <= rx1; cx++) reach.push(L.chunkIndex(cx, cy, cz))
     const before = reach.length <= this.regenLightDiffLimit ? new Map(reach.map((ci) => [ci, store.lightSnapshot(ci)])) : null
     // 3. Write, relight, commit. commit() closes every written or relit chunk; its list over-marks and is only the fallback.
-    for (const w of writes) { store.writeChunkDense(w.ci, w.data); this.epochs[w.ci]!++ }
+    for (const w of writes) { store.writeChunkDense(w.ci, w.data); this.epochs[w.ci]!++; this.collapse.replaceChunk(w.ci, w.data) }
     this.light.relightRegion(x0, z0, x1, z1)
     // Light can only differ in a chunk that is open: every write opens one.
     const touched = before ? [...before].filter(([ci]) => store.isOpen(ci)) : []
@@ -290,6 +307,8 @@ export class Simulation {
         this.physics('gravity', () => this.gravity.step()) // 3
         this.physics('water', () => this.water.step()) // 4
         this.physics('region jobs', () => this.jobs.run(this.jobCap)) // 5
+        // Ownership transfers must fail fatally rather than continue with a partially applied fragment.
+        this.collapse.step()
       }
       // 3. random ticks
       if (this.hasRandom) {
@@ -308,10 +327,12 @@ export class Simulation {
     const landed = this.gravity.landed
     for (const l of landed) l.version = this.store.versions[l.chunk]!
     const ws = this.water.stats(), jobs = this.jobs.size
-    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 }
+    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 || this.collapse.busy,
+      ...(this.collapse.enabled && { collapse: this.collapse.stats() }) }
     const events = this.events
     this.events = []
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published }
+    const collapse = this.collapse.publication(this.store.versions)
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }) }
   }
 
   hash(): number {
@@ -332,6 +353,7 @@ export class Simulation {
     this.gravity.mixState(mix)
     this.water.mixState(mix)
     this.jobs.mixState(mix)
+    this.collapse.mixState(mix)
     return h >>> 0
   }
 
@@ -355,6 +377,10 @@ export class Simulation {
     if (cmd.type === 'fillRegion') {
       const c = cmd as FillRegionCommand
       const [x0, y0, z0] = c.min, [x1, y1, z1] = c.max
+      // Preflight the whole command so a rejected fill has no partial effect.
+      if (this.collapse.stats().fragments) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+        if (this.collapse.overlaps(x, y, z)) throw new FragmentOverlapError('edit overlaps a falling structural fragment')
+      }
       for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
         const shell = x === x0 || x === x1 || y === y0 || y === y1 || z === z0 || z === z1
         this.applySet(x, y, z, c.voxel, shell)
@@ -367,12 +393,14 @@ export class Simulation {
   private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
     const old = this.store.getVoxel(x, y, z)
     if (old === v || !this.layout.inBounds(x, y, z)) return
+    if (!this.collapseWrite && this.collapse.overlaps(x, y, z)) throw new FragmentOverlapError('edit overlaps a falling structural fragment')
     if (!this.store.setVoxel(x, y, z, v)) return
     this.epochs[this.layout.chunkOf(x, y, z)]!++
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)
     this.water.onWrite(x, y, z, old, v)
     this.gravity.afterWrite(x, y, z, v)
+    this.collapse.afterWrite(x, y, z, old, v)
     if (!notify || !this.hasNeighborRules) return
     this.neighbors.push(this.layout.voxelIndex(x, y, z))
     for (let d = 0; d < 6; d++) {

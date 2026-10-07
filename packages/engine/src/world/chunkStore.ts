@@ -47,6 +47,11 @@ export class ChunkStore {
     return this.views.voxels(e)[Layout.localIndex(x & 31, y & 31, z & 31)]!
   }
 
+  /** Reserve every destination slot before a multi-cell ownership transfer. commit() closes these seqlocks. */
+  prepareChunks(chunks: readonly number[]): void { for (const ci of chunks) this.writable(ci) }
+  /** A version barrier for neighbor mesh handoffs, without materializing uniform chunks. */
+  touchChunks(chunks: readonly number[]): void { for (const ci of chunks) { this.quiet.delete(ci); this.openChunk(ci) } }
+
   getLight(x: number, y: number, z: number): number {
     if (!this.layout.inBounds(x, y, z)) return FULL_SKY
     const e = this.table[this.layout.chunkOf(x, y, z)]!

@@ -1,0 +1,42 @@
+{
+  "windows": [
+    {
+      "backend": "webgpu",
+      "durationMs": 8703.270000001416,
+      "ticks": 174,
+      "frames": 1566,
+      "tickP95": 6.470000000670552,
+      "tickMax": 10.644999999552965,
+      "fpsP5": 179.0510295434187,
+      "minFps": 102.45901639344034,
+      "peakFragments": 38,
+      "maxVisited": 4096,
+      "maxMutations": 128,
+      "movingFrames": 1497,
+      "renderPeak": 38
+    },
+    {
+      "backend": "webgpu",
+      "durationMs": 8643.349999999627,
+      "ticks": 173,
+      "frames": 1555,
+      "tickP95": 7.7099999990314245,
+      "tickMax": 11.21000000089407,
+      "fpsP5": 179.0510295434187,
+      "minFps": 101.21457489878897,
+      "peakFragments": 38,
+      "maxVisited": 4096,
+      "maxMutations": 128,
+      "movingFrames": 1496,
+      "renderPeak": 38
+    }
+  ],
+  "production": true,
+  "scenario": "9216-cell slab",
+  "viewport": [
+    1280,
+    720
+  ],
+  "headed": true,
+  "channel": "chrome"
+}

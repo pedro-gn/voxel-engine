@@ -11,12 +11,14 @@ import { paintTextures } from './textures.ts'
 import e2eDoc from './terrain/e2e.terrain.json'
 import showcaseDoc from './terrain/showcase.terrain.json'
 import { randomTickRate } from './rules.ts'
+import { COLLAPSE_SIZE, cutLeftCommands, cutRightCommands, cutTowerCommands, cutNormalCommands, stressCollapseCommands } from './scenes/collapse.ts'
 import { createTerrainPanel } from './terrainPanel.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' ? sceneParam : 'world'
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' ? sceneParam : 'world'
+if (sceneName === 'collapse') HOTBAR.splice(4, 2, 'structural_planks', 'structural_glass')
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
   const v = Number(raw ?? 1024)
@@ -32,6 +34,7 @@ const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
 const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
+  : sceneName === 'collapse' ? [...COLLAPSE_SIZE]
   : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
   : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
@@ -47,6 +50,8 @@ const engine = await createEngine({
   textures: paintTextures(),
   simWorker: sceneName === 'diorama'
     ? () => new Worker(new URL('./diorama.worker.ts', import.meta.url), { type: 'module' })
+    : sceneName === 'collapse'
+      ? () => new Worker(new URL('./collapse.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'flood'
       ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'caves'
@@ -54,7 +59,8 @@ const engine = await createEngine({
     : sceneName === 'terrain'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
-  terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' } : terrainDoc,
+  terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' }
+    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : terrainDoc,
   genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
@@ -97,6 +103,11 @@ if (sceneName === 'caves') {
     s.target[0] = 64; s.target[1] = 26; s.target[2] = 64
     s.distance = 200
     s.pitch = 0.8
+  }
+}
+if (sceneName === 'collapse') {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = 56; s.target[1] = 12; s.target[2] = 46; s.distance = 140; s.pitch = 0.75; s.yaw = 0.7
   }
 }
 createControls(engine, { collapsed: editing })
@@ -155,4 +166,21 @@ const caves = sceneName === 'caves'
       openCanal: () => openCanalCommands().forEach((c) => engine.submit(c)),
     }
   : null
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, ready: true } })
+const collapse = sceneName === 'collapse' ? {
+  cutLeft: () => cutLeftCommands().forEach(c => engine.submit(c)),
+  cutRight: () => cutRightCommands().forEach(c => engine.submit(c)),
+  cutTower: () => cutTowerCommands().forEach(c => engine.submit(c)),
+  cutNormal: () => cutNormalCommands().forEach(c => engine.submit(c)),
+  stress: () => stressCollapseCommands().forEach(c => engine.submit(c)),
+} : null
+if (collapse) {
+  const bar = document.createElement('div'); bar.setAttribute('aria-label', 'Structural collapse demonstrations')
+  Object.assign(bar.style, { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', zIndex: '10' })
+  for (const [label, action] of [['Cut left support', collapse.cutLeft], ['Cut right support', collapse.cutRight], ['Collapse tower', collapse.cutTower], ['Cut normal beam', collapse.cutNormal]] as const) {
+    const button = document.createElement('button'); button.textContent = label
+    Object.assign(button.style, { padding: '10px 14px', border: '1px solid #bcc7b9', borderRadius: '6px', background: '#f6f8f1', color: '#233027', cursor: 'pointer' })
+    button.addEventListener('click', () => { action(); button.disabled = true }); bar.append(button)
+  }
+  document.body.append(bar)
+}
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, ready: true } })

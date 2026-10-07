@@ -18,6 +18,7 @@ export interface GravityPort {
   get(x: number, y: number, z: number): number
   /** Writes through the simulation as a 'gravity' write. */
   write(x: number, y: number, z: number, v: number): void
+  floorAt?(x: number, z: number, from256: number, to256: number): number | undefined
 }
 
 /** Falling blocks (spec §6): integer bodies, processed in id order, a write when they start and when they land. */
@@ -29,10 +30,20 @@ export class GravitySystem {
   private readonly pendingSet = new Set<number>()
   private nextId = 1
   private readonly port: GravityPort
+  private readonly columns = new Map<number, FallingBodyState[]>()
 
   constructor(port: GravityPort) { this.port = port }
 
   get count(): number { return this.bodies.length }
+  /** Structural fragments query only the relevant column, after the ordinary gravity phase. */
+  floorAt(x: number, z: number, from256: number, to256: number): number | undefined {
+    let top: number | undefined
+    for (const b of this.columns.get(x + z * this.port.layout.size[0]) ?? []) {
+      const t = b.y256 + 256
+      if (t <= from256 && t > to256 && (top === undefined || t > top)) top = t
+    }
+    return top
+  }
 
   /** A write may have placed a falls block or taken a support away: check the cell and the one above. */
   afterWrite(x: number, y: number, z: number, v: number): void {
@@ -70,6 +81,8 @@ export class GravitySystem {
         let target = b.y256 - b.vy256
         const limit = floorOf.get(col)
         if (limit !== undefined && limit <= b.y256) target = Math.max(target, limit)
+        const fragment = this.port.floorAt?.(b.x, b.z, b.y256, target)
+        if (fragment !== undefined) target = Math.max(target, fragment)
         let land = -1
         for (let k = Math.ceil(b.y256 / 256) - 1; k >= Math.floor(target / 256); k--) {
           if (k < 0) { land = 0; break }
@@ -92,6 +105,8 @@ export class GravitySystem {
     } finally {
       if (i < bodies.length) for (let j = landing ? i + 1 : i; j < bodies.length; j++) keep.push(bodies[j]!)
       this.bodies = keep
+      this.columns.clear()
+      for (const b of keep) { const col = b.x + b.z * L.size[0]; let a = this.columns.get(col); if (!a) { a = []; this.columns.set(col, a) } a.push(b) }
     }
   }
 

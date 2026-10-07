@@ -7,6 +7,7 @@ import type { GeneratorModule } from './generator.ts'
 import { GenPool, type PortLike } from './genPool.ts'
 import type { RulesModule } from './rules.ts'
 import { Simulation } from './simulation.ts'
+import { FragmentOverlapError } from './collapse.ts'
 
 export interface SimModules { rules?: RulesModule; generator: GeneratorModule }
 export interface Clock {
@@ -90,6 +91,7 @@ export class SimHost {
           this.sim = new Simulation({
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
+            collapse: msg.options.collapse,
             // only defined keys: an undefined one would override WaterSystem's default
             water: {
               debug: msg.options.debugFluids === true,
@@ -286,7 +288,8 @@ export class SimHost {
       const dirtyChunks = sim.replaceColumns(cols)
       this.post({ type: 'regenerated', id, ok: true, dirtyChunks, ms: this.clock.now() - t0, slotsUsed: sim.store.slotsUsed() })
     } catch (e) {
-      this.fail(e)
+      if (e instanceof FragmentOverlapError) this.post({ type: 'regenerated', id, ok: false, message: e.message })
+      else this.fail(e)
     }
   }
 

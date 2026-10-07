@@ -15,6 +15,8 @@ export interface BlockDef {
   decoration?: string
   /** Falls when the cell below is air or a flowing liquid (sand, gravel). Cannot be combined with `liquid`. */
   falls?: boolean
+  /** Joins face-connected structural fragments. Normal blocks keep their existing behavior. */
+  collapses?: boolean
   /** Makes this liquid block a spring of the named liquid: it counts as full and injects that liquid every fluid step. */
   source?: string
 }
@@ -34,6 +36,10 @@ export class BlockRegistry {
   readonly liquid: Uint8Array
   readonly emits: Uint8Array
   readonly falls: Uint8Array
+  readonly collapses: Uint8Array
+  /** 0 = no support, 1 = structural member, 2 = fixed normal solid. */
+  readonly structural: Uint8Array
+  readonly hasCollapse: boolean
   /** 1 for a spring (a liquid with `source`). */
   readonly source: Uint8Array
   /** The base liquid's id for a liquid or a spring; 0 for every other block. */
@@ -52,6 +58,8 @@ export class BlockRegistry {
     this.liquid = new Uint8Array(this.count)
     this.emits = new Uint8Array(this.count)
     this.falls = new Uint8Array(this.count)
+    this.collapses = new Uint8Array(this.count)
+    this.structural = new Uint8Array(this.count)
     this.source = new Uint8Array(this.count)
     this.liquidGroup = new Uint16Array(this.count)
 
@@ -75,6 +83,11 @@ export class BlockRegistry {
       this.layer[id] = LAYER_CODE[layer]
       this.opaque[id] = (d.opaque ?? layer === 'opaque') ? 1 : 0
       this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid
+      if (d.collapses && (falls || liquid || d.source !== undefined || this.solid[id] !== 1)) {
+        throw new Error(`block "${d.name}": collapses requires a solid, non-liquid block without falls or source`)
+      }
+      this.collapses[id] = d.collapses ? 1 : 0
+      this.structural[id] = d.collapses ? 1 : this.solid[id] && !falls && !liquid ? 2 : 0
       this.liquid[id] = liquid ? 1 : 0
       this.emits[id] = emits
       const t = d.textures ?? d.name
@@ -82,6 +95,7 @@ export class BlockRegistry {
       this.faceTex.push(side, side, top, bottom, side, side)
     })
 
+    this.hasCollapse = this.collapses.includes(1)
     all.forEach((d, id) => {
       if (!this.liquid[id]) return
       if (d.source === undefined) { this.liquidGroup[id] = id; return }

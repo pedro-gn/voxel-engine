@@ -6,6 +6,7 @@ export { DecorationRegistry, defineDecoration, type DecorationDef, type FlowerDe
 export { AIR, blockLight, packLight, packVoxel, skyLight, voxelId, voxelState, withState } from './world/voxel.ts'
 export type { Ack, Command, FillRegionCommand, SetBlockCommand, Vec3 } from './sim/commands.ts'
 export type { SimEvent } from './sim/simulation.ts'
+export type { CollapseOptions } from './sim/collapse.ts'
 export type { RayHit, Vec3Like } from './interact/raycast.ts'
 export type { Layout, WorldSize } from './world/layout.ts'
 export type { OrbitCamera, OrbitState } from './interact/orbitCamera.ts'

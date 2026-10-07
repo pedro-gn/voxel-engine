@@ -22,6 +22,9 @@ export const BLOCKS = [
   defineBlock({ name: 'spring', textures: 'water', liquid: true, source: 'water', solid: false }),
   defineBlock({ name: 'mud', textures: 'mud' }),
   defineBlock({ name: 'wet_sand', textures: 'wet_sand' }),
+  // Opt-in variants: existing materials and generator IDs retain their behavior.
+  defineBlock({ name: 'structural_planks', textures: 'planks', collapses: true }),
+  defineBlock({ name: 'structural_glass', textures: 'glass', layer: 'translucent', collapses: true }),
 ]
 
 export const DECORATIONS = [

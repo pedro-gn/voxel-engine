@@ -1,0 +1,70 @@
+{
+  "node": "v24.5.0",
+  "cpu": "AMD Ryzen 5 5600 6-Core Processor              ",
+  "waterEnabled": true,
+  "scanCap": 4096,
+  "mutationCap": 128,
+  "fragmentCells": 128,
+  "results": [
+    {
+      "name": "small-deck",
+      "side": 16,
+      "depth": 1,
+      "count": 256,
+      "tick": {
+        "p50": 0.254,
+        "p95": 4.67,
+        "max": 10.053
+      },
+      "collapse": {
+        "p50": 0.162,
+        "p95": 1.611,
+        "max": 3.239
+      },
+      "firstBirthTick": 0,
+      "settledTick": 31,
+      "peakFragments": 2,
+      "payloadBytes": 2256
+    },
+    {
+      "name": "dense-slab",
+      "side": 96,
+      "depth": 4,
+      "count": 36864,
+      "tick": {
+        "p50": 1.313,
+        "p95": 3.727,
+        "max": 5.816
+      },
+      "collapse": {
+        "p50": 0.5,
+        "p95": 0.918,
+        "max": 3.283
+      },
+      "firstBirthTick": 9,
+      "settledTick": 745,
+      "peakFragments": 64,
+      "payloadBytes": 567144
+    },
+    {
+      "name": "wide-thin-slab",
+      "side": 192,
+      "depth": 1,
+      "count": 36864,
+      "tick": {
+        "p50": 2.104,
+        "p95": 6.242,
+        "max": 10.459
+      },
+      "collapse": {
+        "p50": 0.822,
+        "p95": 1.515,
+        "max": 4.747
+      },
+      "firstBirthTick": 9,
+      "settledTick": 599,
+      "peakFragments": 49,
+      "payloadBytes": 350064
+    }
+  ]
+}

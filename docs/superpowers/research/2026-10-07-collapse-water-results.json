@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "collapse": false,
+      "ticks": 600,
+      "tickP95": 4.837,
+      "tickMax": 25.734,
+      "peakFragments": 0,
+      "peakWaterTiles": 124,
+      "structuralRestarts": 0,
+      "cellsBorn": 0,
+      "waterVolumeExact": true
+    },
+    {
+      "collapse": true,
+      "ticks": 600,
+      "tickP95": 3.509,
+      "tickMax": 12.717,
+      "peakFragments": 15,
+      "peakWaterTiles": 121,
+      "structuralRestarts": 0,
+      "cellsBorn": 1600,
+      "waterVolumeExact": true
+    }
+  ]
+}

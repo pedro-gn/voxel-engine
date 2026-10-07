@@ -14,6 +14,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
     el.textContent = [
       `[${sceneName}] fps ${s.fps.toFixed(0)}   frame ${s.frameMs.toFixed(1)} ms   [${s.backend}]   gpu ${s.gpuMs === null ? '—' : s.gpuMs.toFixed(2) + ' ms'}`,
       `tick ${s.tick}   ${s.tickMs.toFixed(2)} ms`,
+      ...(sceneName === 'collapse' ? [`collapse checks ${s.collapseChecks}   fragments ${s.collapseFragments}   cells ${s.collapseCells}   visited ${s.collapseVisited}   writes ${s.collapseMutations}`] : []),
       `mesh queue ${s.meshQueue}   in flight ${s.meshInFlight}   failed ${s.failedChunks}`,
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
       `decorations ${s.decorationInstances} instances   ${s.decorationDraws} draws   shadow casters ${s.shadowCasters}`,

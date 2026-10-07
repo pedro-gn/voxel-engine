@@ -1,6 +1,9 @@
 import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { Layout } from '../world/layout.ts'
+import type { BlockRegistry } from '../blocks/registry.ts'
+import { FragmentMeshes } from './fragments.ts'
+import type { FragmentFrame } from './fragmentTrack.ts'
 import { AtmosphereController, type Atmosphere } from './atmosphere.ts'
 import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
@@ -33,6 +36,7 @@ export interface VisualsOptions {
   /** Per texture-array layer: blocks spanned by one texture repeat (engine `textureScale` option). */
   textureScales?: Float32Array
   layout: Layout
+  registry: BlockRegistry
   /** The orbit camera's distance to its target; sets how far shadows reach. */
   viewDistance: () => number
   decorations: DecorationRegistry
@@ -60,6 +64,7 @@ export class Visuals {
   private readonly deco: DecorationMeshes
   private readonly decoRadius: { value: number }
   private readonly falling: FallingCubes
+  private readonly fragments: FragmentMeshes
   private decoStats = { instances: 0, draws: 0 }
   private readonly warned = new Set<string>()
 
@@ -76,6 +81,8 @@ export class Visuals {
     o.scene.add(this.deco.group)
     this.falling = new FallingCubes(o.texture, this.lights, o.faceLayers)
     o.scene.add(this.falling.mesh)
+    this.fragments = new FragmentMeshes(o.layout, o.registry, o.faceLayers, o.texture, this.lights)
+    o.scene.add(this.fragments.group)
     this.sun = new SunLights(o.scene, this.quality.shadowMapSize)
     this.effects = this.resolve(this.requested)
     this.water = new WaterMaterial(this.lights, resolveEffects(this.requested, SUPPORT[o.backend]).waterDepth)
@@ -118,6 +125,7 @@ export class Visuals {
   drawFalling(cubes: readonly FallingCube[], light: (x: number, y: number, z: number) => number): void {
     this.falling.set(cubes, light)
   }
+  drawFragments(frames: readonly FragmentFrame[], light: (x: number, y: number, z: number) => number): void { this.fragments.set(frames, light) }
 
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
@@ -159,6 +167,7 @@ export class Visuals {
     this.deco.dispose()
     this.o.scene.remove(this.falling.mesh)
     this.falling.dispose()
+    this.o.scene.remove(this.fragments.group); this.fragments.dispose()
     this.o.scene.remove(this.waterSurface.group)
     this.waterSurface.dispose()
     this.water.dispose()
