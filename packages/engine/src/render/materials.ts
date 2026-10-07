@@ -21,6 +21,9 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: albedo.rgb }, lights)
     if (mode === 'opaque') {
       m.colorNode = vec4(albedo.rgb, 1)
+      // Internal voxel faces are culled. Back-face shadow casting (three's default)
+      // leaves light leaks where walls meet the floor; cast the exposed front faces.
+      m.shadowSide = THREE.FrontSide
     } else if (mode === 'cutout') {
       m.colorNode = albedo
       m.alphaTest = 0.5

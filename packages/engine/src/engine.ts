@@ -322,7 +322,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       failed.delete(m.chunk)
       results.push(m)
     } else if (m.type === 'retry') {
-      queue.retry(m.chunk)
+      queue.retry(m.chunk, true)
     } else {
       jobFailed(m.chunk, m.message)
     }
@@ -486,6 +486,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     last = now
     controls.update(dt)
     controls.apply(camera)
+    queue.releaseRetries()
     dispatch()
     upload()
     // FallingTrack.frame advances the shared clock for this frame; the water reads it after.

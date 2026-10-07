@@ -398,24 +398,9 @@ export class SurfaceView {
       d.mark(z & 31)
       this.markDirty(key)
       this.touch(key)
-      this.track(c, r)
+      this.track(c, r, d, o)
     }
     const next = this.nextMoving
-    let w = 0
-    for (const s of next) {
-      const c = (s / RANKS) | 0, r = s % RANKS
-      const x = c % sx, z = (c - x) / sx, cc = (x >> 5) + (z >> 5) * this.cx, d = this.data[r]![cc]!
-      const o = ((x & 31) + (z & 31) * 32) * 4, hp = d.hPrev, hc = d.hCur
-      let far = false, apart = false
-      for (let k = o; k < o + 4; k++) {
-        const g = Math.abs(hc[k]! - hp[k]!)
-        if (g >= SETTLED) far = true
-        else if (g > 0) apart = true
-      }
-      if (far) { next[w++] = s; continue }
-      if (apart) { hp.set(hc.subarray(o, o + 4), o); d.mark(z & 31); this.markDirty(r * this.ccCount + cc) }
-    }
-    next.length = w
     this.nextMoving = this.moving
     this.nextMoving.length = 0
     this.moving = next
@@ -423,10 +408,19 @@ export class SurfaceView {
     this.curtainsMoving.length = 0
   }
 
-  /** Alpha mode: lists slot (c, r) (just refreshed or carried, drawn) for the end of this apply's settleRest. */
-  private track(c: number, r = 0): void {
+  /** Keeps only moving slots, snapping near endpoints while their quad and offset are already in hand. */
+  private track(c: number, r: number, d: ColumnData, o: number): void {
     const s = c * RANKS + r
     if (this.movingMark[s] === this.epoch) return
+    const hp = d.hPrev, hc = d.hCur
+    const g0 = Math.abs(hc[o]! - hp[o]!), g1 = Math.abs(hc[o + 1]! - hp[o + 1]!)
+    const g2 = Math.abs(hc[o + 2]! - hp[o + 2]!), g3 = Math.abs(hc[o + 3]! - hp[o + 3]!)
+    if (g0 < SETTLED && g1 < SETTLED && g2 < SETTLED && g3 < SETTLED) {
+      if (g0 > 0 || g1 > 0 || g2 > 0 || g3 > 0) {
+        hp[o] = hc[o]!; hp[o + 1] = hc[o + 1]!; hp[o + 2] = hc[o + 2]!; hp[o + 3] = hc[o + 3]!
+      }
+      return
+    }
     this.movingMark[s] = this.epoch
     this.nextMoving.push(s)
   }
@@ -625,7 +619,7 @@ export class SurfaceView {
     d.info[o + 2] = depth * PER_SUB
     d.info[o + 3] = (l & 15) * 16 + (l >> 4) + 256 * white
     d.curtainMask[i] = prevBits | (curBits << 4)
-    if (a >= 0) this.track(c, r)
+    if (a >= 0) this.track(c, r, d, o)
   }
 
   /**
@@ -691,7 +685,7 @@ export class SurfaceView {
     d.info[o + 2] = depth * PER_SUB
     d.info[o + 3] = (l & 15) * 16 + (l >> 4) + 256 * white
     d.curtainMask[i] = prevBits | (curBits << 4)
-    if (a >= 0) this.track(c)
+    if (a >= 0) this.track(c, 0, d, o)
   }
 
   /**

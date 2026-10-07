@@ -4614,18 +4614,18 @@ This task is interactive. The controller drives it with the user, who runs the a
 | Every 3c knob | 3c plan, Task 13 table |
 | Straight curtains | `layStraight` in `render/water/surfaceView.ts` |
 
-- [ ] **Checkpoint 1: The dam hole.** Run `__elovox.caves.openDam()`. The lake drains through the two-block hole under the solid dam into the valley. A straight curtain falls from the hole. Everything settles.
-- [ ] **Checkpoint 2: The U-tunnel.** Run `__elovox.caves.digTunnel()` on a fresh page. The tunnel fills, and the shaft's water rises to the lake's level, sways a little and settles. The lake goes down by what the tunnel and the shaft took.
-- [ ] **Checkpoint 3: The pierced roof.** Run `__elovox.caves.pierceRoof()` on a fresh page. The pond pours through the hole as a curtain, and the cave fills (seen through the hole). The pond empties.
-- [ ] **Checkpoint 4: The bridged canal.** Judge the water under both bridges: no seam where the layers meet. Then run `__elovox.caves.openCanal()`: the canal flows under both bridges toward the cut. The low deck stays dry on top.
-- [ ] **Checkpoint 5: Flood regression.** Open `?scene=flood`. Dam break, channel, river and sand, as accepted at 3c's checkpoints: the same look and speed. The pillar over the lake now stands on a layer-1 slot: no seam.
-- [ ] **Checkpoint 6: Laptop measurements.**
+- [x] **Checkpoint 1: The dam hole — local functional/visual review.** The lake drains through the two-block hole under the solid dam into the valley. Its lit outgoing curtain uses an arc (the fix recorded below); engine tests cover drainage and settling. The short browser run does not wait for the entire valley to sleep.
+- [x] **Checkpoint 2: The U-tunnel — local functional/visual review.** The isolated scene fills its tunnel, lifts the shaft to the lake's level and settles with exact volume. The browser also exercises `__elovox.caves.digTunnel()`.
+- [x] **Checkpoint 3: The pierced roof — local functional/visual review.** The isolated scene pours the pond into the cave and settles; the remaining water above the pond bed is below the visibility threshold. Browser hooks and a drained-pond capture were checked.
+- [x] **Checkpoint 4: The bridged canal — local functional/visual review.** `__elovox.caves.openCanal()` drains through both bridges. The browser test verifies matching corners across draw layers at both bridges, solid decks and dry upper cells.
+- [x] **Checkpoint 5: Flood regression — local functional/visual review.** Browser tests cover the breach draining into the valley, the dug channel filling, sand landing, and the initial lake surface rendering at its expected level. Engine water regression tests passed. Speed on the laptop remains checkpoint 6; the opt-in 21-minute browser flattening test was not run.
+- [x] **Checkpoint 6: Measurements on the user-selected desktop (2026-10-06).** The user selected this PC (Ryzen 5 5600 / RTX 5060) as the current target. Visible Chrome/WebGPU and the production build passed: dam tick p95 8.28 ms / minimum 101.97 FPS; stress tick p95 8.99 ms / minimum 71.56 FPS.
   - Targets:
     - dam break and stress (`BENCH=1 E2E_PORT=5174 npx playwright test e2e/flood-bench.spec.ts --workers=1 --headed`, or the HUD) at tick p95 ≤ 10 ms and ≥ 45 fps;
-    - `?scene=terrain` idle with 0 water tiles.
+    - stationary terrain with 0 water tiles: passed with the scene's generator, flat base and lake-only reference document, normal physics active. The showcase's spring-fed river is continuously active and is not an idle case.
   - The pending 3c measurements: the HUD's `waterApply` during the dam break. Over budget: spread `SurfaceView.apply` over frames (record the decision).
-- [ ] **Also check** `?scene=diorama` and `?scene=world` for regressions, and that there are no console errors.
-- [ ] **Record and commit.** Fill in "Checkpoint results", then:
+- [x] **Also check** `?scene=diorama` and `?scene=world` for regressions, and that there are no console errors. Both WebGL2 smoke tests passed in the local review; the `world` run used a 300-second timeout after the initial run exceeded 120 seconds.
+- [x] **Record and commit.** Checkpoint results and both review reports are recorded with the validated water changes for local consolidation:
 
 ```bash
 git add docs/superpowers/plans/2026-10-05-water-layers.md
@@ -4719,3 +4719,17 @@ Ratio 3d / 3c: tick p95 **1.14×** (p50 1.15×), within the spec's 1.2×. Σ dep
   - A slot no longer named whose run holds the current rank-0 water goes at once and hands its level to rank 0.
   - Cave pools that really appear or dry out still rise and sink.
 - **Result (measured):** the water stays at 28.00 through both edits; only its layer changes.
+
+### Local functional and visual review (2026-10-06)
+
+The local portions of checkpoints 1–5 are closed. The focused engine tests passed (58 tests), the real caves scene tests passed (6 tests), and 7 distinct water E2E tests passed. The `world` and `diorama` smoke tests also passed, for 9 distinct browser checks in all. New coverage checks isolated tunnel/roof/canal commands, shared corners under both bridges, dry decks, and both interpolation endpoints when a roof edit transfers water between layers.
+
+The dam, drained pond, shaft, canal, flood scene and lake after a roof edit were captured and inspected. This first review used bundled headless Chromium/WebGL2 and left checkpoint 6 open. The later desktop closure below validates native WebGPU and the user-selected PC's performance budgets. No measurement on a different laptop or new human visual acceptance is claimed.
+
+See [the validation report](../reviews/2026-10-06-water-validation.md) for measured levels, test commands, screenshots, general scene checks and remaining verification limits.
+
+### Desktop quality and performance closure (2026-10-06)
+
+The user selected the connected desktop as the performance target. Checkpoint 6 passed on visible Chrome/WebGPU at 1280 × 720, using the production bundle. The final suite passed 1,093 tests plus the two existing expected tile-cap failures; 18 functional browser tests and 3 peak/idle checks passed. Build and workspace typecheck passed.
+
+Performance changes avoid immediate mesh retry loops, filter settled interpolation slots before queuing them, mirror only the changed surface band, skip unchanged quantized columns, and specialize common dense edge operations. Replays preserved exact render buffers and full simulation hashes; constants and physics ordering remain unchanged. See [the performance report](../reviews/2026-10-06-water-performance.md) for methodology, final numbers, commands and known limitations.

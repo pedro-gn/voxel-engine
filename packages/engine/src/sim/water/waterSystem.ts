@@ -8,7 +8,7 @@ import { KIND, MIN_FLOW, SUB, TILE } from './constants.ts'
 import { WaterCycle } from './cycle.ts'
 import { WaterBodies } from './bodies.ts'
 import { WaterEdges } from './edges.ts'
-import { WaterMirror, mirrorRun } from './mirror.ts'
+import { WaterMirror, mirrorRun, quantize } from './mirror.ts'
 import { WaterPublisher, type WaterTick } from './publish.ts'
 import { rebuildSegments, waterKinds } from './rebuild.ts'
 import { resegment, type Seg } from './resegment.ts'
@@ -370,7 +370,11 @@ export class WaterSystem {
       out.push(t)
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
-        mirror.flush(c, x, z, floor[c]!, depth[c]!, this.water, this.kind, this.height, this.get, this.set)
+        const f = floor[c]!, d = depth[c]!, q = mirror.q[c]!
+        // Most moving surfaces still occupy the same eighth of a voxel. Avoid the full mirror call for those columns.
+        if (q < 0 || mirror.lo[c] !== f || q !== (d > 0 ? quantize(f * SUB + d) : f * 8)) {
+          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set)
+        }
         for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set)
       }
     }

@@ -40,6 +40,25 @@ describe('quantize', () => {
 })
 
 describe('WaterMirror', () => {
+  it('a deep lake changing only its top level reads the surface band, leaving full cells below untouched', () => {
+    const m = mirrorAt(2), w = column()
+    m.flush(0, 0, 0, 2, 16 * SUB, ID.water, kind, 32, w.get, w.set)
+    const reads: number[] = []
+    const get = (x: number, y: number, z: number) => { reads.push(y); return w.get(x, y, z) }
+    m.flush(0, 0, 0, 2, 16 * SUB + SUB / 8, ID.water, kind, 32, get, w.set)
+    expect(reads).toEqual([18])
+    expect(w.get(0, 17, 0)).toBe(water(7))
+    expect(w.get(0, 18, 0)).toBe(water(0))
+    reads.length = 0
+    m.flush(0, 0, 0, 2, 15 * SUB + 3 * SUB / 4, ID.water, kind, 32, get, w.set)
+    expect(reads).toEqual([17, 18])
+    expect(w.get(0, 17, 0)).toBe(water(5))
+    expect(w.get(0, 18, 0)).toBe(AIR)
+    w.cells.delete(6)
+    m.touch(0, 6)
+    m.flush(0, 0, 0, 2, 15 * SUB + 3 * SUB / 4, ID.water, kind, 32, w.get, w.set)
+    expect(w.get(0, 6, 0)).toBe(water(7)) // touched columns still get their complete canonical mirror
+  })
   it('writes full cells under the quantized surface and a partial cell at it', () => {
     const m = mirrorAt(2), w = column()
     expect(m.flush(0, 0, 0, 2, 2 * SUB + 100, ID.water, kind, 32, w.get, w.set)).toBe(true)

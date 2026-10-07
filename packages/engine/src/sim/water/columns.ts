@@ -65,6 +65,23 @@ function scaled(f: number, d: number, out: number): number {
  * (fallCode, from the step's starting surfaces, so the order edges move in does not matter) says where transfer lands it.
  */
 function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number): void {
+  const da = depth[a]!, db = depth[b]!
+  if (floor[a] === floor[b] && da >= 0 && db >= 0) {
+    // Most edges share a bed. The floor cancels from the head and neither side can be a brink.
+    let h = da - db
+    if (h > MAX_HEAD) h = MAX_HEAD
+    else if (h < -MAX_HEAD) h = -MAX_HEAD
+    let f = damp(flux[e]!) + h * gain
+    if (f > 0 && da < MIN_FLOW || f < 0 && db < MIN_FLOW) f = 0
+    flux[e] = f
+    fall[e] = 0
+    return
+  }
+  accelerateUneven(floor, depth, flux, fall, e, a, b, gain, stride, sx, sz)
+}
+
+/** General edge path, including brinks and ballistic falls. */
+function accelerateUneven(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number): void {
   const fa = floor[a]! * SUB, fb = floor[b]! * SUB, da = depth[a]!, db = depth[b]!
   const sa = fa + da, sb = fb + db
   let h = sa - sb
@@ -128,6 +145,21 @@ function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, sou
   return out
 }
 
+/** Interior column: all four edges exist, so read each flux once without per-edge world-boundary checks. */
+function limitInterior(depth: Int32Array, flux: Int32Array, c: number, sx: number, extra: number): number {
+  const east = c * 2, south = east + 1, west = east - 2, north = (c - sx) * 2 + 1
+  const fe = flux[east]!, fs = flux[south]!, fw = flux[west]!, fn = flux[north]!
+  const out = extra + (fe > 0 ? fe >> FLUX_FP : 0) + (fs > 0 ? fs >> FLUX_FP : 0)
+    + (fw < 0 ? -fw >> FLUX_FP : 0) + (fn < 0 ? -fn >> FLUX_FP : 0)
+  const d = depth[c]!
+  if (out <= d) return 0
+  if (fe > 0) flux[east] = scaled(fe, d, out)
+  if (fs > 0) flux[south] = scaled(fs, d, out)
+  if (fw < 0) flux[west] = -scaled(-fw, d, out)
+  if (fn < 0) flux[north] = -scaled(-fn, d, out)
+  return out
+}
+
 /** The columns transfer's last fall landed its water on (spot[0..spots)) and what each took. */
 const spot = new Int32Array(4), spotTook = new Int32Array(4)
 let spots = 0
@@ -164,6 +196,19 @@ function plunge(depth: Int32Array, floor: Int16Array, sx: number, sz: number, c:
  * columns its arc crosses and lands on the one fallColumn gives, as its curtain is drawn, spreading there (plunge).
  */
 function transfer(depth: Int32Array, flux: Int32Array, fall: Uint16Array, floor: Int16Array, e: number, a: number, b: number, stride: number, sx: number, sz: number): number {
+  if (fall[e] === 0) {
+    spots = 0
+    const m = moved(flux[e]!)
+    if (m === 0) return 0
+    depth[a] = depth[a]! - m
+    depth[b] = depth[b]! + m
+    return m < 0 ? -m : m
+  }
+  return transferFall(depth, flux, fall, floor, e, a, b, stride, sx, sz)
+}
+
+/** Cold transfer path for a ballistic fall and its landing footprint. */
+function transferFall(depth: Int32Array, flux: Int32Array, fall: Uint16Array, floor: Int16Array, e: number, a: number, b: number, stride: number, sx: number, sz: number): number {
   spots = 0
   const m = moved(flux[e]!)
   if (m === 0) return 0
@@ -440,7 +485,10 @@ export class WaterColumns {
       const t = this.list.data[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
-        this.limitTop(c, limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c)))
+        const out = x > 0 && z > 0 && x + 1 < sx && z + 1 < sz
+          ? limitInterior(depth, flux, c, sx, this.extraOut(c))
+          : limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c))
+        this.limitTop(c, out)
       }
     }
     for (let k = 0; k < this.ring.length; k++) {
@@ -454,7 +502,8 @@ export class WaterColumns {
 
   /** After limit for column c: remember it was limited, and its scale when it scaled (its under edges are scaled alike). */
   private limitTop(c: number, out: number): void {
-    if (this.under === null) return
+    // Only collected under-edge senders read these marks in limitUnder/scaleUnder.
+    if (this.under === null || this.topMark[c] !== this.stepNo) return
     this.topLimited[c] = this.stepNo
     if (out > 0) { this.topScaleD[c] = this.depth[c]!; this.topScaleOut[c] = out; this.topScaleMark[c] = this.stepNo }
   }

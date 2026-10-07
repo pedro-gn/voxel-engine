@@ -16,7 +16,9 @@ export function mirrorRun(lo: Int16Array, q: Int32Array, i: number, x: number, z
   const oq = q[i]!, force = oq < 0, extent = force ? ~oq : oq
   const ol = lo[i]!
   if (!force && nq === oq && floor === ol) return false
-  const from = Math.min(ol, floor)
+  // With an unchanged floor and a valid mirror, cells below both surfaces are already full. Only their surface band
+  // can differ. Edits (force) and floor changes still rebuild the complete run, including stray or displaced cells.
+  const from = force || floor !== ol ? Math.min(ol, floor) : Math.max(floor, Math.min(extent >> 3, nq >> 3))
   const to = Math.min(ceil, Math.max((extent + 7) >> 3, (nq + 7) >> 3))
   const full = nq >> 3, part = nq & 7
   let wrote = false

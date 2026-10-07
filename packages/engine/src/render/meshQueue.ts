@@ -6,6 +6,7 @@ export class MeshQueue {
   private readonly inFlight = new Map<number, number>()
   private readonly again = new Map<number, number>()
   private readonly applied = new Map<number, number>()
+  private readonly deferredRetries = new Set<number>()
 
   get size(): number { return this.queued.size }
   get inFlightCount(): number { return this.inFlight.size }
@@ -39,6 +40,7 @@ export class MeshQueue {
   }
 
   finish(ci: number): void {
+    this.deferredRetries.delete(ci)
     this.inFlight.delete(ci)
     const p = this.again.get(ci)
     if (p !== undefined) {
@@ -47,11 +49,20 @@ export class MeshQueue {
     }
   }
 
-  /** A job returned `retry` (snapshot failed): free its slot and queue the chunk again, never lower than before. */
-  retry(ci: number): void {
+  /** A failed snapshot can wait for the next frame instead of repeatedly reading a chunk the sim still holds open. */
+  retry(ci: number, defer = false): void {
+    if (defer) {
+      if (this.inFlight.has(ci)) this.deferredRetries.add(ci)
+      return
+    }
     const p = this.inFlight.get(ci)
     this.finish(ci)
     if (p !== undefined) this.mark(ci, p)
+  }
+
+  /** Releases deferred snapshots once per frame, preserving their original priority and any edits coalesced meanwhile. */
+  releaseRetries(): void {
+    for (const ci of this.deferredRetries) this.retry(ci)
   }
 
   /** The version of the mesh last applied for a chunk; −1 before any. */

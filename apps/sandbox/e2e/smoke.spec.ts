@@ -125,6 +125,11 @@ test('terrain editor adds an op, drags it live, and undoes back to the original 
   const added = await heights()
   expect(added).not.toEqual(original)
 
+  // Regeneration raises the camera's terrain-following target. Let its damping finish before computing a screen pick.
+  await page.waitForFunction(() => {
+    const { current, goal } = (window as W).__elovox!.engine.controls
+    return current.target.every((v, i) => Math.abs(v - goal.target[i]!) < 0.01)
+  })
   const c = await page.evaluate(() => (window as W).__elovox!.editor!.handleScreen('center'))
   expect(c).not.toBeNull()
   const centreBefore = await page.evaluate(() => (window as W).__elovox!.editor!.session.doc.ops.at(-1)!.shape)
