@@ -2,6 +2,8 @@
 
 Date: 2026-10-07. Selected desktop: Ryzen 5 5600 / RTX 5060 / Windows.
 
+Status: **closed by user acceptance on 2026-10-07**. The user approved the current milestone and requested closure. Further collapse-pacing tuning and maximum simultaneous water/collapse browser stress are optional future follow-ups; they are not pending acceptance requirements for 3b. The measurement limits documented below remain unchanged.
+
 ## Delivered behavior
 
 - `BlockDef.collapses` defaults to false. Existing IDs and material behavior remain intact, including sand/gravel's individual gravity. Appended sandbox types are `structural_planks` and `structural_glass`.

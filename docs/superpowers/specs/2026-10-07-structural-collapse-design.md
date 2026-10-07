@@ -1,11 +1,11 @@
 # Elovox — Sub-project 3b: Structural collapse — design
 
 Date: 2026-10-07.
-Status: approved by the user on 2026-10-07; implemented and validated. See the [validation report](../reviews/2026-10-07-collapse-validation.md) for measured limits and final defaults.
+Status: **closed on 2026-10-07 following user acceptance**; implemented and validated. The user approved the current 3b behavior and requested closure. See the [validation report](../reviews/2026-10-07-collapse-validation.md) for measured limits and final defaults.
 Builds on SP3a's gravity/jobs and the completed SP3d water integration.
 Evidence and alternatives: [research](../research/2026-10-07-structural-collapse.md).
 
-## 1. Confirmed requirement and proposed defaults
+## 1. Confirmed requirement and approved defaults
 
 **Confirmed by the user:** block types opt in to structural collapse. Normal block types retain their current behavior; enabling 3b must not make every solid block fall.
 
