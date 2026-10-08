@@ -1,0 +1,84 @@
+{
+  "format": "elovox-terrain",
+  "version": 1,
+  "size": [512, 512],
+  "seaLevel": 30,
+  "base": { "height": 40, "amplitude": 8, "noise": { "scale": 120, "octaves": 4, "warp": { "scale": 220, "amount": 24 } } },
+  "biomes": [
+    {
+      "name": "temperate",
+      "surface": [
+        { "block": "stone", "slope": [1.6, 99] },
+        { "block": "gravel", "underwater": true, "depth": [0, 1] },
+        { "block": "sand", "nearWater": 2, "depth": [0, 2] },
+        { "block": "stone", "ceiling": true, "depth": [0, 40] },
+        { "block": "grass" },
+        { "block": "dirt", "depth": [1, 3] }
+      ],
+      "trees": { "density": 0.1, "kinds": ["broadleaf", "broadleaf", "bush"] },
+      "rocks": { "density": 0.015, "size": [1, 3] }
+    },
+    {
+      "name": "alpine",
+      "surface": [
+        { "block": "stone", "slope": [1.3, 99] },
+        { "block": "stone", "ceiling": true, "depth": [0, 40] },
+        { "block": "snow" }
+      ],
+      "trees": { "density": 0.04, "kinds": ["pine"], "on": ["snow"] }
+    },
+    {
+      "name": "beach",
+      "surface": [
+        { "block": "gravel", "underwater": true, "depth": [0, 1] },
+        { "block": "sand", "depth": [0, 3] }
+      ],
+      "rocks": { "density": 0.05, "size": [2, 4] }
+    }
+  ],
+  "biomeRule": {
+    "default": "temperate",
+    "moisture": { "scale": 140, "octaves": 3 },
+    "rules": [{ "biome": "alpine", "minHeight": 80 }]
+  },
+  "ops": [
+    {
+      "id": "north-range", "type": "mountain",
+      "shape": { "kind": "path", "width": 140, "points": [{ "x": 0, "z": 40 }, { "x": 180, "z": 30 }, { "x": 360, "z": 50 }, { "x": 512, "z": 35 }] },
+      "params": { "height": 44, "roughness": 0.6, "noise": { "type": "ridged", "scale": 90, "octaves": 5 } }
+    },
+    {
+      "id": "north-cave", "type": "cave",
+      "shape": { "kind": "path", "width": 7, "points": [{ "x": 80, "z": 95, "y": 50 }, { "x": 100, "z": 70, "y": 54 }, { "x": 130, "z": 55, "y": 52 }] }
+    },
+    {
+      "id": "centre-hills", "type": "hills",
+      "shape": { "kind": "circle", "center": [300, 300], "radius": 150, "falloff": 50 },
+      "params": { "amplitude": 8, "noise": { "scale": 50, "octaves": 3 } }
+    },
+    {
+      "id": "river", "type": "river",
+      "shape": { "kind": "path", "width": 9, "points": [{ "x": 262, "z": 90 }, { "x": 250, "z": 180 }, { "x": 266, "z": 280 }, { "x": 246, "z": 380 }, { "x": 232, "z": 430 }] },
+      "params": { "start": 46, "end": 36, "depth": 3, "bank": 14, "bankSlope": 0.4 }
+    },
+    {
+      "id": "lake", "type": "lake",
+      "shape": { "kind": "circle", "center": [230, 455], "radius": 40 },
+      "params": { "level": 36, "depth": 6, "shore": 16 }
+    },
+    {
+      "id": "sea", "type": "hills", "blend": "min",
+      "shape": { "kind": "polygon", "points": [[0, 380], [110, 360], [170, 420], [190, 512], [0, 512]], "falloff": 60 },
+      "params": { "amplitude": 5, "offset": 16, "noise": { "scale": 40 } }
+    },
+    {
+      "id": "coast", "type": "biome",
+      "shape": { "kind": "polygon", "points": [[0, 380], [110, 360], [170, 420], [190, 512], [0, 512]], "falloff": 50 },
+      "params": { "biome": "beach", "jitter": 10 }
+    },
+    { "id": "plateau-reservoir", "type": "flatten", "shape": { "kind": "circle", "center": [170, 200], "radius": 36, "falloff": 16 }, "params": { "y": 58 } },
+    { "id": "plateau-work", "type": "flatten", "shape": { "kind": "circle", "center": [330, 200], "radius": 36, "falloff": 16 }, "params": { "y": 46 } },
+    { "id": "plateau-rest", "type": "flatten", "shape": { "kind": "circle", "center": [330, 310], "radius": 36, "falloff": 16 }, "params": { "y": 46 } },
+    { "id": "plateau-tower", "type": "flatten", "shape": { "kind": "circle", "center": [440, 300], "radius": 36, "falloff": 16 }, "params": { "y": 46 } }
+  ]
+}
