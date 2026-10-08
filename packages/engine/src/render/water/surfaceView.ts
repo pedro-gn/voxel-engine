@@ -94,6 +94,8 @@ export class SurfaceView {
   readonly layers: LayerStore
   /** Tests: refresh every tile through the layered path (plan decision 14's differential test). */
   forceLayered = false
+  /** Tests: every column of a layered tile through refreshSlot (the path before 4a #1), for the mixed path's differential test. */
+  forceSlots = false
   /** Encoded surfaces (WaterBuffers.surface) of the previous and the current step. */
   readonly prev: Int32Array
   readonly cur: Int32Array
@@ -149,6 +151,7 @@ export class SurfaceView {
   private readonly vPrev = new Float32Array(VERTICES * VERTICES * 4)
   private readonly vCur = new Float32Array(VERTICES * VERTICES * 4)
   private readonly smooth = new Uint8Array(VERTICES * VERTICES)
+  private readonly reg = { xa: 0, xb: 0, za: 0, zb: 0, hw: 0, vw: 0, aligned: false }
   /** The alpha (0–1) the surface is drawn at while an apply runs; negative: none given (the previous step is computed). */
   private shown = -1
   /**
@@ -473,6 +476,21 @@ export class SurfaceView {
    */
   private refreshTile(tile: number, e: number): void {
     if (this.forceLayered || this.layers.layeredAround(tile)) { this.refreshLayered(tile, e); return }
+    const g = this.region(tile, e)
+    for (let z = g.za; z < g.zb; z++) for (let x = g.xa; x < g.xb; x++) {
+      const c = x + z * this.sx
+      if (this.refreshed[c] === e || !this.near(x, z, e)) continue
+      this.refreshed[c] = e
+      this.refreshColumn(x, z, x - g.xa + 1 + (z - g.za + 1) * g.hw, g.hw, x - g.xa + (z - g.za) * g.vw, g.vw, g.aligned)
+    }
+  }
+
+  /**
+   * The region refreshTile refreshes: the tile and its one-column ring (a ring side left to the tile beyond it when that tile
+   * changed too), its columns' effective values with a halo (eP, eC) and every vertex grouped once (vPrev, vCur, smooth), the
+   * previous step only when the region is not aligned. Returns this.reg, reused.
+   */
+  private region(tile: number, e: number): typeof this.reg {
     const tw = this.tx, th = this.seen.length / tw, tx = tile % tw, tz = (tile - tx) / tw
     const x0 = tx * TILE, z0 = tz * TILE
     const xa = tx > 0 && this.tileChanged[tile - 1] !== e ? x0 - 1 : x0
@@ -496,12 +514,9 @@ export class SurfaceView {
       const a = i + k * hw, b = a + hw
       smooth[vi] = (shares(eC, a, b, vC, vi * 4) ? 2 : 0) | (!aligned && shares(eP, a, b, vP, vi * 4) ? 1 : 0)
     }
-    for (let z = za; z < zb; z++) for (let x = xa; x < xb; x++) {
-      const c = x + z * sx
-      if (this.refreshed[c] === e || !this.near(x, z, e)) continue
-      this.refreshed[c] = e
-      this.refreshColumn(x, z, x - xa + 1 + (z - za + 1) * hw, hw, x - xa + (z - za) * vw, vw, aligned)
-    }
+    const g = this.reg
+    g.xa = xa; g.xb = xb; g.za = za; g.zb = zb; g.hw = hw; g.vw = vw; g.aligned = aligned
+    return g
   }
 
   /**
@@ -528,18 +543,21 @@ export class SurfaceView {
     return false
   }
 
-  /** The tile and its ring as refreshTile, every column at every rank, neighbours through links (plan decision 14). */
+  /**
+   * The tile and its ring as refreshTile. A column whose 3 × 3 holds no slot (LayerStore.plainAround) is drawn by
+   * refreshColumn on the region's grids; one next to a slot refreshes every rank through its links (plan decision 14).
+   */
   private refreshLayered(tile: number, e: number): void {
-    const tw = this.tx, th = this.seen.length / tw, tx = tile % tw, tz = (tile - tx) / tw
-    const x0 = tx * TILE, z0 = tz * TILE
-    const xa = tx > 0 && this.tileChanged[tile - 1] !== e ? x0 - 1 : x0
-    const xb = tx + 1 < tw && this.tileChanged[tile + 1] !== e ? x0 + TILE + 1 : x0 + TILE
-    const za = tz > 0 && this.tileChanged[tile - tw] !== e ? z0 - 1 : z0
-    const zb = tz + 1 < th && this.tileChanged[tile + tw] !== e ? z0 + TILE + 1 : z0 + TILE
-    for (let z = za; z < zb; z++) for (let x = xa; x < xb; x++) {
+    const g = this.region(tile, e)
+    for (let z = g.za; z < g.zb; z++) for (let x = g.xa; x < g.xb; x++) {
       const c = x + z * this.sx
       if (this.refreshed[c] === e || !this.nearLayered(x, z, e)) continue
       this.refreshed[c] = e
+      if (!this.forceSlots && this.layers.plainAround(x, z)) {
+        this.refreshColumn(x, z, x - g.xa + 1 + (z - g.za + 1) * g.hw, g.hw, x - g.xa + (z - g.za) * g.vw, g.vw, g.aligned)
+        for (let r = 1; r < RANKS; r++) this.clearSlot(x, z, r)
+        continue
+      }
       for (let r = 0; r < RANKS; r++) {
         if (r === 0 || this.layers.has(c, r)) this.refreshSlot(x, z, r)
         else this.clearSlot(x, z, r)

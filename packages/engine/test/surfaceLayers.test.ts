@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { RippleSet, editRipples } from '../src/render/water/ripples.ts'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
-import { SUB } from '../src/sim/water/constants.ts'
+import { RANKS, SUB } from '../src/sim/water/constants.ts'
 import { WaterPublisher } from '../src/sim/water/publish.ts'
 import { createWaterBuffers } from '../src/world/waterBuffers.ts'
 import { AIR, STONE, layered, wv } from './layerHelpers.ts'
@@ -210,5 +210,61 @@ describe('what a body looks like from the free side (final review I1, I2)', () =
     expect(w.under.body[w.under.first[25 + 5 * 64]!]).toBeGreaterThanOrEqual(0)
     const d = view.column(0, 1)
     expect(d ? d.info[((25 & 31) + 5 * 32) * 4 + 3]! : -1).toBeLessThan(0)
+  })
+})
+
+/** A lake behind a gate with a hole under a deck: water runs through the hole into a lower channel, under the deck (lower slots). */
+function gateWorld() {
+  return layered((x, y, z) => {
+    if (y < 2 || z === 0 || z >= 5 || x === 0 || x === 63) return STONE
+    if (x === 31 && !(y >= 3 && y <= 4 && z === 2)) return STONE // the gate, a 1 × 2 hole at z 2
+    if (x >= 26 && x <= 40 && y === 7) return STONE // the deck over the gate
+    if (x < 31) return y <= 10 ? wv(7) : AIR // the lake
+    return AIR
+  }, [64, 32, 32])
+}
+
+describe('plain columns of layered tiles (4a #1)', () => {
+  it('plainAround is false within one column of a slot, true elsewhere', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const view = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), pub = new WaterPublisher(w.buffers.water)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    expect(view.layers.plainAround(31, 2)).toBe(false) // the gate hole under the deck
+    expect(view.layers.plainAround(5, 2)).toBe(true) // the open lake, far from the deck
+  })
+
+  it('draws exactly what the all-slots path drew, on a world with layers and running water (differential)', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const pub = new WaterPublisher(w.buffers.water)
+    const mixed = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), slots = new SurfaceView([64, 32, 32], w.buffers.water, () => 15)
+    slots.forceSlots = true
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    for (let tick = 0; tick < 40; tick++) {
+      const t = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+      mixed.apply(t, 0.5); slots.apply(t, 0.5)
+      for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < mixed.cx * mixed.cz; cc++) {
+        const a = slots.column(cc, r), s = mixed.column(cc, r)
+        expect(!!a).toBe(!!s)
+        if (!a || !s) continue
+        expect([tick, r, cc, diff(s.hCur, a.hCur), diff(s.hPrev, a.hPrev), diff(s.info, a.info), diff(s.curtainMask, a.curtainMask),
+          diff(s.curtains.cur.subarray(0, s.curtains.count * 4), a.curtains.cur.subarray(0, a.curtains.count * 4))]).toEqual([tick, r, cc, -1, -1, -1, -1, -1])
+      }
+      w.step()
+    }
+  }, 60_000)
+
+  it('only columns next to a slot pay for refreshSlot', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const view = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), pub = new WaterPublisher(w.buffers.water)
+    const spy = vi.spyOn(SurfaceView.prototype as unknown as { refreshSlot: (...a: number[]) => void }, 'refreshSlot')
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    let notPlain = 0
+    for (let z = 0; z < 32; z++) for (let x = 0; x < 64; x++) if (!view.layers.plainAround(x, z)) notPlain++
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(notPlain * RANKS)
+    spy.mockRestore()
   })
 })

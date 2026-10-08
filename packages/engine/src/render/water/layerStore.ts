@@ -124,6 +124,22 @@ export class LayerStore {
     return false
   }
 
+  /**
+   * Whether column (x, z) and its 8 neighbours hold no slot at any rank (rank-0 link records included): its 3 × 3 is then the
+   * dense columns' alone, so the fast path's refreshColumn draws it exactly as refreshSlot would.
+   */
+  plainAround(x: number, z: number): boolean {
+    for (let j = Math.max(0, z - 1); j <= Math.min(this.sz - 1, z + 1); j++) {
+      for (let i = Math.max(0, x - 1); i <= Math.min(this.sx - 1, x + 1); i++) {
+        const s = this.tiles[(i >> 4) + (j >> 4) * this.tx]
+        if (s === null) continue
+        const k = ((i & 15) + (j & 15) * 16) * RANKS
+        for (let r = 0; r < RANKS; r++) if (s.present[k + r] === 1) return false
+      }
+    }
+    return true
+  }
+
   has(c: number, r: number): boolean { const s = this.slots(c); return s !== null && s.present[this.k(c, r)] === 1 }
   prev(c: number, r: number): number { return this.slots(c)!.prev[this.k(c, r)]! }
   cur(c: number, r: number): number { return this.slots(c)!.cur[this.k(c, r)]! }
