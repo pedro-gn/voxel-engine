@@ -4,15 +4,15 @@ import { AO_CURVE } from '../mesh/ao.ts'
 import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
 import { FLIP_U } from './faceUv.ts'
 
-/**
- * The chunk's translation when a BatchedMesh draws it (chunkBatches.ts), else 0. three r186 applies the batch's
- * per-instance matrix to positionLocal BEFORE the material's positionNode, which then overwrites it, so a custom
- * positionNode must read that matrix itself: instance_index (the draw range's firstInstance) -> the batch's indirect
- * texture -> the instance's matrix in the matrices texture (4 texels per matrix) -> column 3, the translation.
- */
 /** A data texture's width in texels (level 0), as an int node. */
 const widthOf = (t: THREE.DataTexture) => int((textureSize(textureLoad(t), int(0)) as unknown as ReturnType<typeof ivec2>).x)
 
+/**
+ * The chunk's translation when a BatchedMesh draws it (chunkBatches.ts), else 0. Trap 1 of chunkBatches.ts: three r186
+ * applies the batch's per-instance matrix to positionLocal BEFORE the material's positionNode, which then overwrites
+ * it, so a custom positionNode must read that matrix itself: instance_index (the draw range's firstInstance) -> the
+ * batch's indirect texture -> the instance's matrix in the matrices texture (4 texels per matrix) -> column 3.
+ */
 const batchOffset = Fn((_: unknown, builder: { object?: THREE.Object3D }) => {
   const bm = builder.object as (THREE.BatchedMesh & { _indirectTexture: THREE.DataTexture; _matricesTexture: THREE.DataTexture }) | undefined
   if (!bm || bm.isBatchedMesh !== true) return vec3(0, 0, 0)

@@ -6,18 +6,19 @@ import { geometryOf } from './chunkMeshes.ts'
 /**
  * One chunk layer drawn by THREE.BatchedMesh: one batch per region of REGION × REGION chunk columns (all heights), so the
  * renderer pays its per-render-object CPU cost once per region instead of once per chunk. Each chunk is one geometry
- * plus one instance whose matrix is the chunk-centre translation; the chunk vertex shader reads that translation itself
- * (chunkVertex.ts `batchOffset`: three r186 applies the batch matrix before the material's positionNode, which then
- * overwrites it).
+ * plus one instance whose matrix is the chunk-centre translation.
  *
- * three r186 traps handled here (re-check them on every three upgrade; the internals test pins the private fields):
- * 1. BatchedMesh._initializeGeometry builds the batch attributes from the first geometry but drops `gpuType` (IntType)
- *    and un-aliases `position` from `packed`: the batch geometry is pre-initialised instead (`newBatch`).
- * 2. setGeometrySize re-runs that initialisation, so growing goes through `growBatch`, which keeps both.
- * 3. The renderer's opaque/transparent sort reads geometry.boundingSphere and computes it from the integer `position`
- *    alias when missing (NaN radius errors): explicit region bounds go on the batch and on its geometry.
- * 4. The shadow map renders INSIDE the main pass, and both passes write the batch's single shared multi-draw list in
- *    onBeforeRender: `PassGuard` restores the outer camera's list after a nested pass.
+ * The four three r186 traps (re-check them on every three upgrade; the internals test pins the private fields):
+ * 1. Custom position: the batch matrix is applied to positionLocal before the material's positionNode, which then
+ *    overwrites it. Handled in chunkVertex.ts (`batchOffset`), which reads the instance translation itself.
+ * 2. Batch geometry: BatchedMesh._initializeGeometry (and setGeometrySize, which re-runs it) builds the batch attributes
+ *    from a geometry but drops `gpuType` (IntType) and un-aliases `position` from `packed`. The batch geometry is built
+ *    here instead (`newBatch`) and grown here (`growBatch`).
+ * 3. Bounds: the renderer's opaque/transparent sort reads geometry.boundingSphere and computes it from the integer
+ *    `position` alias when missing (NaN radius errors). Explicit region bounds go on the batch and its geometry.
+ * 4. Nested shadow pass: the shadow map renders INSIDE the main pass, and both passes write the batch's single shared
+ *    multi-draw list in onBeforeRender. `PassGuard` restores the outer camera's list after a nested pass, and the
+ *    duplicate cull of onBeforeShadow is skipped.
  */
 
 /** Chunk columns per region side. */
@@ -51,7 +52,7 @@ function packedAttribute(vertices: number): THREE.BufferAttribute {
   return packed
 }
 
-/** Trap 1: initialise the batch geometry ourselves, with the integer `packed` attribute aliased as `position`. */
+/** Trap 2: initialise the batch geometry ourselves, with the integer `packed` attribute aliased as `position`. */
 function newBatch(material: THREE.Material, maxInstances: number, maxVertices: number, maxIndices: number): THREE.BatchedMesh {
   const bm = new THREE.BatchedMesh(maxInstances, maxVertices, maxIndices, material)
   const packed = packedAttribute(maxVertices)
