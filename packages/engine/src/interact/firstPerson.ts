@@ -112,7 +112,10 @@ export class FirstPersonController {
   private blockedH = false
   private readonly delta: [number, number, number] = [0, 0, 0]
 
-  constructor(private readonly o: FirstPersonOptions) {
+  private readonly o: FirstPersonOptions
+
+  constructor(o: FirstPersonOptions) {
+    this.o = o
     this.tuning = Object.freeze({ ...FP_TUNING, ...o.tuning })
   }
 

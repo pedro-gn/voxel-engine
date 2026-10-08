@@ -4,6 +4,7 @@ import { columnTop, ghostAwareGet, markTick } from './engineWorld.ts'
 import { EngineError, showErrorScreen } from './errors.ts'
 import { GhostEdits } from './interact/ghostEdits.ts'
 import { OrbitCamera } from './interact/orbitCamera.ts'
+import { FP_FOV, FP_VIEW_DISTANCE, FirstPersonController, firstPersonToOrbit, orbitToFirstPerson, surfaceTop, type CameraMode } from './interact/firstPerson.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { bindCollision, type Collision } from './interact/collision.ts'
 import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
@@ -113,6 +114,11 @@ export interface Engine {
   readonly blocks: BlockRegistry
   readonly layout: Layout
   readonly controls: OrbitCamera
+  /** The first-person controller; drives the camera while cameraMode is 'firstPerson' (spec 4d). */
+  readonly firstPerson: FirstPersonController
+  readonly cameraMode: CameraMode
+  /** Switches the camera controller with a hand-off: first person starts at the orbit target; orbit comes back centred on the player. */
+  setCameraMode(mode: CameraMode): void
   readonly atmosphere: AtmosphereController
   get quality(): Quality
   set quality(value: Partial<Quality>)
@@ -267,10 +273,13 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   }
   const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(world.get, registry.solid, size, x, z) })
   const detachControls = controls.attach(canvas)
+  // First person is built once engine.collision exists (public API below); until then only the orbit can be active.
+  let cameraMode: CameraMode = 'orbit'
+  let detachFirstPerson: (() => void) | null = null
   const visuals = new Visuals({
     renderer, scene, camera, backend, texture: tex.texture, layout, registry,
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
-    viewDistance: () => controls.current.distance,
+    viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     faceLayers,
     water: waterView,
@@ -517,8 +526,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const now = performance.now()
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
-    controls.update(dt)
-    controls.apply(camera)
+    if (cameraMode === 'orbit') { controls.update(dt); controls.apply(camera) } else { firstPerson.update(dt); firstPerson.apply(camera) }
     queue.releaseRetries()
     dispatch()
     upload()
@@ -545,6 +553,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     halt()
     rejectTerrainWaits('the engine was disposed')
     detachControls()
+    detachFirstPerson?.()
     ro.disconnect()
     scene.remove(highlight)
     visuals.dispose()
@@ -564,6 +573,23 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   // ---- public API ----
   let seq = 0
   const collision = bindCollision({ size, get: world.get, solid: registry.solid, liquid: registry.liquid, source: registry.source })
+  const firstPerson = new FirstPersonController({
+    worldSize: size, collision,
+    surfaceAt: (x, z) => surfaceTop(world.get, registry.solid, registry.liquid, size, x, z),
+  })
+  firstPerson.enabled = false
+  detachFirstPerson = firstPerson.attach(canvas)
+  let orbitDistance = controls.goal.distance
+  const orbitFov = camera.fov
+  const setCameraMode = (mode: CameraMode) => {
+    if (mode !== 'orbit' && mode !== 'firstPerson') throw new TypeError(`setCameraMode expects 'orbit' or 'firstPerson', got ${String(mode)}`)
+    if (mode === cameraMode || disposed) return
+    if (mode === 'firstPerson') orbitDistance = orbitToFirstPerson(controls, firstPerson)
+    else firstPersonToOrbit(controls, firstPerson, orbitDistance)
+    cameraMode = mode
+    camera.fov = mode === 'orbit' ? orbitFov : FP_FOV
+    camera.updateProjectionMatrix()
+  }
   const pickable = (v: number) => { const id = voxelId(v); return id !== 0 && registry.liquid[id] === 0 }
   const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(world.get, pickable, size, origin, dir, maxDist)
   const raycaster = new THREE.Raycaster()
@@ -590,6 +616,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   return {
     scene, camera, renderer, blocks: registry, layout, controls, world,
+    firstPerson, get cameraMode() { return cameraMode }, setCameraMode,
     terrain: {
       get initial() { return initialGen },
       setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })),
