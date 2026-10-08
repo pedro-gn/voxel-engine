@@ -20,7 +20,7 @@ export function createHud(engine: Engine, getSelected: () => string, sceneName: 
       `slots ${s.slotsUsed}   meshes ${s.meshes}   draws ${s.drawCalls}`,
       `decorations ${s.decorationInstances} instances   ${s.decorationDraws} draws   shadow casters ${s.shadowCasters}`,
       `physics  water tiles ${s.waterTiles}   columns ${s.waterColumns}   jobs ${s.regionJobs}   falling ${s.fallingBodies}   ${s.physicsBusy ? 'busy' : 'settled'}   water apply ${s.waterApplyMs.toFixed(2)} ms (p95 ${s.waterApplyP95.toFixed(2)}) · bodies ${s.waterBodies}${s.waterLayersHidden !== 0 ? ` · hidden ${s.waterLayersHidden}` : ''}`,
-      o.hint ?? (sceneName === 'workers' ? 'LMB select · Shift add / area · RMB move · tools designate work · Escape clear' : `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom · V bean walk`),
+      o.hint ?? (sceneName === 'workers' ? 'LMB select · Shift add / area · RMB move · tools designate work · Escape clear · C first person' : `block [${getSelected()}]   1–0 select · LMB dig · RMB place · WASD/edges pan · RMB-drag rotate · wheel zoom · V bean walk · C first person`),
     ].join('\n')
   }
   render()
