@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  FP_TUNING, FirstPersonController, createLookFilter, lookDelta, surfaceTop, wishDir,
+  FP_TUNING, FirstPersonController, createLookFilter, firstPersonToOrbit, lookDelta, orbitToFirstPerson, surfaceTop, wishDir,
   type CollisionLike, type FpBox,
 } from '../src/interact/firstPerson.ts'
+import { OrbitCamera } from '../src/interact/orbitCamera.ts'
 
 /** A stub of 4c's frozen signatures: an infinite floor at y = floorY, nothing else, no water. Replaced in Task 6. */
 function flatFloor(floorY = 0): CollisionLike & { calls: number } {
@@ -181,5 +182,27 @@ describe('FirstPersonController.update (flat floor stub)', () => {
     ;(fp as unknown as { eyeOffset: number }).eyeOffset = -1
     run(fp, 0.15)
     expect(Math.abs(fp.eyeLag)).toBeLessThan(0.06)
+  })
+})
+
+describe('orbit ⇄ first person hand-off', () => {
+  it('starts the player at the orbit target and centres the orbit on the player on the way back', () => {
+    const orbit = new OrbitCamera({ worldSize: [64, 64, 64] })
+    for (const s of [orbit.goal, orbit.current]) { s.target = [20, 5, 30]; s.yaw = 1.2; s.distance = 150; s.pitch = 0.9 }
+    const fp = makeFp(flatFloor(), 7)
+    fp.enabled = false
+    const remembered = orbitToFirstPerson(orbit, fp)
+    expect(remembered).toBe(150)
+    expect(fp.position).toEqual([20, 7, 30])
+    expect(fp.yaw).toBe(1.2); expect(fp.pitch).toBe(0)
+    expect(fp.enabled).toBe(true); expect(orbit.enabled).toBe(false)
+
+    fp.position[0] = 25; fp.position[1] = 7; fp.position[2] = 33; fp.yaw = -0.4
+    firstPersonToOrbit(orbit, fp, remembered)
+    expect(orbit.goal.target).toEqual([25, 7, 33]); expect(orbit.current.target).toEqual([25, 7, 33])
+    expect(orbit.goal.yaw).toBe(-0.4); expect(orbit.current.yaw).toBe(-0.4)
+    expect(orbit.current.distance).toBe(8); expect(orbit.goal.distance).toBe(150)
+    expect(orbit.goal.pitch).toBe(0.9)
+    expect(fp.enabled).toBe(false); expect(orbit.enabled).toBe(true)
   })
 })

@@ -1,5 +1,6 @@
 import type { WorldSize } from '../world/layout.ts'
 import { voxelId } from '../world/voxel.ts'
+import type { OrbitCamera } from './orbitCamera.ts'
 
 // ---- collision, as consumed (4c §3 at 68eff31; replaced by imports from collision.ts once it lands) ----
 export interface FpBox { readonly minX: number; readonly minY: number; readonly minZ: number; readonly maxX: number; readonly maxY: number; readonly maxZ: number }
@@ -290,4 +291,28 @@ export class FirstPersonController {
       document.removeEventListener('mousemove', mm)
     }
   }
+}
+
+/** Orbit → first person: the player stands at the orbit target facing the orbit's way. Returns the orbit distance to restore. */
+export function orbitToFirstPerson(orbit: OrbitCamera, fp: FirstPersonController): number {
+  const t = orbit.current.target
+  fp.spawn(t[0], t[2])
+  fp.yaw = orbit.current.yaw
+  fp.pitch = 0
+  orbit.enabled = false
+  fp.enabled = true
+  return orbit.goal.distance
+}
+
+/** First person → orbit: centred on the player's feet, same yaw; the camera pulls back from the head to `distance`. */
+export function firstPersonToOrbit(orbit: OrbitCamera, fp: FirstPersonController, distance: number): void {
+  const [x, y, z] = fp.position
+  for (const s of [orbit.goal, orbit.current]) {
+    s.target[0] = x; s.target[1] = y; s.target[2] = z
+    s.yaw = fp.yaw
+  }
+  orbit.current.distance = orbit.minDistance
+  orbit.goal.distance = distance
+  fp.enabled = false
+  orbit.enabled = true
 }
