@@ -1405,3 +1405,284 @@ Water apply halves, and each frame costs ~1–7 ms more. Task 7 changes only `su
 Conclusion: #1 does not raise frame cost; it removes water apply work.
 
 **Rule added for every later before/after:** compare builds interleaved in alternating order (ABBA or ABAB plus BABA) within one session. Never compare runs from separate sessions or a single fixed order. The living benchmark's worse-of-two stays the gate for the targets; the interleaved A/B is the attribution.
+
+---
+
+## Phase 2 addendum B: candidate #3 (chunks drawn in batches)
+
+> Same rules as the spec's §5. Attribution uses the interleaved A/B in alternating order, from addendum A's diagnosis. Here the A/B is a runtime switch (`?nobatch`) in the same build, so no second build is needed.
+
+**Evidence: the spike (2026-10-08, throwaway).**
+- Worktree branch `worktree-agent-a15fddb8eec7bb538`, commits `95ae6bf` (code) and `1dbfd06` (harness, screenshots, results). It is the reference implementation: read it, but do not cherry-pick it.
+- It batched only the opaque layer, as one `BatchedMesh` per 4 × 4-chunk region. Production build, alternating ABAB / BABA in one session:
+
+| | Without batches (A) | With batches (B) |
+|---|---|---|
+| CPU frame median, default camera | 12.1–18.4 ms | 6.7–9.3 ms |
+| CPU frame median, far camera | 18.1–28.8 ms | 8.6–13.0 ms |
+
+- B won every neighbouring pair, and shadow casters dropped from 715 to 202.
+- `info.drawCalls` is unchanged. three r186 draws a `BatchedMesh` as one render object, which runs `_renderObjectDirect` and its cache keys once, then loops `drawIndexed` per range (`WebGPUBackend.js:2124-2145`).
+- Screenshots of A and B match: the pixel diff equals the A-vs-A noise.
+
+**Three r186 traps the real version must handle** (from the spike):
+1. **Custom position:** the batch matrix is applied before the material's `positionNode`, which then overwrites it. The chunk vertex must add the instance translation itself.
+2. **Batch geometry:** `_initializeGeometry` and `setGeometrySize` rebuild the attributes. That drops `gpuType = IntType` and the `position` → `packed` alias. We build and grow the batch geometry ourselves.
+3. **Bounds:** the WebGPU sort reads `geometry.boundingSphere`. Without explicit bounds it computes them from the integer `position` and logs NaN errors.
+4. **Nested shadow pass:** the shadow map renders inside the main pass and rewrites the batch's single draw list. The outer camera's list must be restored after a nested pass, and `onBeforeShadow`'s duplicate cull must be skipped.
+
+**Scope:** opaque and cutout layers batched, one batch per layer per 4 × 4-chunk region. Translucent and liquid stay one mesh per chunk: they are few, and they need per-object transparency order. `EngineOptions.batchChunks` (default true) keeps the old path for the A/B and as a fallback.
+
+### Task 8: `ChunkBatches`: a layer's chunks in region BatchedMeshes
+
+**Files:**
+- Create: `packages/engine/src/render/chunkBatches.ts`
+- Modify: `packages/engine/src/render/chunkMeshes.ts`: export `geometryOf` and `LAYERS`, unchanged
+- Test: `packages/engine/test/chunkBatches.test.ts`
+
+**Interfaces:**
+- Produces:
+  - `REGION = 4` (chunk columns per region side);
+  - `class PassGuard { enter(camera: THREE.Camera): void; exit(): THREE.Camera | null }`;
+  - `class ChunkBatches { constructor(layout: Layout, material: THREE.Material, name: string, castShadow: boolean); readonly group: THREE.Group; set(ci, cx, cy, cz, lm: LayerMesh): void; remove(ci): void; setMaterial(m: THREE.Material): void; readonly batchCount: number; readonly instanceCount: number; readonly stats: { inPlace: number; appended: number; grown: number; compacted: number }; dispose(): void }`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+import * as THREE from 'three/webgpu'
+import { describe, expect, it } from 'vitest'
+import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
+import { FACE, packA } from '../src/mesh/vertexFormat.ts'
+import { ChunkBatches, PassGuard, REGION } from '../src/render/chunkBatches.ts'
+import { Layout } from '../src/world/layout.ts'
+
+/** n +Y quads in a row at y 2 (4 vertices, 6 indices each). */
+function quads(n: number): LayerMesh {
+  const vertices = new Uint32Array(n * 8), indices = new Uint32Array(n * 6)
+  for (let q = 0; q < n; q++) {
+    for (let c = 0; c < 4; c++) vertices[(q * 4 + c) * 2] = packA((q % 30) + (c === 1 || c === 2 ? 1 : 0), 2, 1 + (c >= 2 ? 1 : 0), FACE.PY, 0, c, 0)
+    indices.set([0, 1, 2, 0, 2, 3].map(i => i + q * 4), q * 6)
+  }
+  return { vertices, indices }
+}
+const layout = new Layout([256, 64, 256])
+const batches = () => new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true)
+const bm = (b: ChunkBatches) => b.group.children as THREE.BatchedMesh[]
+
+describe('ChunkBatches', () => {
+  it('puts chunks of one 4 × 4-column region in one batch, translated to the chunk centre, with explicit finite bounds', () => {
+    const b = batches()
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(REGION - 1, 1, REGION - 1), REGION - 1, 1, REGION - 1, quads(1))
+    b.set(layout.chunkIndex(REGION, 0, 0), REGION, 0, 0, quads(1))
+    expect(b.batchCount).toBe(2)
+    expect(b.instanceCount).toBe(3)
+    const first = bm(b)[0]!, m = new THREE.Matrix4()
+    first.getMatrixAt(1, m)
+    expect(new THREE.Vector3().setFromMatrixPosition(m).toArray()).toEqual([(REGION - 1) * 32 + 16, 48, (REGION - 1) * 32 + 16])
+    expect(Number.isFinite(first.geometry.boundingSphere!.radius)).toBe(true)
+    expect(first.geometry.boundingBox!.max.toArray()).toEqual([REGION * 32, 64, REGION * 32])
+  })
+  it('keeps the integer packed attribute aliased as position, also after growing', () => {
+    const b = batches()
+    for (let i = 0; i < 16; i++) b.set(i, i % 8, 0, 0, quads(900)) // forces at least one grow of the first batch
+    const g = bm(b)[0]!.geometry
+    expect(b.stats.grown).toBeGreaterThan(0)
+    expect(g.getAttribute('position')).toBe(g.getAttribute('packed'))
+    expect((g.getAttribute('packed') as THREE.BufferAttribute).gpuType).toBe(THREE.IntType)
+  })
+  it('remeshes in place when the new mesh fits its reserved slack, and appends when it does not', () => {
+    const b = batches()
+    b.set(0, 0, 0, 0, quads(8))
+    b.set(0, 0, 0, 0, quads(9)) // within 25% slack
+    expect(b.stats).toMatchObject({ inPlace: 1, appended: 0 })
+    b.set(0, 0, 0, 0, quads(40))
+    expect(b.stats).toMatchObject({ inPlace: 1, appended: 1 })
+    expect(b.instanceCount).toBe(1)
+  })
+  it('removes a chunk, and compacts a batch whose freed space passes 30% when it needs room', () => {
+    const b = batches()
+    for (let i = 0; i < 10; i++) b.set(i, 0, i, 0, quads(100))
+    for (let i = 0; i < 6; i++) b.remove(i)
+    expect(b.instanceCount).toBe(4)
+    for (let i = 10; i < 20; i++) b.set(i, 1, i - 10, 0, quads(100))
+    expect(b.stats.compacted).toBeGreaterThan(0)
+    expect(b.instanceCount).toBe(14)
+  })
+  it('never raycasts', () => {
+    const b = batches()
+    b.set(0, 0, 0, 0, quads(1))
+    const hits: THREE.Intersection[] = []
+    bm(b)[0]!.raycast(new THREE.Raycaster(), hits)
+    expect(hits).toEqual([])
+  })
+})
+
+describe('PassGuard', () => {
+  it('returns the outer camera after a nested pass, and nothing after the outermost', () => {
+    const g = new PassGuard(), main = new THREE.PerspectiveCamera(), shadow = new THREE.OrthographicCamera()
+    g.enter(main); g.enter(shadow)
+    expect(g.exit()).toBe(main) // the shadow pass ended inside the main one: restore main's draw list
+    expect(g.exit()).toBeNull()
+  })
+})
+
+describe('three internals this module relies on (re-check on every three upgrade)', () => {
+  it('BatchedMesh still has the private fields ChunkBatches uses', () => {
+    expect(THREE.REVISION).toBe('186')
+    const m = new THREE.BatchedMesh(1, 4, 6, new THREE.MeshBasicMaterial()) as unknown as Record<string, unknown>
+    for (const k of ['_indirectTexture', '_matricesTexture', '_geometryInfo', '_maxVertexCount', '_maxIndexCount', '_geometryInitialized', '_nextVertexStart', '_nextIndexStart']) expect(k in m, k).toBe(true)
+  })
+})
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx vitest run --root packages/engine test/chunkBatches.test.ts`
+Expected: FAIL. `../src/render/chunkBatches.ts` does not exist, but the three-internals test passes on its own. If it does not pass, stop and report: the spike's assumptions no longer hold.
+
+- [ ] **Step 3: Write `chunkBatches.ts`**
+
+Port the spike's `LayerBatches`, `newBatch`, `growBatch` and `guardNestedPasses` (commit `95ae6bf`, `chunkMeshes.ts`) into this file, with these changes:
+- **No URL flags or global stats.** The region size is `REGION = 4`. The counters live in `stats`, an instance field.
+- **`PassGuard`**, a stack of cameras:
+  - `enter` pushes;
+  - `exit` pops and returns the new top, or `null` when the stack is empty.
+  - The batch's `onBeforeRender` wrapper calls `enter`.
+  - `onAfterRender` calls `exit`. With a camera returned, it sets `_visibilityChanged = true` and re-runs the original `onBeforeRender` with that camera and the last geometry and material.
+  - `onBeforeShadow` is a no-op.
+- **Capacity**, in `set`:
+  - reserve `ceil(count × 1.25)` vertices and indices per chunk geometry;
+  - in place (`setGeometryAt`) when the new mesh fits its reserved counts;
+  - else `deleteGeometry` + append.
+  - When appending needs room: if the batch's freed space (deleted reserved counts, tracked in this class) is over 30% of its capacity, call `optimize()` (stats.compacted++). Then, if still short, grow both buffers to `max(needed, 1.5 ×)` with the spike's `growBatch` (stats.grown++), keeping `IntType` and the alias.
+- **Explicit bounds:** set the region box and sphere on both the batch and its geometry, as the spike does.
+- **`raycast`** is a no-op.
+- **`setMaterial(m)`** sets `material` on every batch (for a future toggle; layers keep their material today).
+- **Initial capacity** per batch: the spike's `maxInstances × 4096` vertices and `× 6144` indices is generous. Start at `maxInstances × 1024` and `× 1536`, and let growth handle the rest. Memory scales with what is drawn.
+
+Doc comments state the four r186 traps where the code handles them.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `npx vitest run --root packages/engine test/chunkBatches.test.ts test/chunkMeshes.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/engine/src/render/chunkBatches.ts packages/engine/src/render/chunkMeshes.ts packages/engine/test/chunkBatches.test.ts
+git commit -m "feat(render): ChunkBatches: a layer's chunks in region BatchedMeshes that keep the packed integer attribute"
+```
+
+### Task 9: The chunk vertex reads its batch translation, and ChunkMeshes batches opaque and cutout
+
+**Files:**
+- Modify: `packages/engine/src/render/chunkVertex.ts` (the spike's `batchOffset`, same as `95ae6bf`)
+- Modify: `packages/engine/src/render/chunkMeshes.ts` (constructor option `batched: boolean`; opaque and cutout through `ChunkBatches`; `meshCount`, `shadowCasterCount`, `remove`, `dispose`)
+- Modify: `packages/engine/src/render/visuals.ts:76` and `packages/engine/src/engine.ts` (`EngineOptions.batchChunks?: boolean`, default true, passed to `ChunkMeshes`)
+- Modify: `apps/sandbox/src/main.ts` (`batchChunks: !params.has('nobatch')`)
+- Test: `packages/engine/test/chunkMeshes.test.ts`
+
+**Interfaces:**
+- Consumes: Task 8's `ChunkBatches`.
+- Produces: `new ChunkMeshes(layout, materials, { batched })`. `meshCount` counts chunk layer meshes, as before (batch instances + meshes). `shadowCasterCount` counts render objects that cast shadows (batches + meshes). `EngineOptions.batchChunks`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Update `setup()` in `chunkMeshes.test.ts` to take `batched = false`, and keep the two existing tests on `batched: false`. Add:
+
+```ts
+  it('batched: opaque and cutout go into region batches, translucent and liquid stay meshes; counts mean the same', () => {
+    const cm = setup(true)
+    cm.apply(1, { ...data(quad(), quad()), cutout: quad() })
+    expect(cm.meshCount).toBe(3) // opaque + cutout instances + the liquid mesh
+    expect(cm.group.getObjectByName('chunk-1-opaque')).toBeUndefined()
+    expect(cm.group.getObjectByName('chunk-1-liquid')).toBeInstanceOf(THREE.Mesh)
+    expect(cm.shadowCasterCount).toBe(2) // one opaque batch + one cutout batch
+    cm.apply(1, data(null, null))
+    expect(cm.meshCount).toBe(0)
+    cm.apply(2, data(null, quad()))
+    cm.remove(2)
+    expect(cm.meshCount).toBe(0)
+  })
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx vitest run --root packages/engine test/chunkMeshes.test.ts`
+Expected: FAIL. `setup(true)` still makes per-chunk meshes, so `chunk-1-opaque` exists.
+
+- [ ] **Step 3: Implement**
+
+- `chunkVertex.ts`: add `batchOffset` exactly as in `95ae6bf`, with its doc comment rewritten (no "SPIKE"). Use the batched `position` for the returned position and for the world-space UV projection. Unbatched meshes get offset 0, so their output is unchanged.
+- `chunkMeshes.ts`:
+  - the constructor takes `{ batched = false } = {}`;
+  - when batched, it builds `ChunkBatches` for `opaque` (castShadow) and `cutout` (castShadow) and adds their groups to `this.group`;
+  - `apply` routes those two layers to `set` / `remove`;
+  - the other layers stay as today;
+  - update `meshCount`, `shadowCasterCount`, `remove`, `dispose`.
+- `visuals.ts` / `engine.ts`: thread `batchChunks` (default true) into `new ChunkMeshes(..., { batched })`.
+- `main.ts`: `batchChunks: !params.has('nobatch')`.
+
+- [ ] **Step 4: Run tests and typecheck**
+
+Run: `npx vitest run --root packages/engine test/chunkMeshes.test.ts test/chunkBatches.test.ts; npm run typecheck`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/engine/src/render/chunkVertex.ts packages/engine/src/render/chunkMeshes.ts packages/engine/src/render/visuals.ts packages/engine/src/engine.ts apps/sandbox/src/main.ts packages/engine/test/chunkMeshes.test.ts
+git commit -m "perf(render): opaque and cutout chunks drawn in region batches (EngineOptions.batchChunks, ?nobatch)"
+```
+
+### Task 10: Same picture, then measure
+
+**Files:**
+- Create: `apps/sandbox/e2e/batching.spec.ts`
+- Create: `docs/superpowers/research/2026-10-08-living-after-3.json`, `docs/superpowers/research/2026-10-08-batching-ab.json`
+- Modify: this plan (results section)
+
+- [ ] **Step 1: Write the pixel-equality e2e**
+
+`batching.spec.ts` loads `/?size=128&still` twice: once with batches, once with `&nobatch`.
+- Decorations are hidden, through the HUD effects or `engine` quality/effects, as `smoke.spec.ts` toggles them. That keeps animated grass out of the comparison.
+- The camera is the same fixed one, set via `engine.controls` as `main.ts` does for the diorama scene.
+- Wait for `meshQueue + meshInFlight === 0`, wait 1 s, then `page.screenshot()`.
+- Compare the two PNGs pixel by pixel. Read them with `pngjs`, as other specs in the repo do; if none does, compare the raw `page.screenshot({ type: 'png' })` buffers through the canvas `getImageData` in the page.
+- Assert that the share of pixels differing by more than 8 on any channel is **< 0.5%**.
+- Also assert that the batched run's `shadowCasters` is below the unbatched one's, and that no console errors occurred. That covers the NaN-bounds trap.
+
+Run it: `E2E_PORT=5199 E2E_CHANNEL=msedge npx playwright test e2e/batching.spec.ts --workers=1` (from `apps/sandbox`).
+Expected: PASS. If the diff is above 0.5%, save both PNGs and the diff to `test-results/`, find what moved (chunk offsets, shadows, cutout leaves), and fix the code, not the threshold.
+
+- [ ] **Step 2: Full verification**
+
+Run: `npm run test` (all workspaces), `npm run typecheck`, then the whole e2e suite: `E2E_PORT=5199 E2E_CHANNEL=msedge npx playwright test --workers=1`.
+Expected: all pass. A single smoke boot timeout has been seen as a flake; rerun it isolated before concluding.
+
+- [ ] **Step 3: Living benchmark (gate)**
+
+From `apps/sandbox`: `npm run build`, then `BENCH_LIVING=1 LIVING_BENCH_OUT=../../docs/superpowers/research/2026-10-08-living-after-3.json E2E_PREVIEW=1 E2E_PORT=5201 E2E_CHANNEL=msedge npx playwright test e2e/living-bench.spec.ts --headed --workers=1`.
+Expected: PASS with `invalid: []`.
+
+- [ ] **Step 4: Attribution A/B**
+
+Same production build, `?scene=living` against `?scene=living&nobatch`, order ABAB then BABA in one Edge session (a throwaway Playwright script outside the repo, as in addendum A's diagnosis).
+- Record per run the CPU frame median, fps median and shadow casters, at the default and far cameras.
+- Write the runs to `docs/superpowers/research/2026-10-08-batching-ab.json`.
+- **If batched does not win every adjacent pair at the far camera, stop and report before committing** (spec §5 rule 2).
+
+- [ ] **Step 5: Results and commit**
+
+Append "Phase 2 results: #3" to this plan: the living benchmark table (after #1 → after #3, fps p5, CPU median, apply p95, tick p95 per phase) and the A/B table.
+
+```bash
+git add apps/sandbox/e2e/batching.spec.ts docs/superpowers/research/2026-10-08-living-after-3.json docs/superpowers/research/2026-10-08-batching-ab.json docs/superpowers/plans/2026-10-08-living-world-performance.md
+git commit -m "test(render): batched and unbatched chunks draw the same picture; #3 results" -m "<far / default CPU frame median, A vs B, from the A/B; fps p5 per phase before → after>"
+```
+
+- [ ] **Step 6: Checkpoint**
+
+The controller shows the user before/after screenshots of the living scene at both cameras, and the numbers. Spec §5 rule 3: the user confirms nothing visible changed.
