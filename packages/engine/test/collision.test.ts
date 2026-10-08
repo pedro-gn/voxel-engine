@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import {
-  CONTACT_EPS, bodyBox, boxOverlapsSolid, sweepBox,
+  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, moveBox, sweepBox,
   type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
 import type { WorldSize } from '../src/world/layout.ts'
@@ -187,5 +187,113 @@ describe('sweepBox', () => {
     const out: SweepResult = { dx: 9, dy: 9, dz: 9, blockedX: true, blockedY: true, blockedZ: true }
     expect(sweepBox(world, body(10.5, 10, 10.5), [1, 0, 0], out)).toBe(out)
     expect(out).toEqual({ dx: 1, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false })
+  })
+})
+
+/** A stone floor whose top is y = 5 under x, z in [0, 31). */
+function floored() {
+  const t = makeWorld()
+  t.fill(0, 4, 0, 30, 4, 30, STONE)
+  return t
+}
+
+describe('groundDistance', () => {
+  it('measures the drop to the support within maxDown', () => {
+    const { world } = floored()
+    expect(groundDistance(world, body(10.5, 5, 10.5))).toBe(0)
+    expect(groundDistance(world, body(10.5, 5.0005, 10.5))).toBeCloseTo(0.0005, 9)
+    expect(groundDistance(world, body(10.5, 5.5, 10.5))).toBeNull()
+    expect(groundDistance(world, body(10.5, 5.5, 10.5), 1)).toBeCloseTo(0.5, 9)
+    expect(groundDistance(world, body(40.5, 5, 40.5), 1)).toBeNull()
+    expect(groundDistance(world, body(40.5, 0, 40.5))).toBe(0) // the world floor
+    expect(groundDistance(world, body(10.5, 5.5, 10.5), NaN)).toBeNull() // falls back to GROUND_EPS
+    expect(groundDistance(world, body(NaN, 5, 10.5))).toBeNull()
+  })
+})
+
+describe('moveBox', () => {
+  it('reports grounded, ceiling and blockedY', () => {
+    const { world, set } = floored()
+    const land = moveBox(world, body(10.5, 6, 10.5), [0, -2, 0])
+    expect(land).toMatchObject({ blockedY: true, ceiling: false, grounded: true, stepped: 0 })
+    expect(6 + land.dy).toBeCloseTo(5, 9)
+    set(10, 8, 10, STONE)
+    const bump = moveBox(world, body(10.5, 5, 10.5), [0, 2, 0])
+    expect(bump).toMatchObject({ blockedY: true, ceiling: true, grounded: false })
+    expect(6.8 + bump.dy).toBeCloseTo(8, 9)
+    expect(moveBox(world, body(10.5, 5, 10.5), [1, 0, 0])).toMatchObject({ dx: 1, grounded: true, ceiling: false })
+  })
+  it('does not step without stepHeight', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 5, 30, STONE)
+    const r = moveBox(world, body(10.5, 5, 10.5), [2, -0.01, 0])
+    expect(10.8 + r.dx).toBeCloseTo(12, 9)
+    expect(r).toMatchObject({ blockedX: true, stepped: 0 })
+  })
+  it('climbs a one-block ledge with stepHeight 1 and 1.25', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 5, 30, STONE)
+    for (const stepHeight of [1, 1.25]) {
+      const r = moveBox(world, body(10.5, 5, 10.5), [2, -0.01, 0], { stepHeight })
+      expect(r).toMatchObject({ dx: 2, blockedX: false, grounded: true })
+      expect(r.stepped).toBeCloseTo(1, 9)
+      expect(r.dy).toBeCloseTo(1, 9)
+      expect(boxOverlapsSolid(world, after(body(10.5, 5, 10.5), r))).toBe(false)
+    }
+  })
+  it('refuses a ledge higher than stepHeight', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 5, 30, STONE)
+    expect(moveBox(world, body(10.5, 5, 10.5), [2, -0.01, 0], { stepHeight: 0.6 })).toMatchObject({ blockedX: true, stepped: 0, dy: 0 })
+    fill(12, 6, 0, 12, 6, 30, STONE)
+    expect(moveBox(world, body(10.5, 5, 10.5), [2, -0.01, 0], { stepHeight: 1 })).toMatchObject({ blockedX: true, stepped: 0, dy: 0 })
+  })
+  it('refuses a step with too little headroom, over the ledge or over the body', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 5, 30, STONE)
+    fill(12, 7, 0, 14, 7, 30, STONE) // a ceiling one block above the ledge top
+    expect(moveBox(world, body(10.5, 5, 10.5), [2, -0.01, 0], { stepHeight: 1 })).toMatchObject({ blockedX: true, stepped: 0 })
+    const low = floored()
+    low.fill(12, 5, 0, 12, 5, 30, STONE)
+    low.set(10, 7, 10, STONE) // a ceiling over the body: only 0.2 of lift
+    expect(moveBox(low.world, body(10.5, 5, 10.5), [2, -0.01, 0], { stepHeight: 1 })).toMatchObject({ blockedX: true, stepped: 0 })
+  })
+  it('does not step in the air', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 12, 30, STONE)
+    fill(13, 5, 0, 13, 7, 30, STONE)
+    const r = moveBox(world, body(10.5, 8, 10.5), [2, -0.01, 0], { stepHeight: 1 })
+    expect(r).toMatchObject({ blockedX: true, stepped: 0, grounded: false })
+  })
+  it('steps after landing in the same move', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 5, 30, STONE)
+    const r = moveBox(world, body(10.5, 5.0005, 10.5), [2, -0.01, 0], { stepHeight: 1 })
+    expect(r.dx).toBe(2)
+    expect(5.0005 + r.dy).toBeCloseTo(6, 9)
+  })
+  it('does not bob against a tall wall when the other axis is free', () => {
+    const { world, fill } = floored()
+    fill(12, 5, 0, 12, 10, 30, STONE)
+    const r = moveBox(world, body(10.5, 5, 10.5), [2, 0, 1], { stepHeight: 1 })
+    expect(r).toMatchObject({ dz: 1, blockedX: true, stepped: 0, dy: 0 })
+  })
+  it('keeps stepped at 0, never negative, over a ledge followed by a hole', () => {
+    const { world, fill } = makeWorld()
+    fill(0, 4, 0, 12, 4, 30, STONE) // floor only up to x = 12
+    fill(12, 5, 0, 12, 5, 30, STONE) // a one-wide ledge; beyond it a hole to the world floor
+    const r = moveBox(world, body(10.5, 5, 10.5), [3, -0.01, 0], { stepHeight: 1 })
+    expect(r.dx).toBe(3)
+    expect(r.stepped).toBe(0)
+    expect(r.dy).toBe(0)
+    expect(r.grounded).toBe(false)
+    expect(boxOverlapsSolid(world, after(body(10.5, 5, 10.5), r))).toBe(false)
+  })
+  it('treats non-finite input as no motion and fills the out object', () => {
+    const { world } = floored()
+    expect(moveBox(world, body(NaN, 5, 10.5), [1, 0, 0])).toMatchObject({ dx: 0, dy: 0, dz: 0, grounded: false, ceiling: false, stepped: 0 })
+    const out = { dx: 9, dy: 9, dz: 9, blockedX: true, blockedY: true, blockedZ: true, grounded: false, ceiling: true, stepped: 9 }
+    expect(moveBox(world, body(10.5, 5, 10.5), [1, 0, 0], { stepHeight: Infinity }, out)).toBe(out)
+    expect(out).toEqual({ dx: 1, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false, grounded: true, ceiling: false, stepped: 0 })
   })
 })

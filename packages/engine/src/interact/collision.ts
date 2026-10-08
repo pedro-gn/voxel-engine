@@ -163,3 +163,56 @@ export function sweepBox(w: CollisionWorld, box: Box, delta: Vec3Like, out?: Swe
   sweepHorizontal(w, b, dx, dz, r)
   return r
 }
+
+/** Solid lies within GROUND_EPS below b. */
+function resting(w: CollisionWorld, b: Bounds): boolean {
+  const probe: Bounds = [...b]
+  return sweepAxis(w, probe, 1, -GROUND_EPS) !== -GROUND_EPS
+}
+
+/** How far the box drops before resting on solid, if within maxDown (default GROUND_EPS); null otherwise. */
+export function groundDistance(w: CollisionWorld, box: Box, maxDown = GROUND_EPS): number | null {
+  const b = bounds(box)
+  if (b === null) return null
+  const reach = Number.isFinite(maxDown) && maxDown > 0 ? maxDown : GROUND_EPS
+  const moved = sweepAxis(w, b, 1, -reach)
+  return moved === -reach ? null : 0 - moved // 0 − moved: never −0
+}
+
+/**
+ * sweepBox plus step-up (spec §4 Step-up): when stepHeight > 0, a horizontal axis is blocked and the box rests on
+ * solid after the y phase, it also tries lift → horizontal → drop by the lift, and keeps that path only if it gets
+ * strictly further horizontally.
+ */
+export function moveBox(w: CollisionWorld, box: Box, delta: Vec3Like, options?: MoveOptions, out?: MoveResult): MoveResult {
+  const r = out ?? { dx: 0, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false, grounded: false, ceiling: false, stepped: 0 }
+  r.grounded = false
+  r.ceiling = false
+  r.stepped = 0
+  const start = bounds(box)
+  if (start === null) { sweepBox(w, box, delta, r); return r }
+  const [dx, dy, dz] = delta3(delta)
+  let b = start
+  r.dy = sweepAxis(w, b, 1, dy)
+  r.blockedY = r.dy !== dy
+  r.ceiling = r.blockedY && dy > 0
+  const afterY: Bounds = [...b]
+  sweepHorizontal(w, b, dx, dz, r)
+  const stepHeight = options?.stepHeight ?? 0
+  if (stepHeight > 0 && Number.isFinite(stepHeight) && (r.blockedX || r.blockedZ) && resting(w, afterY)) {
+    const s: Bounds = [...afterY]
+    const lift = sweepAxis(w, s, 1, stepHeight)
+    const h: Horizontal = { dx: 0, dz: 0, blockedX: false, blockedZ: false }
+    sweepHorizontal(w, s, dx, dz, h)
+    const drop = sweepAxis(w, s, 1, -lift)
+    if (h.dx * h.dx + h.dz * h.dz > r.dx * r.dx + r.dz * r.dz) {
+      r.dx = h.dx; r.dz = h.dz
+      r.blockedX = h.blockedX; r.blockedZ = h.blockedZ
+      r.stepped = lift + drop
+      r.dy += r.stepped
+      b = s
+    }
+  }
+  r.grounded = resting(w, b)
+  return r
+}
