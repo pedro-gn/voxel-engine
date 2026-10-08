@@ -529,7 +529,7 @@ export class SurfaceView {
     const xa = Math.max(0, tx - 1), xb = Math.min(tw - 1, tx + 1), za = Math.max(0, tz - 1), zb = Math.min(th - 1, tz + 1)
     for (let z = za; z <= zb; z++) for (let x = xa; x <= xb; x++) {
       const t = x + z * tw
-      if (this.tileFresh[t] === e || (this.tileListed[t] !== e && this.tileSettled[t] === 0)) return false
+      if (this.tileFresh[t] === e || this.slotChanged[t] === e || (this.tileListed[t] !== e && this.tileSettled[t] === 0)) return false
     }
     return true
   }

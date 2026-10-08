@@ -5,7 +5,8 @@ import { WaterColumns } from '../src/sim/water/columns.ts'
 import { RANKS, SUB } from '../src/sim/water/constants.ts'
 import { WaterPublisher } from '../src/sim/water/publish.ts'
 import { createWaterBuffers } from '../src/world/waterBuffers.ts'
-import { AIR, STONE, layered, wv } from './layerHelpers.ts'
+import { rebuildSegments } from '../src/sim/water/rebuild.ts'
+import { AIR, KINDS, STONE, layered, wv } from './layerHelpers.ts'
 
 function corners(view: SurfaceView, x: number, z: number, r: number, f: 'hCur' | 'hPrev' | 'info' = 'hCur'): number[] {
   const d = view.column((x >> 5) + (z >> 5) * view.cx, r)!
@@ -267,4 +268,43 @@ describe('plain columns of layered tiles (4a #1)', () => {
     expect(spy.mock.calls.length).toBeLessThanOrEqual(notPlain * RANKS)
     spy.mockRestore()
   })
+})
+
+describe('plainness transitions of layered tiles (4a #1)', () => {
+  /** A deck over a flooded channel at tick 3 (added) or taken away at tick 3 (removed): the mixed path draws what the all-slots path does, every tick, with and without alpha. */
+  for (const deck of ['removed', 'added']) for (const shown of [0.5, undefined]) {
+    it(`a deck ${deck} mid-run (shown ${shown}) draws exactly what the all-slots path draws`, () => {
+      const fill = (withDeck: boolean) => (x: number, y: number, z: number): number => {
+        if (y < 2 || x === 0 || x === 31 || z === 0 || z >= 4) return STONE
+        if (withDeck && x === 15 && y === 7) return STONE
+        return y <= 5 ? wv(7) : AIR
+      }
+      const w = layered(fill(deck === 'removed'))
+      w.edges.ensure(w.cols, w.under, 32)
+      const pub = new WaterPublisher(w.buffers.water)
+      const mixed = new SurfaceView([32, 32, 32], w.buffers.water, () => 15), slots = new SurfaceView([32, 32, 32], w.buffers.water, () => 15)
+      slots.forceSlots = true
+      const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+      for (let tick = 0; tick < 14; tick++) {
+        if (tick === 3) {
+          const data = new Uint16Array(32768), f = fill(deck === 'added')
+          for (let i = 0; i < 32768; i++) data[i] = f(i & 31, i >> 10, (i >> 5) & 31)
+          w.store.writeChunkDense(0, data); w.store.commit()
+          rebuildSegments(w.store, KINDS, w.cols, w.under, w.mirror, 0, 0, 32, 32)
+          w.edges.markAll(); w.edges.ensure(w.cols, w.under, 32); w.wakeWet()
+        }
+        const t = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+        mixed.apply(t, shown); slots.apply(t, shown)
+        for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < mixed.cx * mixed.cz; cc++) {
+          const a = slots.column(cc, r), s = mixed.column(cc, r)
+          expect(!!a).toBe(!!s)
+          if (!a || !s) continue
+          expect([tick, r, cc, diff(s.hCur, a.hCur), diff(s.hPrev, a.hPrev), diff(s.info, a.info), diff(s.curtainMask, a.curtainMask),
+            diff(s.curtains.cur.subarray(0, s.curtains.count * 4), a.curtains.cur.subarray(0, a.curtains.count * 4)),
+            diff(s.curtains.prev.subarray(0, s.curtains.count * 4), a.curtains.prev.subarray(0, a.curtains.count * 4))]).toEqual([tick, r, cc, -1, -1, -1, -1, -1, -1])
+        }
+        w.step()
+      }
+    }, 120_000)
+  }
 })
