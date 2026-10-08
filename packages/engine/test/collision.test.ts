@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import {
-  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, moveBox, sweepBox,
+  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, moveBox, sweepBox, unstick,
   type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
 import type { WorldSize } from '../src/world/layout.ts'
@@ -295,5 +295,40 @@ describe('moveBox', () => {
     const out = { dx: 9, dy: 9, dz: 9, blockedX: true, blockedY: true, blockedZ: true, grounded: false, ceiling: true, stepped: 9 }
     expect(moveBox(world, body(10.5, 5, 10.5), [1, 0, 0], { stepHeight: Infinity }, out)).toBe(out)
     expect(out).toEqual({ dx: 1, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false, grounded: true, ceiling: false, stepped: 0 })
+  })
+})
+
+describe('unstick', () => {
+  it('is 0 for a free box', () => {
+    const { world } = floored()
+    expect(unstick(world, body(10.5, 5, 10.5), 1)).toBe(0)
+    expect(unstick(world, body(10.5, 5, 10.5), NaN)).toBe(0)
+  })
+  it('lifts a box out of a block edited in at its feet, within maxUp', () => {
+    const { world, set } = floored()
+    set(10, 5, 10, STONE)
+    expect(unstick(world, body(10.5, 5, 10.5), 1.5)).toBe(1)
+    expect(unstick(world, body(10.5, 5, 10.5), 0.5)).toBeNull()
+    expect(unstick(world, body(10.5, 5.3, 10.5), 1)).toBeCloseTo(0.7, 9)
+  })
+  it('cannot clear a block in the head region with a small lift', () => {
+    const { world, set } = floored()
+    set(10, 6, 10, STONE)
+    expect(unstick(world, body(10.5, 5, 10.5), 1.5)).toBeNull()
+    expect(unstick(world, body(10.5, 5, 10.5), 2)).toBe(2)
+  })
+  it('accounts for a ceiling above', () => {
+    const { world, set } = floored()
+    set(10, 5, 10, STONE); set(10, 7, 10, STONE)
+    expect(unstick(world, body(10.5, 5, 10.5), 1.5)).toBeNull()
+    expect(unstick(world, body(10.5, 5, 10.5), 3)).toBe(3)
+  })
+  it('returns null for bad maxUp, a non-finite box, or a box outside the world, and terminates', () => {
+    const { world, set } = floored()
+    set(10, 5, 10, STONE)
+    expect(unstick(world, body(10.5, 5, 10.5), -1)).toBeNull()
+    expect(unstick(world, body(10.5, 5, 10.5), Infinity)).toBeNull()
+    expect(unstick(world, body(NaN, 5, 10.5), 1)).toBeNull()
+    expect(unstick(world, body(0.1, 5, 10.5), 1e9)).toBeNull()
   })
 })

@@ -216,3 +216,21 @@ export function moveBox(w: CollisionWorld, box: Box, delta: Vec3Like, options?: 
   r.grounded = resting(w, b)
   return r
 }
+
+/**
+ * The smallest upward lift (≤ maxUp) after which the box overlaps no solid; 0 when it already overlaps none, null when
+ * no lift up to maxUp frees it. Clearing a cell needs minY on that cell's top, so the candidates put minY on each
+ * integer above it. Above the world's top only the sides can overlap, and lifting never clears those.
+ */
+export function unstick(w: CollisionWorld, box: Box, maxUp: number): number | null {
+  const b = bounds(box)
+  if (b === null) return null
+  if (!boxSolid(w, b)) return 0
+  if (!Number.isFinite(maxUp) || maxUp < 0) return null
+  const top = w.size[1]
+  for (let n = Math.floor(b[1]) + 1; n - b[1] <= maxUp && n <= top; n++) {
+    const lift = n - b[1]
+    if (!boxSolid(w, [b[0], n, b[2], b[3], b[4] + lift, b[5]])) return lift
+  }
+  return null
+}
