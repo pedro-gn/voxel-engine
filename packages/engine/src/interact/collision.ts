@@ -1,5 +1,5 @@
 import type { WorldSize } from '../world/layout.ts'
-import { voxelId } from '../world/voxel.ts'
+import { voxelId, voxelState } from '../world/voxel.ts'
 import type { Vec3Like } from './raycast.ts'
 
 /** An axis-aligned box in world blocks. Voxel (x, y, z) occupies [x, x+1) × [y, y+1) × [z, z+1). */
@@ -233,4 +233,62 @@ export function unstick(w: CollisionWorld, box: Box, maxUp: number): number | nu
     if (!boxSolid(w, [b[0], n, b[2], b[3], b[4] + lift, b[5]])) return lift
   }
   return null
+}
+
+/** The liquid fill of cell (x, y, z) from the voxel water mirror: 0 dry, 1 a spring, else (level + 1) / 8. */
+function fillOf(w: CollisionWorld, x: number, y: number, z: number): number {
+  const [sx, sy, sz] = w.size
+  if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) return 0
+  const v = w.get(x, y, z), id = voxelId(v)
+  if (w.liquid[id] !== 1) return 0
+  return w.source[id] === 1 ? 1 : ((voxelState(v) & 7) + 1) / 8
+}
+
+/** Whether the point (x, y, z) is under a liquid surface: inside a liquid voxel, below that voxel's fill. */
+export function liquidAt(w: CollisionWorld, x: number, y: number, z: number): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false
+  const cy = Math.floor(y)
+  const f = fillOf(w, Math.floor(x), cy, Math.floor(z))
+  return f > 0 && y < cy + f
+}
+
+/** The top of the highest liquid run in column (x, z) that has a liquid cell in [y0, y1]: climbs through full cells. */
+function surfaceAt(w: CollisionWorld, x: number, z: number, y0: number, y1: number): number {
+  let y = y1
+  while (y > y0 && fillOf(w, x, y, z) === 0) y--
+  let f = fillOf(w, x, y, z)
+  while (f === 1) {
+    const g = fillOf(w, x, y + 1, z)
+    if (g === 0) break
+    y++
+    f = g
+  }
+  return y + f
+}
+
+/** How deep the box is in liquid (spec §4 Liquid), read from the voxel water mirror; eyeY tests a point at the box centre. */
+export function liquidInBox(w: CollisionWorld, box: Box, eyeY?: number): LiquidInfo {
+  const r: LiquidInfo = { submerged: 0, eyeUnder: false, surfaceY: null }
+  const b = bounds(box)
+  if (b === null) return r
+  const [sx, sy, sz] = w.size
+  const x0 = Math.max(0, firstCell(b[0])), x1 = Math.min(sx - 1, lastCell(b[0], b[3]))
+  const z0 = Math.max(0, firstCell(b[2])), z1 = Math.min(sz - 1, lastCell(b[2], b[5]))
+  const y0 = Math.max(0, firstCell(b[1])), y1 = Math.min(sy - 1, lastCell(b[1], b[4]))
+  let best = 0, bx = 0, bz = 0
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+    let wet = 0
+    for (let y = y0; y <= y1; y++) {
+      const f = fillOf(w, x, y, z)
+      if (f > 0) wet += Math.max(0, Math.min(y + f, b[4]) - Math.max(y, b[1]))
+    }
+    if (wet > best) { best = wet; bx = x; bz = z }
+  }
+  const height = b[4] - b[1]
+  if (best > 0) {
+    r.submerged = height > 0 ? Math.min(1, best / height) : 0
+    r.surfaceY = surfaceAt(w, bx, bz, y0, y1)
+  }
+  if (eyeY !== undefined) r.eyeUnder = liquidAt(w, (b[0] + b[3]) / 2, eyeY, (b[2] + b[5]) / 2)
+  return r
 }

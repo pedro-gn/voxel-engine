@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import {
-  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, moveBox, sweepBox, unstick,
+  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, liquidAt, liquidInBox, moveBox, sweepBox, unstick,
   type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
 import type { WorldSize } from '../src/world/layout.ts'
+import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
 
 const REG = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', textures: 'water', liquid: true, source: 'water' })])
@@ -330,5 +331,64 @@ describe('unstick', () => {
     expect(unstick(world, body(10.5, 5, 10.5), Infinity)).toBeNull()
     expect(unstick(world, body(NaN, 5, 10.5), 1)).toBeNull()
     expect(unstick(world, body(0.1, 5, 10.5), 1e9)).toBeNull()
+  })
+})
+
+const water = (level: number) => packVoxel(WATER, level)
+
+describe('liquidAt', () => {
+  it('is under the surface inside a liquid cell below its fill', () => {
+    const { world, set } = makeWorld()
+    set(10, 5, 10, water(7))   // full
+    set(11, 5, 10, water(3))   // fill 0.5
+    set(12, 5, 10, packVoxel(SPRING, 0)) // a spring counts as full
+    set(13, 5, 10, STONE)
+    expect(liquidAt(world, 10.5, 5.99, 10.5)).toBe(true)
+    expect(liquidAt(world, 10.5, 6, 10.5)).toBe(false)
+    expect(liquidAt(world, 11.5, 5.49, 10.5)).toBe(true)
+    expect(liquidAt(world, 11.5, 5.5, 10.5)).toBe(false)
+    expect(liquidAt(world, 12.5, 5.9, 10.5)).toBe(true)
+    expect(liquidAt(world, 13.5, 5.5, 10.5)).toBe(false)
+    expect(liquidAt(world, -0.5, 5.5, 10.5)).toBe(false)
+    expect(liquidAt(world, 10.5, NaN, 10.5)).toBe(false)
+  })
+})
+
+describe('liquidInBox', () => {
+  it('measures a submerged body and finds the surface above it', () => {
+    const { world, set } = makeWorld()
+    set(10, 5, 10, water(7)); set(10, 6, 10, water(7)); set(10, 7, 10, water(3)) // surface at 7.5
+    const r = liquidInBox(world, body(10.5, 5, 10.5), 6.6)
+    expect(r.submerged).toBeCloseTo(1, 9)
+    expect(r.surfaceY).toBeCloseTo(7.5, 9)
+    expect(r.eyeUnder).toBe(true)
+    expect(liquidInBox(world, body(10.5, 5, 10.5), 7.6).eyeUnder).toBe(false)
+    expect(liquidInBox(world, body(10.5, 5, 10.5)).eyeUnder).toBe(false)
+  })
+  it('takes the max over the footprint columns and the surface from that column', () => {
+    const { world, set } = makeWorld()
+    set(10, 5, 10, water(7)) // column 10 wet to 6, column 11 dry
+    const r = liquidInBox(world, body(11, 5, 10.5), 5.5)
+    expect(r.submerged).toBeCloseTo(1 / 1.8, 9)
+    expect(r.surfaceY).toBeCloseTo(6, 9)
+    expect(r.eyeUnder).toBe(false) // the centre x = 11 is in the dry column
+  })
+  it('sees water under and over a bridge deck as separate runs', () => {
+    const { world, set } = makeWorld()
+    set(10, 5, 10, water(7)); set(10, 6, 10, STONE); set(10, 7, 10, water(7)); set(10, 8, 10, water(1))
+    const under = liquidInBox(world, body(10.5, 5, 10.5))
+    expect(under.submerged).toBeCloseTo(1 / 1.8, 9)
+    expect(under.surfaceY).toBeCloseTo(6, 9)
+    const over = liquidInBox(world, body(10.5, 7, 10.5))
+    expect(over.submerged).toBeCloseTo(1.25 / 1.8, 9)
+    expect(over.surfaceY).toBeCloseTo(8.25, 9)
+  })
+  it('is dry above a shallow partial cell, in air and outside the world', () => {
+    const { world, set } = makeWorld()
+    set(10, 5, 10, water(3)) // water to 5.5
+    expect(liquidInBox(world, body(10.5, 5.6, 10.5))).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
+    expect(liquidInBox(world, body(20.5, 5, 20.5), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
+    expect(liquidInBox(world, body(-10, 5, -10), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
+    expect(liquidInBox(world, body(NaN, 5, 10.5), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
   })
 })
