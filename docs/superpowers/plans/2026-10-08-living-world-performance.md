@@ -1388,3 +1388,20 @@ Water apply p95 drops in every phase and fps p5 rises in every phase. CPU frame 
 | Water apply p95 (default / far / dam) | 13–14 / 15.5 / 33 | 5.4–6.8 / 7.3–8.2 / 18–20 |
 
 Water apply halves, and each frame costs ~1–7 ms more. Task 7 changes only `surfaceView.ts` and `layerStore.ts`, and the review found identical dirty and touched keys. Profiles of the far view (minified) show no single new hot spot. The cause is open, and it is the first item for the next step.
+
+**Diagnosis (2026-10-08): not a regression, a measurement artifact.** The A/B was repeated with temporary instrumentation splitting the frame into water sync and render, and counting applies, deferrals and uploaded keys. It ran in both orders, ABAB and BABA: eight page loads in one browser.
+
+| CPU frame median, ms | A runs | B runs |
+|---|---|---|
+| far, ABAB | 22.5, 19.1 | 20.2, 19.0 |
+| far, BABA | 24.1, 23.8 | 20.9, 24.1 |
+| dam, ABAB | 20.6, 19.8 | 34.6 (outlier), 19.5 |
+| dam, BABA | 24.3, 28.0 | 23.6, 26.1 |
+
+- CPU frame climbs over a session, whichever build is loaded. The first A/B always loaded B after A, so the drift landed on B.
+- The frame is almost all render: water sync costs 0.03–0.18 ms per frame on both builds.
+- There are no deferred applies on either build. B uploads fewer water keys per frame (16–21 against 22–24 far; 30–54 against 38–47 dam). B's total apply time is under half of A's (far 0.7–0.9 s against 1.9–2.2 s per 10 s).
+
+Conclusion: #1 does not raise frame cost; it removes water apply work.
+
+**Rule added for every later before/after:** compare builds interleaved in alternating order (ABBA or ABAB plus BABA) within one session. Never compare runs from separate sessions or a single fixed order. The living benchmark's worse-of-two stays the gate for the targets; the interleaved A/B is the attribution.
