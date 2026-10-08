@@ -1,9 +1,7 @@
 # Elovox — Sub-project 4d: First-person camera and character controller — Design
 
-Status: DRAFT, in brainstorming. Decisions so far: water = Minecraft-style swimming (Q1), auto-step
-1 block (Q2), section 1 (architecture + API, §3 here) approved with two notes (spawn on water, no
-far/fog assumptions). Section 2 (movement, §4 here) approved with two additions (unstick failure, pointer-lock spikes).
-Section 3 (§6 here) is not yet presented.
+Status: approved by the expert (standing in for the user) on 2026-10-08: sections 1–3 approved in
+brainstorming, Q1 water = Minecraft-style swimming, Q2 auto-step 1 block.
 Builds on 1 (voxel core: orbit camera, raycast, setBlock) and runs alongside 4c (AABB collision,
 `feat/collision`), which it consumes.
 
@@ -77,7 +75,7 @@ class FirstPersonController {
   look(dYaw: number, dPitch: number): void       // pitch clamped to ±(π/2 − 0.01)
   spawn(x: number, z: number): void              // feet at surfaceAt(x, z), then unstick
   update(dt: number): void                       // substeps ≤ 1/120 s
-  apply(camera: CameraLike & { rotation: ... }): void
+  apply(camera: FpCameraLike): void              // position.set(eye) + rotation.set(pitch, yaw, 0, 'YXZ')
   eye(): [number, number, number]; forward(): [number, number, number]
   attach(canvas: HTMLCanvasElement): () => void  // keys → input; mousemove under pointer lock → look
 }
@@ -187,8 +185,60 @@ minimal stub with these signatures before that.
 
 ## 6. Sandbox
 
-DRAFT, to be presented as section 3.
+A new file, `apps/sandbox/src/firstPerson.ts`, is wired in by small additive hunks in `main.ts`.
+`workersView.ts`, `controls.ts` and the terrain editor are not edited.
+
+- **Mode key C.** It toggles on `keydown` when `e.code === 'KeyC'`, with no modifiers, not a repeat,
+  and focus not in a text field (pure `isModeKey(e, activeElement)`). It is not installed in
+  `?scene=terrain&edit`. Entering calls `engine.setCameraMode('firstPerson')` and
+  `canvas.requestPointerLock()` (the keydown is a user activation). Leaving calls
+  `document.exitPointerLock()` and `engine.setCameraMode('orbit')`.
+- **Esc.** The browser drops the lock and the player stays in first person. A "click to look" line
+  shows, and the next click only re-locks; it never digs or places.
+- **Input gate.** While in first person, a capture-phase `window` listener takes `pointerdown`,
+  `pointermove`, `pointerup`, `wheel` and `contextmenu` events aimed at the canvas and stops their
+  propagation. No orbit dig/highlight handler in `main.ts`, and no `workersView` select/order handler,
+  ever sees a locked-cursor click with a stale `clientX`. In orbit mode the gate is inert.
+- **Dig/place in first person**, only where orbit digs/places today (not the units scenes, not the editor):
+  - The hit is `engine.raycast(eye, forward, 5)`. LMB digs (`setBlock` AIR). RMB places the hotbar
+    block at `hit.pos + hit.normal`, with today's liquid `packVoxel(id, 7)` rule and in-bounds check.
+  - A placement is refused when the target cell overlaps the player box: `cellOverlapsBody(x, y, z)`
+    on the controller, a box-vs-cell interval test, not a collision query. The decision is the pure
+    `placementTarget(hit, inBounds, overlapsBody)`.
+  - One action per click; no hold-to-repeat. The highlight follows the crosshair on the engine's `frame` event.
+  - In the units scenes a first-person click only (re-)locks; look and walk work.
+- **UI.**
+  - A centred CSS crosshair, and a bottom-centre hint, both shown only in first person:
+    `C orbit · WASD walk · Shift sprint · Space jump/swim · LMB dig · RMB place · Esc free mouse`
+    (without dig/place in the units scenes).
+  - One additive hunk in `hud.ts` appends ` · C first person` to the default orbit hint lines.
+- **Test hook.** `window.__elovox.fp = { toggle, dig, place }` acts along the centre ray and needs no
+  pointer lock. The e2e also drives `engine.firstPerson.input` and `look()` directly.
 
 ## 7. Testing
 
-DRAFT.
+- **Engine unit tests** (`packages/engine/test/firstPerson.test.ts`, Node):
+  - Look and input: input mapping and diagonal normalization; `lookDelta` (first event after lock
+    dropped, |d| > 200 px dropped); pitch clamp.
+  - Walking: the reach-speed and stop curves; sprint.
+  - Jumping, stepping, landing: jump apex ≈ 1.25 and landing sets grounded; the 1-block step with eye
+    smoothing, and no step onto 2 blocks; the ground snap down stairs.
+  - Water: swim up and sink, the shallow-water factor, and the water-exit hop.
+  - Substeps and safety: substep count (dt 0.1 → 12) with no tunnelling at terminal speed; unstick on
+    overlap, and position unchanged when unstick returns null.
+  - Spawn and hand-off: `spawn` on land and on water (via `surfaceAt`); the hand-off both ways with a
+    real `OrbitCamera`. In `orbitCamera.test.ts`: `enabled = false` ignores input, and orbit is
+    unchanged while enabled.
+  - These tests run against a stub of the frozen 68eff31 signatures until 4c lands, then against a
+    fake world through 4c's real `bindCollision`.
+- **Sandbox unit tests** (vitest, Node): `isModeKey`, `placementTarget`.
+- **e2e** `apps/sandbox/e2e/first-person.spec.ts` on a small world scene:
+  - Camera mode: C gives `cameraMode === 'firstPerson'`.
+  - Walking and jumping: `input.forward = 1` for ~1 s moves ≥ 3 blocks with the feet on the ground;
+    a jump rises and lands.
+  - Dig/place: `fp.dig` removes the centre block; `fp.place` into the player's own cell is refused.
+  - Back to orbit: C gives an orbit target ≈ the player's feet.
+  - Units scene: a first-person click submits nothing.
+  - The existing unit and e2e suites stay green.
+- **Feel/visual checkpoint** with the user, arranged by the expert: walk, sprint, jump, swim,
+  step-up, the first-person shadow reach 48, FOV 70.
