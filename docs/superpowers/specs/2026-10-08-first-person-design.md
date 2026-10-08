@@ -2,7 +2,8 @@
 
 Status: DRAFT, in brainstorming. Decisions so far: water = Minecraft-style swimming (Q1), auto-step
 1 block (Q2), section 1 (architecture + API, §3 here) approved with two notes (spawn on water, no
-far/fog assumptions). Sections 2–3 (§4, §6 here) are not yet presented.
+far/fog assumptions). Section 2 (movement, §4 here) approved with two additions (unstick failure, pointer-lock spikes).
+Section 3 (§6 here) is not yet presented.
 Builds on 1 (voxel core: orbit camera, raycast, setBlock) and runs alongside 4c (AABB collision,
 `feat/collision`), which it consumes.
 
@@ -114,7 +115,51 @@ held keys and edge state are cleared. Everything else is unchanged, so orbit beh
 
 ## 4. Movement
 
-DRAFT, to be presented as section 2.
+Every number below is a tunable (`FirstPersonTuning`) and goes to the user feel checkpoint.
+
+### Frame and substeps
+
+`update(dt)`: a non-finite dt counts as 0, and dt is clamped to 0.1 s. If the body overlaps solid (a
+placed block, sand landing on the player), the controller first lifts it by `unstick(box, 2)`. When
+unstick returns null (buried deeper than 2 blocks, e.g. a fillRegion over the player), the position is
+left unchanged. Collision's escape semantics still let the player walk out of the cells it is in, but
+never into new solid. Then n = ceil(dt · 120) equal substeps h run; the 0.1 s clamp means at most 12.
+
+### Per substep
+
+1. **Wish direction** from `input` in the yaw frame: forward = (−sin yaw, 0, −cos yaw),
+   right = (cos yaw, 0, −sin yaw). Diagonals are normalized to length 1. Target horizontal speed =
+   walk 4.3 b/s × (sprint ? 1.3 : 1) × medium factor. Sprint is Shift held while moving forward.
+2. **Horizontal velocity** approaches the target exponentially: v += (target − v)(1 − e^(−k·h)), with
+   k = 14/s on the ground (~0.2 s to full speed or to a stop), 3/s in the air (momentum with a little
+   air control), and 6/s swimming.
+3. **Vertical.**
+   - *Not swimming:* gravity 30 b/s², terminal speed 50 b/s. Jump (Space held while grounded):
+     vy = √(2 · 30 · 1.25) ≈ 8.66, an apex of 1.25 blocks. Holding Space re-jumps on landing.
+   - *Swimming* (`liquid(box, eyeY).submerged ≥ 0.5`): no gravity. vy approaches +2.5 b/s with
+     Space or −1.0 b/s without, at k = 5/s. Medium factor ×0.5.
+   - *Shallow water* (0 < submerged < 0.5): medium factor ×0.75, normal gravity and jump.
+   - *Water exit:* swimming, Space held, blocked horizontally on the previous substep and the eye
+     not under the surface → one jump impulse (vy = 8.66), which climbs a 1-block bank.
+4. **Move:** `move(box, v · h, { stepHeight: groundedBefore && !swimming ? 1 : 0 })`.
+   - A blocked x/z axis zeroes that velocity component.
+   - A blocked y zeroes vy when vy was pushing into the obstacle (down onto ground, up into a ceiling).
+   - `grounded` comes from the result.
+5. **Step smoothing:** after a step of `stepped = s`, the eye offset becomes offset − s, and it decays
+   as e^(−t/0.05) (≈ 0.15 s to settle). The camera rises smoothly instead of popping.
+6. **Ground snap down stairs:** the conditions are grounded before, not jumping, not swimming,
+   vy ≤ 0, and airborne after the move. When they hold, d = `groundDistance(box, 1)`. If d ≠ null,
+   the controller moves down by d through `move`, sets grounded, sets vy = 0 and adds d to the eye
+   offset (smoothed the same way). Walking off a 1-block stair follows it down instead of hopping.
+
+### Look
+
+`look(dYaw, dPitch)` adds to yaw and clamps pitch to ±(π/2 − 0.01). Mouse mapping in `attach`: under
+pointer lock, `movementX/Y × 0.0022 rad/px` (Y not inverted), so dYaw = −mx·s and dPitch = −my·s.
+Chromium/Edge sometimes deliver a spike, so the first mousemove after the lock engages is ignored,
+and any event with |movementX| or |movementY| > 200 px is discarded. The mapping is the pure function
+`lookDelta(mx, my, sensitivity)`, which returns null for a discarded event, and it is unit-tested.
+There is no camera bob (YAGNI; it can come up at the feel checkpoint).
 
 ## 5. Collision contract (consumed)
 
