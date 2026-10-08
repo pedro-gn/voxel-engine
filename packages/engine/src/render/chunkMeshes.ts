@@ -4,10 +4,10 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import type { ChunkMaterials } from './materials.ts'
 
-const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
+export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
 const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
 
-function geometryOf(m: LayerMesh): THREE.BufferGeometry {
+export function geometryOf(m: LayerMesh): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry()
   const packed = new THREE.BufferAttribute(m.vertices, 2)
   packed.gpuType = THREE.IntType // integer attribute: read as uvec2 in the shader, never converted to float
