@@ -4,6 +4,9 @@ import {
   type CollisionLike, type FpBox,
 } from '../src/interact/firstPerson.ts'
 import { OrbitCamera } from '../src/interact/orbitCamera.ts'
+import { bindCollision } from '../src/interact/collision.ts'
+import { packVoxel } from '../src/world/voxel.ts'
+import { ID, testRegistry } from './helpers.ts'
 
 /** A stub of 4c's frozen signatures: an infinite floor at y = floorY, nothing else, no water. Replaced in Task 6. */
 function flatFloor(floorY = 0): CollisionLike & { calls: number } {
@@ -204,5 +207,133 @@ describe('orbit ⇄ first person hand-off', () => {
     expect(orbit.current.distance).toBe(8); expect(orbit.goal.distance).toBe(150)
     expect(orbit.goal.pitch).toBe(0.9)
     expect(fp.enabled).toBe(false); expect(orbit.enabled).toBe(true)
+  })
+})
+
+const reg = testRegistry()
+const WATER = packVoxel(ID.water, 7)
+function world(size: [number, number, number] = [32, 32, 32]) {
+  const cells = new Map<number, number>()
+  const key = (x: number, y: number, z: number) => x + size[0] * (z + size[2] * y)
+  const get = (x: number, y: number, z: number) => cells.get(key(x, y, z)) ?? 0
+  const fill = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, v: number) => {
+    for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) cells.set(key(x, y, z), v)
+  }
+  fill(0, 0, 0, size[0] - 1, 3, size[2] - 1, ID.stone) // floor top at y = 4
+  const fp = (tuning?: Partial<typeof FP_TUNING>) => new FirstPersonController({
+    worldSize: size,
+    collision: bindCollision({ size, get, solid: reg.solid, liquid: reg.liquid, source: reg.source }),
+    surfaceAt: (x, z) => surfaceTop(get, reg.solid, reg.liquid, size, x, z),
+    tuning,
+  })
+  return { size, get, fill, fp }
+}
+const settle = (p: FirstPersonController) => run(p, 0.2)
+
+describe('FirstPersonController over 4c collision', () => {
+  it('steps up a 1-block ledge with a smoothed eye, but not a 2-block one', () => {
+    const w = world()
+    w.fill(0, 4, 0, 31, 4, 10, ID.stone)                          // 1-high ledge for z ≤ 10
+    const p = w.fp(); p.spawn(16.5, 14.5); settle(p)
+    p.input.forward = 1
+    let sawLag = false
+    for (let i = 0; i < 120 && p.position[1] < 5; i++) { p.update(1 / 60); if (p.eyeLag < -0.5) sawLag = true }
+    expect(p.position[1]).toBe(5)
+    expect(sawLag).toBe(true)
+    run(p, 0.3)
+    expect(Math.abs(p.eyeLag)).toBeLessThan(0.01)
+
+    const w2 = world()
+    w2.fill(0, 4, 0, 31, 5, 10, ID.stone)                         // 2-high wall
+    const q = w2.fp(); q.spawn(16.5, 14.5); settle(q)
+    q.input.forward = 1; run(q, 2)
+    expect(q.position[1]).toBe(4)
+    expect(q.position[2]).toBeCloseTo(11.3, 5)
+  })
+  it('snaps down 1-block stairs but falls off a cliff', () => {
+    const w = world()
+    w.fill(0, 4, 12, 31, 4, 31, ID.stone)                         // ledge top 5 for z ≥ 12
+    const p = w.fp(); p.spawn(16.5, 14.5); settle(p)
+    expect(p.position[1]).toBe(5)
+    p.input.forward = 1
+    let airborne = 0
+    for (let i = 0; i < 90; i++) { p.update(1 / 60); if (!p.grounded) airborne++ }
+    expect(p.position[1]).toBe(4)
+    expect(airborne).toBe(0)
+
+    const c = world()
+    c.fill(0, 4, 12, 31, 7, 31, ID.stone)                         // 4-high cliff
+    const q = c.fp(); q.spawn(16.5, 14.5); settle(q)
+    q.input.forward = 1
+    let fell = 0
+    for (let i = 0; i < 90; i++) { q.update(1 / 60); if (!q.grounded) fell++ }
+    expect(q.position[1]).toBe(4)
+    expect(fell).toBeGreaterThan(3)
+  })
+  it('swims up with Space, sinks without it, and wades slower in shallow water', () => {
+    const w = world()
+    w.fill(4, 4, 4, 27, 11, 27, WATER)                            // a pool 8 deep, surface at 12
+    const p = w.fp(); p.spawn(16, 16)
+    expect(p.position[1]).toBe(12)                                // spawned on the water, not the bed
+    run(p, 3)
+    expect(p.swimming).toBe(true)
+    expect(p.velocity[1]).toBeCloseTo(-1, 1)                      // sinking
+    p.input.jump = true; run(p, 1)
+    expect(p.velocity[1]).toBeGreaterThan(2)                      // swimming up
+    p.input.jump = false; run(p, 10)
+    expect(p.position[1]).toBe(4)                                 // rests on the bed
+    p.input.forward = 1; run(p, 1)
+    expect(hSpeed(p)).toBeCloseTo(4.3 * 0.5, 1)
+
+    const s = world()
+    s.fill(0, 4, 0, 31, 4, 31, packVoxel(ID.water, 3))           // half a block deep
+    const q = s.fp(); q.spawn(16, 16); settle(q)
+    q.input.forward = 1; run(q, 1)
+    expect(q.swimming).toBe(false)
+    expect(hSpeed(q)).toBeCloseTo(4.3 * 0.75, 1)
+  })
+  it('climbs out of the water onto a 1-block bank', () => {
+    const w = world()
+    w.fill(0, 4, 0, 31, 9, 31, ID.stone)                          // ground top at 10
+    w.fill(8, 4, 8, 23, 9, 23, WATER)                             // a pool in it, surface at 10
+    const p = w.fp(); p.spawn(16, 12); run(p, 1)
+    expect(p.swimming).toBe(true)
+    Object.assign(p.input, { forward: 1, jump: true })            // toward −z, bank at z < 8
+    for (let i = 0; i < 360 && !(p.grounded && p.position[1] === 10 && p.position[2] < 8); i++) p.update(1 / 60)
+    expect(p.position[1]).toBe(10)
+    expect(p.position[2]).toBeLessThan(8)
+  })
+  it('never tunnels through a 1-block floor at terminal speed with 0.1 s frames', () => {
+    const w = world([32, 128, 32])
+    w.fill(0, 0, 0, 31, 3, 31, 0)
+    w.fill(0, 60, 0, 31, 60, 31, ID.stone)                         // a 1-block slab at y = 60
+    const p = w.fp(); p.spawn(16, 16)
+    p.position[1] = 120; p.velocity[1] = -50
+    for (let i = 0; i < 40; i++) { p.update(0.1); expect(p.position[1]).toBeGreaterThanOrEqual(61) }
+    expect(p.position[1]).toBe(61)
+    expect(p.grounded).toBe(true)
+  })
+  it('is lifted out of a block placed into it, and stays put when buried deeper than 2', () => {
+    const w = world()
+    const p = w.fp(); p.spawn(16.5, 16.5); settle(p)
+    w.fill(16, 4, 16, 16, 4, 16, ID.stone)
+    p.update(1 / 60)
+    expect(p.position[1]).toBe(5)
+
+    const b = world()
+    const q = b.fp(); q.spawn(16.5, 16.5); settle(q)
+    b.fill(16, 4, 16, 16, 8, 16, ID.stone)                          // a 5-block pillar through the body
+    q.update(1 / 60)
+    expect(q.position).toEqual([16.5, 4, 16.5])                    // no lift possible within 2
+    q.input.forward = 1; run(q, 1)
+    expect(q.position[2]).toBeLessThan(15.7)                       // but it can walk out of the cells it is in
+  })
+  it('spawn on a column narrower than the body is unstuck on the first update', () => {
+    const w = world()
+    w.fill(17, 4, 16, 17, 4, 16, ID.stone)                          // the neighbour is 1 higher
+    const p = w.fp(); p.spawn(16.9, 16.5)                           // body overlaps x = 17
+    expect(p.position[1]).toBe(4)
+    p.update(1 / 60)
+    expect(p.position[1]).toBe(5)
   })
 })

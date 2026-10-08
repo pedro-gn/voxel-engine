@@ -1,19 +1,11 @@
 import type { WorldSize } from '../world/layout.ts'
 import { voxelId } from '../world/voxel.ts'
+import { GROUND_EPS, bodyBox, type Box, type Collision } from './collision.ts'
 import type { OrbitCamera } from './orbitCamera.ts'
 
-// ---- collision, as consumed (4c §3 at 68eff31; replaced by imports from collision.ts once it lands) ----
-export interface FpBox { readonly minX: number; readonly minY: number; readonly minZ: number; readonly maxX: number; readonly maxY: number; readonly maxZ: number }
-export interface FpMoveResult { dx: number; dy: number; dz: number; blockedX: boolean; blockedY: boolean; blockedZ: boolean; grounded: boolean; ceiling: boolean; stepped: number }
-export interface FpLiquid { submerged: number; eyeUnder: boolean; surfaceY: number | null }
-/** The part of engine.collision the controller uses. */
-export interface CollisionLike {
-  move(box: FpBox, delta: readonly [number, number, number], options?: { stepHeight?: number }): FpMoveResult
-  overlaps(box: FpBox): boolean
-  groundDistance(box: FpBox, maxDown?: number): number | null
-  liquid(box: FpBox, eyeY?: number): FpLiquid
-  unstick(box: FpBox, maxUp: number): number | null
-}
+/** The part of engine.collision the controller uses (4c §3). */
+export type CollisionLike = Pick<Collision, 'move' | 'overlaps' | 'groundDistance' | 'liquid' | 'unstick'>
+export type FpBox = Box
 
 export type CameraMode = 'orbit' | 'firstPerson'
 
@@ -139,8 +131,7 @@ export class FirstPersonController {
   }
 
   box(): FpBox {
-    const [x, y, z] = this.position, hw = this.tuning.halfWidth
-    return { minX: x - hw, minY: y, minZ: z - hw, maxX: x + hw, maxY: y + this.tuning.height, maxZ: z + hw }
+    return bodyBox(this.position[0], this.position[1], this.position[2], this.tuning.halfWidth, this.tuning.height)
   }
 
   look(dYaw: number, dPitch: number): void {
@@ -222,7 +213,9 @@ export class FirstPersonController {
 
     // Ground snap: walking off a ledge of ≤ snapDown follows it down instead of hopping.
     if (wasGrounded && !r.grounded && !jumped && !swimming && v[1] <= 0) {
-      const drop = c.groundDistance(this.box(), t.snapDown)
+      // + GROUND_EPS: a drop of exactly snapDown (a full 1-block stair) touches the plane without the probe being
+      // blocked, which groundDistance reports as null.
+      const drop = c.groundDistance(this.box(), t.snapDown + GROUND_EPS)
       if (drop !== null && drop > 0) {
         d[0] = 0; d[1] = -drop; d[2] = 0
         const s = c.move(this.box(), d)
