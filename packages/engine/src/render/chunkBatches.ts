@@ -66,6 +66,19 @@ function newBatch(material: THREE.Material, maxInstances: number, maxVertices: n
   return bm
 }
 
+/**
+ * Trap 2, again: three iterates the batch geometry's attributes BY NAME when it copies vertex data (setGeometryAt) and
+ * when it compacts (optimize), so the `position` alias of `packed` gets every copy twice. In optimize, a geometry that
+ * moves by less than its reserved size then reads ranges the first copy already overwrote, which corrupts its
+ * vertices. Runs `fn` with the alias removed, so each copy happens once.
+ */
+function unaliased<T>(bm: THREE.BatchedMesh, fn: () => T): T {
+  const g = bm.geometry
+  const packed = g.getAttribute('packed')
+  g.deleteAttribute('position')
+  try { return fn() } finally { g.setAttribute('position', packed) }
+}
+
 /** Trap 2: grows a batch's vertex and index buffers, keeping `position` aliased to the integer `packed` attribute. */
 function growBatch(bm: THREE.BatchedMesh, minVertices: number, minIndices: number): void {
   const b = internals(bm)
@@ -161,7 +174,7 @@ export class ChunkBatches {
       const batch = this.batches.get(e.region)!
       const info = internals(batch.mesh)._geometryInfo[e.geometryId]!
       if (vertices <= info.reservedVertexCount && indices <= info.reservedIndexCount) {
-        batch.mesh.setGeometryAt(e.geometryId, geometry)
+        unaliased(batch.mesh, () => batch.mesh.setGeometryAt(e.geometryId, geometry))
         this.stats.inPlace++
         return
       }
@@ -176,7 +189,7 @@ export class ChunkBatches {
     if (bm.unusedVertexCount < rv || bm.unusedIndexCount < ri) {
       const b = internals(bm)
       if (batch.freedVertices > COMPACT_AT * b._maxVertexCount || batch.freedIndices > COMPACT_AT * b._maxIndexCount) {
-        bm.optimize()
+        unaliased(bm, () => bm.optimize())
         batch.freedVertices = 0
         batch.freedIndices = 0
         this.stats.compacted++
@@ -186,7 +199,7 @@ export class ChunkBatches {
         this.stats.grown++
       }
     }
-    const geometryId = bm.addGeometry(geometry, rv, ri)
+    const geometryId = unaliased(bm, () => bm.addGeometry(geometry, rv, ri))
     const instanceId = bm.addInstance(geometryId)
     bm.setMatrixAt(instanceId, this.matrix.makeTranslation(cx * 32 + 16, cy * 32 + 16, cz * 32 + 16))
     this.entries.set(ci, { region, geometryId, instanceId })

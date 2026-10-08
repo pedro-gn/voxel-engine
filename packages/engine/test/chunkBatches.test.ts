@@ -58,6 +58,48 @@ describe('ChunkBatches', () => {
     expect(b.stats.compacted).toBeGreaterThan(0)
     expect(b.instanceCount).toBe(14)
   })
+  it('keeps every chunk\'s vertex and index data intact through compaction, in place remeshes and appends', () => {
+    /** n quads whose second vertex word is unique per chunk and vertex, so any misplaced copy shows. */
+    const tagged = (n: number, tag: number): LayerMesh => {
+      const m = quads(n)
+      for (let v = 0; v < n * 4; v++) m.vertices[v * 2 + 1] = tag * 100_000 + v
+      return m
+    }
+    const b = batches()
+    const meshes = new Map<string, LayerMesh>()
+    const put = (ci: number, cy: number, n: number) => { const m = tagged(n, ci + 1); meshes.set(`0,${cy},0`, m); b.set(ci, 0, cy, 0, m) }
+    // 2500, 7500 and 10000 reserved vertices. Removing the first and third frees 12500 (> 30% of 32768); the kept middle
+    // chunk then moves down by 2500, less than its own 7500: its old and new ranges overlap.
+    put(0, 0, 500); put(1, 1, 1500); put(2, 2, 2000)
+    b.remove(0); b.remove(2)
+    meshes.delete('0,0,0'); meshes.delete('0,2,0')
+    put(3, 3, 3000) // needs room: compacts
+    expect(b.stats.compacted).toBe(1)
+    put(3, 3, 2900) // fits its reservation: in place (chunk 1 keeps the data compaction moved)
+    put(4, 4, 10)
+    put(4, 4, 200) // outgrows it: append
+    expect(b.stats).toMatchObject({ inPlace: 1, appended: 1 })
+    const batch = bm(b)[0]! as unknown as THREE.BatchedMesh & {
+      _instanceInfo: { active: boolean; geometryIndex: number }[]
+      _geometryInfo: { vertexStart: number; vertexCount: number; indexStart: number; indexCount: number }[]
+    }
+    const packed = batch.geometry.getAttribute('packed').array as Uint32Array
+    const index = batch.geometry.getIndex()!.array as Uint32Array
+    const m = new THREE.Matrix4(), p = new THREE.Vector3()
+    let checked = 0
+    batch._instanceInfo.forEach((inst, i) => {
+      if (!inst.active) return
+      batch.getMatrixAt(i, m)
+      p.setFromMatrixPosition(m)
+      const want = meshes.get(`${(p.x - 16) / 32},${(p.y - 16) / 32},${(p.z - 16) / 32}`)!
+      const g = batch._geometryInfo[inst.geometryIndex]!
+      expect(g.vertexCount).toBe(want.vertices.length / 2)
+      expect(Array.from(packed.subarray(g.vertexStart * 2, (g.vertexStart + g.vertexCount) * 2))).toEqual(Array.from(want.vertices))
+      expect(Array.from(index.subarray(g.indexStart, g.indexStart + g.indexCount), (x) => x - g.vertexStart)).toEqual(Array.from(want.indices))
+      checked++
+    })
+    expect(checked).toBe(3)
+  })
   it('never raycasts', () => {
     const b = batches()
     b.set(0, 0, 0, 0, quads(1))
