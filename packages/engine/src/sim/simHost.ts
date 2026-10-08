@@ -92,6 +92,7 @@ export class SimHost {
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
             collapse: msg.options.collapse,
+            workers: msg.options.workers,
             // only defined keys: an undefined one would override WaterSystem's default
             water: {
               debug: msg.options.debugFluids === true,

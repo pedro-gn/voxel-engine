@@ -7,6 +7,7 @@ export { AIR, blockLight, packLight, packVoxel, skyLight, voxelId, voxelState, w
 export type { Ack, Command, FillRegionCommand, SetBlockCommand, Vec3 } from './sim/commands.ts'
 export type { SimEvent } from './sim/simulation.ts'
 export type { CollapseOptions } from './sim/collapse.ts'
+export { WORKER_STATES, type WorkerOptions, type WorkerCommand, type WorkerTick, type WorkerView, type WorkOrderView, type WorkerStats } from './sim/workers/types.ts'
 export type { RayHit, Vec3Like } from './interact/raycast.ts'
 export type { Layout, WorldSize } from './world/layout.ts'
 export type { OrbitCamera, OrbitState } from './interact/orbitCamera.ts'

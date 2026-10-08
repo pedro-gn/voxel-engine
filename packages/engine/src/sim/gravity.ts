@@ -13,6 +13,7 @@ export interface FallingBodyState { id: number; voxel: number; x: number; z: num
 export interface Landing { id: number; x: number; y: number; z: number; chunk: number; version: number }
 
 export interface GravityPort {
+  trackSweeps?: boolean
   readonly layout: Layout
   readonly registry: BlockRegistry
   get(x: number, y: number, z: number): number
@@ -23,6 +24,10 @@ export interface GravityPort {
 
 /** Falling blocks (spec §6): integer bodies, processed in id order, a write when they start and when they land. */
 export class GravitySystem {
+  private readonly swept = new Map<number, { lo: number; hi: number }[]>()
+  sweptOverlaps(x: number, y: number, z: number): boolean {
+    return this.swept.get(x + z * this.port.layout.size[0])?.some(b => y * 256 < b.hi && (y + 1) * 256 > b.lo) ?? false
+  }
   /** Landings of the last step; Simulation sets their versions after commit. */
   landed: Landing[] = []
   private bodies: FallingBodyState[] = []
@@ -35,6 +40,10 @@ export class GravitySystem {
   constructor(port: GravityPort) { this.port = port }
 
   get count(): number { return this.bodies.length }
+  /** Whether a body in flight overlaps the cell now; writing a solid there breaks its landing scan. */
+  occupies(x: number, y: number, z: number): boolean {
+    return this.columns.get(x + z * this.port.layout.size[0])?.some(b => b.y256 < (y + 1) * 256 && b.y256 + 256 > y * 256) ?? false
+  }
   /** Structural fragments query only the relevant column, after the ordinary gravity phase. */
   floorAt(x: number, z: number, from256: number, to256: number): number | undefined {
     let top: number | undefined
@@ -53,6 +62,7 @@ export class GravitySystem {
   }
 
   step(): void {
+    this.swept.clear()
     const L = this.port.layout, reg = this.port.registry
     this.landed = []
     // 1. Starts. Removing a block queues the one above, which this loop reaches in the same tick.
@@ -91,6 +101,10 @@ export class GravitySystem {
           if (reg.solid[id] === 1 || (reg.liquid[id] === 1 && reg.source[id] === 1)) { land = k + 1; break }
         }
         if (land < 0 && target < 0) land = 0
+        if (this.port.trackSweeps) {
+          let a = this.swept.get(col); if (!a) { a = []; this.swept.set(col, a) }
+          a.push({ lo: land >= 0 ? land * 256 : target, hi: b.y256 + 256 })
+        }
         if (land >= 0) {
           landing = true
           this.port.write(b.x, land, b.z, b.voxel)

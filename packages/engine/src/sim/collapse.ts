@@ -14,6 +14,7 @@ export interface FragmentBirth { id: number; positions: Uint32Array; voxels: Uin
 export interface FragmentLanding { id: number; offset256: number; chunks: ChunkVersion[] }
 export interface CollapseTick { born: FragmentBirth[]; poses: Int32Array; landed: FragmentLanding[] }
 export interface CollapsePort {
+  trackSweeps?: boolean
   layout: Layout; registry: BlockRegistry
   get(x: number, y: number, z: number): number
   write(x: number, y: number, z: number, voxel: number): void
@@ -71,6 +72,11 @@ interface Occupied { id: number; bottom256: number; top256: number }
 
 /** Exact edit-driven support checks and connected vertical fragments. All caps count work, never clocks. */
 export class CollapseSystem {
+  private readonly swept = new Map<number, { lo: number; hi: number }[]>()
+  get checking(): boolean { return !!this.search || this.seedSet.size > 0 || this.dirty.size > 0 || this.scanChunk !== null }
+  sweptOverlaps(x: number, y: number, z: number): boolean {
+    return this.overlaps(x, y, z) || (this.swept.get(x + z * this.port.layout.size[0])?.some(b => y * 256 < b.hi && (y + 1) * 256 > b.lo) ?? false)
+  }
   readonly enabled: boolean
   private readonly port: CollapsePort
   private readonly scanCap: number
@@ -173,6 +179,7 @@ export class CollapseSystem {
   }
 
   step(): void {
+    this.swept.clear()
     this.born = []; this.landed = []; this.visited = 0; this.mutations = 0
     if (!this.enabled) return
     // Landings and detachments share the mutation allowance. An entire admitted body fits it.
@@ -369,15 +376,25 @@ export class CollapseSystem {
       if (grid >= dynamic && grid >= target && this.mutations + b.positions.length <= this.mutationCap) {
         const offset = grid / 256, chunks = this.chunks(b.positions, offset)
         this.port.prepare(this.chunks(b.positions, offset, false).map(v => v.chunk)); this.port.touch(chunks.map(v => v.chunk))
+        this.recordSweep(b, grid)
         this.unindex(b)
         for (let i = 0; i < b.positions.length; i++) { const [x, y, z] = this.port.layout.voxelCoords(b.positions[i]!); this.port.write(x, y + offset, z, b.voxels[i]!) }
         this.landed.push({ id: b.id, offset256: grid, chunks }); this.mutations += b.positions.length
       } else {
         if (grid >= target && grid >= dynamic) target = b.offset256
         if (target > b.offset256 - b.vy256) b.vy256 = 0
+        this.recordSweep(b, target)
         this.unindex(b); b.offset256 = target; this.index(b); keep.push(b)
       }
     }
     this.fragments = keep
+  }
+  private recordSweep(b: Fragment, target: number): void {
+    if (!this.port.trackSweeps) return
+    for (const r of b.runs) {
+      const col = r.x + r.z * this.port.layout.size[0]
+      let a = this.swept.get(col); if (!a) { a = []; this.swept.set(col, a) }
+      a.push({ lo: r.y * 256 + target, hi: (r.y + r.height) * 256 + b.offset256 })
+    }
   }
 }

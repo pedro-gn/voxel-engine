@@ -122,6 +122,13 @@ export class WaterSystem {
   }
 
   get enabled(): boolean { return this.water !== 0 }
+  /** Authoritative immersion above feet in Q8, including cave segments. */
+  depthAt(x: number, y: number, z: number): number {
+    if (!this.enabled || !this.layout.inBounds(x, y, z)) return 0
+    const c = x + z * this.cols.sx, U = this.under
+    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (y >= U.floor[i]! && y < U.ceil[i]!) return Math.max(0, U.surface(i) - y * SUB)
+    return y >= this.cols.floor[c]! ? Math.max(0, this.cols.floor[c]! * SUB + this.cols.depth[c]! - y * SUB) : 0
+  }
   get seaLevel(): number { return this.cycle.seaLevel }
   get sea(): number { return this.cycle.sea }
   get stepCount(): number { return this.steps }

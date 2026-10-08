@@ -18,6 +18,8 @@ import type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModul
 import { Scheduler } from './scheduler.ts'
 import type { WaterTick } from './water/publish.ts'
 import { WaterSystem, type WaterOptions } from './water/waterSystem.ts'
+import { WorkerSystem } from './workers/workers.ts'
+import { WORKER_COMMANDS, type WorkerOptions, type WorkerTick } from './workers/types.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -30,6 +32,7 @@ export interface SimulationOptions {
   /** Heightfield water options (tile cap, debug check). */
   water?: Partial<WaterOptions>
   collapse?: CollapseOptions
+  workers?: WorkerOptions
   /** replaceColumns diffs light only over at most this many chunks; above it (a whole-world regeneration) it remeshes every relit chunk. Default 1024. */
   regenLightDiffLimit?: number
   randomTicksPerChunk?: number
@@ -41,6 +44,7 @@ export interface SimulationOptions {
 
 export interface SimEvent { tick: number; type: string; payload?: unknown }
 export interface TickResult {
+  workers?: WorkerTick
   tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]
   /** Bodies still falling after this tick. */
   falling: FallingBodyState[]
@@ -70,6 +74,7 @@ export class Simulation {
   readonly water: WaterSystem
   readonly gravity: GravitySystem
   readonly collapse: CollapseSystem
+  readonly workers?: WorkerSystem
   private collapseWrite = false
   private isPaused = false
   private readonly jobCap: number
@@ -108,16 +113,18 @@ export class Simulation {
     this.water = new WaterSystem({
       layout: this.layout, registry: this.registry, store: this.store, buffers: o.buffers.water,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
-      setQuiet: (x, y, z, v) => { if (sim.store.setVoxelQuiet(x, y, z, v)) sim.epochs[sim.layout.chunkOf(x, y, z)]!++ },
+      setQuiet: (x, y, z, v) => { const old = sim.workers ? sim.store.getVoxel(x, y, z) : AIR; if (sim.store.setVoxelQuiet(x, y, z, v)) { sim.epochs[sim.layout.chunkOf(x, y, z)]!++; sim.workers?.afterWrite(x, y, z, old, v) } },
       log: (m) => sim.log(m),
     }, o.water)
     this.gravity = new GravitySystem({
+      trackSweeps: o.workers !== undefined,
       layout: this.layout, registry: this.registry,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       write: (x, y, z, v) => sim.applySet(x, y, z, v, true),
       floorAt: (x, z, from, to) => sim.collapse.floor(x, z, from, to),
     })
     this.collapse = new CollapseSystem({
+      trackSweeps: o.workers !== undefined,
       layout: this.layout, registry: this.registry,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       write: (x, y, z, v) => { sim.collapseWrite = true; try { sim.applySet(x, y, z, v, true) } finally { sim.collapseWrite = false } },
@@ -141,6 +148,25 @@ export class Simulation {
     this.hasNeighborRules = this.byId.some((r) => r?.onNeighborChanged)
     this.handlers = new Map(Object.entries(o.rules?.commands ?? {}))
     this.customTypes = new Set(this.handlers.keys())
+    if (o.workers !== undefined) {
+      for (const name of WORKER_COMMANDS) { if (this.customTypes.has(name)) throw new Error(`reserved worker command ${name}`); this.customTypes.add(name) }
+      this.workers = new WorkerSystem({
+        layout: this.layout, registry: this.registry, get: (x, y, z) => sim.store.getVoxel(x, y, z),
+        edit(pos, expected, value, commit) {
+          if (sim.store.getVoxel(...pos) !== expected || sim.collapse.overlaps(...pos) || sim.registry.solid[voxelId(value)] && (sim.workers!.overlaps(...pos) || sim.gravity.occupies(...pos))) return false
+          sim.store.prepareChunks([sim.layout.chunkOf(...pos)])
+          sim.applySet(...pos, value, true, commit); return true
+        },
+        safe(x, y, z) {
+          const id = y === 0 ? 0 : voxelId(sim.store.getVoxel(x, y - 1, z))
+          const feet = voxelId(sim.store.getVoxel(x, y, z))
+          return !(sim.registry.liquid[feet] && (sim.registry.liquidGroup[feet] !== sim.water.water || sim.registry.source[feet])) && sim.water.depthAt(x, y, z) <= 128 && !sim.registry.falls[id] && !(sim.registry.collapses[id] && sim.collapse.checking) && !sim.collapse.overlaps(x, y, z) && !sim.collapse.overlaps(x, y + 1, z)
+        },
+        hazard: (x, y, z) => sim.gravity.sweptOverlaps(x, y, z) || sim.collapse.sweptOverlaps(x, y, z),
+        dynamicBusy: () => sim.water.cols.tiles.awakeCount() > 0 || sim.gravity.count > 0 || sim.collapse.busy,
+        emit: (type, payload) => sim.events.push({ tick: sim.tick, type, payload }),
+      }, o.workers)
+    }
     this.ctx = this.makeContext()
   }
 
@@ -169,6 +195,7 @@ export class Simulation {
 
   /** Writes a generated column into the world. Chunks stay open until finishGenerate or replaceColumns commits. */
   applyColumn(cx: number, cz: number, column: Uint16Array): void {
+    if (this.workers && (this.workers.units.size || this.workers.nav.cacheTiles || this.workers.nav.pending)) this.workers.invalidateAll()
     const L = this.layout
     if (column.length !== 32 * 32 * L.size[1]) throw new RangeError(`column has ${column.length} voxels, expected ${32 * 32 * L.size[1]}`)
     for (let cy = 0; cy < L.cy; cy++) {
@@ -198,11 +225,12 @@ export class Simulation {
     const L = this.layout, store = this.store
     // 1. Find the changed chunks. Nothing is written yet: the light snapshot needs the old world.
     const vox = new Uint16Array(CHUNK_VOLUME)
-    const writes: { ci: number; data: Uint16Array }[] = []
+    const writes: { ci: number; data: Uint16Array; geometry: boolean }[] = []
     const masks = new Map<number, number>()
     const regenerated: [number, number][] = []
     let cx0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cz1 = -Infinity
     for (const c of cols) {
+      if (this.workers?.columnOverlaps(c.cx, c.cz, c.data)) throw new FragmentOverlapError('regeneration overlaps a unit')
       if (this.collapse.overlapsColumn(c.cx, c.cz)) throw new FragmentOverlapError('regeneration overlaps a falling structural fragment')
       if (c.data.length !== CHUNK_VOLUME * L.cy) throw new RangeError(`column has ${c.data.length} voxels, expected ${CHUNK_VOLUME * L.cy}`)
       for (let cy = 0; cy < L.cy; cy++) {
@@ -212,7 +240,7 @@ export class Simulation {
         const m = diffMask(old, data)
         if (m === 0) continue
         masks.set(ci, m)
-        writes.push({ ci, data })
+        writes.push({ ci, data, geometry: this.workers?.geometryChanged(old, data) ?? false })
         const last = regenerated[regenerated.length - 1]
         if (!last || last[0] !== c.cx || last[1] !== c.cz) regenerated.push([c.cx, c.cz])
         cx0 = Math.min(cx0, c.cx); cz0 = Math.min(cz0, c.cz); cx1 = Math.max(cx1, c.cx); cz1 = Math.max(cz1, c.cz)
@@ -227,7 +255,7 @@ export class Simulation {
     for (let cy = 0; cy < L.cy; cy++) for (let cz = rz0; cz <= rz1; cz++) for (let cx = rx0; cx <= rx1; cx++) reach.push(L.chunkIndex(cx, cy, cz))
     const before = reach.length <= this.regenLightDiffLimit ? new Map(reach.map((ci) => [ci, store.lightSnapshot(ci)])) : null
     // 3. Write, relight, commit. commit() closes every written or relit chunk; its list over-marks and is only the fallback.
-    for (const w of writes) { store.writeChunkDense(w.ci, w.data); this.epochs[w.ci]!++; this.collapse.replaceChunk(w.ci, w.data) }
+    for (const w of writes) { store.writeChunkDense(w.ci, w.data); this.epochs[w.ci]!++; this.collapse.replaceChunk(w.ci, w.data); this.workers?.replaceChunk(w.ci, w.geometry) }
     this.light.relightRegion(x0, z0, x1, z1)
     // Light can only differ in a chunk that is open: every write opens one.
     const touched = before ? [...before].filter(([ci]) => store.isOpen(ci)) : []
@@ -293,6 +321,7 @@ export class Simulation {
           acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: msg })
         }
       }
+      if (!this.isPaused) this.workers?.beforePhysics()
       // 2. neighbour notifications and scheduled updates, under the work cap.
       // Scheduled updates are drained one at a time so the notifications they cause share the budget.
       let budget = this.processNeighbors(this.workCap)
@@ -316,6 +345,7 @@ export class Simulation {
         this.processNeighbors(budget)
       }
       // 4. light
+      if (!this.isPaused) this.workers?.afterPhysics()
       this.light.propagate()
       // 5. the water mirror follows the heightfield every tick, paused or not, so edits made while paused show
       this.physics('water mirror', () => { this.water.flush() })
@@ -327,12 +357,12 @@ export class Simulation {
     const landed = this.gravity.landed
     for (const l of landed) l.version = this.store.versions[l.chunk]!
     const ws = this.water.stats(), jobs = this.jobs.size
-    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 || this.collapse.busy,
+    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 || this.collapse.busy || (this.workers?.busy ?? false),
       ...(this.collapse.enabled && { collapse: this.collapse.stats() }) }
     const events = this.events
     this.events = []
     const collapse = this.collapse.publication(this.store.versions)
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }) }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions) }) }
   }
 
   hash(): number {
@@ -354,6 +384,7 @@ export class Simulation {
     this.water.mixState(mix)
     this.jobs.mixState(mix)
     this.collapse.mixState(mix)
+    this.workers?.mixState(mix)
     return h >>> 0
   }
 
@@ -369,14 +400,17 @@ export class Simulation {
   }
 
   private applyCommand(cmd: Command): void {
+    if (WORKER_COMMANDS.has(cmd.type) && this.workers) { this.workers.command(cmd); return }
     if (cmd.type === 'setBlock') {
       const c = cmd as SetBlockCommand
+      if (this.registry.solid[voxelId(c.voxel)] && this.workers?.overlaps(...c.pos)) throw new Error('edit overlaps a unit')
       this.applySet(c.pos[0], c.pos[1], c.pos[2], c.voxel, true)
       return
     }
     if (cmd.type === 'fillRegion') {
       const c = cmd as FillRegionCommand
       const [x0, y0, z0] = c.min, [x1, y1, z1] = c.max
+      if (this.registry.solid[voxelId(c.voxel)] && this.workers?.overlapsRegion(c.min, c.max)) throw new Error('fill overlaps a unit')
       // Preflight the whole command so a rejected fill has no partial effect.
       if (this.collapse.stats().fragments) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
         if (this.collapse.overlaps(x, y, z)) throw new FragmentOverlapError('edit overlaps a falling structural fragment')
@@ -390,11 +424,13 @@ export class Simulation {
     this.handlers.get(cmd.type)!(this.ctx, cmd)
   }
 
-  private applySet(x: number, y: number, z: number, v: number, notify: boolean): void {
+  private applySet(x: number, y: number, z: number, v: number, notify: boolean, onCommit?: () => void): void {
     const old = this.store.getVoxel(x, y, z)
     if (old === v || !this.layout.inBounds(x, y, z)) return
     if (!this.collapseWrite && this.collapse.overlaps(x, y, z)) throw new FragmentOverlapError('edit overlaps a falling structural fragment')
     if (!this.store.setVoxel(x, y, z, v)) return
+    onCommit?.()
+    this.workers?.afterWrite(x, y, z, old, v)
     this.epochs[this.layout.chunkOf(x, y, z)]!++
     // Light depends only on a block's opacity and emission, which belong to its id: a state change cannot move it.
     if (voxelId(old) !== voxelId(v)) this.light.onVoxelChanged(x, y, z, old, v)

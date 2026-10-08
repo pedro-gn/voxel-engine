@@ -23,6 +23,7 @@ import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
 import { validateCommand, type Ack, type Command, type FillRegionCommand, type SetBlockCommand } from './sim/commands.ts'
 import type { SimEvent } from './sim/simulation.ts'
+import type { WorkerStats, WorkerTick } from './sim/workers/types.ts'
 import { createWorldBuffers } from './world/buffers.ts'
 import { Layout, type WorldSize } from './world/layout.ts'
 import { WorldReader } from './world/reader.ts'
@@ -57,6 +58,8 @@ export interface EngineOptions {
 }
 
 export interface EngineEvents {
+  workers: WorkerTick
+  frame: { dt: number; now: number }
   ready: { chunks: number }
   tick: { tick: number; tickMs: number }
   event: SimEvent
@@ -69,6 +72,7 @@ export interface EngineEvents {
 }
 
 export interface EngineStats {
+  workers?: WorkerStats
   fps: number; frameMs: number; tick: number; tickMs: number
   /** meshInFlight: chunks being meshed or meshed but not yet uploaded; queue + inFlight = 0 means everything is visible. */
   meshQueue: number; meshInFlight: number; failedChunks: number
@@ -95,6 +99,8 @@ export interface EngineStats {
 }
 
 export interface Engine {
+  readonly workers: WorkerTick | null
+  meshVersion(chunk: number): number
   readonly scene: THREE.Scene
   readonly camera: THREE.PerspectiveCamera
   readonly renderer: THREE.WebGPURenderer
@@ -421,6 +427,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         } else clock.hold(waterView, null) // every tile settled (prev = cur): nothing to time
         relightWater(m.dirtyChunks)
         physicsStats = m.physics
+        if (m.workers) { latestWorkers = m.workers; events.emit('workers', m.workers) }
         for (const a of m.acks) events.emit('ack', a)
         for (const ev of m.events) events.emit('event', ev)
         events.emit('tick', { tick: m.tick, tickMs: m.tickMs })
@@ -494,6 +501,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       stagedSources.clear(); fragments.releaseSources()
     }
   }
+  let latestWorkers: WorkerTick | null = null
   let last = performance.now(), fpsT = last, frames = 0, fps = 0, frameMs = 0
   let gpuMs: number | null = null, gpuFrames = 0
   renderer.setAnimationLoop(() => {
@@ -510,6 +518,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     visuals.drawFragments(fragments.frame(performance.now(), ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     waterShown = waterTick === null ? 1 : stepAlpha(clock.due, waterTick)
     visuals.setWaterAlpha(waterShown)
+    // Before rendering, so listeners' scene changes show in this frame.
+    events.emit('frame', { dt, now })
     visuals.frame(dt)
     if (o.gpuTiming && ++gpuFrames % 30 === 0) {
       renderer.resolveTimestampsAsync('render').then((ms) => { if (typeof ms === 'number') gpuMs = ms }).catch(() => {})
@@ -580,6 +590,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       ),
     },
     physics,
+    get workers() { return latestWorkers },
+    // A staged mesh is accepted but not drawn until its fragment sources release together.
+    meshVersion: ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci),
     atmosphere: visuals.atmosphere,
     get quality(): Quality { return visuals.getQuality() },
     set quality(value: Partial<Quality>) { visuals.setQuality(value) },
@@ -625,6 +638,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         collapseVisited: physicsStats.collapse?.visited ?? 0, collapseMutations: physicsStats.collapse?.mutations ?? 0,
         waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
+        ...(latestWorkers && { workers: latestWorkers.stats }),
       }
     },
     dispose,

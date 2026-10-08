@@ -23,7 +23,8 @@ export function raycast(
   // Rejects NaN and negatives. Infinity is fine: the walk always stops at the world box.
   if (!(maxDist >= 0)) return null
 
-  const len = Math.hypot(d[0], d[1], d[2])
+  // Math.sqrt is correctly rounded; Math.hypot is implementation-approximated and would break replay across engines.
+  const len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
   if (!(len > 0) || !Number.isFinite(len)) return null
   d[0] /= len; d[1] /= len; d[2] /= len
 
