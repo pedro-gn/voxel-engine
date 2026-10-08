@@ -5,6 +5,7 @@ import { EngineError, showErrorScreen } from './errors.ts'
 import { GhostEdits } from './interact/ghostEdits.ts'
 import { OrbitCamera } from './interact/orbitCamera.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
+import { bindCollision, type Collision } from './interact/collision.ts'
 import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, GenConnect, SimInitOptions, TerrainRect, ToMesh, ToSim } from './protocol.ts'
@@ -120,6 +121,8 @@ export interface Engine {
   get water(): WaterParams
   set water(value: WaterInput)
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
+  /** AABB-vs-voxel collision over the ghost-aware world (a predicted edit collides at once). Pure geometry: no dt or gravity. */
+  readonly collision: Collision
   readonly terrain: {
     /** The initial generation: wall time (light pass included) and chunk columns. */
     readonly initial: { ms: number; columns: number }
@@ -560,6 +563,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   // ---- public API ----
   let seq = 0
+  const collision = bindCollision({ size, get: world.get, solid: registry.solid, liquid: registry.liquid, source: registry.source })
   const pickable = (v: number) => { const id = voxelId(v); return id !== 0 && registry.liquid[id] === 0 }
   const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(world.get, pickable, size, origin, dir, maxDist)
   const raycaster = new THREE.Raycaster()
@@ -621,6 +625,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       return s
     },
     raycast: rc,
+    collision,
     pickScreen(clientX, clientY, maxDist = PICK_DISTANCE) {
       const r = canvas.getBoundingClientRect()
       ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)

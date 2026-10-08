@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
+import { ghostAwareGet } from '../src/engineWorld.ts'
+import { GhostEdits } from '../src/interact/ghostEdits.ts'
 import {
-  CONTACT_EPS, bodyBox, boxOverlapsSolid, groundDistance, liquidAt, liquidInBox, moveBox, sweepBox, unstick,
+  CONTACT_EPS, bindCollision, bodyBox, boxOverlapsSolid, groundDistance, liquidAt, liquidInBox, moveBox, sweepBox, unstick,
   type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
-import type { WorldSize } from '../src/world/layout.ts'
+import { Layout, type WorldSize } from '../src/world/layout.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
 
@@ -390,5 +392,33 @@ describe('liquidInBox', () => {
     expect(liquidInBox(world, body(20.5, 5, 20.5), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
     expect(liquidInBox(world, body(-10, 5, -10), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
     expect(liquidInBox(world, body(NaN, 5, 10.5), 6)).toEqual({ submerged: 0, eyeUnder: false, surfaceY: null })
+  })
+})
+
+describe('bindCollision', () => {
+  it('collides with ghost edits through the ghost-aware getter', () => {
+    const { world, set } = makeWorld()
+    set(8, 10, 10, STONE)
+    const ghosts = new GhostEdits(new Layout(world.size))
+    const c = bindCollision({ ...world, get: ghostAwareGet(ghosts, world.get) })
+    const b = body(10.5, 10, 10.5)
+    expect(c.move(b, [3, 0, 0]).dx).toBe(3)
+    ghosts.add(1, 12, 10, 10, STONE) // predicted, not acked
+    expect(10.8 + c.move(b, [3, 0, 0]).dx).toBeCloseTo(12, 9)
+    expect(c.overlaps(body(12.5, 10, 10.5))).toBe(true)
+    ghosts.add(2, 8, 10, 10, 0) // a predicted removal of real stone
+    expect(c.sweep(b, [-3, 0, 0]).dx).toBe(-3)
+    ghosts.resolve(1)
+    expect(c.move(b, [3, 0, 0]).dx).toBe(3)
+  })
+  it('forwards every query', () => {
+    const { world, set } = floored()
+    set(10, 5, 10, STONE); set(20, 5, 20, water(7))
+    const c = bindCollision(world)
+    expect(c.groundDistance(body(15.5, 5.5, 15.5), 1)).toBeCloseTo(0.5, 9)
+    expect(c.unstick(body(10.5, 5, 10.5), 1)).toBe(1)
+    expect(c.liquid(body(20.5, 5, 20.5), 5.5)).toMatchObject({ eyeUnder: true, surfaceY: 6 })
+    expect(c.liquidAt(20.5, 5.5, 20.5)).toBe(true)
+    expect(c.move(body(15.5, 5, 15.5), [0, -1, 0], { stepHeight: 1 }).grounded).toBe(true)
   })
 })

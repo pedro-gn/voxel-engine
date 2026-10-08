@@ -292,3 +292,16 @@ export function liquidInBox(w: CollisionWorld, box: Box, eyeY?: number): LiquidI
   if (eyeY !== undefined) r.eyeUnder = liquidAt(w, (b[0] + b[3]) / 2, eyeY, (b[2] + b[5]) / 2)
   return r
 }
+
+/** The functions closed over one world: what `engine.collision` is. */
+export function bindCollision(w: CollisionWorld): Collision {
+  return {
+    sweep: (box, delta, out) => sweepBox(w, box, delta, out),
+    move: (box, delta, options, out) => moveBox(w, box, delta, options, out),
+    overlaps: box => boxOverlapsSolid(w, box),
+    groundDistance: (box, maxDown) => groundDistance(w, box, maxDown),
+    liquid: (box, eyeY) => liquidInBox(w, box, eyeY),
+    liquidAt: (x, y, z) => liquidAt(w, x, y, z),
+    unstick: (box, maxUp) => unstick(w, box, maxUp),
+  }
+}
