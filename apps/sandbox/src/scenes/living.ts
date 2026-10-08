@@ -65,8 +65,8 @@ export function collapseCommands(s: Site): Command[] { const b = TOWER_BASE(s); 
 export function TUNNEL(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 4, s.ground, z0 + 23], max: [x0 + 11, s.ground + 1, z0 + 24] } }
 /** The 2-wide plank deck across the channel, flush with the ground. */
 export function BRIDGE(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 18, s.ground - 1, z0 + 23], max: [x0 + 22, s.ground - 1, z0 + 24] } }
-/** A 10 × 3 stone wall. */
-export function WALL(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 30, s.ground, z0 + 10], max: [x0 + 39, s.ground + 2, z0 + 10] } }
+/** A 10 × 2 stone wall (a third row is out of a unit's reach from the ground). */
+export function WALL(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 30, s.ground, z0 + 10], max: [x0 + 39, s.ground + 1, z0 + 10] } }
 /** The stone mound to tunnel through and the channel to bridge. */
 export function workSiteCommands(s: Site, ids: Ids): Command[] {
   const [x0, z0] = o(s)

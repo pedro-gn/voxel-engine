@@ -3,6 +3,9 @@ import { BLOCKS, DECORATIONS } from './blocks.ts'
 import { spawnCharacter } from './character.ts'
 import { createWorkersView } from './workersView.ts'
 import { WORKERS_SIZE, WORKER_OPTIONS } from './scenes/workers.ts'
+import { LIVING_SIZE, LIVING_WORKER_OPTIONS } from './scenes/living.ts'
+import { createLiving, createLivingBar } from './livingScript.ts'
+import livingDoc from './terrain/living.terrain.json'
 import { createControls } from './controls.ts'
 import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
@@ -19,7 +22,7 @@ import { createTerrainPanel } from './terrainPanel.ts'
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' || sceneParam === 'workers' ? sceneParam : 'world'
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' || sceneParam === 'workers' || sceneParam === 'living' ? sceneParam : 'world'
 if (sceneName === 'collapse') HOTBAR.splice(4, 2, 'structural_planks', 'structural_glass')
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
@@ -37,6 +40,7 @@ const seed = Number(params.get('seed') ?? 1234)
 const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
 const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
   : sceneName === 'workers' ? [...WORKERS_SIZE]
+  : sceneName === 'living' ? [...LIVING_SIZE]
   : sceneName === 'collapse' ? [...COLLAPSE_SIZE]
   : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
@@ -60,16 +64,16 @@ const engine = await createEngine({
       ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'caves'
       ? () => new Worker(new URL('./caves.worker.ts', import.meta.url), { type: 'module' })
-    : sceneName === 'terrain'
+    : sceneName === 'terrain' || sceneName === 'living'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' }
-    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : terrainDoc,
-  genWorker: terrainDoc ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
+    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : sceneName === 'living' ? livingDoc : terrainDoc,
+  genWorker: terrainDoc || sceneName === 'living' ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
-    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...(sceneName === 'workers' && { workers: WORKER_OPTIONS }) }
-    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' && { workers: WORKER_OPTIONS }) },
+    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : {}) }
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : {}) },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
@@ -114,8 +118,9 @@ if (sceneName === 'collapse') {
     s.target[0] = 56; s.target[1] = 12; s.target[2] = 46; s.distance = 140; s.pitch = 0.75; s.yaw = 0.7
   }
 }
-createControls(engine, { collapsed: editing || sceneName === 'workers' })
-if (sceneName === 'workers') Object.assign(document.getElementById('controls')!.style, { top: 'auto', right: 'auto', bottom: '12px', left: '12px' })
+const unitsScene = sceneName === 'workers' || sceneName === 'living'
+createControls(engine, { collapsed: editing || unitsScene })
+if (unitsScene) Object.assign(document.getElementById('controls')!.style, { top: 'auto', right: 'auto', bottom: '12px', left: '12px' })
 const editor = editing
   ? createTerrainEditor(engine, { doc: terrainDoc, seed, fileName: n <= 256 ? 'e2e.terrain.json' : 'showcase.terrain.json' })
   : null
@@ -127,13 +132,13 @@ if (sceneName === 'workers') {
   for (const s of [engine.controls.goal, engine.controls.current]) { s.target[0] = 44; s.target[1] = 7; s.target[2] = 34; s.distance = 125; s.pitch = .8; s.yaw = .7 }
   engine.controls.apply(engine.camera)
 }
-const bean = sceneName === 'workers' ? null : await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
-const workers = sceneName === 'workers' ? await createWorkersView(engine, canvas) : null
+const bean = unitsScene ? null : await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
+const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers' }) : null
 
 let selected = 0
 createHud(engine, () => HOTBAR[selected]!, editing ? 'terrain · edit' : sceneName, editing ? { corner: 'bottom', hint: EDIT_HINT } : {})
 window.addEventListener('keydown', (e) => {
-  if (sceneName === 'workers') return
+  if (unitsScene) return
   if (e.key === 'v' || e.key === 'V') bean?.play(bean.clip === 'walk' ? 'idle' : 'walk')
   const k = e.key === '0' ? 10 : Number(e.key)
   if (k >= 1 && k <= HOTBAR.length) selected = k - 1
@@ -194,4 +199,6 @@ if (collapse) {
   }
   document.body.append(bar)
 }
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, ready: true } })
+const living = sceneName === 'living' ? createLiving(engine) : null
+if (living) { living.camera('default'); await living.setup(); createLivingBar(living) }
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, ready: true } })

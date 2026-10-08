@@ -10,6 +10,7 @@ import {
   breachCommands, clearCommands, collapseCommands, moveGroupCommands, reservoirCommands, reservoirInterior,
   spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids, type Site,
 } from '../src/scenes/living.ts'
+import { createLiving, submitAll } from '../src/livingScript.ts'
 
 // A flat 64³ test world: stone below y 7, grass at y 7, so the first air is y 8.
 const G = 8
@@ -100,4 +101,37 @@ describe('living set pieces: simulation', () => {
     for (let i = 0; i < 2000 && !(dug() && bridged() && walled()); i++) sim.step()
     expect({ dug: dug(), bridged: bridged(), walled: walled() }).toEqual({ dug: true, bridged: true, walled: true })
   }, 180_000)
+})
+
+describe('submitAll', () => {
+  function fakeEngine(fail?: number) {
+    const listeners = new Set<(a: { seq: number; ok: boolean; error?: string; clientId: number }) => void>()
+    let seq = 0
+    return {
+      submit: () => { const s = ++seq; queueMicrotask(() => { for (const l of listeners) l({ clientId: 0, seq: s, ok: s !== fail, ...(s === fail && { error: 'spawn needs clear body, safe water and support' }) }) }); return s },
+      on: (_type: string, fn: (a: { seq: number; ok: boolean; error?: string; clientId: number }) => void) => { listeners.add(fn); return () => listeners.delete(fn) },
+    }
+  }
+  it('resolves once every command is acked', async () => {
+    await expect(submitAll(fakeEngine() as never, [{ type: 'setBlock', pos: [0, 0, 0], voxel: 0 }, { type: 'setBlock', pos: [1, 0, 0], voxel: 0 }])).resolves.toBeUndefined()
+  })
+  it('rejects with the first refused command instead of hanging', async () => {
+    await expect(submitAll(fakeEngine(2) as never, [{ type: 'setBlock', pos: [0, 0, 0], voxel: 0 }, { type: 'setBlock', pos: [1, 0, 0], voxel: 0 }])).rejects.toThrow('spawn needs clear body')
+  })
+})
+
+describe('living script', () => {
+  it('starting work twice queues the orders once', async () => {
+    const submitted: Command[] = []
+    let seq = 0
+    const listeners = new Set<(a: { seq: number; ok: boolean; clientId: number }) => void>()
+    const engine = {
+      blocks: { id: (n: string) => ({ water: 1, stone: 2, planks: 3, structural_planks: 4, structural_glass: 5 } as Record<string, number>)[n]! },
+      submit: (c: Command) => { submitted.push(c); const s = ++seq; queueMicrotask(() => { for (const l of listeners) l({ clientId: 0, seq: s, ok: true }) }); return s },
+      on: (_t: string, fn: (a: { seq: number; ok: boolean; clientId: number }) => void) => { listeners.add(fn); return () => listeners.delete(fn) },
+    }
+    const living = createLiving(engine as never)
+    await Promise.all([living.startWork(), living.startWork()])
+    expect(submitted.filter(c => c.type === 'workDig')).toHaveLength(1)
+  })
 })

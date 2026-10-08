@@ -8,7 +8,7 @@ const STATES: Record<string, string> = { idle: 'Livre', planning: 'Buscando rota
 const BARRIER_TIMEOUT_MS = 1000
 const REASONS: Record<string, string> = { 'no-access': 'Sem acesso', 'missing-material': 'Falta material', 'missing-tool': 'Falta ferramenta', unsafe: 'Passagem perigosa', traffic: 'Passagem ocupada', 'search-limited': 'Limite da busca', 'target-changed': 'Alvo alterado' }
 
-export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElement) {
+export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElement, { demo = true }: { demo?: boolean } = {}) {
   const scene = new Group(); engine.scene.add(scene)
   const selected = new Set<number>(), views = new Map<number, WorkerView>(), previous = new Map<number, Vector3>()
   const skins = new Map<number, { root: Object3D; mixer: AnimationMixer; clip: string; heading: number }>()
@@ -53,7 +53,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   const tunnel = () => engine.submit({ type: 'workDig', min: [22, 5, 29], max: [26, 6, 29], ...jobIds() })
   const bridge = () => engine.submit({ type: 'workBuild', min: [42, 4, 30], max: [46, 4, 30], voxel: engine.blocks.id('planks'), ...jobIds() })
   const wall = () => engine.submit({ type: 'workBuild', min: [32, 5, 28], max: [36, 6, 28], voxel: engine.blocks.id(material.value), ...jobIds() })
-  button('Abrir túnel', tunnel); button('Montar ponte', bridge); button('Erguer parede', wall)
+  if (demo) { button('Abrir túnel', tunnel); button('Montar ponte', bridge); button('Erguer parede', wall) }
   button('Reabastecer', () => { if (ids().length) engine.submit({ type: 'unitStock', ids: ids(), block: engine.blocks.id(material.value), count: 32 }); else status.textContent = 'Selecione uma unidade para reabastecer.' })
   button('Selecionar todas', () => { selected.clear(); for (const u of views.values()) if (u.state !== 'incapacitated') selected.add(u.id) })
   button('Parar unidades', () => { if (ids().length) engine.submit({ type: 'unitCancel', ids: ids() }) })
@@ -173,7 +173,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   }
   const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { selected.clear(); anchor = null; preview.visible = false } }
   canvas.addEventListener('pointerdown', pointerDown); canvas.addEventListener('pointermove', pointerMove); canvas.addEventListener('pointerup', pointerUp); canvas.addEventListener('pointercancel', pointerCancel); window.addEventListener('keydown', key)
-  for (let i = 0; i < 8; i++) engine.submit({ type: 'unitSpawn', pos: [12 + (i % 4) * 2, 5, 27 + Math.floor(i / 4) * 3], tools: ['pick'], stock: [{ block: engine.blocks.id('planks'), count: 32 }, { block: engine.blocks.id('stone'), count: 16 }, { block: engine.blocks.id('glass'), count: 16 }, { block: engine.blocks.id('structural_planks'), count: 16 }] })
+  if (demo) for (let i = 0; i < 8; i++) engine.submit({ type: 'unitSpawn', pos: [12 + (i % 4) * 2, 5, 27 + Math.floor(i / 4) * 3], tools: ['pick'], stock: [{ block: engine.blocks.id('planks'), count: 32 }, { block: engine.blocks.id('stone'), count: 16 }, { block: engine.blocks.id('glass'), count: 16 }, { block: engine.blocks.id('structural_planks'), count: 16 }] })
   return {
     tunnel, bridge, wall, selectAll() { for (const u of views.values()) selected.add(u.id) },
     dispose() { clearInterval(timer); for (const off of callbacks) off(); canvas.removeEventListener('pointerdown', pointerDown); canvas.removeEventListener('pointermove', pointerMove); canvas.removeEventListener('pointerup', pointerUp); canvas.removeEventListener('pointercancel', pointerCancel); window.removeEventListener('keydown', key); panel.remove(); style.remove(); engine.scene.remove(scene); proxyGeo.dispose(); proxyMat.dispose(); outlineGeo.dispose(); outlineMat.dispose(); preview.geometry.dispose(); (preview.material as MeshStandardMaterial).dispose(); for (const s of skins.values()) s.mixer.stopAllAction() },

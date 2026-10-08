@@ -75,6 +75,15 @@ describe('workers view input and proxy picking', () => {
 
   function skinX(id: number) { return (engine.scene.children[0] as Group).children.find(o => o instanceof Group && o.userData.unit === id)!.position.x }
 
+  it('without the demo it spawns no units and adds no demonstration buttons', async () => {
+    submit.mockClear()
+    const plain = await createWorkersView(engine, new Element() as unknown as HTMLCanvasElement, { demo: false })
+    expect(submit.mock.calls.filter(([c]) => c.type === 'unitSpawn')).toHaveLength(0)
+    const actions = (document.body as unknown as Element).children.at(-1)!.querySelector('.workers-actions')!
+    expect(actions.children.map(b => b.textContent)).not.toContain('Abrir túnel')
+    expect(actions.children.map(b => b.textContent)).toContain('Selecionar todas')
+    plain.dispose()
+  })
   it('holds only units near a pending mesh barrier and releases a barrier whose mesh never arrives', () => {
     const near = unit(1, 1), far = unit(2, 80)
     publish([near, far])
