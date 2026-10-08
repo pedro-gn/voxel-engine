@@ -19,8 +19,10 @@ const SCRIPT: [Phase, 'default' | 'far' | 'dam' | 'tower', 'startWork' | 'breach
   ['dam', 'dam', 'breach', 45_000], ['collapse', 'tower', 'collapse', 20_000],
 ]
 
-async function settle(page: Page) {
-  await page.waitForFunction(() => { const s = (window as W).__elovox!.engine.stats(); return s.meshQueue === 0 && s.meshInFlight === 0 }, null, { timeout: 120_000 })
+/** Waits for the mesh queue to drain; active phases (water, work, random ticks) may never reach zero, so give up after `ms`. */
+async function settle(page: Page, ms: number): Promise<boolean> {
+  return page.waitForFunction(() => { const s = (window as W).__elovox!.engine.stats(); return s.meshQueue === 0 && s.meshInFlight === 0 }, null, { timeout: ms })
+    .then(() => true, () => false)
 }
 
 async function measure(page: Page, phase: Phase, windowMs: number): Promise<PhaseResult> {
@@ -77,13 +79,14 @@ async function run(page: Page): Promise<PhaseResult[]> {
   await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 300_000 })
   // The river and the sea never sleep, so physics is never idle: a fixed warm-up lets the set pieces' first edits pass.
   await page.waitForTimeout(10_000 * SCALE)
-  await settle(page)
+  if (!await settle(page, 120_000)) throw new Error('the living scene never finished its first meshing')
   const out: PhaseResult[] = []
   for (const [phase, camera, event, windowMs] of SCRIPT) {
     await page.evaluate(c => (window as W).__elovox!.living!.camera(c), camera)
     if (event) await page.evaluate(ev => (window as W).__elovox!.living![ev](), event)
-    await page.waitForTimeout(2000); await settle(page)
-    out.push(await profile(page, phase, () => measure(page, phase, windowMs * SCALE)))
+    await page.waitForTimeout(2000)
+    const settled = await settle(page, 10_000)
+    out.push({ ...await profile(page, phase, () => measure(page, phase, windowMs * SCALE)), settled })
   }
   expect(errors).toEqual([])
   return out

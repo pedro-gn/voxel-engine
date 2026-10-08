@@ -1079,3 +1079,53 @@ git commit -m "docs(4a): living-world baseline and phase-2 candidates"
 - [ ] **Step 5: Checkpoint with the user**
 
 Present the results table and the candidates in chat, in Portuguese. The user picks the candidates. They become the phase-2 addendum to this plan, written with the writing-plans skill under the spec's §5 rules. If every phase passes, propose closing 4a with the scene and benchmark delivered.
+
+## Phase 1 results (2026-10-08)
+
+Production build, Edge headed, WebGPU, 1920 × 889, desktop (Ryzen 5 5600), monitor ~75 Hz. JSON: `docs/superpowers/research/2026-10-08-living-baseline.json`. Worse of two runs, except the idle phases. Run 1's idle windows drew only 9 frames in 10 s: the window was occluded, so rAF was throttled. Those rows use run 2.
+
+| Phase | fps p5 | fps median | CPU frame median / p95 ms | GPU ms | tick p95 ms | water apply p95 ms | draws | pass |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| idle-default | 30.0 | 45.0 | 16.2 / 23.4 | 1.4 | 6.1 | 13.8 | 864 | no |
+| idle-far | 20.0 | 29.9 | 25.5 / 36.5 | 2.3 | 5.8 | 14.9 | 1,571 | no |
+| work-default | 22.5 | 36.1 | 17.2 / 27.4 | 1.5 | 9.0 | 18.2 | 870 | no |
+| work-far | 16.4 | 25.7 | 25.6 / 40.1 | 2.4 | 7.8 | 19.4 | 1,577 | no |
+| dam | 7.5 | 10.0 | 28.1 / 42.7 | 2.0 | 16.2 | 49.1 | 1,568 | no |
+| collapse | 8.2 | 10.6 | 20.3 / 33.1 | 1.5 | 14.4 | 44.8 | 1,161 | no |
+
+Every phase misses. The GPU is never the limit (≤ 2.4 ms); the **main thread** is.
+
+Reference: the plain `?size=512` world measured in the morning had a CPU frame of 5.5–8.1 ms. A census of the living scene measured the frame loop at 13.6 ms median against 5.8 ms for the plain world, with 715 shadow-casting chunk meshes against 639. Hiding the units saves ~2 ms: 24 animated beans, 48 skinned meshes with shadows.
+
+Node sim bench (tick p50 / p95 / max, ms): idle 11.0 / 76.9 / 215 · work 6.4 / 9.9 / 39.0 · dam 13.1 / 17.2 / 27.3 · collapse 11.8 / 18.4 / 29.1. The "idle" window follows a 3,000-tick settle loop that never settled (the river and sea never sleep), so its p95 includes GC. The browser's tick p95 for idle is 6 ms.
+
+### Where the time goes
+
+**Main thread, dam** (dev build profile, inclusive):
+- water `SurfaceView.apply` **45%**, almost all `refreshLayered` → `refreshSlot` → `slotPatch.patch`/`resolve`/`diagonal`, plus `vertexShares`;
+- render (`visuals.frame`) **47%**.
+
+**Main thread, idle-default:**
+- render 68%;
+- water apply 18%, the same layered path.
+
+**Inside render,** three r186's per-draw `getCacheKey` → `getMaterialCacheKey` → `_getNodeChildren` takes ~20–25% of the main thread in every phase (the profile's top self time). That is per-draw overhead × ~860–1,570 draws, plus the shadow pass over 715 casters.
+
+**Sim worker, whole Node run** (inclusive):
+- water step 39%: `columns` accelerate / limit / transfer / settle, and the `under` chain;
+- water **publish 30%**: `records` 21%, `link` / `linkOf` 14%;
+- random ticks 7%;
+- chunk commit 4.5%.
+
+### Candidates for phase 2
+
+| # | Candidate | Phase(s) and metric it attacks | Evidence | Expected gain | Risk |
+|---|---|---|---|---|---|
+| 1 | Cheaper water apply on the main thread: a fast path for layered tiles whose slots did not change shape, so `refreshSlot` / `slotPatch` run only for slots that changed, and `vertexShares` is not recomputed per slot | water apply p95 (all phases; 14–49 ms against 4), fps p5 | `refreshLayered` 41% (dam) and 16% (idle) of the main thread | large: the apply path dominates dam and collapse | medium: 3d layered rendering has subtle seams. Covered by the surfaceView tests and the water-render / caves e2e |
+| 2 | Move the water `SurfaceView.apply` work into a worker, so the main thread only uploads finished buffers | water apply p95, fps p5 | same as #1 | largest for the main thread, but the cost stays on the CPU | high: a new worker boundary and buffer ownership. Pick it only if #1 is not enough |
+| 3 | Fewer chunk draws per frame (merge chunk meshes per region with BatchedMesh / multi-draw), so three's per-draw cache-key cost is paid less often | CPU frame (far views: 1,570 draws, 25–26 ms median) | `getMaterialCacheKey` + `_getNodeChildren` ~20–25% of the main thread | medium to large in far views | medium: touches the chunk mesh, shadow and remesh paths |
+| 4 | Fewer shadow casters: only chunks near the camera cast shadows | CPU frame, all views | 715 casters drawn again in the shadow pass; 2a measured shadows off = −512 draws, −2.1 ms | ~2–4 ms | low; a visual change for distant shadows → user checkpoint |
+| 5 | Cheaper water publish in the sim (`records` / `link`), e.g. records only for tiles whose layers changed | tick p95 dam / collapse (14–16 ms against 10) | `publish` 30% of the sim, `records` 21% | could bring dam / collapse ticks under 10 ms | medium: protocol of the water tick |
+| 6 | Fewer animated unit models: 8 instead of 24, or no shadows on beans | CPU frame | hiding the units saves ~2 ms | ~1–2 ms | low; visual → checkpoint |
+
+Suggested order: #1 → measure → #3 or #4 → #5. #2 stays in reserve.
