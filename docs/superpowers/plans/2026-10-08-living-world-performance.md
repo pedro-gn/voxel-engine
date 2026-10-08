@@ -1362,3 +1362,18 @@ git commit -m "perf(render): plain columns of layered water tiles take the fast 
 - [ ] **Step 9: Report and pick the next candidate**
 
 Append a "Phase 2 results: #1" table (phase, before → after, for fps p5, CPU median, apply p95 and tick p95) to this plan. Then present it to the user with the choice between #3 (batched chunk draws) and #4 (near-only shadow casters), based on how much CPU frame remains. #4 changes visuals and needs the user's look anyway. The next addendum is written after that choice.
+
+## Phase 2 results: #1 (plain columns of layered tiles take the fast path)
+
+Worst of two runs per phase, before (`2026-10-08-living-baseline.json`) → after (`2026-10-08-living-after-1.json`, `invalid: []`). Times in ms.
+
+| Phase | fps p5 | CPU median | Water apply p95 | Tick p95 |
+|---|---|---|---|---|
+| idle-default | 30.02 → 35.95 | 13.63 → 16.03 | 15.29 → 6.04 | 5.91 → 5.54 |
+| idle-far | 22.51 → 25.73 | 20.07 → 22.39 | 14.59 → 5.89 | 7.51 → 5.36 |
+| work-default | 29.93 → 35.98 | 14.56 → 15.56 | 15.97 → 6.48 | 7.74 → 7.69 |
+| work-far | 20.03 → 22.48 | 20.52 → 26.33 | 15.97 → 7.38 | 7.06 → 8.04 |
+| dam | 10.58 → 14.98 | 22.20 → 30.69 | 37.96 → 21.84 | 11.36 → 14.57 |
+| collapse | 7.81 → 19.99 | 22.05 → 24.14 | 47.94 → 21.25 | 17.88 → 16.73 |
+
+Water apply p95 drops in every phase and fps p5 rises in every phase. CPU frame median rose in every phase (1 to 8 ms) even though apply fell; the median counts frames without an apply spike, so this looks like run-to-run machine noise, not a regression, but it is unexplained.
