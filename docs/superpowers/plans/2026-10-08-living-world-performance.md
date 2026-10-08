@@ -1686,3 +1686,40 @@ git commit -m "test(render): batched and unbatched chunks draw the same picture;
 - [ ] **Step 6: Checkpoint**
 
 The controller shows the user before/after screenshots of the living scene at both cameras, and the numbers. Spec §5 rule 3: the user confirms nothing visible changed.
+
+---
+
+## Phase 2 results: #3 (opaque and cutout chunks drawn in region batches)
+
+**Same picture.** `e2e/batching.spec.ts` (`/?size=128&still`, decorations off, bean hidden, fixed camera, WebGPU): 0.14–0.19% of pixels differ by more than 8 on a channel across three runs (threshold 0.5%). The differences are isolated single pixels plus the HUD's fps text; nothing moved. Shadow casters 1 batched against 45; meshes 45 on both. No console errors. Screenshots of the living scene at both cameras, with and without `?nobatch`, match by eye (the far camera's target was pinned to the same height: it follows the live terrain, which differed by 2 blocks between loads).
+
+**Living benchmark.** Worst of two runs per phase, after #1 (`2026-10-08-living-after-1.json`) → after #3 (`2026-10-08-living-after-3.json`, `invalid: []`). Times in ms. Separate sessions, so this is the gate, not the attribution.
+
+| Phase | fps p5 | CPU median | Water apply p95 | Tick p95 |
+|---|---|---|---|---|
+| idle-default | 35.95 → 44.91 | 16.03 → 11.42 | 6.04 → 8.31 | 5.54 → 11.11 |
+| idle-far | 25.73 → 44.87 | 22.39 → 13.29 | 5.89 → 8.45 | 5.36 → 11.95 |
+| work-default | 35.98 → 44.91 | 15.56 → 11.62 | 6.48 → 9.14 | 7.69 → 14.89 |
+| work-far | 22.48 → 35.95 | 26.33 → 13.50 | 7.38 → 10.41 | 8.04 → 18.79 |
+| dam | 14.98 → 16.37 | 30.69 → 16.56 | 21.84 → 31.66 | 14.57 → 31.93 |
+| collapse | 19.99 → 16.37 | 24.14 → 16.67 | 21.25 → 32.84 | 16.73 → 39.45 |
+
+Shadow casters 715 → 31 in every phase; draw calls unchanged (864–1576). CPU frame median falls 4–14 ms in every phase and fps p5 rises in five of six. Collapse fps p5 falls (19.99 → 16.37), and tick p95 and water apply p95 rise in every phase. Neither tick (sim worker) nor apply (water) runs batching code; see the A/B.
+
+**Interleaved A/B (attribution).** One production build, `?scene=living` (A, batched) against `?scene=living&nobatch` (B), order ABAB then BABA in one Edge session (`2026-10-08-batching-ab.json`). Per page: 8 s warm-up, then per camera a 10 s window after 2 s. Cells: CPU frame median (ms) / fps median; tick and water apply are p95 over the window's ticks.
+
+| Run | Build | Default: CPU / fps | Far: CPU / fps | Tick p95 default / far | Apply p95 default / far | Shadow casters |
+|---|---|---|---|---|---|---|
+| 1 | A batched | 11.11 / 89.2 | 12.22 / 60.2 | 18.25 / 14.79 | 9.38 / 9.57 | 31 |
+| 2 | B nobatch | 30.62 / 25.7 | 42.34 / 20 | 15.25 / 11.71 | 8.77 / 8.32 | 715 |
+| 3 | A batched | 9.72 / 89.9 | 12.82 / 60 | 11.81 / 13.54 | 8.52 / 9.31 | 31 |
+| 4 | B nobatch | 26.47 / 30 | 42.02 / 20 | 10.46 / 11.34 | 7.79 / 8.41 | 715 |
+| 5 | B nobatch | 29.05 / 30 | 45.09 / 18 | 13.28 / 14.80 | 8.51 / 9.30 | 715 |
+| 6 | A batched | 10.89 / 89.7 | 12.81 / 60 | 12.09 / 11.93 | 8.31 / 9.15 | 31 |
+| 7 | B nobatch | 35.91 / 22.5 | 44.16 / 18.1 | 9.38 / 9.34 | 8.21 / 8.85 | 715 |
+| 8 | A batched | 11.26 / 89.5 | 12.36 / 60.1 | 15.49 / 12.34 | 8.13 / 9.07 | 31 |
+
+- Batched wins every adjacent pair at both cameras: CPU frame 9.7–12.8 ms against 26.5–45.1 ms, fps 60–90 against 18–30.
+- The machine ran slower this session than during the after-#1 benchmark (unbatched far 42–45 ms against 22–26 then), so compare within the table only.
+- Tick p95 averages 14.4 / 13.2 ms batched against 12.1 / 11.8 unbatched (default / far); water apply p95 8.6 / 9.3 against 8.3 / 8.7. Small and overlapping the unbatched runs' spread, and consistent with the main thread now drawing 3–4× more frames on the same cores as the sim workers. The benchmark's larger tick and apply rises are across sessions; they are the open item, together with the collapse fps p5.
+- Load to fully meshed (ABBA, same session): 9.3 / 9.8 s batched against 9.6 s and 1.8 s after a slow 11.6 s boot unbatched: no load regression.

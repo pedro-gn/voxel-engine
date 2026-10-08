@@ -1,0 +1,258 @@
+{
+  "date": "2026-10-08T19:14:58.028Z",
+  "build": "production (npm run build at 5a1c2c0), vite preview, Edge headed, viewport 1920x889, one browser session",
+  "order": "ABAB then BABA (ABABBABA)",
+  "A": "?scene=living (batched, default)",
+  "B": "?scene=living&nobatch",
+  "method": "per page: ready, 8 s warm-up; per camera (default, far): 2 s settle then a 10 s window; cpuFrameMsMedian = median of engine.stats().frameMs per rAF frame; fpsMedian = 1000 / median rAF interval; shadowCastersMax = max engine.stats().shadowCasters; tickMsP95 / waterApplyMsP95 over the window's tick events",
+  "runs": [
+    {
+      "run": 0,
+      "key": "A",
+      "batched": true,
+      "url": "http://localhost:5222/?scene=living",
+      "default": {
+        "frames": 642,
+        "cpuFrameMsMedian": 11.11,
+        "fpsMedian": 89.2,
+        "drawsMedian": 861,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 18.25,
+        "waterApplyMsP95": 9.38,
+        "ticks": 202
+      },
+      "far": {
+        "frames": 628,
+        "cpuFrameMsMedian": 12.22,
+        "fpsMedian": 60.2,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 14.79,
+        "waterApplyMsP95": 9.57,
+        "ticks": 200
+      },
+      "errors": []
+    },
+    {
+      "run": 1,
+      "key": "B",
+      "batched": false,
+      "url": "http://localhost:5222/?scene=living&nobatch",
+      "default": {
+        "frames": 254,
+        "cpuFrameMsMedian": 30.62,
+        "fpsMedian": 25.7,
+        "drawsMedian": 860,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 15.25,
+        "waterApplyMsP95": 8.77,
+        "ticks": 200
+      },
+      "far": {
+        "frames": 195,
+        "cpuFrameMsMedian": 42.34,
+        "fpsMedian": 20,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 11.71,
+        "waterApplyMsP95": 8.32,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 2,
+      "key": "A",
+      "batched": true,
+      "url": "http://localhost:5222/?scene=living",
+      "default": {
+        "frames": 800,
+        "cpuFrameMsMedian": 9.72,
+        "fpsMedian": 89.9,
+        "drawsMedian": 866,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 11.81,
+        "waterApplyMsP95": 8.52,
+        "ticks": 201
+      },
+      "far": {
+        "frames": 614,
+        "cpuFrameMsMedian": 12.82,
+        "fpsMedian": 60,
+        "drawsMedian": 1570,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 13.54,
+        "waterApplyMsP95": 9.31,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 3,
+      "key": "B",
+      "batched": false,
+      "url": "http://localhost:5222/?scene=living&nobatch",
+      "default": {
+        "frames": 297,
+        "cpuFrameMsMedian": 26.47,
+        "fpsMedian": 30,
+        "drawsMedian": 860,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 10.46,
+        "waterApplyMsP95": 7.79,
+        "ticks": 200
+      },
+      "far": {
+        "frames": 195,
+        "cpuFrameMsMedian": 42.02,
+        "fpsMedian": 20,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 11.34,
+        "waterApplyMsP95": 8.41,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 4,
+      "key": "B",
+      "batched": false,
+      "url": "http://localhost:5222/?scene=living&nobatch",
+      "default": {
+        "frames": 264,
+        "cpuFrameMsMedian": 29.05,
+        "fpsMedian": 30,
+        "drawsMedian": 861,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 13.28,
+        "waterApplyMsP95": 8.51,
+        "ticks": 202
+      },
+      "far": {
+        "frames": 179,
+        "cpuFrameMsMedian": 45.09,
+        "fpsMedian": 18,
+        "drawsMedian": 1478,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 14.8,
+        "waterApplyMsP95": 9.3,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 5,
+      "key": "A",
+      "batched": true,
+      "url": "http://localhost:5222/?scene=living",
+      "default": {
+        "frames": 653,
+        "cpuFrameMsMedian": 10.89,
+        "fpsMedian": 89.7,
+        "drawsMedian": 861,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 12.09,
+        "waterApplyMsP95": 8.31,
+        "ticks": 200
+      },
+      "far": {
+        "frames": 612,
+        "cpuFrameMsMedian": 12.81,
+        "fpsMedian": 60,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 11.93,
+        "waterApplyMsP95": 9.15,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 6,
+      "key": "B",
+      "batched": false,
+      "url": "http://localhost:5222/?scene=living&nobatch",
+      "default": {
+        "frames": 193,
+        "cpuFrameMsMedian": 35.91,
+        "fpsMedian": 22.5,
+        "drawsMedian": 1057,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 9.38,
+        "waterApplyMsP95": 8.21,
+        "ticks": 201
+      },
+      "far": {
+        "frames": 183,
+        "cpuFrameMsMedian": 44.16,
+        "fpsMedian": 18.1,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 715,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 9.34,
+        "waterApplyMsP95": 8.85,
+        "ticks": 201
+      },
+      "errors": []
+    },
+    {
+      "run": 7,
+      "key": "A",
+      "batched": true,
+      "url": "http://localhost:5222/?scene=living",
+      "default": {
+        "frames": 554,
+        "cpuFrameMsMedian": 11.26,
+        "fpsMedian": 89.5,
+        "drawsMedian": 860,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 15.49,
+        "waterApplyMsP95": 8.13,
+        "ticks": 201
+      },
+      "far": {
+        "frames": 629,
+        "cpuFrameMsMedian": 12.36,
+        "fpsMedian": 60.1,
+        "drawsMedian": 1568,
+        "shadowCastersMax": 31,
+        "meshes": 716,
+        "hidden": false,
+        "tickMsP95": 12.34,
+        "waterApplyMsP95": 9.07,
+        "ticks": 200
+      },
+      "errors": []
+    }
+  ]
+}
