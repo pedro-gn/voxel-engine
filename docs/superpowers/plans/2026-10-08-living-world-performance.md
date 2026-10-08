@@ -1723,3 +1723,20 @@ Shadow casters 715 → 31 in every phase; draw calls unchanged (864–1576). CPU
 - The machine ran slower this session than during the after-#1 benchmark (unbatched far 42–45 ms against 22–26 then), so compare within the table only.
 - Tick p95 averages 14.4 / 13.2 ms batched against 12.1 / 11.8 unbatched (default / far); water apply p95 8.6 / 9.3 against 8.3 / 8.7. Small and overlapping the unbatched runs' spread, and consistent with the main thread now drawing 3–4× more frames on the same cores as the sim workers. The benchmark's larger tick and apply rises are across sessions; they are the open item, together with the collapse fps p5.
 - Load to fully meshed (ABBA, same session): 9.3 / 9.8 s batched against 9.6 s and 1.8 s after a slow 11.6 s boot unbatched: no load regression.
+
+**Dam/collapse A/B (controller, same build 04bcc24, order A B A B B A of ABABBABA; the last two runs were stopped by the harness at 1.5 GB free RAM).** A = batched, B = `&nobatch`; per page: work 15 s, dam 20 s, collapse 15 s, each event fired 1 s into its window.
+
+| | A batched (3 runs) | B nobatch (3 runs) |
+|---|---|---|
+| CPU frame median, work / dam / collapse | 9.6–10.7 / 12.3–12.5 / 12.8–14.4 | 24.9–25.7 / 37.9–39.7 / 30.6–35.1 |
+| fps p5, work / dam / collapse | 44.9–59.7 / 25.7 / 22.5 | 25.6–25.7 / 10.6–11.2 / 9.5–12.0 |
+| tick p95, dam / collapse | 14.7–23.9 / 20.7–28.3 | 21.1–23.3 / 20.0–26.7 |
+| water apply p95, dam / collapse | 22.9–24.3 / 27.7–28.2 | 22.8–24.8 / 26.1–29.7 |
+
+Tick and water apply are equal within noise, and frame time is 2.5–3× lower with batches. The benchmark's higher tick and apply after #3 come from machine state, not batching: during that session an unrelated Next.js dev server held 12.8 GB, and the harness later killed this A/B for low memory. Collapse fps p5 is 22.5 batched against ~10 unbatched in the same session.
+
+**Fix round after review.** Two Critical bugs found by the task review were fixed test-first:
+- compaction copied the aliased `packed`/`position` buffer twice and corrupted data, fixed in 8ee3933;
+- WebGL2 used `instanceIndex` instead of the draw index, fixed in c90094f.
+
+The pixel e2e now covers WebGPU and WebGL2 over a multi-region terrain with trees (cutout), on the canvas only: 0.056–0.101% differ.
