@@ -116,6 +116,8 @@ export class FirstPersonController {
   private eyeOffset = 0
   private _enabled = true
   private readonly keys = new Set<string>()
+  private blockedH = false
+  private readonly delta: [number, number, number] = [0, 0, 0]
 
   constructor(private readonly o: FirstPersonOptions) {
     this.tuning = Object.freeze({ ...FP_TUNING, ...o.tuning })
@@ -154,6 +156,81 @@ export class FirstPersonController {
     this._grounded = false
     this._swimming = false
     this.eyeOffset = 0
+  }
+
+  /** Advances the player by dt seconds (clamped to 0.1) in equal substeps of at most tuning.substep. */
+  update(rawDt: number): void {
+    const dt = Number.isFinite(rawDt) ? clamp(rawDt, 0, 0.1) : 0
+    if (!(dt > 0)) { this.lastSubsteps = 0; return }
+    this.recover()
+    const n = Math.max(1, Math.ceil(dt / this.tuning.substep - 1e-9))
+    const h = dt / n
+    for (let i = 0; i < n; i++) this.step(h)
+    this.lastSubsteps = n
+    this.eyeOffset *= Math.exp(-dt / this.tuning.stepSmoothing)
+    if (Math.abs(this.eyeOffset) < 1e-4) this.eyeOffset = 0
+  }
+
+  /** A body overlapping solid (an edit, a landed block) is lifted out; buried deeper than unstickUp, it stays put. */
+  private recover(): void {
+    const c = this.o.collision, box = this.box()
+    if (!c.overlaps(box)) return
+    const lift = c.unstick(box, this.tuning.unstickUp)
+    if (lift === null || !(lift > 0)) return
+    this.position[1] += lift
+    this.eyeOffset -= lift
+    if (this.velocity[1] < 0) this.velocity[1] = 0
+  }
+
+  private step(h: number): void {
+    const t = this.tuning, c = this.o.collision, v = this.velocity, input = this.input
+    const water = c.liquid(this.box(), this.position[1] + t.eye)
+    const swimming = water.submerged >= t.swimThreshold
+    const shallow = !swimming && water.submerged > 0
+    this._swimming = swimming
+
+    const [wx, wz] = wishDir(input.forward, input.right, this.yaw)
+    const sprinting = input.sprint && input.forward > 0
+    const speed = t.walk * (sprinting ? t.sprint : 1) * (swimming ? t.swimFactor : shallow ? t.shallowFactor : 1)
+    const k = swimming ? t.accelSwim : this._grounded ? t.accelGround : t.accelAir
+    const a = 1 - Math.exp(-k * h)
+    v[0] += (wx * speed - v[0]) * a
+    v[2] += (wz * speed - v[2]) * a
+
+    const jumpSpeed = Math.sqrt(2 * t.gravity * t.jumpHeight)
+    let jumped = false
+    if (swimming) {
+      v[1] += ((input.jump ? t.swimUp : -t.sink) - v[1]) * (1 - Math.exp(-t.swimAccel * h))
+      if (input.jump && this.blockedH && !water.eyeUnder) { v[1] = jumpSpeed; jumped = true } // climb out onto a bank
+    } else {
+      if (input.jump && this._grounded) { v[1] = jumpSpeed; jumped = true }
+      v[1] = Math.max(-t.terminal, v[1] - t.gravity * h)
+    }
+
+    const wasGrounded = this._grounded
+    const d = this.delta
+    d[0] = v[0] * h; d[1] = v[1] * h; d[2] = v[2] * h
+    const r = c.move(this.box(), d, { stepHeight: wasGrounded && !swimming ? t.stepHeight : 0 })
+    this.position[0] += r.dx; this.position[1] += r.dy; this.position[2] += r.dz
+    if (r.blockedX) v[0] = 0
+    if (r.blockedZ) v[2] = 0
+    if (r.blockedY) v[1] = 0
+    if (r.stepped > 0) this.eyeOffset -= r.stepped
+    this.blockedH = r.blockedX || r.blockedZ
+    this._grounded = r.grounded
+
+    // Ground snap: walking off a ledge of ≤ snapDown follows it down instead of hopping.
+    if (wasGrounded && !r.grounded && !jumped && !swimming && v[1] <= 0) {
+      const drop = c.groundDistance(this.box(), t.snapDown)
+      if (drop !== null && drop > 0) {
+        d[0] = 0; d[1] = -drop; d[2] = 0
+        const s = c.move(this.box(), d)
+        this.position[1] += s.dy
+        this.eyeOffset -= s.dy
+        this._grounded = s.grounded
+        v[1] = 0
+      }
+    }
   }
 
   /** Whether voxel cell (x, y, z) overlaps the body (touching faces do not): refuses placing a block into the player. */

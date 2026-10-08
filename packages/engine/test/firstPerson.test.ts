@@ -110,3 +110,76 @@ describe('FirstPersonController (no motion)', () => {
     expect(FP_TUNING).toMatchObject({ halfWidth: 0.3, height: 1.8, eye: 1.62, walk: 4.3, sprint: 1.3, gravity: 30, jumpHeight: 1.25 })
   })
 })
+
+const run = (fp: FirstPersonController, seconds: number, dt = 1 / 60) => { for (let t = 0; t < seconds - 1e-9; t += dt) fp.update(dt) }
+const hSpeed = (fp: FirstPersonController) => Math.sqrt(fp.velocity[0] ** 2 + fp.velocity[2] ** 2)
+
+describe('FirstPersonController.update (flat floor stub)', () => {
+  it('takes equal substeps of at most 1/120 s, and none for a bad dt', () => {
+    const floor = flatFloor(), fp = makeFp(floor)
+    fp.spawn(10, 10)
+    fp.update(0.1); expect(fp.lastSubsteps).toBe(12)
+    fp.update(1 / 60); expect(fp.lastSubsteps).toBe(2)
+    fp.update(5); expect(fp.lastSubsteps).toBe(12)      // dt clamps to 0.1
+    const calls = floor.calls
+    fp.update(Number.NaN); fp.update(-1); fp.update(0)
+    expect(floor.calls).toBe(calls)
+  })
+  it('lands and stays grounded on the floor', () => {
+    const fp = makeFp(flatFloor(), 3)
+    fp.spawn(10, 10)
+    run(fp, 1)
+    expect(fp.grounded).toBe(true)
+    expect(fp.position[1]).toBe(0)
+    expect(fp.velocity[1]).toBe(0)
+  })
+  it('reaches walking speed in ~0.2 s and stops as fast', () => {
+    const fp = makeFp()
+    fp.spawn(32, 32); run(fp, 0.1)
+    fp.input.forward = 1
+    run(fp, 0.2)
+    expect(hSpeed(fp)).toBeGreaterThan(0.9 * 4.3)
+    run(fp, 0.5)
+    expect(hSpeed(fp)).toBeCloseTo(4.3, 2)
+    expect(fp.velocity[2]).toBeLessThan(0)               // yaw 0 walks toward −z
+    fp.input.forward = 0
+    run(fp, 0.3)
+    expect(hSpeed(fp)).toBeLessThan(0.1)
+  })
+  it('sprints only forward, and diagonals are no faster', () => {
+    const fp = makeFp()
+    fp.spawn(32, 32); run(fp, 0.1)
+    Object.assign(fp.input, { forward: 1, sprint: true }); run(fp, 1)
+    expect(hSpeed(fp)).toBeCloseTo(4.3 * 1.3, 2)
+    Object.assign(fp.input, { forward: -1, sprint: true }); run(fp, 1)
+    expect(hSpeed(fp)).toBeCloseTo(4.3, 2)
+    Object.assign(fp.input, { forward: 1, right: 1, sprint: false }); run(fp, 1)
+    expect(hSpeed(fp)).toBeCloseTo(4.3, 2)
+  })
+  it('jumps to ~1.25 blocks and lands', () => {
+    const fp = makeFp()
+    fp.spawn(10, 10); run(fp, 0.1)
+    fp.input.jump = true
+    fp.update(1 / 60)
+    fp.input.jump = false
+    let apex = 0
+    for (let i = 0; i < 120; i++) { fp.update(1 / 60); apex = Math.max(apex, fp.position[1]) }
+    expect(apex).toBeGreaterThan(1.15)
+    expect(apex).toBeLessThanOrEqual(1.26)
+    expect(fp.grounded).toBe(true)
+  })
+  it('does not jump in the air and caps the fall at terminal speed', () => {
+    const fp = makeFp(flatFloor(-1000), 0)
+    fp.spawn(10, 10)
+    fp.input.jump = true
+    run(fp, 3)
+    expect(fp.velocity[1]).toBe(-50)
+  })
+  it('decays the eye offset', () => {
+    const fp = makeFp()
+    fp.spawn(10, 10)
+    ;(fp as unknown as { eyeOffset: number }).eyeOffset = -1
+    run(fp, 0.15)
+    expect(Math.abs(fp.eyeLag)).toBeLessThan(0.06)
+  })
+})
