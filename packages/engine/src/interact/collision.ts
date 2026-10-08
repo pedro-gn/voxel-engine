@@ -94,3 +94,72 @@ export function boxOverlapsSolid(w: CollisionWorld, box: Box): boolean {
   const b = bounds(box)
   return b !== null && boxSolid(w, b)
 }
+
+/** The delta as numbers; a non-finite component counts as 0. */
+function delta3(d: Vec3Like): [number, number, number] {
+  const [x, y, z] = 'x' in d ? [d.x, d.y, d.z] : [d[0], d[1], d[2]]
+  return [Number.isFinite(x) ? x : 0, Number.isFinite(y) ? y : 0, Number.isFinite(z) ? z : 0]
+}
+
+/**
+ * Moves b along axis a (0 x, 1 y, 2 z) by d and returns the distance moved. Every slab of cells the leading face
+ * enters is checked (so no length tunnels); cells the box already overlaps are not (so it can leave them). The scan
+ * starts with residue tolerance and ends strictly, so tiny steps never creep into a face they touch.
+ */
+function sweepAxis(w: CollisionWorld, b: Bounds, a: number, d: number): number {
+  if (d === 0) return 0
+  const u = a === 0 ? 1 : 0, v = a === 2 ? 1 : 2
+  const u0 = firstCell(b[u]), u1 = lastCell(b[u], b[u + 3]), v0 = firstCell(b[v]), v1 = lastCell(b[v], b[v + 3])
+  const slab = (c: number) => a === 0 ? anySolid(w, c, c, u0, u1, v0, v1)
+    : a === 1 ? anySolid(w, u0, u1, c, c, v0, v1) : anySolid(w, u0, u1, v0, v1, c, c)
+  const top = w.size[1]
+  let moved = d
+  if (d > 0) {
+    const f = b[a + 3]
+    for (let c = Math.ceil(f - CONTACT_EPS); c < f + d; c++) {
+      if (slab(c)) { moved = Math.max(0, c - f); break }
+      if (a === 1 && c >= top) break // air from here up: the cross-section is inside the world
+    }
+  } else {
+    const f = b[a]
+    let c = Math.floor(f + CONTACT_EPS) - 1
+    if (a === 1 && c >= top && !slab(c)) c = top - 1 // skip the air above the world
+    for (; c + 1 > f + d; c--) {
+      if (slab(c)) { moved = Math.min(0, c + 1 - f); break }
+    }
+  }
+  b[a] += moved
+  b[a + 3] += moved
+  return moved
+}
+
+interface Horizontal { dx: number; dz: number; blockedX: boolean; blockedZ: boolean }
+
+/** The horizontal phase: the axis with the larger |delta| first, x on a tie. */
+function sweepHorizontal(w: CollisionWorld, b: Bounds, dx: number, dz: number, out: Horizontal): void {
+  if (Math.abs(dz) > Math.abs(dx)) {
+    out.dz = sweepAxis(w, b, 2, dz)
+    out.dx = sweepAxis(w, b, 0, dx)
+  } else {
+    out.dx = sweepAxis(w, b, 0, dx)
+    out.dz = sweepAxis(w, b, 2, dz)
+  }
+  out.blockedX = out.dx !== dx
+  out.blockedZ = out.dz !== dz
+}
+
+/** Moves the box by delta, y first, then the larger horizontal axis; returns the allowed displacement. */
+export function sweepBox(w: CollisionWorld, box: Box, delta: Vec3Like, out?: SweepResult): SweepResult {
+  const r = out ?? { dx: 0, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false }
+  const b = bounds(box)
+  if (b === null) {
+    r.dx = 0; r.dy = 0; r.dz = 0
+    r.blockedX = false; r.blockedY = false; r.blockedZ = false
+    return r
+  }
+  const [dx, dy, dz] = delta3(delta)
+  r.dy = sweepAxis(w, b, 1, dy)
+  r.blockedY = r.dy !== dy
+  sweepHorizontal(w, b, dx, dz, r)
+  return r
+}

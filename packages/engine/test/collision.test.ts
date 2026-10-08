@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import {
-  bodyBox, boxOverlapsSolid,
-  type Box, type CollisionWorld,
+  CONTACT_EPS, bodyBox, boxOverlapsSolid, sweepBox,
+  type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
 import type { WorldSize } from '../src/world/layout.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
@@ -58,5 +58,134 @@ describe('bodyBox and boxOverlapsSolid', () => {
     const { world } = makeWorld()
     expect(boxOverlapsSolid(world, body(NaN, 5, 10.5))).toBe(false)
     expect(boxOverlapsSolid(world, { ...body(10.5, 5, 10.5), maxY: Infinity })).toBe(false)
+  })
+})
+
+/** The box after a result's displacement. */
+const after = (b: Box, r: SweepResult): Box =>
+  ({ minX: b.minX + r.dx, minY: b.minY + r.dy, minZ: b.minZ + r.dz, maxX: b.maxX + r.dx, maxY: b.maxY + r.dy, maxZ: b.maxZ + r.dz })
+
+describe('sweepBox', () => {
+  it('moves freely through air', () => {
+    const { world } = makeWorld()
+    expect(sweepBox(world, body(10.5, 10, 10.5), [1, 2, -0.5])).toEqual({ dx: 1, dy: 2, dz: -0.5, blockedX: false, blockedY: false, blockedZ: false })
+  })
+  it('stops each face exactly on the voxel plane', () => {
+    const { world, set } = makeWorld()
+    set(12, 10, 10, STONE); set(8, 10, 10, STONE); set(10, 10, 12, STONE); set(10, 10, 8, STONE)
+    set(10, 13, 10, STONE); set(10, 4, 10, STONE)
+    const b = body(10.5, 10, 10.5)
+    const px = sweepBox(world, b, [5, 0, 0]); expect(b.maxX + px.dx).toBeCloseTo(12, 9); expect(px.blockedX).toBe(true)
+    const nx = sweepBox(world, b, [-5, 0, 0]); expect(b.minX + nx.dx).toBeCloseTo(9, 9); expect(nx.blockedX).toBe(true)
+    const pz = sweepBox(world, b, [0, 0, 5]); expect(b.maxZ + pz.dz).toBeCloseTo(12, 9); expect(pz.blockedZ).toBe(true)
+    const nz = sweepBox(world, b, [0, 0, -5]); expect(b.minZ + nz.dz).toBeCloseTo(9, 9); expect(nz.blockedZ).toBe(true)
+    const py = sweepBox(world, b, [0, 5, 0]); expect(b.maxY + py.dy).toBeCloseTo(13, 9); expect(py.blockedY).toBe(true)
+    const ny = sweepBox(world, b, [0, -20, 0]); expect(b.minY + ny.dy).toBeCloseTo(5, 9); expect(ny.blockedY).toBe(true)
+    for (const r of [px, nx, pz, nz, py, ny]) expect(boxOverlapsSolid(world, after(b, r))).toBe(false)
+  })
+  it('never tunnels through a one-voxel wall or floor, at any length', () => {
+    const { world, fill } = makeWorld()
+    fill(20, 0, 0, 20, 30, 30, STONE) // wall at x = 20
+    fill(0, 3, 40, 30, 3, 60, STONE)  // floor at y = 3, under z 40..60
+    for (const d of [0.9, 10, 1e4]) {
+      const b = body(19.2, 10, 10.5) // maxX = 19.5
+      const r = sweepBox(world, b, [d, 0, 0])
+      expect(b.maxX + r.dx).toBeCloseTo(20, 9)
+      expect(r.blockedX).toBe(true)
+    }
+    const fall = sweepBox(world, body(10.5, 50, 50.5), [0, -1e4, 0])
+    expect(50 + fall.dy).toBeCloseTo(4, 9)
+  })
+  it('stops across a chunk border', () => {
+    const { world, set } = makeWorld()
+    set(32, 10, 10, STONE)
+    const b = body(30.5, 10, 10.5)
+    expect(b.maxX + sweepBox(world, b, [100, 0, 0]).dx).toBeCloseTo(32, 9)
+  })
+  it('stops at the world sides and floor, and lets the box rise above the top and come back', () => {
+    const { world } = makeWorld()
+    const b = body(2.5, 10, 2.5)
+    expect(b.minX + sweepBox(world, b, [-100, 0, 0]).dx).toBeCloseTo(0, 9)
+    expect(b.minZ + sweepBox(world, b, [0, 0, -100]).dz).toBeCloseTo(0, 9)
+    const e = body(61.5, 10, 61.5)
+    expect(e.maxX + sweepBox(world, e, [100, 0, 0]).dx).toBeCloseTo(64, 9)
+    expect(e.maxZ + sweepBox(world, e, [0, 0, 100]).dz).toBeCloseTo(64, 9)
+    expect(10 + sweepBox(world, b, [0, -100, 0]).dy).toBeCloseTo(0, 9)
+    const up = sweepBox(world, body(10.5, 60, 10.5), [0, 100, 0])
+    expect(up).toMatchObject({ dy: 100, blockedY: false })
+    const back = sweepBox(world, body(10.5, 160, 10.5), [0, -200, 0])
+    expect(160 + back.dy).toBeCloseTo(0, 9)
+  })
+  it('terminates on huge vertical displacements', () => {
+    const { world } = makeWorld()
+    expect(sweepBox(world, body(10.5, 10, 10.5), [0, 1e12, 0]).dy).toBe(1e12)
+    expect(1e12 + sweepBox(world, body(10.5, 1e12, 10.5), [0, -2e12, 0]).dy).toBeCloseTo(0, 0)
+  })
+  it('slides along a wall when moving diagonally', () => {
+    const { world, fill } = makeWorld()
+    fill(12, 10, 0, 12, 11, 30, STONE)
+    const r = sweepBox(world, body(10.5, 10, 10.5), [5, 0, 3])
+    expect(10.8 + r.dx).toBeCloseTo(12, 9)
+    expect(r).toMatchObject({ dz: 3, blockedX: true, blockedZ: false })
+  })
+  it('sweeps the larger horizontal axis first, x on a tie', () => {
+    const { world, set } = makeWorld()
+    set(12, 10, 12, STONE)
+    const zFirst = sweepBox(world, body(10.5, 10, 10.5), [2, 0, 2.5])
+    expect(zFirst.dz).toBe(2.5); expect(10.8 + zFirst.dx).toBeCloseTo(12, 9)
+    const tie = sweepBox(world, body(10.5, 10, 10.5), [2, 0, 2])
+    expect(tie.dx).toBe(2); expect(10.8 + tie.dz).toBeCloseTo(12, 9)
+  })
+  it('passes a gap exactly as wide as the box and stops at a narrower one', () => {
+    const { world, fill } = makeWorld()
+    fill(10, 10, 12, 10, 12, 30, STONE); fill(12, 10, 12, 12, 12, 30, STONE) // a corridor x in [11, 12) from z = 12
+    expect(sweepBox(world, bodyBox(11.5, 10, 9.5, 0.5, 1.8), [0, 0, 10]).dz).toBe(10)
+    const wide = bodyBox(11.5, 10, 9.5, 0.6, 1.8)
+    expect(wide.maxZ + sweepBox(world, wide, [0, 0, 10]).dz).toBeCloseTo(12, 9)
+  })
+  it('slides on a floor it rests on with float residue', () => {
+    const { world, fill, set } = makeWorld()
+    fill(0, 4, 0, 30, 4, 30, STONE)
+    expect(sweepBox(world, body(10.5, 5 - 1e-9, 10.5), [3, 0, 0])).toMatchObject({ dx: 3, blockedX: false })
+    set(12, 5, 10, STONE)
+    const touching = { ...body(10.5, 5, 10.5), minX: 11.4 + 5e-8, maxX: 12 + 5e-8 }
+    expect(sweepBox(world, touching, [1, 0, 0])).toMatchObject({ dx: 0, blockedX: true })
+    expect(sweepBox(world, touching, [-1, 0, 0])).toMatchObject({ dx: -1, blockedX: false })
+  })
+  it('never creeps into a wall through many tiny steps', () => {
+    const { world, set } = makeWorld()
+    set(12, 10, 10, STONE)
+    let b: Box = { ...body(10.5, 10, 10.5), minX: 11.4, maxX: 12 }
+    for (let i = 0; i < 1000; i++) b = after(b, sweepBox(world, b, [1e-8, 0, 0]))
+    expect(b.maxX).toBeLessThan(12 + CONTACT_EPS)
+    expect(sweepBox(world, b, [1, 0, 0]).dx).toBe(0)
+  })
+  it('lets a box escape a block edited into it, but never into new solid', () => {
+    const { world, set } = makeWorld()
+    set(10, 10, 10, STONE)
+    const b = body(10.5, 10, 10.5)
+    expect(sweepBox(world, b, [3, 0, 0]).dx).toBe(3)
+    expect(sweepBox(world, b, [-3, 0, 0]).dx).toBe(-3)
+    set(12, 10, 10, STONE); set(8, 10, 10, STONE)
+    expect(10.8 + sweepBox(world, b, [3, 0, 0]).dx).toBeCloseTo(12, 9)
+    expect(10.2 + sweepBox(world, b, [-3, 0, 0]).dx).toBeCloseTo(9, 9)
+  })
+  it('a degenerate box on a grid plane still stops and terminates', () => {
+    const { world, set } = makeWorld()
+    set(12, 10, 10, STONE)
+    const flat: Box = { minX: 10, minY: 10, minZ: 10, maxX: 10, maxY: 10, maxZ: 10 }
+    expect(10 + sweepBox(world, flat, [1e4, 0, 0]).dx).toBeCloseTo(12, 9)
+    expect(sweepBox(world, flat, [0, 0, 1e4]).dz).toBeCloseTo(54, 9)
+  })
+  it('treats non-finite input as no motion', () => {
+    const { world } = makeWorld()
+    expect(sweepBox(world, body(10.5, 10, 10.5), [NaN, Infinity, 1])).toEqual({ dx: 0, dy: 0, dz: 1, blockedX: false, blockedY: false, blockedZ: false })
+    expect(sweepBox(world, body(NaN, 10, 10.5), { x: 1, y: 1, z: 1 })).toEqual({ dx: 0, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false })
+  })
+  it('fills and returns the out object', () => {
+    const { world } = makeWorld()
+    const out: SweepResult = { dx: 9, dy: 9, dz: 9, blockedX: true, blockedY: true, blockedZ: true }
+    expect(sweepBox(world, body(10.5, 10, 10.5), [1, 0, 0], out)).toBe(out)
+    expect(out).toEqual({ dx: 1, dy: 0, dz: 0, blockedX: false, blockedY: false, blockedZ: false })
   })
 })
