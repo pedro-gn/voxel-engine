@@ -1377,3 +1377,14 @@ Worst of two runs per phase, before (`2026-10-08-living-baseline.json`) → afte
 | collapse | 7.81 → 19.99 | 22.05 → 24.14 | 47.94 → 21.25 | 17.88 → 16.73 |
 
 Water apply p95 drops in every phase and fps p5 rises in every phase. CPU frame median rose in every phase (1 to 8 ms) even though apply fell; the median counts frames without an apply spike, so this looks like run-to-run machine noise, not a regression, but it is unexplained.
+
+**Interleaved A/B (controller, 2026-10-08).** Builds of 9667ee7 (A) and 8893da8 (B) ran alternately A, B, A, B: production, Edge headed, `?scene=living`, 10 s idle windows at the default and far cameras plus a 20 s dam window. The CPU-frame rise is **real, not noise**:
+
+| | A (two runs) | B (two runs) |
+|---|---|---|
+| CPU frame median, default camera | 14.6 / 13.9 | 15.5 / 17.0 |
+| CPU frame median, far camera | 21.5 / 22.3 | 26.3 / 27.4 |
+| CPU frame median, dam | 22.8 / 21.9 | 26.3 / 29.5 |
+| Water apply p95 (default / far / dam) | 13–14 / 15.5 / 33 | 5.4–6.8 / 7.3–8.2 / 18–20 |
+
+Water apply halves, and each frame costs ~1–7 ms more. Task 7 changes only `surfaceView.ts` and `layerStore.ts`, and the review found identical dirty and touched keys. Profiles of the far view (minified) show no single new hot spot. The cause is open, and it is the first item for the next step.
