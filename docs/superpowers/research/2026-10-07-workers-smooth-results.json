@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-07",
+  "node": "v24.5.0",
+  "cpu": "AMD Ryzen 5 5600 6-Core Processor              ",
+  "size": [
+    256,
+    128,
+    256
+  ],
+  "searchCap": 4096,
+  "scope": "Complete Simulation ticks including worker publication, light and commit. No GPU or worker transport; moving includes initial cold queries, traffic and reconstruction. Memory metric includes typed nav arrays only.",
+  "results": [
+    {
+      "count": 0,
+      "idle": {
+        "p50": 0.005,
+        "p95": 0.011,
+        "p99": 0.021,
+        "max": 0.021
+      }
+    },
+    {
+      "count": 1,
+      "idle": {
+        "p50": 0.01,
+        "p95": 0.016,
+        "p99": 0.024,
+        "max": 0.029
+      },
+      "moving": {
+        "p50": 0.021,
+        "p95": 0.065,
+        "p99": 0.868,
+        "max": 4.442
+      },
+      "firstActionsWithin240Ticks": 1,
+      "stateCounts": {
+        "walking": 1
+      },
+      "peakTypedNavBytes": 598016,
+      "peakPosePayload": 36
+    },
+    {
+      "count": 100,
+      "idle": {
+        "p50": 0.026,
+        "p95": 0.075,
+        "p99": 0.364,
+        "max": 0.545
+      },
+      "moving": {
+        "p50": 1.209,
+        "p95": 2.204,
+        "p99": 4.07,
+        "max": 5.107
+      },
+      "firstActionsWithin240Ticks": 100,
+      "stateCounts": {
+        "walking": 100
+      },
+      "peakTypedNavBytes": 1832960,
+      "peakPosePayload": 3600
+    },
+    {
+      "count": 1000,
+      "idle": {
+        "p50": 0.148,
+        "p95": 0.312,
+        "p99": 1.009,
+        "max": 1.192
+      },
+      "moving": {
+        "p50": 3.019,
+        "p95": 4.522,
+        "p99": 5.552,
+        "max": 9.607
+      },
+      "firstActionsWithin240Ticks": 610,
+      "stateCounts": {
+        "walking": 117,
+        "planning": 883
+      },
+      "peakTypedNavBytes": 7362560,
+      "peakPosePayload": 36000
+    }
+  ]
+}

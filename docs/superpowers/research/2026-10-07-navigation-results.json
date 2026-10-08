@@ -1,0 +1,520 @@
+{
+  "date": "2026-10-07",
+  "node": "v24.5.0",
+  "cpu": "AMD Ryzen 5 5600 6-Core Processor              ",
+  "warmup": 5,
+  "runs": 21,
+  "scope": "Static stand-position graph and exact tiny planar action cases. Graph build reads real ChunkStore. No physics, units, GPU, worker transport, dynamic graph maintenance or production HPA* measured.",
+  "correctness": {
+    "dijkstraPairs": 64,
+    "strategies": 3,
+    "popBudget": 3,
+    "fixtures": [
+      "ascent",
+      "source-headroom",
+      "drop-limit",
+      "directed-drop",
+      "bounds",
+      "world-floor"
+    ]
+  },
+  "graph": [
+    {
+      "name": "open-256",
+      "size": [
+        256,
+        64,
+        256
+      ],
+      "nodes": 65536,
+      "graphBytes": 1835012,
+      "buildMs": 128.915,
+      "extractionMs": 112.434,
+      "adjacencyMs": 16.467,
+      "status": "found",
+      "cost": 2008,
+      "pathNodes": 503,
+      "expanded": 503,
+      "searches": [
+        {
+          "mode": "map-cached",
+          "ms": {
+            "p50": 0.308,
+            "p95": 0.643,
+            "max": 0.662
+          },
+          "coldQueryMs": 1.02,
+          "scratchBytes": null,
+          "mapEntries": 1507,
+          "heapBytes": 16384
+        },
+        {
+          "mode": "typed-cached",
+          "ms": {
+            "p50": 0.203,
+            "p95": 0.462,
+            "max": 0.517
+          },
+          "coldQueryMs": 1.311,
+          "scratchBytes": 1048576,
+          "mapEntries": 0,
+          "heapBytes": 16384
+        },
+        {
+          "mode": "typed-live",
+          "ms": {
+            "p50": 0.319,
+            "p95": 0.543,
+            "max": 0.794
+          },
+          "coldQueryMs": 0.653,
+          "scratchBytes": 1048576,
+          "mapEntries": 0,
+          "heapBytes": 16384
+        }
+      ],
+      "sliced": {
+        "popBudget": 256,
+        "slices": 2,
+        "maxSlicePops": 256,
+        "ms": {
+          "p50": 0.311,
+          "p95": 0.311,
+          "max": 0.311
+        }
+      }
+    },
+    {
+      "name": "terraces-128",
+      "size": [
+        128,
+        64,
+        128
+      ],
+      "nodes": 16384,
+      "graphBytes": 458756,
+      "buildMs": 31.324,
+      "extractionMs": 26.42,
+      "adjacencyMs": 4.898,
+      "status": "found",
+      "cost": 1014,
+      "pathNodes": 247,
+      "expanded": 15172,
+      "searches": [
+        {
+          "mode": "map-cached",
+          "ms": {
+            "p50": 11.799,
+            "p95": 13.74,
+            "max": 14.045
+          },
+          "coldQueryMs": 15.978,
+          "scratchBytes": null,
+          "mapEntries": 15434,
+          "heapBytes": 65536
+        },
+        {
+          "mode": "typed-cached",
+          "ms": {
+            "p50": 8.585,
+            "p95": 12.022,
+            "max": 12.795
+          },
+          "coldQueryMs": 9.139,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 65536
+        },
+        {
+          "mode": "typed-live",
+          "ms": {
+            "p50": 11.429,
+            "p95": 13.122,
+            "max": 13.147
+          },
+          "coldQueryMs": 14.433,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 65536
+        }
+      ],
+      "sliced": {
+        "popBudget": 256,
+        "slices": 96,
+        "maxSlicePops": 256,
+        "ms": {
+          "p50": 0.08,
+          "p95": 0.104,
+          "max": 1.409
+        }
+      }
+    },
+    {
+      "name": "two-floors-128",
+      "size": [
+        128,
+        64,
+        128
+      ],
+      "nodes": 31744,
+      "graphBytes": 827396,
+      "buildMs": 38.23,
+      "extractionMs": 27.091,
+      "adjacencyMs": 11.136,
+      "status": "found",
+      "cost": 984,
+      "pathNodes": 247,
+      "expanded": 247,
+      "searches": [
+        {
+          "mode": "map-cached",
+          "ms": {
+            "p50": 0.141,
+            "p95": 0.323,
+            "max": 0.451
+          },
+          "coldQueryMs": 0.164,
+          "scratchBytes": null,
+          "mapEntries": 739,
+          "heapBytes": 16384
+        },
+        {
+          "mode": "typed-cached",
+          "ms": {
+            "p50": 0.102,
+            "p95": 0.129,
+            "max": 0.136
+          },
+          "coldQueryMs": 0.104,
+          "scratchBytes": 507904,
+          "mapEntries": 0,
+          "heapBytes": 16384
+        },
+        {
+          "mode": "typed-live",
+          "ms": {
+            "p50": 0.151,
+            "p95": 0.18,
+            "max": 0.345
+          },
+          "coldQueryMs": 0.161,
+          "scratchBytes": 507904,
+          "mapEntries": 0,
+          "heapBytes": 16384
+        }
+      ],
+      "sliced": {
+        "popBudget": 256,
+        "slices": 1,
+        "maxSlicePops": 247,
+        "ms": {
+          "p50": 0.096,
+          "p95": 0.096,
+          "max": 0.096
+        }
+      }
+    },
+    {
+      "name": "maze-128",
+      "size": [
+        128,
+        64,
+        128
+      ],
+      "nodes": 16384,
+      "graphBytes": 458756,
+      "buildMs": 32.683,
+      "extractionMs": 28.151,
+      "adjacencyMs": 4.529,
+      "status": "found",
+      "cost": 5504,
+      "pathNodes": 1377,
+      "expanded": 13555,
+      "searches": [
+        {
+          "mode": "map-cached",
+          "ms": {
+            "p50": 6.349,
+            "p95": 7.815,
+            "max": 9.045
+          },
+          "coldQueryMs": 6.314,
+          "scratchBytes": null,
+          "mapEntries": 13709,
+          "heapBytes": 32768
+        },
+        {
+          "mode": "typed-cached",
+          "ms": {
+            "p50": 4.1,
+            "p95": 6.764,
+            "max": 7.049
+          },
+          "coldQueryMs": 4.155,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 32768
+        },
+        {
+          "mode": "typed-live",
+          "ms": {
+            "p50": 7.143,
+            "p95": 8.954,
+            "max": 9.853
+          },
+          "coldQueryMs": 8.174,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 32768
+        }
+      ],
+      "sliced": {
+        "popBudget": 256,
+        "slices": 74,
+        "maxSlicePops": 256,
+        "ms": {
+          "p50": 0.046,
+          "p95": 0.102,
+          "max": 0.138
+        }
+      }
+    },
+    {
+      "name": "unreachable-128",
+      "size": [
+        128,
+        64,
+        128
+      ],
+      "nodes": 16384,
+      "graphBytes": 458756,
+      "buildMs": 32.073,
+      "extractionMs": 27.966,
+      "adjacencyMs": 4.102,
+      "status": "unreachable",
+      "cost": null,
+      "pathNodes": 0,
+      "expanded": 8192,
+      "searches": [
+        {
+          "mode": "map-cached",
+          "ms": {
+            "p50": 6.665,
+            "p95": 7.209,
+            "max": 7.424
+          },
+          "coldQueryMs": 6.607,
+          "scratchBytes": null,
+          "mapEntries": 8192,
+          "heapBytes": 131072
+        },
+        {
+          "mode": "typed-cached",
+          "ms": {
+            "p50": 4.854,
+            "p95": 5.962,
+            "max": 11.338
+          },
+          "coldQueryMs": 6.357,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 131072
+        },
+        {
+          "mode": "typed-live",
+          "ms": {
+            "p50": 6.804,
+            "p95": 7.891,
+            "max": 7.944
+          },
+          "coldQueryMs": 7.032,
+          "scratchBytes": 262144,
+          "mapEntries": 0,
+          "heapBytes": 131072
+        }
+      ],
+      "sliced": {
+        "popBudget": 256,
+        "slices": 62,
+        "maxSlicePops": 256,
+        "ms": {
+          "p50": 0.072,
+          "p95": 0.112,
+          "max": 0.16
+        }
+      }
+    }
+  ],
+  "actions": [
+    {
+      "name": "prefer-existing-detour",
+      "status": "found",
+      "cost": 24,
+      "remaining": 0,
+      "actions": [
+        {
+          "type": "walk",
+          "cell": 0
+        },
+        {
+          "type": "walk",
+          "cell": 1
+        },
+        {
+          "type": "walk",
+          "cell": 2
+        },
+        {
+          "type": "walk",
+          "cell": 3
+        },
+        {
+          "type": "walk",
+          "cell": 4
+        },
+        {
+          "type": "walk",
+          "cell": 9
+        }
+      ],
+      "expanded": 15
+    },
+    {
+      "name": "dig-forced-tunnel",
+      "status": "found",
+      "cost": 32,
+      "remaining": 0,
+      "actions": [
+        {
+          "type": "walk",
+          "cell": 1
+        },
+        {
+          "type": "dig",
+          "cell": 2,
+          "bodyCell": "feet"
+        },
+        {
+          "type": "dig",
+          "cell": 2,
+          "bodyCell": "head"
+        },
+        {
+          "type": "walk",
+          "cell": 2
+        },
+        {
+          "type": "walk",
+          "cell": 3
+        },
+        {
+          "type": "walk",
+          "cell": 4
+        }
+      ],
+      "expanded": 7
+    },
+    {
+      "name": "dig-disabled",
+      "status": "unreachable",
+      "cost": null,
+      "expanded": 2
+    },
+    {
+      "name": "bridge-two-blocks",
+      "status": "found",
+      "cost": 36,
+      "remaining": 0,
+      "actions": [
+        {
+          "type": "walk",
+          "cell": 1
+        },
+        {
+          "type": "place-floor",
+          "cell": 2
+        },
+        {
+          "type": "walk",
+          "cell": 2
+        },
+        {
+          "type": "place-floor",
+          "cell": 3
+        },
+        {
+          "type": "walk",
+          "cell": 3
+        },
+        {
+          "type": "walk",
+          "cell": 4
+        },
+        {
+          "type": "walk",
+          "cell": 5
+        }
+      ],
+      "expanded": 10
+    },
+    {
+      "name": "insufficient-material",
+      "status": "unreachable",
+      "cost": null,
+      "expanded": 5
+    },
+    {
+      "name": "preserve-material-via-detour",
+      "status": "found",
+      "cost": 32,
+      "remaining": 0,
+      "actions": [
+        {
+          "type": "walk",
+          "cell": 0
+        },
+        {
+          "type": "walk",
+          "cell": 1
+        },
+        {
+          "type": "walk",
+          "cell": 2
+        },
+        {
+          "type": "walk",
+          "cell": 3
+        },
+        {
+          "type": "walk",
+          "cell": 9
+        },
+        {
+          "type": "place-floor",
+          "cell": 10
+        },
+        {
+          "type": "walk",
+          "cell": 10
+        },
+        {
+          "type": "walk",
+          "cell": 11
+        }
+      ],
+      "expanded": 26
+    },
+    {
+      "name": "build-disabled",
+      "status": "unreachable",
+      "cost": null,
+      "expanded": 2
+    }
+  ],
+  "memoryModel": {
+    "defaultWorldVoxels": 134217728,
+    "denseScratch16Bytes": 2147483648,
+    "singleFloorNodes": 1048576,
+    "compactScratch16Bytes": 16777216
+  }
+}
