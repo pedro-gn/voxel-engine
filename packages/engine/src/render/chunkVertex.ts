@@ -1,4 +1,4 @@
-import { attribute, bool, float, Fn, instanceIndex, int, ivec2, modelWorldMatrix, select, textureLoad, textureSize, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { attribute, bool, drawIndex, float, Fn, instanceIndex, int, ivec2, modelWorldMatrix, select, textureLoad, textureSize, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
 import type * as THREE from 'three/webgpu'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
@@ -10,15 +10,18 @@ const widthOf = (t: THREE.DataTexture) => int((textureSize(textureLoad(t), int(0
 /**
  * The chunk's translation when a BatchedMesh draws it (chunkBatches.ts), else 0. Trap 1 of chunkBatches.ts: three r186
  * applies the batch's per-instance matrix to positionLocal BEFORE the material's positionNode, which then overwrites
- * it, so a custom positionNode must read that matrix itself: instance_index (the draw range's firstInstance) -> the
- * batch's indirect texture -> the instance's matrix in the matrices texture (4 texels per matrix) -> column 3.
+ * it, so a custom positionNode must read that matrix itself: the draw's index -> the batch's indirect texture -> the
+ * instance's matrix in the matrices texture (4 texels per matrix) -> column 3. The draw's index is backend-specific, as
+ * in three's own nodes/accessors/Batch.js: WebGPU draws each range with firstInstance = its index, so instance_index;
+ * WebGL 2 has no firstInstance (gl_InstanceID is 0) and exposes gl_DrawID (or a per-draw uniform) as `drawIndex`.
  */
 const batchOffset = Fn((_: unknown, builder: { object?: THREE.Object3D }) => {
   const bm = builder.object as (THREE.BatchedMesh & { _indirectTexture: THREE.DataTexture; _matricesTexture: THREE.DataTexture }) | undefined
   if (!bm || bm.isBatchedMesh !== true) return vec3(0, 0, 0)
   const ind = bm._indirectTexture, mat = bm._matricesTexture
   const isize = widthOf(ind).toConst()
-  const id = int(instanceIndex).toConst()
+  const drawIndexBuiltin = (builder as unknown as { getDrawIndex(): string | null }).getDrawIndex()
+  const id = int(drawIndexBuiltin === null ? instanceIndex : drawIndex).toConst()
   const indirect = int(textureLoad(ind, ivec2(id.mod(isize), id.div(isize))).x).toConst()
   const msize = widthOf(mat).toConst()
   const j = indirect.mul(4).toConst()
