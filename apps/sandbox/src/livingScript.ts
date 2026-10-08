@@ -1,6 +1,6 @@
 import { packVoxel, type Command, type Engine } from '@elovox/engine'
 import {
-  CAMERAS, SITES, breachCommands, clearCommands, collapseCommands, moveGroupCommands, reservoirCommands,
+  CAMERAS, SITES, breachCommands, quarryCycle, clearCommands, collapseCommands, moveGroupCommands, reservoirCommands,
   spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids,
 } from './scenes/living.ts'
 
@@ -27,7 +27,7 @@ export type Living = {
 
 export function createLiving(engine: Engine): Living {
   const b = engine.blocks
-  const ids: Ids = { water: packVoxel(b.id('water'), 7), stone: b.id('stone'), planks: b.id('planks'), beam: b.id('structural_planks'), glass: b.id('structural_glass') }
+  const ids: Ids = { water: packVoxel(b.id('water'), 7), stone: b.id('stone'), planks: b.id('planks'), beam: b.id('structural_planks'), glass: b.id('structural_glass'), dirt: b.id('dirt') }
   let started = false, breached = false, collapsed = false, groupAtRest = false
   return {
     get started() { return started },
@@ -43,6 +43,13 @@ export function createLiving(engine: Engine): Living {
       started = true
       await submitAll(engine, [...workCommands(SITES.work, ids), ...moveGroupCommands(SITES.rest)])
       groupAtRest = true
+      // Dig the quarry, fill it back, dig again: the crews stay busy for as long as the scene runs.
+      let cycling = false
+      engine.on('workers', tick => {
+        if (cycling) return
+        const next = quarryCycle(tick.orders, SITES.work, ids)
+        if (next.length) { cycling = true; void submitAll(engine, next).finally(() => { cycling = false }) }
+      })
     },
     async breach() { if (breached) return; breached = true; await submitAll(engine, breachCommands(SITES.reservoir)) },
     async collapse() { if (collapsed) return; collapsed = true; await submitAll(engine, collapseCommands(SITES.tower)) },

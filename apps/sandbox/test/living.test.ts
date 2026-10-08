@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
 import {
-  BRIDGE, CREWS, LIVING_WORKER_OPTIONS, SITE_HALF, TOWER_BASE, TUNNEL, UNITS, WALL,
+  BRIDGE, CREWS, QUARRY, SITES, LIVING_WORKER_OPTIONS, SITE_HALF, TOWER_BASE, TUNNEL, UNITS, WALL,
   breachCommands, clearCommands, collapseCommands, moveGroupCommands, reservoirCommands, reservoirInterior,
-  spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids, type Site,
+  quarryCycle, spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids, type Site,
 } from '../src/scenes/living.ts'
 import { createLiving, submitAll } from '../src/livingScript.ts'
 
@@ -26,7 +26,7 @@ function world(extra?: (set: (x: number, y: number, z: number, v: number) => voi
 }
 function ids(sim: Simulation): Ids {
   const r = sim.registry
-  return { water: packVoxel(r.id('water'), 7), stone: r.id('stone'), planks: r.id('planks'), beam: r.id('structural_planks'), glass: r.id('structural_glass') }
+  return { water: packVoxel(r.id('water'), 7), stone: r.id('stone'), planks: r.id('planks'), beam: r.id('structural_planks'), glass: r.id('structural_glass'), dirt: r.id('dirt') }
 }
 let seq = 0
 function run(sim: Simulation, commands: Command[]) {
@@ -38,7 +38,7 @@ const at = (sim: Simulation, x: number, y: number, z: number) => voxelId(sim.sto
 
 describe('living set pieces: command shapes', () => {
   it('keeps every box inside its site footprint', () => {
-    const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5 }
+    const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5, dirt: 6 }
     const all = [...clearCommands(SITE), ...reservoirCommands(SITE, I), ...towerCommands(SITE, I), ...workSiteCommands(SITE, I), ...workCommands(SITE, I)]
     for (const c of all) {
       if (c.type !== 'fillRegion' && c.type !== 'workDig' && c.type !== 'workBuild') continue
@@ -48,13 +48,13 @@ describe('living set pieces: command shapes', () => {
     }
   })
   it('spawns 50 units, assigns the crews by id and moves only the group', () => {
-    const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5 }
+    const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5, dirt: 6 }
     expect(spawnCommands(SITE, I).filter(c => c.type === 'unitSpawn')).toHaveLength(UNITS)
     expect([...CREWS.tunnel, ...CREWS.bridge, ...CREWS.wall, ...CREWS.group].sort((a, b) => a - b)).toEqual(Array.from({ length: UNITS }, (_, i) => i + 1))
     expect(moveGroupCommands(SITE)).toEqual([{ type: 'unitMove', ids: [...CREWS.group], pos: [SITE.x, SITE.ground, SITE.z] }])
     const work = workCommands(SITE, I)
-    expect(work.map(c => c.type)).toEqual(['workDig', 'workBuild', 'workBuild'])
-    expect(work.map(c => (c as { ids?: number[] }).ids)).toEqual([[...CREWS.tunnel], [...CREWS.bridge], [...CREWS.wall]])
+    expect(work.map(c => c.type)).toEqual(['workDig', 'workBuild', 'workBuild', 'workDig'])
+    expect(work.map(c => (c as { ids?: number[] }).ids)).toEqual([[...CREWS.tunnel], [...CREWS.bridge], [...CREWS.wall], [...CREWS.tunnel, ...CREWS.bridge, ...CREWS.wall]])
   })
 })
 
@@ -101,6 +101,16 @@ describe('living set pieces: simulation', () => {
     for (let i = 0; i < 2000 && !(dug() && bridged() && walled()); i++) sim.step()
     expect({ dug: dug(), bridged: bridged(), walled: walled() }).toEqual({ dug: true, bridged: true, walled: true })
   }, 180_000)
+
+  it('the crews still have work after 3600 ticks (the benchmark script, from the first order to the end of the collapse window)', () => {
+    const sim = world(), I = ids(sim)
+    run(sim, [...clearCommands(SITE), ...workSiteCommands(SITE, I)])
+    run(sim, spawnCommands(SITE, I))
+    run(sim, workCommands(SITE, I))
+    for (let i = 0; i < 3600; i++) { if (i % 20 === 0) for (const c of quarryCycle(sim.workers!.publication().orders, SITE, I)) sim.submit(0, ++seq, c); sim.step() }
+    const busy = [...sim.workers!.units.values()].filter(u => u.state === 'working' || u.state === 'walking' || u.state === 'planning').length
+    expect(busy).toBeGreaterThan(0)
+  }, 300_000)
 })
 
 describe('submitAll', () => {
@@ -126,12 +136,24 @@ describe('living script', () => {
     let seq = 0
     const listeners = new Set<(a: { seq: number; ok: boolean; clientId: number }) => void>()
     const engine = {
-      blocks: { id: (n: string) => ({ water: 1, stone: 2, planks: 3, structural_planks: 4, structural_glass: 5 } as Record<string, number>)[n]! },
+      blocks: { id: (n: string) => ({ water: 1, stone: 2, planks: 3, structural_planks: 4, structural_glass: 5, dirt: 6 } as Record<string, number>)[n]! },
       submit: (c: Command) => { submitted.push(c); const s = ++seq; queueMicrotask(() => { for (const l of listeners) l({ clientId: 0, seq: s, ok: true }) }); return s },
       on: (_t: string, fn: (a: { seq: number; ok: boolean; clientId: number }) => void) => { listeners.add(fn); return () => listeners.delete(fn) },
     }
     const living = createLiving(engine as never)
     await Promise.all([living.startWork(), living.startWork()])
-    expect(submitted.filter(c => c.type === 'workDig')).toHaveLength(1)
+    expect(submitted.filter(c => c.type === 'workDig' || c.type === 'workBuild')).toHaveLength(workCommands(SITES.work, { water: 1, stone: 2, planks: 3, beam: 4, glass: 5, dirt: 6 }).length)
+  })
+})
+
+describe('quarry cycle', () => {
+  const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5, dirt: 6 }
+  const q = QUARRY(SITE)
+  const order = (id: number, kind: 'dig' | 'build', done: number, total = 360, cancelled = false) => ({ id, kind, min: q.min, max: q.max, voxel: 0, total, done, pending: total - done, cancelled })
+  it('waits while the latest quarry order is open, then issues the opposite one', () => {
+    expect(quarryCycle([order(4, 'dig', 100)], SITE, I)).toEqual([])
+    expect(quarryCycle([order(4, 'dig', 360)], SITE, I)).toMatchObject([{ type: 'workBuild', voxel: I.dirt, priority: 64 }])
+    expect(quarryCycle([order(4, 'dig', 360), order(5, 'build', 360)], SITE, I)).toMatchObject([{ type: 'workDig', priority: 64 }])
+    expect(quarryCycle([order(5, 'build', 10, 360, true)], SITE, I)).toMatchObject([{ type: 'workDig' }])
   })
 })

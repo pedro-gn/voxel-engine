@@ -10,7 +10,7 @@ import { BLOCKS } from '../src/blocks.ts'
 import rules, { randomTickRate } from '../src/rules.ts'
 import {
   LIVING_SIZE, LIVING_WORKER_OPTIONS, SITES, breachCommands, clearCommands, collapseCommands, moveGroupCommands,
-  reservoirCommands, spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids,
+  quarryCycle, reservoirCommands, spawnCommands, towerCommands, workCommands, workSiteCommands, type Ids,
 } from '../src/scenes/living.ts'
 
 const doc = JSON.parse(readFileSync(new URL('../src/terrain/living.terrain.json', import.meta.url), 'utf8'))
@@ -19,7 +19,7 @@ const t0 = performance.now()
 sim.configure(terrainGenerator, doc); sim.generate(terrainGenerator)
 console.log(`generate ${(performance.now() - t0).toFixed(0)} ms`)
 const r = sim.registry
-const ids: Ids = { water: packVoxel(r.id('water'), 7), stone: r.id('stone'), planks: r.id('planks'), beam: r.id('structural_planks'), glass: r.id('structural_glass') }
+const ids: Ids = { water: packVoxel(r.id('water'), 7), stone: r.id('stone'), planks: r.id('planks'), beam: r.id('structural_planks'), glass: r.id('structural_glass'), dirt: r.id('dirt') }
 let seq = 0
 const submit = (cmds: ReturnType<typeof clearCommands>) => { for (const c of cmds) sim.submit(0, ++seq, c) }
 const check = (label: string) => { for (const a of sim.step().acks) if (!a.ok) throw new Error(`${label}: ${a.error}`) }
@@ -39,7 +39,10 @@ const results: Record<string, { p50: number; p95: number; max: number }> = {}
 for (const [phase, event, n] of SCRIPT) {
   event?.()
   const ms: number[] = []
-  for (let i = 0; i < n; i++) { const a = performance.now(); sim.step(); ms.push(performance.now() - a) }
+  for (let i = 0; i < n; i++) {
+    if (i % 20 === 0) submit(quarryCycle(sim.workers!.publication().orders, SITES.work, ids))
+    const a = performance.now(); sim.step(); ms.push(performance.now() - a)
+  }
   results[phase] = { p50: +q(ms, .5).toFixed(3), p95: +q(ms, .95).toFixed(3), max: +Math.max(...ms).toFixed(3) }
 }
 console.log(JSON.stringify({ node: process.version, results }, null, 2))

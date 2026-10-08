@@ -1,4 +1,4 @@
-import type { Command, Vec3, WorkerOptions } from '@elovox/engine'
+import type { Command, Vec3, WorkerOptions, WorkOrderView } from '@elovox/engine'
 import { AIR } from '@elovox/engine/src/world/voxel.ts'
 import { WORKER_OPTIONS } from './workers.ts'
 
@@ -22,7 +22,7 @@ export const LIVING_WORKER_OPTIONS: WorkerOptions = {
   ...WORKER_OPTIONS,
   materials: { ...WORKER_OPTIONS.materials, sand: { digTicks: 6, buildTicks: 6 }, gravel: { digTicks: 8, buildTicks: 6 }, snow: { digTicks: 4, buildTicks: 4 }, log: { digTicks: 12, buildTicks: 10 }, leaves: { digTicks: 2, buildTicks: 2 } },
 }
-export type Ids = { water: number; stone: number; planks: number; beam: number; glass: number }
+export type Ids = { water: number; stone: number; planks: number; beam: number; glass: number; dirt: number }
 type Box = { min: Vec3; max: Vec3 }
 
 const fill = (min: Vec3, max: Vec3, voxel: number): Command => ({ type: 'fillRegion', min, max, voxel })
@@ -67,6 +67,8 @@ export function TUNNEL(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 
 export function BRIDGE(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 18, s.ground - 1, z0 + 23], max: [x0 + 22, s.ground - 1, z0 + 24] } }
 /** A 10 × 2 stone wall (a third row is out of a unit's reach from the ground). */
 export function WALL(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 30, s.ground, z0 + 10], max: [x0 + 39, s.ground + 1, z0 + 10] } }
+/** A one-block-deep quarry every crew digs at low priority once its own job is done, so work lasts the whole benchmark. */
+export function QUARRY(s: Site): Box { const [x0, z0] = o(s); return { min: [x0 + 26, s.ground - 1, z0 + 12], max: [x0 + 45, s.ground - 1, z0 + 29] } }
 /** The stone mound to tunnel through and the channel to bridge. */
 export function workSiteCommands(s: Site, ids: Ids): Command[] {
   const [x0, z0] = o(s)
@@ -74,17 +76,33 @@ export function workSiteCommands(s: Site, ids: Ids): Command[] {
 }
 /** 40 crew units in 8 × 5 rows, then the 10-unit group behind them, every unit with a pick and stock. */
 export function spawnCommands(s: Site, ids: Ids): Command[] {
-  const [x0, z0] = o(s), stock = [{ block: ids.planks, count: 32 }, { block: ids.stone, count: 32 }]
+  const [x0, z0] = o(s), stock = [{ block: ids.planks, count: 32 }, { block: ids.stone, count: 32 }, { block: ids.dirt, count: 32 }]
   const at = (i: number): Vec3 => i < 40 ? [x0 + 26 + (i % 8) * 2, s.ground, z0 + 30 + Math.floor(i / 8) * 2] : [x0 + 26 + ((i - 40) % 5) * 2, s.ground, z0 + 41 + Math.floor((i - 40) / 5) * 2]
   return Array.from({ length: UNITS }, (_, i) => ({ type: 'unitSpawn', pos: at(i), tools: ['pick'], stock }) as Command)
 }
 export function workCommands(s: Site, ids: Ids): Command[] {
-  const t = TUNNEL(s), b = BRIDGE(s), w = WALL(s)
+  const t = TUNNEL(s), b = BRIDGE(s), w = WALL(s), q = QUARRY(s)
   return [
     { type: 'workDig', min: t.min, max: t.max, ids: [...CREWS.tunnel] },
     { type: 'workBuild', min: b.min, max: b.max, voxel: ids.planks, ids: [...CREWS.bridge] },
     { type: 'workBuild', min: w.min, max: w.max, voxel: ids.stone, ids: [...CREWS.wall] },
+    { type: 'workDig', min: q.min, max: q.max, ids: crewIds(), priority: 64 },
   ] as Command[]
+}
+const crewIds = () => [...CREWS.tunnel, ...CREWS.bridge, ...CREWS.wall]
+const inQuarry = (o: WorkOrderView, q: Box) => o.min[0] === q.min[0] && o.min[1] === q.min[1] && o.min[2] === q.min[2] && o.max[0] === q.max[0] && o.max[1] === q.max[1] && o.max[2] === q.max[2]
+/**
+ * Keeps the crews busy for as long as the benchmark runs: once the latest quarry order is finished (or cancelled), the
+ * opposite one: dug out → filled back with the dirt the crews carry → dug again. [] while a quarry order is open.
+ */
+export function quarryCycle(orders: readonly WorkOrderView[], s: Site, ids: Ids): Command[] {
+  const q = QUARRY(s)
+  let last: WorkOrderView | undefined
+  for (const o of orders) if (inQuarry(o, q) && (!last || o.id > last.id)) last = o
+  if (!last || (!last.cancelled && last.done < last.total)) return []
+  return [last.kind === 'dig'
+    ? { type: 'workBuild', min: q.min, max: q.max, voxel: ids.dirt, ids: crewIds(), priority: 64 } as Command
+    : { type: 'workDig', min: q.min, max: q.max, ids: crewIds(), priority: 64 } as Command]
 }
 export function moveGroupCommands(to: Site): Command[] {
   return [{ type: 'unitMove', ids: [...CREWS.group], pos: [to.x, to.ground, to.z] } as Command]
