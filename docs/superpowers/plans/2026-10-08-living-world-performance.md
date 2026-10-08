@@ -1691,9 +1691,9 @@ The controller shows the user before/after screenshots of the living scene at bo
 
 ## Phase 2 results: #3 (opaque and cutout chunks drawn in region batches)
 
-**Same picture.** `e2e/batching.spec.ts` (`/?size=128&still`, decorations off, bean hidden, fixed camera, WebGPU): 0.14–0.19% of pixels differ by more than 8 on a channel across three runs (threshold 0.5%). The differences are isolated single pixels plus the HUD's fps text; nothing moved. Shadow casters 1 batched against 45; meshes 45 on both. No console errors. Screenshots of the living scene at both cameras, with and without `?nobatch`, match by eye (the far camera's target was pinned to the same height: it follows the live terrain, which differed by 2 blocks between loads).
+**Same picture (first version of the e2e, superseded by the fix round below: WebGPU and WebGL2 over `/?scene=terrain&size=256&still`, canvas only).** `e2e/batching.spec.ts` (`/?size=128&still`, decorations off, bean hidden, fixed camera, WebGPU): 0.14–0.19% of pixels differ by more than 8 on a channel across three runs (threshold 0.5%). The differences are isolated single pixels plus the HUD's fps text; nothing moved. Shadow casters 1 batched against 45; meshes 45 on both. No console errors. Screenshots of the living scene at both cameras, with and without `?nobatch`, match by eye (the far camera's target was pinned to the same height: it follows the live terrain, which differed by 2 blocks between loads).
 
-**Living benchmark.** Worst of two runs per phase, after #1 (`2026-10-08-living-after-1.json`) → after #3 (`2026-10-08-living-after-3.json`, `invalid: []`). Times in ms. Separate sessions, so this is the gate, not the attribution.
+**Living benchmark.** Measured on the build before the fix round (`batching-ab.json` notes 5a1c2c0). The fixes do not change the WebGPU draw path: there `instanceIndex` is the draw index, and `unaliased` only removes duplicate copies. So these numbers stand. Worst of two runs per phase, after #1 (`2026-10-08-living-after-1.json`) → after #3 (`2026-10-08-living-after-3.json`, `invalid: []`). Times in ms. Separate sessions, so this is the gate, not the attribution.
 
 | Phase | fps p5 | CPU median | Water apply p95 | Tick p95 |
 |---|---|---|---|---|
@@ -1724,7 +1724,7 @@ Shadow casters 715 → 31 in every phase; draw calls unchanged (864–1576). CPU
 - Tick p95 averages 14.4 / 13.2 ms batched against 12.1 / 11.8 unbatched (default / far); water apply p95 8.6 / 9.3 against 8.3 / 8.7. Small and overlapping the unbatched runs' spread, and consistent with the main thread now drawing 3–4× more frames on the same cores as the sim workers. The benchmark's larger tick and apply rises are across sessions; they are the open item, together with the collapse fps p5.
 - Load to fully meshed (ABBA, same session): 9.3 / 9.8 s batched against 9.6 s and 1.8 s after a slow 11.6 s boot unbatched: no load regression.
 
-**Dam/collapse A/B (controller, same build 04bcc24, order A B A B B A of ABABBABA; the last two runs were stopped by the harness at 1.5 GB free RAM).** A = batched, B = `&nobatch`; per page: work 15 s, dam 20 s, collapse 15 s, each event fired 1 s into its window.
+**Dam/collapse A/B (controller; no JSON committed, since the harness killed the run before it wrote one, so this table is the record; same build 04bcc24, order A B A B B A of ABABBABA; the last two runs were stopped by the harness at 1.5 GB free RAM).** A = batched, B = `&nobatch`; per page: work 15 s, dam 20 s, collapse 15 s, each event fired 1 s into its window.
 
 | | A batched (3 runs) | B nobatch (3 runs) |
 |---|---|---|
