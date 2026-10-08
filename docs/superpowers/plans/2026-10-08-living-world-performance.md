@@ -1136,4 +1136,229 @@ Node sim bench (tick p50 / p95 / max, ms): idle 11.0 / 76.9 / 215 · work 6.4 / 
 | 6 | Fewer animated unit models: 8 instead of 24, or no shadows on beans | CPU frame | hiding the units saves ~2 ms | ~1–2 ms | low; visual → checkpoint |
 
 Suggested order: #1 → measure → #3 or #4 → #5. #2 stays in reserve.
-nUser decision (2026-10-08): follow the suggested order. #1 first, measure, then #3 or #4 by the numbers, then #5; #2 in reserve.
+
+User decision (2026-10-08): follow the suggested order. #1 first, measure, then #3 or #4 by the numbers, then #5; #2 in reserve.
+
+---
+
+## Phase 2 addendum A: candidate #1 (cheaper layered water apply)
+
+> Same rules as the spec's §5: one optimization, before and after on the same benchmark, the commit message records both, no behaviour change (the differential test is the proof), and revert if the benchmark shows no gain.
+
+**Evidence that sizes it** (Node probe of the living world's published layer records, 2026-10-08):
+- **Idle world:** 112 tiles go through the layered path, but only 14 hold lower slots. Records cover ~500 of 28,672 columns (~1.7%).
+- **Dam break:** 180 layered tiles, 44 with lower slots, ~2,070 records over 46,080 columns (~4.5%).
+
+`refreshTile` switches a whole tile, and every tile within one tile of it, to `refreshLayered` as soon as the tile ever held a slot (`LayerStore.layeredAround`). After that switch, every column pays for `refreshSlot` × 4 ranks, `patch` × 2 and `vertexShares` × 8. This happens even when the column's 3 × 3 has no slot, which is the case for more than 95% of them.
+
+**Change:** in `refreshLayered`, a column whose 3 × 3 holds no slot at any rank (`LayerStore.plainAround`) takes the fast path's `refreshColumn`, on the same region grids that `refreshTile` builds. The other columns keep `refreshSlot`. The existing differential test ("no layers: layered path = fast path") already proves `refreshSlot` = `refreshColumn` for such columns. A new differential test proves the mixed path draws exactly what the all-slots path drew, on a world with layers and moving water.
+
+### Task 7: Plain columns of layered tiles take the fast path
+
+**Files:**
+- Modify: `packages/engine/src/render/water/layerStore.ts` (add `plainAround`)
+- Modify: `packages/engine/src/render/water/surfaceView.ts:96` (add `forceSlots`), `:474-505` (extract `region`), `:532-548` (`refreshLayered`)
+- Test: `packages/engine/test/surfaceLayers.test.ts`
+
+**Interfaces:**
+- Produces: `LayerStore.plainAround(x: number, z: number): boolean`; `SurfaceView.forceSlots: boolean` (tests only: every column of a layered tile through `refreshSlot`, the path before this task).
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `packages/engine/test/surfaceLayers.test.ts`. Add `vi` to the vitest import and `RANKS` from `../src/sim/water/constants.ts`.
+
+```ts
+/** A lake behind a gate with a hole under a deck: water runs through the hole into a lower channel, under the deck (lower slots). */
+function gateWorld() {
+  return layered((x, y, z) => {
+    if (y < 2 || z === 0 || z >= 5 || x === 0 || x === 63) return STONE
+    if (x === 31 && !(y >= 3 && y <= 4 && z === 2)) return STONE // the gate, a 1 × 2 hole at z 2
+    if (x >= 26 && x <= 40 && y === 7) return STONE // the deck over the gate
+    if (x < 31) return y <= 10 ? wv(7) : AIR // the lake
+    return AIR
+  }, [64, 32, 32])
+}
+
+describe('plain columns of layered tiles (4a #1)', () => {
+  it('plainAround is false within one column of a slot, true elsewhere', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const view = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), pub = new WaterPublisher(w.buffers.water)
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    expect(view.layers.plainAround(31, 2)).toBe(false) // the gate hole under the deck
+    expect(view.layers.plainAround(5, 2)).toBe(true) // the open lake, far from the deck
+  })
+
+  it('draws exactly what the all-slots path drew, on a world with layers and running water (differential)', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const pub = new WaterPublisher(w.buffers.water)
+    const mixed = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), slots = new SurfaceView([64, 32, 32], w.buffers.water, () => 15)
+    slots.forceSlots = true
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    for (let tick = 0; tick < 40; tick++) {
+      const t = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+      mixed.apply(t, 0.5); slots.apply(t, 0.5)
+      for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < mixed.cx * mixed.cz; cc++) {
+        const a = slots.column(cc, r), s = mixed.column(cc, r)
+        expect(!!a).toBe(!!s)
+        if (!a || !s) continue
+        expect([tick, r, cc, diff(s.hCur, a.hCur), diff(s.hPrev, a.hPrev), diff(s.info, a.info), diff(s.curtainMask, a.curtainMask),
+          diff(s.curtains.cur.subarray(0, s.curtains.count * 4), a.curtains.cur.subarray(0, a.curtains.count * 4))]).toEqual([tick, r, cc, -1, -1, -1, -1, -1])
+      }
+      w.step()
+    }
+  }, 60_000)
+
+  it('only columns next to a slot pay for refreshSlot', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const view = new SurfaceView([64, 32, 32], w.buffers.water, () => 15), pub = new WaterPublisher(w.buffers.water)
+    const spy = vi.spyOn(SurfaceView.prototype as unknown as { refreshSlot: (...a: number[]) => void }, 'refreshSlot')
+    view.apply(pub.publish(Array.from({ length: w.cols.tiles.count }, (_, t) => t), w.cols, { under: w.under, edges: w.edges, height: 32 })!)
+    let notPlain = 0
+    for (let z = 0; z < 32; z++) for (let x = 0; x < 64; x++) if (!view.layers.plainAround(x, z)) notPlain++
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(notPlain * RANKS)
+    spy.mockRestore()
+  })
+})
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx vitest run --root packages/engine test/surfaceLayers.test.ts`
+Expected: FAIL. `plainAround` is not a function, and `forceSlots` is missing, so the differential test cannot set it. The cost test fails `toBeLessThanOrEqual`, because every column of the two layered tiles calls `refreshSlot`.
+
+- [ ] **Step 3: Add `plainAround` to `LayerStore`**
+
+After `layeredAround` in `packages/engine/src/render/water/layerStore.ts`:
+
+```ts
+  /**
+   * Whether column (x, z) and its 8 neighbours hold no slot at any rank (rank-0 link records included): its 3 × 3 is then the
+   * dense columns' alone, so the fast path's refreshColumn draws it exactly as refreshSlot would.
+   */
+  plainAround(x: number, z: number): boolean {
+    for (let j = Math.max(0, z - 1); j <= Math.min(this.sz - 1, z + 1); j++) {
+      for (let i = Math.max(0, x - 1); i <= Math.min(this.sx - 1, x + 1); i++) {
+        const s = this.tiles[(i >> 4) + (j >> 4) * this.tx]
+        if (s === null) continue
+        const k = ((i & 15) + (j & 15) * 16) * RANKS
+        for (let r = 0; r < RANKS; r++) if (s.present[k + r] === 1) return false
+      }
+    }
+    return true
+  }
+```
+
+- [ ] **Step 4: Share the region grids and route plain columns**
+
+In `surfaceView.ts`:
+- after `forceLayered`, add:
+  ```ts
+  /** Tests: every column of a layered tile through refreshSlot (the path before 4a #1), for the mixed path's differential test. */
+  forceSlots = false
+  ```
+- add a reused region record next to the other private scratch fields:
+  ```ts
+  private readonly reg = { xa: 0, xb: 0, za: 0, zb: 0, hw: 0, vw: 0, aligned: false }
+  ```
+- replace `refreshTile` and `refreshLayered` with the following. `region` is `refreshTile`'s old body up to its column loop, unchanged.
+
+```ts
+  private refreshTile(tile: number, e: number): void {
+    if (this.forceLayered || this.layers.layeredAround(tile)) { this.refreshLayered(tile, e); return }
+    const g = this.region(tile, e)
+    for (let z = g.za; z < g.zb; z++) for (let x = g.xa; x < g.xb; x++) {
+      const c = x + z * this.sx
+      if (this.refreshed[c] === e || !this.near(x, z, e)) continue
+      this.refreshed[c] = e
+      this.refreshColumn(x, z, x - g.xa + 1 + (z - g.za + 1) * g.hw, g.hw, x - g.xa + (z - g.za) * g.vw, g.vw, g.aligned)
+    }
+  }
+
+  /**
+   * The region refreshTile refreshes: the tile and its one-column ring (a ring side left to the tile beyond it when that tile
+   * changed too), its columns' effective values with a halo (eP, eC) and every vertex grouped once (vPrev, vCur, smooth), the
+   * previous step only when the region is not aligned. Returns this.reg, reused.
+   */
+  private region(tile: number, e: number): typeof this.reg {
+    const tw = this.tx, th = this.seen.length / tw, tx = tile % tw, tz = (tile - tx) / tw
+    const x0 = tx * TILE, z0 = tz * TILE
+    const xa = tx > 0 && this.tileChanged[tile - 1] !== e ? x0 - 1 : x0
+    const xb = tx + 1 < tw && this.tileChanged[tile + 1] !== e ? x0 + TILE + 1 : x0 + TILE
+    const za = tz > 0 && this.tileChanged[tile - tw] !== e ? z0 - 1 : z0
+    const zb = tz + 1 < th && this.tileChanged[tile + tw] !== e ? z0 + TILE + 1 : z0 + TILE
+    const sx = this.sx, sz = this.sz, hw = xb - xa + 2, vw = xb - xa + 1
+    const eP = this.eP, eC = this.eC, vP = this.vPrev, vC = this.vCur, smooth = this.smooth
+    const aligned = this.aligned(tx, tz, e)
+    let h = 0
+    for (let z = za - 1; z <= zb; z++) for (let x = xa - 1; x <= xb; x++, h++) {
+      if (x < 0 || z < 0 || x >= sx || z >= sz) { eP[h] = OUTSIDE; eC[h] = OUTSIDE; continue }
+      const c = x + z * sx, f = this.floor[c]!
+      if (!aligned) eP[h] = effective(this.prev[c]!, f)
+      eC[h] = effective(this.cur[c]!, f)
+    }
+    let vi = 0
+    for (let k = 0; k <= zb - za; k++) for (let i = 0; i < vw; i++, vi++) {
+      const a = i + k * hw, b = a + hw
+      smooth[vi] = (shares(eC, a, b, vC, vi * 4) ? 2 : 0) | (!aligned && shares(eP, a, b, vP, vi * 4) ? 1 : 0)
+    }
+    const g = this.reg
+    g.xa = xa; g.xb = xb; g.za = za; g.zb = zb; g.hw = hw; g.vw = vw; g.aligned = aligned
+    return g
+  }
+
+  /**
+   * The tile and its ring as refreshTile. A column whose 3 × 3 holds no slot (LayerStore.plainAround) is drawn by
+   * refreshColumn on the region's grids; one next to a slot refreshes every rank through its links (plan decision 14).
+   */
+  private refreshLayered(tile: number, e: number): void {
+    const g = this.region(tile, e)
+    for (let z = g.za; z < g.zb; z++) for (let x = g.xa; x < g.xb; x++) {
+      const c = x + z * this.sx
+      if (this.refreshed[c] === e || !this.nearLayered(x, z, e)) continue
+      this.refreshed[c] = e
+      if (!this.forceSlots && this.layers.plainAround(x, z)) {
+        this.refreshColumn(x, z, x - g.xa + 1 + (z - g.za + 1) * g.hw, g.hw, x - g.xa + (z - g.za) * g.vw, g.vw, g.aligned)
+        for (let r = 1; r < RANKS; r++) this.clearSlot(x, z, r)
+        continue
+      }
+      for (let r = 0; r < RANKS; r++) {
+        if (r === 0 || this.layers.has(c, r)) this.refreshSlot(x, z, r)
+        else this.clearSlot(x, z, r)
+      }
+    }
+  }
+```
+
+Keep `refreshTile`'s doc comment on `refreshTile`. The eP/eC/vPrev/vCur/smooth scratch arrays are sized for the fast path's region, and the region bounds are identical, so they already fit.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `npx vitest run --root packages/engine test/surfaceLayers.test.ts test/surfaceView.test.ts`
+Expected: PASS, including the old differential test (no layers) and the new one (layers).
+
+If the new differential test fails, the mixed path draws something different. Find the first differing `(tick, r, cc, index)` and fix the routing: a column that needs its links must not be `plainAround`. Do not loosen the test.
+
+- [ ] **Step 6: Run the engine suite, typecheck and the water e2e**
+
+Run: `npm run test -w @elovox/engine; npm run typecheck`. Then, from `apps/sandbox`, run `E2E_PORT=5199 E2E_CHANNEL=msedge npx playwright test e2e/caves.spec.ts e2e/water-render.spec.ts e2e/flood.spec.ts e2e/living.spec.ts --workers=1`.
+Expected: all pass.
+
+- [ ] **Step 7: Measure before and after**
+
+The baseline JSON is the "before". From `apps/sandbox`: `npm run build`, then `BENCH_LIVING=1 LIVING_BENCH_OUT=../../docs/superpowers/research/2026-10-08-living-after-1.json E2E_PREVIEW=1 E2E_PORT=5201 E2E_CHANNEL=msedge npx playwright test e2e/living-bench.spec.ts --headed --workers=1`.
+Expected: PASS with `invalid: []`. Compare `worst` per phase with the baseline: water apply p95, CPU frame median, fps p5 and tick p95. **If water apply p95 does not drop in any phase, revert the task** (spec §5 rule 2) and record why.
+
+- [ ] **Step 8: Commit with both numbers**
+
+```bash
+git add packages/engine/src/render/water/layerStore.ts packages/engine/src/render/water/surfaceView.ts packages/engine/test/surfaceLayers.test.ts docs/superpowers/research/2026-10-08-living-after-1.json
+git commit -m "perf(render): plain columns of layered water tiles take the fast path" -m "<per phase: water apply p95 before → after, fps p5 before → after, from the two JSON files>"
+```
+
+- [ ] **Step 9: Report and pick the next candidate**
+
+Append a "Phase 2 results: #1" table (phase, before → after, for fps p5, CPU median, apply p95 and tick p95) to this plan. Then present it to the user with the choice between #3 (batched chunk draws) and #4 (near-only shadow casters), based on how much CPU frame remains. #4 changes visuals and needs the user's look anyway. The next addendum is written after that choice.
