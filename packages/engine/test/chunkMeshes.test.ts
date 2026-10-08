@@ -7,10 +7,10 @@ import { ChunkMeshes } from '../src/render/chunkMeshes.ts'
 import type { ChunkMaterials } from '../src/render/materials.ts'
 import { Layout } from '../src/world/layout.ts'
 
-function setup(): ChunkMeshes {
+function setup(batched = false): ChunkMeshes {
   const m = () => new THREE.MeshBasicMaterial()
   const mats = { opaque: m(), cutout: m(), translucent: m(), liquid: m() } as unknown as ChunkMaterials
-  return new ChunkMeshes(new Layout([64, 64, 64]), mats)
+  return new ChunkMeshes(new Layout([64, 64, 64]), mats, { batched })
 }
 
 /** One +Y quad at cell (1, 1, 1). */
@@ -41,6 +41,19 @@ describe('ChunkMeshes', () => {
     expect(cm.group.getObjectByName('chunk-0-liquid')).toBeUndefined()
     expect(cm.meshCount).toBe(1)
     cm.remove(0)
+    expect(cm.meshCount).toBe(0)
+  })
+  it('batched: opaque and cutout go into region batches, translucent and liquid stay meshes; counts mean the same', () => {
+    const cm = setup(true)
+    cm.apply(1, { ...data(quad(), quad()), cutout: quad() })
+    expect(cm.meshCount).toBe(3) // opaque + cutout instances + the liquid mesh
+    expect(cm.group.getObjectByName('chunk-1-opaque')).toBeUndefined()
+    expect(cm.group.getObjectByName('chunk-1-liquid')).toBeInstanceOf(THREE.Mesh)
+    expect(cm.shadowCasterCount).toBe(2) // one opaque batch + one cutout batch
+    cm.apply(1, data(null, null))
+    expect(cm.meshCount).toBe(0)
+    cm.apply(2, data(null, quad()))
+    cm.remove(2)
     expect(cm.meshCount).toBe(0)
   })
 })

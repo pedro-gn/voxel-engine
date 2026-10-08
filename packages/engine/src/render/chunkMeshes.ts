@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
+import { ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
@@ -21,26 +22,48 @@ export function geometryOf(m: LayerMesh): THREE.BufferGeometry {
   return g
 }
 
+type Layer = (typeof LAYERS)[number]
+
+export interface ChunkMeshesOptions {
+  /** Draw the opaque and cutout layers in region batches (ChunkBatches) instead of one mesh per chunk. */
+  batched?: boolean
+}
+
 export class ChunkMeshes {
   readonly group = new THREE.Group()
   private readonly layout: Layout
   private readonly owned: ChunkMaterials
-  private readonly materials: Record<(typeof LAYERS)[number], THREE.Material>
+  private readonly materials: Record<Layer, THREE.Material>
+  /** Per chunk, one mesh slot per layer; a batched layer's slot stays null. */
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
+  private readonly batches: Partial<Record<Layer, ChunkBatches>> = {}
 
-  constructor(layout: Layout, materials: ChunkMaterials) {
+  constructor(layout: Layout, materials: ChunkMaterials, { batched = false }: ChunkMeshesOptions = {}) {
     this.layout = layout
     this.owned = materials
     this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
+    if (batched) {
+      for (const name of ['opaque', 'cutout'] as const) {
+        const b = new ChunkBatches(layout, this.materials[name], name, true)
+        this.batches[name] = b
+        this.group.add(b.group)
+      }
+    }
   }
 
-  get meshCount(): number { return this.group.children.length }
+  /** Chunk layer meshes: batch instances plus per-chunk meshes. */
+  get meshCount(): number {
+    let n = this.group.children.length // per-chunk meshes, plus one group per batched layer
+    for (const b of Object.values(this.batches)) n += b.instanceCount - 1
+    return n
+  }
 
-  /** Chunk meshes that render into the sun's shadow map. */
+  /** Render objects that draw into the sun's shadow map: region batches plus per-chunk meshes. */
   get shadowCasterCount(): number {
     let n = 0
-    for (const m of this.group.children) if ((m as THREE.Mesh).castShadow) n++
+    for (const m of this.group.children) if ((m as THREE.Mesh).castShadow) n++ // a batched layer's group never casts
+    for (const b of Object.values(this.batches)) n += b.batchCount
     return n
   }
 
@@ -62,6 +85,12 @@ export class ChunkMeshes {
     const [cx, cy, cz] = this.layout.chunkCoords(ci)
     LAYERS.forEach((name, k) => {
       const lm = data[name]
+      const batches = this.batches[name]
+      if (batches) {
+        if (lm) batches.set(ci, cx, cy, cz, lm)
+        else batches.remove(ci)
+        return
+      }
       const existing = slots![k]!
       if (!lm) {
         if (existing) { this.group.remove(existing); existing.geometry.dispose(); slots![k] = null }
@@ -90,6 +119,7 @@ export class ChunkMeshes {
   }
 
   remove(ci: number): void {
+    for (const b of Object.values(this.batches)) b.remove(ci)
     const slots = this.meshes.get(ci)
     if (!slots) return
     for (const m of slots) if (m) { this.group.remove(m); m.geometry.dispose() }
@@ -98,6 +128,7 @@ export class ChunkMeshes {
 
   dispose(): void {
     for (const ci of [...this.meshes.keys()]) this.remove(ci)
+    for (const b of Object.values(this.batches)) { this.group.remove(b.group); b.dispose() }
     for (const name of LAYERS) this.owned[name].dispose()
   }
 }

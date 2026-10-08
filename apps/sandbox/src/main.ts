@@ -76,6 +76,8 @@ const engine = await createEngine({
     : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : {}) },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
+  // ?nobatch: one mesh per chunk layer instead of region batches (the before/after of perf candidate #3).
+  batchChunks: !params.has('nobatch'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
   // render at full resolution (~14 layers ≈ 19 MB with mipmaps).
   tileSize: 512,

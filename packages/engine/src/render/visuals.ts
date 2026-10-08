@@ -44,6 +44,8 @@ export interface VisualsOptions {
   faceLayers: Uint16Array
   /** The main thread's view of the heightfield water (engine.ts feeds it from the tick messages). */
   water: SurfaceView
+  /** Draw the opaque and cutout chunk layers in region batches (EngineOptions.batchChunks). Default true. */
+  batchChunks?: boolean
 }
 
 /** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water materials, the heightfield water surface and the instanced grass and flower decorations. */
@@ -73,7 +75,7 @@ export class Visuals {
     o.renderer.shadowMap.enabled = true
     o.renderer.shadowMap.type = THREE.PCFShadowMap
     this.lights = createLightUniforms()
-    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales))
+    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true })
     o.scene.add(this.chunks.group)
     const dm = createDecorationMaterials(o.decorations, this.lights)
     this.decoRadius = dm.radius

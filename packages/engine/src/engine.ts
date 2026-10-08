@@ -55,6 +55,11 @@ export interface EngineOptions {
   genWorker?: () => Worker
   /** Generation workers to start. Default: the mesh worker count. */
   genWorkers?: number
+  /**
+   * Draw the opaque and cutout chunk layers with one BatchedMesh per 4 × 4-chunk region instead of one mesh per chunk
+   * (far fewer render objects, less CPU per frame). Same picture either way. Default true.
+   */
+  batchChunks?: boolean
 }
 
 export interface EngineEvents {
@@ -266,6 +271,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     decorations,
     faceLayers,
     water: waterView,
+    batchChunks: o.batchChunks ?? true,
   })
 
   // ---- lifecycle ----
