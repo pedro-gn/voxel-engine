@@ -118,7 +118,27 @@ DRAFT, to be presented as section 2.
 
 ## 5. Collision contract (consumed)
 
-DRAFT, pending 4c's approved API text (forwarded by the expert).
+Source: §3 of `2026-10-08-collision-design.md` on `feat/collision` 68eff31, approved by the expert.
+Changes go through the expert. 4d uses this subset of `engine.collision` (`Collision`):
+
+```ts
+bodyBox(x, y, z, halfWidth, height): Box      // feet centre
+move(box, delta, { stepHeight }?): MoveResult // dx dy dz, blockedX/Y/Z, grounded, ceiling, stepped
+overlaps(box): boolean
+groundDistance(box, maxDown?): number | null  // support at box.minY - d
+liquid(box, eyeY?): { submerged: 0..1, eyeUnder, surfaceY | null }
+unstick(box, maxUp): number | null            // smallest lift to a free position
+```
+
+What 4d relies on: displacements go in and the allowed displacement comes out, with no dt and no
+gravity. Y is swept first, then the larger horizontal axis. Nothing tunnels at any length. A box that
+already overlaps solid can move out but never into new solid, and there is no auto-push, so the
+controller calls `unstick`. Step-up happens only when the box is grounded after the Y phase, blocked
+horizontally, and the step improves progress. Ground snap is a downward `move` the controller makes
+itself. The x/z sides and y < 0 are solid; above the world top is air. `CollisionLike` in
+firstPerson.ts is `Pick<Collision, 'move' | 'overlaps' | 'groundDistance' | 'liquid' | 'unstick'>`.
+Unit tests use a fake world through 4c's pure functions once they land (`bindCollision`), and a
+minimal stub with these signatures before that.
 
 ## 6. Sandbox
 
