@@ -22,7 +22,7 @@ import { shadowDistance } from './shadowFit.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
-import type { SurfaceView } from './water/surfaceView.ts'
+import type { SurfaceSource } from './water/surfaceMirror.ts'
 import { WaterSurface } from './water/waterSurface.ts'
 import { editRipples, ripples, syncRipples, type EditCommand } from './water/ripples.ts'
 import { waterAlpha } from './water/waterVertex.ts'
@@ -43,7 +43,7 @@ export interface VisualsOptions {
   /** Per block id × 6 faces (+X −X +Y −Y +Z −Z): texture-array layer (BlockRegistry.faceLayers). */
   faceLayers: Uint16Array
   /** The main thread's view of the heightfield water (engine.ts feeds it from the tick messages). */
-  water: SurfaceView
+  water: SurfaceSource
   /** Draw the opaque and cutout chunk layers in region batches (EngineOptions.batchChunks). Default true. */
   batchChunks?: boolean
 }

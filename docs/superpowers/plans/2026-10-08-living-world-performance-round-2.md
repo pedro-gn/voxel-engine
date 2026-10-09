@@ -1671,3 +1671,11 @@ Each step is planned here, as Tasks 9+, once #2's results are in.
 `test/surfaceMirror.test.ts`), not `WaterMirror`. The sim already has a `WaterMirror` (`sim/water/mirror.ts`, the voxel
 mirror), and its test file `test/waterMirror.test.ts` was overwritten by mistake in Task 4's commit `8abaf86`. That file is
 restored from `90e5c97` in Task 6's commit.
+
+**As built, Task 7.**
+- **Crash hook.** It is a non-enumerable method keyed by `Symbol.for('elovox.waterCrash')` on the engine object, not a
+  `?debug` global. It is not on the `Engine` type, so it is unreachable from the public API (the expert's @internal rule),
+  and no sandbox flag is needed.
+- **The e2e's queue check.** It waits for `waterQueue <= 1`, the queue draining, instead of asserting `<= 3`. Headless
+  SwiftShader draws about one frame a second, and ticks bunch up behind each frame. That is exactly what `waterLagMs`
+  reports.
