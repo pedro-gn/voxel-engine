@@ -1512,6 +1512,20 @@ _Avoid_: Render distance, chunk radius, LOD
 
 ## Results (filled in during execution)
 
-- Task 4 Step 1 cutout share: _(recorded during execution)_
-- Task 3 / 4 / 5 A/B outcomes: _(recorded during execution)_
-- Part-1 gate: _(recorded during execution)_
+- **Task 4 Step 1, cutout share.**
+  - Terrain 1024²: 52 cutout batches, 702 chunks, 925,700 vertices reserved, 278 per slot.
+  - World 1024²: no cutout layer.
+  - Result: `CUTOUT_VERTICES_PER_SLOT = 512` (smallest power of two ≥ 1.25 × 278), indices 768 (e442e87).
+- **Task 3, own cull: kept** (window 1, `research/2026-10-08-view-ab-cull.json`). CPU falls at every pose; ground GPU is flat.
+- **Task 5, decoration detach: kept** (window 2, `-view-ab-deco.json`). CPU falls at every pose, by up to 2.7 ms on world.
+- **Task 4, REGION 8.**
+  - The window-1 A/B (`-view-ab-region.json`) failed the frames-based latency rule and the memory rule.
+  - Diagnosis: frame counts are biased by frame length. The expert ruled that wall ms decides, with batchBytes allowed up
+    to +10%.
+  - The re-A/B (window 4, `-view-ab-region-2.json`, probe 9a5a45c) passed: editMs median and max no worse, edit CPU
+    better, batchBytes +3.5–8%.
+  - Kept at c41f0ec.
+- **Part-1 gate.**
+  - Missed with region 4 on terrain far / far-low (59.9–60.0): `-view-gate-part1.json` and `-gate-part1-2.json`.
+  - Met on the final bundle c41f0ec (window 5, `-view-gate-part1-3.json`): worse fps p5 ≥ 176.4 at every pose in both
+    scenes.

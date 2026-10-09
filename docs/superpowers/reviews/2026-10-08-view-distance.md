@@ -89,7 +89,18 @@ Region 8 had a keep rule of its own: edit latency no worse, edit CPU within 10%,
 
 ### Part-1 gate (fps p5 ≥ 60, worse of two runs, default R)
 
-_(filled in after the gate on the final bundle)_
+**Met on the final bundle (c41f0ec, `-gate-part1-3.json`).** Values are worse fps p5 of two runs, with CPU median / CPU
+p95 in ms:
+
+| Scene | default | far | far-low | ground |
+|---|---|---|---|---|
+| world | 178.41 (1.71 / 2.85) | 178.57 (1.94 / 3.09) | 177.94 (1.74 / 2.95) | 178.25 (1.65 / 3.04) |
+| terrain | 178.41 (2.81 / 4.59) | 177.46 (3.60 / 6.21) | 177.15 (3.71 / 6.81) | 176.37 (3.78 / 5.96) |
+
+On `main`, the baseline was terrain ground 59.8 and orbit 400 60.0. Two earlier gates missed:
+- With region 4 (the deco window's head slots, then a dedicated hh run), terrain far / far-low sat at 59.9–60.0. CPU p95
+  was 9–13.8 ms there, across the three-vsync line.
+- Region 8 brought terrain CPU p95 to at most 6.8 ms.
 
 ### Same picture as `main` (default R)
 
@@ -107,7 +118,19 @@ The batching e2e at region 8 (1024² showcase):
 
 ### R sweep
 
-_(filled in after the window)_
+Bundle c41f0ec, order i532235i (`-view-sweep.json`). CPU median ms at inf / 512 / 384 / 256:
+
+| Scene | default | far | far-low | ground |
+|---|---|---|---|---|
+| world | 1.68 / 2.28 / 1.88 / 1.85 | 1.77 / 1.74 / 1.65 / 1.42 | 1.67 / 1.62 / 1.54 / 1.35 | 1.71 / 1.53 / 1.43 / 1.33 |
+| terrain | 2.67 / 3.14 / 2.91 / 2.58 | 3.43 / 3.10 / 2.43 / 1.66 | 3.37 / 2.97 / 2.33 / 1.86 | 3.58 / 2.58 / 2.12 / 1.86 |
+
+- Draws at terrain far: 4334 / 1752 / 725 / 14. GPU ms there: 1.83 / 1.24 / 1.05 / 0.61.
+- At the default orbit, a finite R hides almost nothing and costs 0.2–0.6 ms, from the per-batch range check and the edge
+  fog node.
+- Every slot keeps fps p5 ≥ 177, except one world 512 slot. That slot read about 89.5 at every pose, including the
+  default, where R changes nothing, with CPU p95 under 4 ms. It is frame-pacing jitter in that browser session; the other
+  world 512 slot read 178.6–178.9.
 
 ### Living benchmark, `main` vs branch (exit condition)
 
