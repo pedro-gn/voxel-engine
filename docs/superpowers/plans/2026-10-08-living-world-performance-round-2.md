@@ -1679,3 +1679,104 @@ restored from `90e5c97` in Task 6's commit.
 - **The e2e's queue check.** It waits for `waterQueue <= 1`, the queue draining, instead of asserting `<= 3`. Headless
   SwiftShader draws about one frame a second, and ticks bunch up behind each frame. That is exactly what `waterLagMs`
   reports.
+
+## Results: #2 (`ca129f1`: water publishes applied in a dedicated worker)
+
+Quiet window, 2026-10-09, 09:06–09:23. Edge headed, prod build at `eb138b6` (`0c51901` + the A/B video knob), 179 Hz
+display.
+- Free RAM: 14.67 GB at the start, 15.28 GB at the end, 15.1–15.2 GB between steps.
+- Heavy apps at every step's start and end: `steam` only (107–116 MB). No game, so the gate counts.
+- The A/B ran as two invocations, ABBA then BABA, merged as runs 1–8 (expert-approved, so each half fits one foreground
+  call). Attribution comes from the pairs inside a half. Pair 4–5 spans the browser restart and is not used alone.
+- Runs 1–2 recorded video, which loads the CPU. Both builds are slower in them, so they are reported but not used for
+  the lag figures.
+
+**Water A/B** (`research/2026-10-08-living-r2-water-ab.json`). A = `?nowaterworker`, the host in-thread; B = the host
+in its worker.
+- Columns: CPU median ms, fps p5, main apply p95 ms, host p95 ms, lag p50 / p95 ms, queue max, mean mesh backlog.
+- In A, "lag" is the time from tick to shown, the in-thread host plus the wait for the next frame.
+
+| Run | Build | Window | CPU med | fps p5 | apply p95 | host p95 | lag p50 / p95 | queue | backlog |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | A | work-far | 8.13 | 45.0 | 9.98 | 9.66 | 8.0 / 10.2 | 1 | 0.72 |
+| 1 | A | dam | 8.68 | 30.0 | 25.35 | 24.97 | 19.2 / 25.5 | 1 | 1.79 |
+| 1 | A | collapse | 9.75 | 22.6 | 30.41 | 29.94 | 24.0 / 30.6 | 1 | 3.55 |
+| 2 | B | work-far | 9.67 | 59.9 | 0.52 | 10.78 | 11.4 / 16.9 | 1 | 0.74 |
+| 2 | B | dam | 11.83 | 45.0 | 1.05 | 39.56 | 29.2 / 72.4 | 3 | 1.64 |
+| 2 | B | collapse | 13.62 | 44.9 | 1.24 | 54.29 | 50.2 / 120.1 | 3 | 2.29 |
+| 3 | B | work-far | 7.24 | 89.3 | 0.36 | 8.97 | 9.8 / 15.5 | 1 | 0.63 |
+| 3 | B | dam | 7.58 | 89.6 | 0.58 | 23.77 | 22.9 / 30.6 | 1 | 1.18 |
+| 3 | B | collapse | 8.62 | 60.0 | 0.85 | 30.86 | 28.8 / 42.7 | 2 | 1.64 |
+| 4 | A | work-far | 6.35 | 60.0 | 8.57 | 8.34 | 6.5 / 8.8 | 1 | 0.61 |
+| 4 | A | dam | 7.04 | 36.0 | 22.42 | 21.84 | 16.4 / 22.7 | 1 | 1.47 |
+| 4 | A | collapse | 7.75 | 30.0 | 26.23 | 25.77 | 19.6 / 26.5 | 1 | 2.47 |
+| 5 | B | work-far | 6.49 | 89.7 | 0.31 | 8.04 | 9.9 / 12.5 | 1 | 0.60 |
+| 5 | B | dam | 7.31 | 89.3 | 0.56 | 22.17 | 21.9 / 29.0 | 1 | 1.18 |
+| 5 | B | collapse | 7.96 | 60.9 | 0.70 | 28.13 | 27.3 / 38.1 | 2 | 1.56 |
+| 6 | A | work-far | 6.12 | 60.0 | 9.12 | 8.92 | 6.3 / 9.2 | 1 | 0.59 |
+| 6 | A | dam | 7.39 | 35.9 | 22.79 | 22.34 | 16.8 / 23.1 | 1 | 1.57 |
+| 6 | A | collapse | 8.23 | 25.7 | 27.58 | 26.90 | 20.4 / 27.9 | 1 | 2.72 |
+| 7 | B | work-far | 6.01 | 89.9 | 0.32 | 8.80 | 9.6 / 14.8 | 1 | 0.53 |
+| 7 | B | dam | 6.83 | 89.4 | 0.56 | 25.61 | 22.8 / 34.3 | 2 | 1.12 |
+| 7 | B | collapse | 7.33 | 89.4 | 0.77 | 29.17 | 28.2 / 35.8 | 2 | 1.44 |
+| 8 | A | work-far | 6.24 | 60.0 | 8.79 | 8.50 | 6.2 / 9.1 | 1 | 0.61 |
+| 8 | A | dam | 6.88 | 36.0 | 23.35 | 22.91 | 16.6 / 23.7 | 1 | 1.45 |
+| 8 | A | collapse | 7.74 | 25.7 | 28.30 | 27.88 | 20.1 / 28.5 | 1 | 2.49 |
+
+- **Main apply and fps.** B wins every adjacent pair in dam and collapse, on both apply p95 and fps p5. Apply p95 goes
+  from 22–30 ms to 0.56–1.24 ms. fps p5 goes from 26–36 to 45–90, or 60–90 without video.
+- **Host cost.** The host in the worker costs about what it costs in-thread, roughly +0–15% at p95: dam 22–26 against
+  22–23, collapse 28–31 against 26–28. The 2× of the headless smoke, 88–100 against 41–50, was SwiftShader saturating
+  the CPU.
+- **Lag in B, runs 3–8:**
+  - dam: p50 21.9–22.9 ms, p95 29.0–34.3 ms. At 180 Hz that is 5.2–6.2 frames at p95; at 60 Hz, 1.7–2.1 frames.
+  - collapse: p50 27.3–28.8 ms, p95 35.8–42.7 ms. At 180 Hz that is 6.5–7.7 frames at p95; at 60 Hz, 2.2–2.6 frames.
+  - Added over A in the same runs: p50 +5–6 ms in dam and +7–9 ms in collapse; p95 +6–11 ms in dam and +8–15 ms in
+    collapse. That is under one 60 Hz frame.
+  - Queue max is 1–2.
+- **Lag under load.** In run 2 (video recording), B's queue reaches 3, and lag p95 reaches 72 ms in dam and 120 ms in
+  collapse, 4.3 and 7.2 frames at 60 Hz. A does not queue, because its host is synchronous. When the CPU is short,
+  queueing is how the worker path degrades. The headless smoke showed the extreme of it: queue 6–7, 235–280 ms.
+- **Mesh backlog.** B's mean backlog is at or below A's in every window: dam 1.12–1.18 against 1.45–1.57, collapse
+  1.44–1.64 against 2.47–2.72. The pool rule does not trigger.
+
+**Frame pacing in today's session.** In both builds, frames alternate between one and two vsyncs, about half each,
+even when idle at ~5 ms CPU. That holds the frame rate at ~120 fps and fps p5 at ~89.5, two 179 Hz vsyncs. At the
+baseline, the idle phases ran 1-vsync frames ~89% of the time, ~170 fps. A and B have the same frame counts in today's
+A/B, so the cause is the browser or OS pacing in this session, not #2. fps p5 ≥ 60 still means "no frame longer than
+three vsyncs", so the target keeps its meaning. fps medians and means are not comparable with the baseline.
+
+**Anatomy after #2** (`research/2026-10-08-living-r2-anatomy-after-2.json`; summary from `bench/anatomy.node.mjs`).
+- Long frames are intervals over 16.7 ms. With #2 the main-thread apply is gone from them.
+
+| Phase | Long frames, baseline → after | Of which with an apply | Main apply p50 / p95 per tick, ms |
+|---|---|---|---|
+| idle-far | 2 → 3 | 2 → 0 | 4.7 / 6.2 → 0.2 / 0.3 |
+| dam | 298 (14.5%) → 17 (0.7%) | 297 → 8 | 12.7 / 17.4 → 0.4 / 0.6 |
+| collapse | 305 (23.9%) → 19 (1.1%) | 300 → 10 | 15.6 / 21.1 → 0.5 / 0.7 |
+
+- The few long frames left are ~17 ms of CPU, with apply medians of 0.0–0.4 ms. They are not apply frames.
+
+**Gate** (`research/2026-10-08-living-r2-after-2.json`, worse of two runs, `invalid: []`). Valid, since no game was
+running. This also re-runs #5's gate, which was provisional: the build contains `7f9dfc0`.
+
+| Phase | fps p5: baseline → after | CPU median | tick p95 | apply p95 | Pass |
+|---|---|---|---|---|---|
+| idle-default | 90.3 → 89.5 | 4.4 → 5.1 | 5.0 → 5.4 | 5.65 → 0.32 | yes |
+| idle-far | 89.8 → 89.4 | 5.8 → 6.1 | 5.4 → 5.3 | 6.0 → 0.33 | yes |
+| work-default | 89.9 → 89.4 | 5.2 → 5.8 | 7.2 → 8.0 | 6.4 → 0.31 | yes |
+| work-far | 60.1 → 89.5 | 6.3 → 6.5 | 7.7 → 8.1 | 6.9 → 0.32 | yes |
+| dam | 36.0 → 60.2 | 7.9 → 8.0 | 13.4 → **12.3** | 21.6 → 0.69 | no (tick) |
+| collapse | 30.1 → 88.6 | 7.9 → 7.8 | 15.6 → **13.9** | 22.6 → 0.79 | no (tick) |
+
+- fps p5 ≥ 60 and apply p95 ≤ 4 now pass in every phase. Dam's fps p5 comes from run 2's 60.24; run 1 had 89.25.
+- The only miss left is tick p95 in dam (12.3) and collapse (13.9), against ≤ 10. That is Part 3.
+- #5 in the browser: the sim tick p95 drops 8–11% against the baseline, 13.4 → 12.3 and 15.6 → 13.9. That is less than
+  the −27–30% of the Node A/B, because the browser tick includes more than the water publish.
+
+**Decision (Step 4).**
+- **Keep Task 7 (`ca129f1`).** B beats A on main apply p95 and fps p5 in every adjacent dam and collapse pair.
+- **The mesh pool stays as it is.** B's backlog is not above A's.
+- **Lag.** On a quiet machine, the added lag is under one 60 Hz frame at p95 (+6–15 ms). Under CPU load it grows with
+  the queue, to 72–120 ms p95 with video recording. The numbers and clips (runs 1 A and 2 B, both with video) went to
+  the expert for the checkpoint decision.
