@@ -176,8 +176,10 @@ downward `moveBox`).
 
 ### Ground
 
-`groundDistance` is a downward sweep of `maxDown` (non-finite or negative → `GROUND_EPS`): the distance moved if it
-was blocked, else null.
+`groundDistance` is a downward sweep of `maxDown` (non-finite or not positive → `GROUND_EPS`): the distance moved if
+it was blocked. A sweep that moves the full reach and ends with the bottom face on a voxel plane (within
+`CONTACT_EPS`) over solid also counts: a drop of exactly `maxDown` returns `maxDown` (fix found by fpcontrol, 4d).
+Otherwise null. `moveBox.grounded` and the step-up precondition use the same test with `GROUND_EPS`.
 
 ### Liquid
 

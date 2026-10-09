@@ -164,19 +164,31 @@ export function sweepBox(w: CollisionWorld, box: Box, delta: Vec3Like, out?: Swe
   return r
 }
 
-/** Solid lies within GROUND_EPS below b. */
+/**
+ * How far b drops before resting on solid, if within reach; null otherwise. Moves b. The sweep ends strictly, so a drop
+ * of exactly reach (or within contact residue of it) moves the full reach without being blocked: then the bottom face
+ * lies on a voxel plane, and the cells just under it decide.
+ */
+function drop(w: CollisionWorld, b: Bounds, reach: number): number | null {
+  const y = b[1]
+  const moved = sweepAxis(w, b, 1, -reach)
+  if (moved !== -reach) return 0 - moved // 0 − moved: never −0
+  const plane = Math.round(b[1])
+  if (Math.abs(b[1] - plane) > CONTACT_EPS) return null
+  const below = anySolid(w, firstCell(b[0]), lastCell(b[0], b[3]), plane - 1, plane - 1, firstCell(b[2]), lastCell(b[2], b[5]))
+  return below ? y - plane : null
+}
+
+/** Solid lies within GROUND_EPS below b (the same test as groundDistance's default). */
 function resting(w: CollisionWorld, b: Bounds): boolean {
-  const probe: Bounds = [...b]
-  return sweepAxis(w, probe, 1, -GROUND_EPS) !== -GROUND_EPS
+  return drop(w, [...b], GROUND_EPS) !== null
 }
 
 /** How far the box drops before resting on solid, if within maxDown (default GROUND_EPS); null otherwise. */
 export function groundDistance(w: CollisionWorld, box: Box, maxDown = GROUND_EPS): number | null {
   const b = bounds(box)
   if (b === null) return null
-  const reach = Number.isFinite(maxDown) && maxDown > 0 ? maxDown : GROUND_EPS
-  const moved = sweepAxis(w, b, 1, -reach)
-  return moved === -reach ? null : 0 - moved // 0 − moved: never −0
+  return drop(w, b, Number.isFinite(maxDown) && maxDown > 0 ? maxDown : GROUND_EPS)
 }
 
 /**

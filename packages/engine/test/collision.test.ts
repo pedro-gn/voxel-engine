@@ -3,7 +3,7 @@ import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { ghostAwareGet } from '../src/engineWorld.ts'
 import { GhostEdits } from '../src/interact/ghostEdits.ts'
 import {
-  CONTACT_EPS, bindCollision, bodyBox, boxOverlapsSolid, groundDistance, liquidAt, liquidInBox, moveBox, sweepBox, unstick,
+  CONTACT_EPS, GROUND_EPS, bindCollision, bodyBox, boxOverlapsSolid, groundDistance, liquidAt, liquidInBox, moveBox, sweepBox, unstick,
   type Box, type CollisionWorld, type SweepResult,
 } from '../src/interact/collision.ts'
 import { Layout, type WorldSize } from '../src/world/layout.ts'
@@ -211,6 +211,20 @@ describe('groundDistance', () => {
     expect(groundDistance(world, body(40.5, 0, 40.5))).toBe(0) // the world floor
     expect(groundDistance(world, body(10.5, 5.5, 10.5), NaN)).toBeNull() // falls back to GROUND_EPS
     expect(groundDistance(world, body(NaN, 5, 10.5))).toBeNull()
+  })
+  it('counts a drop of exactly maxDown, within contact residue, and nothing beyond', () => {
+    const { world } = floored()
+    expect(groundDistance(world, body(10.5, 6, 10.5), 1)).toBe(1) // a full one-block stair
+    expect(groundDistance(world, body(10.5, 6 + 1e-9, 10.5), 1)).toBeCloseTo(1, 8) // residue above the plane
+    expect(groundDistance(world, body(10.5, 6 + 1e-6, 10.5), 1)).toBeNull()
+    expect(groundDistance(world, body(10.5, 5 + 0.25, 10.5), 0.25)).toBe(0.25)
+    expect(groundDistance(world, body(10.5, 5 + GROUND_EPS, 10.5))).toBeCloseTo(GROUND_EPS, 12)
+    expect(groundDistance(world, body(40.5, 1, 40.5), 1)).toBe(1) // onto the world floor
+  })
+  it('agrees with moveBox.grounded at exactly GROUND_EPS', () => {
+    const { world } = floored()
+    expect(moveBox(world, body(10.5, 5 + GROUND_EPS, 10.5), [0, 0, 0]).grounded).toBe(true)
+    expect(moveBox(world, body(10.5, 5 + 2 * GROUND_EPS, 10.5), [0, 0, 0]).grounded).toBe(false)
   })
 })
 
