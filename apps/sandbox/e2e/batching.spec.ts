@@ -20,7 +20,11 @@ const DEFAULT_POSE: Pose = { t: [128, 40, 128], d: 260, p: 0.75, y: 0.7 }
 /** Boots the scene, hides what animates and is not a chunk, frames a fixed camera, and screenshots the canvas alone. */
 async function shoot(page: Page, url: string, pose: Pose = DEFAULT_POSE): Promise<Shot> {
   const errors: string[] = []
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text())
+    // Batching follow-up: the batch geometry aliases `normal`, so three's batch node no longer warns once per batch build.
+    if (/Vertex attribute "normal" not found/.test(m.text())) errors.push(`warning: ${m.text()}`)
+  })
   page.on('pageerror', (e) => errors.push(e.message))
   await page.goto(url)
   await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 240_000 })

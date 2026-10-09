@@ -87,6 +87,7 @@ export interface EngineStats {
   /** meshInFlight: chunks being meshed or meshed but not yet uploaded; queue + inFlight = 0 means everything is visible. */
   meshQueue: number; meshInFlight: number; failedChunks: number
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
+  /** Render objects drawn into the sun's shadow map: region batches plus per-chunk meshes (not chunks). */
   shadowCasters: number
   decorationInstances: number; decorationDraws: number
   /** Falling blocks being drawn (in the air or waiting for their chunk mesh). */

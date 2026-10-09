@@ -85,12 +85,19 @@ function packedAttribute(vertices: number): THREE.BufferAttribute {
   return packed
 }
 
-/** Trap 2: initialise the batch geometry ourselves, with the integer `packed` attribute aliased as `position`. */
+/**
+ * Names that alias the integer `packed` attribute (no extra memory). `position`: node materials expect one. `normal`:
+ * three's batch node transforms normalLocal, which warns ("Vertex attribute "normal" not found") without one; the chunk
+ * material computes its own normal, so the alias is never read as a normal.
+ */
+const ALIASES = ['position', 'normal'] as const
+
+/** Trap 2: initialise the batch geometry ourselves, with the integer `packed` attribute aliased as `position` and `normal`. */
 function newBatch(material: THREE.Material, maxInstances: number, maxVertices: number, maxIndices: number): THREE.BatchedMesh {
   const bm = new THREE.BatchedMesh(maxInstances, maxVertices, maxIndices, material)
   const packed = packedAttribute(maxVertices)
   bm.geometry.setAttribute('packed', packed)
-  bm.geometry.setAttribute('position', packed)
+  for (const name of ALIASES) bm.geometry.setAttribute(name, packed)
   bm.geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(maxIndices), 1))
   internals(bm)._geometryInitialized = true
   // `position` aliases the packed integers, so three's Raycaster would decode garbage triangles (picking goes through
@@ -101,32 +108,37 @@ function newBatch(material: THREE.Material, maxInstances: number, maxVertices: n
 
 /**
  * Trap 2, again: three iterates the batch geometry's attributes BY NAME when it copies vertex data (setGeometryAt) and
- * when it compacts (optimize), so the `position` alias of `packed` gets every copy twice. In optimize, a geometry that
- * moves by less than its reserved size then reads ranges the first copy already overwrote, which corrupts its
- * vertices. Runs `fn` with the alias removed, so each copy happens once.
+ * when it compacts (optimize), so each alias of `packed` gets every copy again. In optimize, a geometry that moves by
+ * less than its reserved size then reads ranges the first copy already overwrote, which corrupts its vertices. Runs `fn`
+ * with the aliases removed, so each copy happens once.
  */
 function unaliased<T>(bm: THREE.BatchedMesh, fn: () => T): T {
   const g = bm.geometry
   const packed = g.getAttribute('packed')
-  g.deleteAttribute('position')
-  try { return fn() } finally { g.setAttribute('position', packed) }
+  for (const name of ALIASES) g.deleteAttribute(name)
+  try { return fn() } finally { for (const name of ALIASES) g.setAttribute(name, packed) }
 }
 
-/** Trap 2: grows a batch's vertex and index buffers, keeping `position` aliased to the integer `packed` attribute. */
-function growBatch(bm: THREE.BatchedMesh, minVertices: number, minIndices: number): void {
+/**
+ * Trap 2: grows a batch's vertex and index buffers, keeping the aliases on the integer `packed` attribute. Returns the
+ * replaced attributes, whose GPU buffers the renderer keeps until they are deleted (ChunkBatches.releaseRetired).
+ */
+function growBatch(bm: THREE.BatchedMesh, minVertices: number, minIndices: number): THREE.BufferAttribute[] {
   const b = internals(bm)
   const maxV = Math.max(minVertices, Math.ceil(b._maxVertexCount * 1.5))
   const maxI = Math.max(minIndices, Math.ceil(b._maxIndexCount * 1.5))
   const g = bm.geometry
+  const oldPacked = g.getAttribute('packed') as THREE.BufferAttribute, oldIndex = g.getIndex()!
   const packed = packedAttribute(maxV)
-  ;(packed.array as Uint32Array).set((g.getAttribute('packed') as THREE.BufferAttribute).array as Uint32Array)
+  ;(packed.array as Uint32Array).set(oldPacked.array as Uint32Array)
   const index = new THREE.BufferAttribute(new Uint32Array(maxI), 1)
-  ;(index.array as Uint32Array).set(g.getIndex()!.array as Uint32Array)
+  ;(index.array as Uint32Array).set(oldIndex.array as Uint32Array)
   g.setAttribute('packed', packed)
-  g.setAttribute('position', packed)
+  for (const name of ALIASES) g.setAttribute(name, packed)
   g.setIndex(index)
   b._maxVertexCount = maxV
   b._maxIndexCount = maxI
+  return [oldPacked, oldIndex]
 }
 
 /**
@@ -162,7 +174,9 @@ export class ChunkBatches {
   private readonly entries = new Map<number, Entry>()
   private readonly matrix = new THREE.Matrix4()
   private readonly layout: Layout
-  private material: THREE.Material
+  private readonly material: THREE.Material
+  /** Attributes replaced by grows, until releaseRetired frees their GPU buffers. */
+  private readonly retired: THREE.BufferAttribute[] = []
   private readonly name: string
   private readonly castShadow: boolean
   private readonly threeCull: boolean
@@ -192,9 +206,13 @@ export class ChunkBatches {
   /** Chunks drawn (one instance each). */
   get instanceCount(): number { return this.entries.size }
 
-  setMaterial(material: THREE.Material): void {
-    this.material = material
-    for (const b of this.batches.values()) b.mesh.material = material
+  /**
+   * Hands every vertex and index attribute a grow replaced to `free` (the renderer's attribute delete), once. Call after a
+   * render: that render already drew from the new buffers, so the old ones are unused.
+   */
+  releaseRetired(free: (attribute: THREE.BufferAttribute) => void): void {
+    for (const a of this.retired) free(a)
+    this.retired.length = 0
   }
 
   set(ci: number, cx: number, cy: number, cz: number, lm: LayerMesh): void {
@@ -226,7 +244,7 @@ export class ChunkBatches {
         this.stats.compacted++
       }
       if (bm.unusedVertexCount < rv || bm.unusedIndexCount < ri) {
-        growBatch(bm, b._nextVertexStart + rv, b._nextIndexStart + ri)
+        this.retired.push(...growBatch(bm, b._nextVertexStart + rv, b._nextIndexStart + ri))
         this.stats.grown++
       }
     }

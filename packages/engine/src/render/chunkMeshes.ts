@@ -92,6 +92,11 @@ export class ChunkMeshes {
     return chunkInRange(this.eye, this.range, cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
   }
 
+  /** Frees the GPU buffers batch grows replaced (ChunkBatches.releaseRetired); call after a render. */
+  releaseRetired(free: (attribute: THREE.BufferAttribute) => void): void {
+    for (const b of Object.values(this.batches)) b.releaseRetired(free)
+  }
+
   /** Chunk layer draws of the camera's pass this frame: batched chunks after the cull, plus per-chunk meshes in range. */
   get drawnCount(): number {
     let n = 0

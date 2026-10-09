@@ -164,6 +164,11 @@ export class Visuals {
     this.waterSurface.update()
     if (this.effects.post) this.post.render()
     else this.o.renderer.render(this.o.scene, this.o.camera)
+    // three r186 frees a replaced attribute's GPU buffer only through its private attribute store (else at GC): the batch
+    // buffers a grow replaced are unused now that this render drew from the new ones. Pinned in chunkBatches.test.ts.
+    const attributes = (this.o.renderer as unknown as { _attributes?: { delete?(a: THREE.BufferAttribute): unknown } | null })._attributes
+    // Without the store, just drop the references and leave the buffers to GC (as before).
+    this.chunks.releaseRetired(attributes && typeof attributes.delete === 'function' ? a => attributes.delete!(a) : () => {})
   }
 
   stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number; chunksDrawn: number } {

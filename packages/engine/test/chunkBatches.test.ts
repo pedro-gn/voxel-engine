@@ -40,6 +40,30 @@ describe('ChunkBatches', () => {
     expect(g.getAttribute('position')).toBe(g.getAttribute('packed'))
     expect((g.getAttribute('packed') as THREE.BufferAttribute).gpuType).toBe(THREE.IntType)
   })
+  it('aliases normal (and position) to the packed attribute, also after growing, so three\'s batch normal finds one', () => {
+    const b = batches()
+    b.set(0, 0, 0, 0, quads(1))
+    expect(bm(b)[0]!.geometry.getAttribute('normal')).toBe(bm(b)[0]!.geometry.getAttribute('packed'))
+    for (let i = 0; i < 16; i++) b.set(i, i % 8, 0, 0, quads(900))
+    const g = bm(b)[0]!.geometry
+    expect(b.stats.grown).toBeGreaterThan(0)
+    expect(g.getAttribute('normal')).toBe(g.getAttribute('packed'))
+  })
+  it('hands the buffers a grow replaced to releaseRetired once', () => {
+    const b = batches()
+    const before = bm(b).length
+    b.set(0, 0, 0, 0, quads(1))
+    const old = [bm(b)[before]!.geometry.getAttribute('packed'), bm(b)[before]!.geometry.getIndex()]
+    for (let i = 1; i < 16; i++) b.set(i, i % 4, (i / 4) | 0, 0, quads(900)) // the first region's batch grows
+    const freed: THREE.BufferAttribute[] = []
+    b.releaseRetired(a => freed.push(a))
+    expect(freed).toContain(old[0])
+    expect(freed).toContain(old[1])
+    expect(freed.length % 2).toBe(0) // vertex + index per grow
+    const again: THREE.BufferAttribute[] = []
+    b.releaseRetired(a => again.push(a))
+    expect(again).toEqual([])
+  })
   it('remeshes in place when the new mesh fits its reserved slack, and appends when it does not', () => {
     const b = batches()
     b.set(0, 0, 0, 0, quads(8))
@@ -205,5 +229,11 @@ describe('three internals this module relies on (re-check on every three upgrade
     const m = new THREE.BatchedMesh(1, 4, 6, new THREE.MeshBasicMaterial()) as unknown as Record<string, unknown>
     for (const k of ['_indirectTexture', '_matricesTexture', '_geometryInfo', '_maxVertexCount', '_maxIndexCount', '_geometryInitialized', '_nextVertexStart', '_nextIndexStart',
       '_instanceInfo', '_multiDrawStarts', '_multiDrawCounts', '_multiDrawCount', '_multiDrawBytesPerElement', '_visibilityChanged']) expect(k in m, k).toBe(true)
+  })
+  it('the renderer still keeps its attribute store in _attributes, with a delete (Visuals frees replaced batch buffers through it)', async () => {
+    const { default: Attributes } = await import('three/src/renderers/common/Attributes.js' as string) as { default: { prototype: object } }
+    expect(typeof (Attributes.prototype as { delete?: unknown }).delete).toBe('function')
+    const src = (THREE.WebGPURenderer as unknown as { toString(): string }).toString() + String(Object.getPrototypeOf(THREE.WebGPURenderer.prototype).constructor)
+    expect(src).toContain('this._attributes = new Attributes')
   })
 })
