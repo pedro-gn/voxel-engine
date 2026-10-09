@@ -16,6 +16,8 @@ interface Slot {
   curtains: THREE.Mesh
   cgeo: THREE.InstancedBufferGeometry
   generation: number
+  /** Within the view distance (setRange). */
+  inRange: boolean
 }
 
 /** Bounds of a chunk column's instances, `margin` blocks past its sides (+ 1), over the world's height. */
@@ -135,6 +137,8 @@ export class WaterSurface {
   private readonly slots = new Map<number, Slot>()
   private surfaceMaterial: THREE.Material
   private curtainMaterial: THREE.Material
+  private eye = { x: 0, y: 0, z: 0 }
+  private range = Infinity
 
   constructor(height: number, view: SurfaceView, surface: THREE.Material, curtain: THREE.Material) {
     this.height = height
@@ -164,6 +168,21 @@ export class WaterSurface {
     }
   }
 
+  /** View distance: hides the chunk columns whose nearest point is farther than `range` blocks from `eye`; Infinity shows all. */
+  setRange(eye: { x: number; y: number; z: number }, range: number): void {
+    this.eye = { x: eye.x, y: eye.y, z: eye.z }
+    this.range = range
+    const n = this.view.ccCount
+    for (const [key, s] of this.slots) {
+      const cc = key % n, inRange = this.near(cc)
+      if (inRange === s.inRange) continue
+      s.inRange = inRange
+      const d = this.view.column(cc, (key - cc) / n)
+      s.surface.visible = inRange && d !== undefined && anyDrawn(d.info)
+      s.curtains.visible = inRange && d !== undefined && d.curtains.count > 0
+    }
+  }
+
   dispose(): void {
     for (const s of this.slots.values()) { s.geo.dispose(); s.cgeo.dispose() }
     this.slots.clear()
@@ -179,7 +198,7 @@ export class WaterSurface {
       d.rowLo = 32
       d.rowHi = -1
       // A chunk column that dried out draws nothing: skip its 1024 collapsed quads.
-      s.surface.visible = anyDrawn(d.info)
+      s.surface.visible = anyDrawn(d.info) && s.inRange
     }
     const cs = d.curtains
     if (cs.generation !== s.generation) {
@@ -189,7 +208,15 @@ export class WaterSurface {
       for (const [name] of CURTAIN_ATTRIBUTES) s.cgeo.getAttribute(name).needsUpdate = true
     }
     s.cgeo.instanceCount = cs.count
-    s.curtains.visible = cs.count > 0
+    s.curtains.visible = cs.count > 0 && s.inRange
+  }
+
+  private near(cc: number): boolean {
+    if (this.range === Infinity) return true
+    const x0 = (cc % this.view.cx) * 32, z0 = Math.floor(cc / this.view.cx) * 32, e = this.eye
+    const dx = Math.max(x0 - e.x, 0, e.x - x0 - 32), dz = Math.max(z0 - e.z, 0, e.z - z0 - 32)
+    const dy = Math.max(-e.y, 0, e.y - this.height)
+    return dx * dx + dy * dy + dz * dz <= this.range * this.range
   }
 
   private create(key: number, cc: number, r: number, d: ColumnData): Slot {
@@ -206,7 +233,7 @@ export class WaterSurface {
     cgeo.instanceCount = 0
     const curtains = this.mesh(cgeo, [this.curtainMaterial], ox, oz, `water-${r}-${cc}-curtains`)
     curtains.visible = false
-    const slot: Slot = { surface, geo, attrs, curtains, cgeo, generation: d.curtains.generation }
+    const slot: Slot = { surface, geo, attrs, curtains, cgeo, generation: d.curtains.generation, inRange: this.near(cc) }
     this.slots.set(key, slot)
     return slot
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CAMERA_FAR, boxDistanceSq, boxInRange, cameraFar, chunkInRange, edgeBand } from '../src/render/viewDistance.ts'
+import { shadowDistance } from '../src/render/shadowFit.ts'
+import { DEFAULT_CAMERA_FAR, boxDistanceSq, boxInRange, cameraFar, chunkInRange, edgeBand, shadowReach } from '../src/render/viewDistance.ts'
 
 describe('viewDistance helpers', () => {
   it('measures the distance to a box\'s nearest point, 0 inside', () => {
@@ -21,6 +22,11 @@ describe('viewDistance helpers', () => {
   it('ties the far plane to R plus a chunk diagonal, 3000 at Infinity', () => {
     expect(cameraFar(Infinity)).toBe(DEFAULT_CAMERA_FAR)
     expect(cameraFar(256)).toBe(320)
+  })
+  it('clamps the shadow reach to the view distance', () => {
+    expect(shadowReach(400, Infinity)).toBe(shadowDistance(400))
+    expect(shadowReach(400, 256)).toBe(256)
+    expect(shadowReach(8, 256)).toBe(shadowDistance(8))
   })
   it('puts the edge band at [0.75 R, R], and out of reach at Infinity', () => {
     expect(edgeBand(400)).toEqual([300, 400])

@@ -1,3 +1,5 @@
+import { shadowDistance } from './shadowFit.ts'
+
 /** Pure view-distance helpers (spec 4b §5): distances are 3D, from the eye to a box's nearest point, as the fog measures. */
 export interface Vec3Like { x: number; y: number; z: number }
 
@@ -26,6 +28,11 @@ export function chunkInRange(eye: Vec3Like, range: number, cx: number, cy: numbe
 
 export function cameraFar(range: number): number {
   return range === Infinity ? DEFAULT_CAMERA_FAR : range + FAR_MARGIN
+}
+
+/** How far shadows reach: the orbit-based reach (shadowFit.ts), never past the view distance. */
+export function shadowReach(orbitDistance: number, range: number): number {
+  return Math.min(shadowDistance(orbitDistance), range)
 }
 
 export function edgeBand(range: number): [number, number] {

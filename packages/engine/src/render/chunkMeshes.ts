@@ -4,7 +4,7 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import { ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
-import type { Vec3Like } from './viewDistance.ts'
+import { chunkInRange, type Vec3Like } from './viewDistance.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
 const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
@@ -42,6 +42,8 @@ export class ChunkMeshes {
   /** Per chunk, one mesh slot per layer; a batched layer's slot stays null. */
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
   private readonly batches: Partial<Record<Layer, ChunkBatches>> = {}
+  private eye: Vec3Like = { x: 0, y: 0, z: 0 }
+  private range = Infinity
 
   constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region }: ChunkMeshesOptions = {}) {
     this.layout = layout
@@ -75,6 +77,19 @@ export class ChunkMeshes {
   /** Once per frame before rendering (Visuals.frame): the viewer and the view distance. */
   beginFrame(eye: Vec3Like, range: number): void {
     for (const b of Object.values(this.batches)) b.beginFrame(eye, range)
+    const was = this.range
+    this.eye = { x: eye.x, y: eye.y, z: eye.z }
+    this.range = range
+    if (range === Infinity && was === Infinity) return // the default: every mesh stays visible, nothing to test
+    for (const [ci, slots] of this.meshes) {
+      const on = this.inRange(ci)
+      for (const m of slots) if (m) m.visible = on
+    }
+  }
+
+  private inRange(ci: number): boolean {
+    const [cx, cy, cz] = this.layout.chunkCoords(ci)
+    return chunkInRange(this.eye, this.range, cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
   }
 
   /** Chunk layer draws of the camera's pass this frame: batched chunks after the cull, plus per-chunk meshes in range. */
@@ -131,6 +146,7 @@ export class ChunkMeshes {
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()
       mesh.name = `chunk-${ci}-${name}`
+      mesh.visible = this.inRange(ci)
       this.group.add(mesh)
       slots![k] = mesh
     })

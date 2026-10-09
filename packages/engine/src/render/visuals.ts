@@ -18,7 +18,7 @@ import {
   DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, SUPPORT, mergeEffects, mergeQuality, mergeWater, resolveEffects,
   type Backend, type Effects, type Quality, type WaterInput, type WaterParams,
 } from './settings.ts'
-import { shadowDistance } from './shadowFit.ts'
+import { cameraFar, shadowReach } from './viewDistance.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
@@ -140,28 +140,35 @@ export class Visuals {
   }
 
   frame(dt: number): void {
-    this.chunks.beginFrame(this.o.camera.position, Infinity)
+    // View distance (spec 4b §5): what lies beyond it is not drawn; at Infinity every step below is a no-op.
+    const range = this.quality.viewDistance, eye = this.o.camera.position
+    this.chunks.beginFrame(eye, range)
+    this.waterSurface.setRange(eye, range)
+    const cf = cameraFar(range)
+    if (this.o.camera.far !== cf) { this.o.camera.far = cf; this.o.camera.updateProjectionMatrix() }
     ripples.update(dt)
     syncRipples()
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
-    const far = shadowDistance(this.o.viewDistance())
+    const far = shadowReach(this.o.viewDistance(), range)
     this.lights.shadowFar.value = far
     if (this.effects.shadows) this.sun.fit(this.o.camera, far, 0, this.o.layout.size[1], this.quality.shadowMapSize)
+    const decoRadius = Math.min(this.quality.decorationRadius, range)
     this.deco.group.visible = this.effects.decorations
-    this.decoRadius.value = this.quality.decorationRadius
+    this.decoRadius.value = decoRadius
     this.decoStats = this.effects.decorations
-      ? this.deco.cull(this.o.camera.position, this.quality.decorationRadius, this.quality.decorationMaxInstances)
+      ? this.deco.cull(eye, decoRadius, this.quality.decorationMaxInstances)
       : { instances: 0, draws: 0 }
     this.waterSurface.update()
     if (this.effects.post) this.post.render()
     else this.o.renderer.render(this.o.scene, this.o.camera)
   }
 
-  stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number } {
+  stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number; chunksDrawn: number } {
     return {
       shadowCasters: this.effects.shadows ? this.chunks.shadowCasterCount : 0,
       decorationInstances: this.decoStats.instances,
       decorationDraws: this.decoStats.draws,
+      chunksDrawn: this.chunks.drawnCount,
     }
   }
 

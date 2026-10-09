@@ -106,6 +106,8 @@ export interface EngineStats {
   waterApplyMs: number; waterApplyP95: number
   /** GPU render time in ms; null when not tracked or unsupported. */
   gpuMs: number | null
+  /** Chunk layer draws of the camera's pass in the last frame: batched chunks after the frustum and view-distance cull, plus per-chunk meshes within the view distance. */
+  chunksDrawn: number
 }
 
 export interface Engine {
@@ -650,6 +652,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         collapseVisited: physicsStats.collapse?.visited ?? 0, collapseMutations: physicsStats.collapse?.mutations ?? 0,
         waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
+        chunksDrawn: vs.chunksDrawn,
         ...(latestWorkers && { workers: latestWorkers.stats }),
       }
     },
