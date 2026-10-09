@@ -35,3 +35,7 @@ _Avoid_: Target block, nearest empty voxel
 **Route action**:
 A walk, dig or placement step with explicit prerequisites. Local engineering plans simulate edits without writing the world; execution validates them again.
 _Avoid_: Unconditional waypoint, teleport
+
+**Underwater view**:
+The screen effect shown while the camera, in either camera mode, is under the voxel water level: short-range fog, a blue-green tint and a slight wobble.
+_Avoid_: Underwater fog (scene fog is untouched), water tint (the water material's colour)
