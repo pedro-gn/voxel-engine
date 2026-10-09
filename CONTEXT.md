@@ -35,3 +35,7 @@ _Avoid_: Target block, nearest empty voxel
 **Route action**:
 A walk, dig or placement step with explicit prerequisites. Local engineering plans simulate edits without writing the world; execution validates them again.
 _Avoid_: Unconditional waypoint, teleport
+
+**View distance**:
+The distance from the camera beyond which the world is not drawn; the fog dissolves its last quarter into the sky. Infinity draws the whole world.
+_Avoid_: Render distance, chunk radius, LOD
