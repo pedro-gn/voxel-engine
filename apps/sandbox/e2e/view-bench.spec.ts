@@ -53,6 +53,23 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
   await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 300_000 })
   if (!await settle(page, 300_000)) throw new Error('the world never finished its first meshing')
   const out: Record<string, unknown> = {}
+  // Scene composition: render objects by kind (name prefix up to the first '-' or digit), all and visible.
+  out.composition = await page.evaluate(() => {
+    const e = (window as W).__elovox!.engine
+    const kinds: Record<string, { all: number; visible: number }> = {}
+    e.scene.traverse(o => {
+      const m = o as { isMesh?: boolean; isBatchedMesh?: boolean; isLine?: boolean; isPoints?: boolean; isSprite?: boolean }
+      if (!m.isMesh && !m.isLine && !m.isPoints && !m.isSprite) return
+      const kind = `${m.isBatchedMesh ? 'batch:' : ''}${(o.name || o.type).replace(/[-_]?\d.*$/, '')}`
+      let visible = true
+      for (let p: typeof o | null = o; p; p = p.parent) if (!p.visible) { visible = false; break }
+      const k = kinds[kind] ??= { all: 0, visible: 0 }
+      k.all++; if (visible) k.visible++
+    })
+    let objects = 0
+    e.scene.traverse(() => { objects++ })
+    return { objects, kinds }
+  })
   for (const [name, p] of Object.entries(POSES)) {
     await page.bringToFront()
     await page.evaluate(p => {
