@@ -1,8 +1,8 @@
 # Elovox — Sub-project 4, 4a round 2: Living-world performance — Design
 
-Status: draft. Brainstormed with the expert (sub-project 4 decider) on 2026-10-08.
-- Section 3 (#5) is ready for review.
-- Section 4 (#2) follows the expert's Q1 decision and constraints, and is in review.
+Status: approved by the expert (sub-project 4 decider) on 2026-10-08.
+- §3 (#5) was approved as written.
+- §4 (#2) was approved. Its back-to-back publish rule (§4.1) was added at the expert's review.
 
 Builds on the closed 4a: [spec](2026-10-08-living-world-performance-design.md),
 [plan](../plans/2026-10-08-living-world-performance.md) and
@@ -211,6 +211,32 @@ so the sandbox does not change. It owns:
    The time this takes is the new `waterApplyMs`, the metric the target gates.
 
 **A deferred apply** (the stamp check failed) answers "not applied". The main thread keeps the old hold, as today.
+
+**Back-to-back publishes: one request in flight, the rest queued in order** (expert, §4 review). When tick N + 1 carries
+water while N is still in the worker, the main thread does not forward it. A slow frame or GC can bunch ticks; a dam
+apply takes ~20 ms against a 50 ms tick.
+- **Queueing.** The main thread appends N + 1's `{ tick, water }` to a FIFO.
+- **Forwarding.** Right after N's copy, the main thread forwards the head of the FIFO. Its `shown` is computed then: the
+  alpha on screen after N's copy, which is 0. Only one request is ever in flight, so publishes apply in tick order and each
+  `shown` matches the screen.
+- **Relights.** A tick's relight goes with its publish: it is queued behind it, never ahead.
+- **No coalescing.** Consecutive publishes are deltas: each lists the tiles changed since the last, plus that one's tiles.
+  `SurfaceView` must see them all, in order.
+  - A queued publish whose parity buffer the sim has reused meanwhile (N + 2 written over N's parity) fails the stamp
+    check in the worker.
+  - It is then deferred and read from the next publish's buffer, exactly as today's recovery does on the main thread.
+  - So a long queue degrades into today's tested recovery path, not into wrong data.
+- **Lag with a queue.** `waterLagMs` runs from the tick message's arrival to the first frame that draws its step, so it
+  includes the time spent queued. A growing queue shows up in the stat's p95.
+- **Queue length.** A new stat `waterQueue` (current length, and the max over the last 200 ticks) is appended in the water
+  path, so the benchmark can see bunching.
+- **Test.** A Node test of the main-side scheduler (`WaterLink`, pure, with a fake worker port):
+  - two publishes arrive before the first reply;
+  - only the first is forwarded;
+  - the second is forwarded after the first's copy, with `shown = 0`, in order;
+  - the hold and `waterTick` follow each copy.
+
+  The ColumnData differential test (§4.4) also runs the scenario with publishes queued two and three deep.
 
 **Relight.** `relightWater(dirtyChunks)` becomes a message with the chunk-column ranges, handled in order after the tick's
 apply. The worker is single-threaded, so the order is today's.
