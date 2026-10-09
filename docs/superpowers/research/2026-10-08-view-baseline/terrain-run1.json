@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-09T00:10:05.997Z",
+  "query": "scene=terrain&size=1024&gpu",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+  "poses": {
+    "orbit-default": {
+      "frames": 1199,
+      "fpsMedian": 179.86,
+      "fpsP5": 89.85,
+      "cpuMedian": 4.26,
+      "cpuP95": 6.63,
+      "gpuMs": 1.343616,
+      "draws": 910,
+      "triangles": 2032437
+    },
+    "orbit-far": {
+      "frames": 836,
+      "fpsMedian": 90.17,
+      "fpsP5": 59.99,
+      "cpuMedian": 8.22,
+      "cpuP95": 11.95,
+      "gpuMs": 1.633184,
+      "draws": 4335,
+      "triangles": 2799621
+    },
+    "orbit-far-low": {
+      "frames": 920,
+      "fpsMedian": 90.54,
+      "fpsP5": 89.05,
+      "cpuMedian": 7.36,
+      "cpuP95": 10.63,
+      "gpuMs": 1.463328,
+      "draws": 4590,
+      "triangles": 2753403
+    },
+    "ground-horizon": {
+      "frames": 916,
+      "fpsMedian": 174.52,
+      "fpsP5": 89.45,
+      "cpuMedian": 6.38,
+      "cpuP95": 9.76,
+      "gpuMs": 1.16432,
+      "draws": 2873,
+      "triangles": 2557239
+    }
+  }
+}

@@ -64,7 +64,15 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
     }, p)
     await page.waitForTimeout(2000)
     await settle(page, 10_000)
-    out[name] = await measure(page, WINDOW_MS)
+    if (process.env.VIEW_PROFILE) {
+      // VIEW_PROFILE=dir: a main-thread CPU profile of each pose's window, for bench/topSelf.node.mjs.
+      const cdp = await page.context().newCDPSession(page)
+      await cdp.send('Profiler.enable'); await cdp.send('Profiler.start')
+      out[name] = await measure(page, WINDOW_MS)
+      const { profile } = await cdp.send('Profiler.stop')
+      mkdirSync(process.env.VIEW_PROFILE, { recursive: true })
+      writeFileSync(`${process.env.VIEW_PROFILE}/view-${name}.cpuprofile`, JSON.stringify(profile))
+    } else out[name] = await measure(page, WINDOW_MS)
     mkdirSync('test-results', { recursive: true })
     await page.screenshot({ path: `test-results/view-${name}.png` })
   }
