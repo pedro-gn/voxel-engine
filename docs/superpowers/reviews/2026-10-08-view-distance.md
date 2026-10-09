@@ -134,7 +134,24 @@ Bundle c41f0ec, order i532235i (`-view-sweep.json`). CPU median ms at inf / 512 
 
 ### Living benchmark, `main` vs branch (exit condition)
 
-_(filled in after the window)_
+**Met: no regression; the branch is better in every phase** (`-view-living-ab.json`). Setup: main 90e5c97 vs c41f0ec,
+order m f f m, each slot one living-bench invocation of 2 runs.
+
+Worst of 4 runs, as CPU median ms / fps median / fps p5:
+
+| Phase | branch | main |
+|---|---|---|
+| idle-default | 3.31 / 180.0 / 178.4 | 6.33 / 179.2 / 60.0 |
+| idle-far | 3.81 / 179.9 / 177.6 | 8.02 / 90.2 / 59.8 |
+| work-default | 3.69 / 179.9 / 177.2 | 6.31 / 177.9 / 60.0 |
+| work-far | 4.00 / 179.9 / 90.3 | 6.77 / 178.6 / 60.0 |
+| dam | 5.32 / 179.5 / 36.1 | 8.05 / 90.1 / 30.0 |
+| collapse | 6.25 / 179.1 / 36.0 | 9.22 / 89.9 / 25.7 |
+
+- Tick p95 and apply p95 (perf's paths, which 4b does not touch) are equal or better.
+- No run is invalid.
+- The dam and collapse fps p5 stay below 60 on both sides. They are bound by perf's water apply and sim tick, which are
+  4a round 2's subjects.
 
 ## Screenshots (checkpoint 1)
 
@@ -146,14 +163,34 @@ The edge dissolves into the sky colour in every preset, with no hard cut and no 
 distance of 256 or 384 is shorter than the camera distance, so even the orbit target fogs out: R is measured from the
 camera.
 
+At the ground pose the camera sits in the snowy mountain's cross-section, with floating slabs and see-through walls. That
+picture is identical on `main` (0 px diff), so it comes from the pose, not from 4b. The shots went to the user through the
+expert, with the recommendation to keep the default at `Infinity`.
+
+The sandbox view field now follows an R set through the API (5f15674). In the shots it still reads ∞.
+
 ## Verification
 
-At c41f0ec (+ docs):
+At 5f15674:
 - `npm run typecheck`: 0.
-- Engine: 816 passed + 2 expected fail (78 files).
-- Sandbox: 104 passed (11 files).
-- Full sandbox e2e (Edge, port 5181, one worker): 33 passed, 13 skipped (benches and env-gated shot specs).
+- `npm test`:
+  - engine 816 passed + 2 expected fail (78 files);
+  - terrain 174;
+  - terrain-editor 200;
+  - sandbox 104.
+- Full sandbox e2e (Edge, port 5181, one worker): 33 passed, 13 skipped. The skips are the benches and the env-gated shot
+  and compare specs. This covers batching, view-distance, smoke, living and water-render.
 
 ## Open items
 
-_(filled in at the end)_
+1. **Checkpoint 2, the default R.** The default stays `Infinity`, pending the user's answer to checkpoint 1. The expert
+   recommends `Infinity`: part 1 meets the gate without a finite R, and a finite R costs 0.2–0.6 ms at the default orbit.
+2. **three r186 privates.** The cull and the grow release depend on three's private fields: `_geometryInfo`,
+   `_instanceInfo`, the multi-draw arrays, `_indirectTexture` and the renderer's `_attributes`. Their internals tests in
+   `chunkBatches.test.ts` must be re-checked on every three upgrade.
+3. **Merge with perf (4a round 2).** Merge lod last. Re-check its `waterSurface.ts` hook (`setRange`) against perf's
+   `SurfaceSource` type change. Re-check the visuals.ts shadow and decoration lines against perf's type-only edit there.
+4. **The 180 Hz display quantizes fps p5** to 180 / 90 / 60. Gates near 60 depend on CPU p95 against the 11.1 ms
+   three-vsync line. This is a property of the bench machine, recorded so later gates read it the same way.
+5. **`?region=` and `?cull=three` stay** as `@internal` debug options. The batching e2e uses `?cull=three` as its
+   reference.
