@@ -216,8 +216,7 @@ export class FirstPersonController {
 
     // Ground snap: walking off a ledge of ≤ snapDown follows it down instead of hopping.
     if (wasGrounded && !r.grounded && !jumped && !swimming && v[1] <= 0) {
-      // + GROUND_EPS: a drop of exactly snapDown (a full 1-block stair) touches the plane without the probe being
-      // blocked, which groundDistance reports as null.
+      // + GROUND_EPS: a full 1-block stair (a drop of exactly snapDown, give or take float residue) is always in reach.
       const drop = c.groundDistance(this.box(), t.snapDown + GROUND_EPS)
       if (drop !== null && drop > 0) {
         d[0] = 0; d[1] = -drop; d[2] = 0
