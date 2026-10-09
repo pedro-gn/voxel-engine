@@ -31,6 +31,11 @@ async function shoot(page: Page, url: string, pose: Pose = DEFAULT_POSE): Promis
   await page.evaluate((pose) => {
     const { engine } = (window as W).__elovox!
     engine.effects = { decorations: false } // animated grass would differ between the two loads
+    // So would drifting clouds and the animated water surface (the 1024² showcase has a lake and a river); the chunks are
+    // what these tests compare.
+    engine.atmosphere.set({ sky: { clouds: { speed: 0 } } })
+    const water = engine.scene.getObjectByName('elovox-water')
+    if (water) water.visible = false
     for (const s of [engine.controls.goal, engine.controls.current]) {
       s.target[0] = pose.t[0]; s.target[1] = pose.t[1]; s.target[2] = pose.t[2]
       s.distance = pose.d; s.pitch = pose.p; s.yaw = pose.y
