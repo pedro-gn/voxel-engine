@@ -1780,3 +1780,127 @@ running. This also re-runs #5's gate, which was provisional: the build contains 
 - **Lag.** On a quiet machine, the added lag is under one 60 Hz frame at p95 (+6–15 ms). Under CPU load it grows with
   the queue, to 72–120 ms p95 with video recording. The numbers and clips (runs 1 A and 2 B, both with video) went to
   the expert for the checkpoint decision.
+
+---
+
+# Part 3, Task 9: #5 step 2, publish's dense loop and flush's mirror loop
+
+Where things stand after #2:
+- **Target:** tick p95 ≤ 10 ms.
+- **Gate:** dam 12.3, collapse 13.9.
+- **Node A/B after step 1:** dam 14.0, collapse 17.3–18.3.
+- **Old profile shares** (spec §1, before step 1): publish's dense loop 8.7% self, flush's mirror loop 5.9% self, the
+  water step 37.4%.
+- **Arithmetic:** even if step 2 removed both loops entirely, it would cut ~15–18% of the tick, about 12.3 → ~10.3 in the
+  dam. So step 2 alone probably does not reach the target, and step 3 (the water step) is where most of what remains
+  lies. Step 1 below checks this before any code changes.
+
+### Task 9
+
+**Files:**
+- Modify: `packages/engine/src/sim/water/publish.ts` (the dense loop in `publish`), `packages/engine/src/sim/water/waterSystem.ts`
+  (`flush`), `packages/engine/test/waterPublishGolden.test.ts` (a second golden).
+- Modify: `apps/sandbox/playwright.config.ts` (`E2E_PREVIEW_DIR`, for the browser A/B).
+- Create (in the window): `docs/superpowers/research/2026-10-08-living-r2-node-ab-5b.json` and
+  `docs/superpowers/research/2026-10-08-living-r2-browser-ab-5b.json`.
+
+- [ ] **Step 1: Profile at HEAD, outside a window (not evidence)**
+
+Run the scratch inspector variant of `bench/living.node.ts` (dam and collapse windows) at HEAD and summarize it with
+`inclusive.mjs`. Record the self and inclusive shares of the following, in the dam and collapse windows:
+- `WaterPublisher.publish`, its own dense loop;
+- `records`;
+- `WaterSystem.flush` self;
+- `mirrorRun`;
+- `quantize`;
+- `columns.step` and its four hot loops.
+
+**Go/no-go, sent to the expert:**
+- **Go:** publish self plus the flush loop together are ≥ 10% of the dam tick. Steps 2–5 follow.
+- **Below 10%:** step 2 cannot move tick p95 measurably. I propose to fold its two changes into step 3's work: still
+  separate commits and separate A/B items, but one window.
+
+- [ ] **Step 2: Characterization test first, passing on the current code**
+
+In `waterPublishGolden.test.ts`, add a second `it` over the same world, edits and ticks: `mirrors exactly what the
+code before step 2 mirrored`. It mixes `sim.hash()` after every tick. That hash covers the voxels, which the mirror
+writes, and the water state (`WaterMirror.lo`/`q`, `U.mirrorLo`/`mirrorQ`). The final hash is recorded as `GOLDEN_STATE`
+on the code before any change.
+- **Not vacuous:** in a scratch edit, make `mirrorRun` write `part` instead of `part − 1` for the partial cell. The test
+  must fail. Revert the edit.
+- The existing publish golden (`GOLDEN`) pins the publish output and stays unchanged.
+- Commit: `test(water): golden hash of the simulation state per tick, recorded before 4a-r2 #5 step 2`.
+
+- [ ] **Step 3: publish's dense loop**
+
+Changes, with the output bit-identical:
+- Hoist `cols.depth`, `cols.floor`, `cols.flux`, `this.surface` and `this.flux` into locals.
+- Walk each row with a running column index `c` and output index `o = base + c`, instead of recomputing `x + z * sx`
+  and `2 * (base + c)`.
+- Inline `moved` and `clamp16` as local arithmetic, with the same integer operations: `>> FLUX_FP` on the magnitude,
+  and the ±32767/−32768 clamp.
+- Read `shown[c]` once into a local.
+
+Then run:
+- both goldens;
+- `waterPublish`, `surfaceLayers`, `waterLayersWorld`, `waterWorld`, the water fuzz, `determinism`;
+- `workers.test.ts` (the units' replay).
+
+Commit: `perf(water): publish's dense loop on locals, one index per row`.
+
+- [ ] **Step 4: flush's mirror loop**
+
+Changes:
+- Hoist `mirror.q`, `mirror.lo`, `U.first`, `U.next`, `U.floor`, `U.ceil`, `U.depth`, `U.mirrorLo` and `U.mirrorQ` into
+  locals.
+- **Lower segments:** apply the same fast path the top already has before calling `mirrorRun`. Skip the call when
+  `mirrorQ[i] ≥ 0`, `mirrorLo[i] === floor` and `mirrorQ[i] === (depth > 0 ? quantize(floor·SUB + depth) : floor·8)`.
+  That is exactly `mirrorRun`'s own early return, so the writes are unchanged.
+- Bind `this.get`/`this.set` once, outside the tile loop.
+
+The same suites as in Step 3, plus both goldens. Commit: `perf(water): flush's mirror loop skips unchanged lower
+segments without a call`.
+
+- [ ] **Step 5: Measure in a quiet window: the Node A/B, then a browser A/B of the tick**
+
+Before the window:
+- Detach a worktree `perf-a` at Task 9's parent (the golden-test commit), run `npm install`, then `npm run build` in its
+  `apps/sandbox`.
+- Build B (HEAD) in the perf worktree.
+- Add `E2E_PREVIEW_DIR` to `playwright.config.ts`: the preview command gets `--outDir <dir>` when it is set, so one port
+  serves either build. Commit it with the tooling.
+
+The window request (~25 min): `#5 step 2 Node A/B (ABBA, ~10 min) + browser tick A/B (ABBA, anatomy spec, ~8 min)`.
+1. Record free RAM and the heavy apps, as in Task 8.
+2. **Node A/B:** `nodeAb.node.mjs <perf-a> <perf> ABBA research/2026-10-08-living-r2-node-ab-5b.json`. Report dam and
+   collapse tick p50/p95.
+3. **Browser A/B:** four foreground calls of `living-anatomy.spec.ts`, in the order A B B A. A sets
+   `E2E_PREVIEW_DIR=<perf-a>/apps/sandbox/dist`; B uses the default. Each run writes `ANATOMY_OUT=<scratch>/anat-<run>-<build>.json`,
+   and the four are merged into `research/2026-10-08-living-r2-browser-ab-5b.json`.
+   - The tick is the per-tick `tickMs` that the anatomy already records. Report tick p50/p95 per run for dam and
+     collapse.
+   - This replaces Task 3's comparison of a gate against a baseline from another day. It answers in the browser, and in
+     the same session, why step 1's Node gain (−27–30%) looked like −8–11% in the browser.
+4. Record free RAM and the heavy apps, then send DONE.
+
+- [ ] **Step 6: Decide and record**
+
+- **Keep or revert each commit** (Steps 3 and 4). Revert it unless B's dam and collapse tick p95 are below A's in every
+  adjacent pair of the Node A/B.
+- **If Steps 3 and 4 are in one A/B,** a gain can't be split between them. A further split is asked of the expert only
+  when the result is ambiguous.
+- **Gate:** the browser gate (living-bench, two runs) runs after step 3 (the water step), not after step 2, unless the
+  browser A/B shows tick p95 ≤ 10 already.
+- **Results:** append "Results: #5 step 2" to this plan, commit the JSONs, and send the expert the numbers together with
+  the note for step 3 (the new profile's water-step shares).
+
+**Step 3 of #5** (water-step hot loops behind a second golden hash on the column state) is not planned here. It comes
+after its note to the expert, per §3.1. Step 2's `GOLDEN_STATE` is already the "second golden hash on the column
+state" that §3.2 asks for. `sim.hash()` reaches `WaterSystem.mixState`, which covers:
+- per column: floor, depth, last and both fluxes;
+- every lower segment: floor, ceil, depth, last, excess and its mirror;
+- every edge: a, b, lo, axis and flux;
+- tile awake/quiet;
+- the voxels.
+
+Step 3 reuses it, and may add a longer world if step 3's profile points at code the golden world does not reach.
