@@ -1,0 +1,136 @@
+# View distance (4b): final report
+
+Date: 2026-10-09. Branch `feat/view-distance`, from `main` 90e5c97.
+
+- [Spec](../specs/2026-10-08-view-distance-design.md)
+- [Plan](../plans/2026-10-08-view-distance.md)
+- Data, all in `../research/`:
+  - baseline: `2026-10-08-view-baseline/`
+  - A/Bs: `2026-10-08-view-ab-cull.json`, `-ab-region.json`, `-ab-region-2.json`, `-ab-deco.json`
+  - gates: `2026-10-08-view-gate-part1.json`, `-gate-part1-2.json`, `-gate-part1-3.json`
+  - picture diff: `2026-10-08-view-picture-vs-main.json`
+  - R sweep: `2026-10-08-view-sweep.json`
+  - living A/B: `2026-10-08-view-living-ab.json`
+  - screenshots: `2026-10-08-view-checkpoint/`
+
+## What was delivered
+
+**Part 1: CPU cuts with the same picture.**
+- **The engine's own batch cull** (`render/chunkCull.ts`, `chunkBatches.ts`). Each pass runs a world-space frustum test over
+  precomputed chunk spheres, plus the view distance, with no sort. It replaces three's per-instance cull and sort in the
+  camera pass and the shadow pass. Three's cull stays available as `?cull=three` (`EngineOptions.threeCull`,
+  `@internal`), the pixel-diff reference.
+- **Hidden decorations leave the scene graph** (`render/decorations/decorationMeshes.ts`). Hidden meshes are detached
+  instead of kept invisible. The selection is redone only after the camera moves 2 blocks or the entries change. Scene
+  objects drop from 3028 to 230 (world) and from 2093 to 477 (terrain).
+- **Region batches of 8 × 8 chunk columns** (`REGION = 8`, was 4). Adopted after a re-A/B that measured edit latency in
+  wall ms. `?region=` (`EngineOptions.regionChunks`, `@internal`) keeps the A/B possible.
+- **Smaller cutout batches.** The cutout layer starts at 512 vertices per slot. The measured average at 1024² is 278.
+- **`EngineStats.batchBytes`**: bytes the region batches reserve.
+
+**Part 2: `Quality.viewDistance`** (default `Infinity`, finite range [64, 4096]).
+- Beyond R, in both passes, the renderer skips chunks, whole region batches, unbatched meshes, water surfaces (the one
+  `waterSurface.ts` hook) and decorations. Shadow reach is clamped to R.
+- `camera.far` follows R (R + 64, or 3000 at `Infinity`).
+- The edge: a height-independent fog term `smoothstep(0.75R, R, d)`, max'ed with the fog factor. With fog off there is an
+  edge-only fog node. At `Infinity` there is no node change at all.
+- Sandbox: `?view=` and a view-distance field. `EngineStats.chunksDrawn` counts the chunks drawn.
+
+**Batching follow-ups from the 4a review.**
+- The `normal` alias silences three's per-batch warning at its source.
+- `setMaterial` is removed.
+- Buffers replaced by a grow are freed through the renderer's attribute store. This relies on a three private, pinned in
+  `chunkBatches.test.ts`.
+- `PassGuard.reset` runs every frame.
+- `shadowCasters` is documented.
+
+**Tooling.**
+- `bench/viewAB.mjs`: interleaved A/B of prebuilt bundles, with the bundle SHAs recorded.
+- View-bench probes:
+  - edit latency in frames and in wall ms;
+  - edit max CPU;
+  - batch memory;
+  - per-layer batch use.
+- `e2e/compare-shots.spec.ts`: picture diff of two bundles.
+- `e2e/shots.ts`: shared shot and diff helpers.
+
+**Docs.**
+- `CONTEXT.md`: **View distance**.
+
+## Measurements
+
+All windows were expert-granted, on a quiet machine: no game; Steam was idle; free RAM was 14.6–16.3 GB. Edge was
+headed, on port 5181, with production bundles. The display runs at 180 Hz, so fps p5 is quantized to 180 / 90 / 60. A
+frame whose CPU passes about 11 ms waits three vsyncs.
+
+### Part-1 A/Bs (CPU median ms, larger of two interleaved runs; GPU flat unless noted)
+
+| Item | Scene | default | far | far-low | ground | Verdict |
+|---|---|---|---|---|---|---|
+| Own cull vs three's | world | 1.57 / 2.11 | 2.52 / 3.50 | 2.28 / 3.23 | 2.20 / 3.27 | keep (ground GPU 1.34 / 1.40) |
+| | terrain | 3.43 / 3.70 | 6.75 / 6.93 | 6.90 / 7.56 | 6.13 / 6.35 | (ground GPU 1.28 / 1.29) |
+| Decoration detach vs before | world | 1.81 / 3.71 | 2.44 / 4.51 | 2.31 / 5.04 | 2.47 / 4.74 | keep |
+| | terrain | 3.98 / 4.36 | 8.34 / 10.57 | 8.31 / 10.17 | 6.58 / 7.98 | |
+| Region 8 vs 4 (re-A/B) | world | 1.79 / 1.86 | 1.66 / 3.22 | 1.54 / 2.65 | 1.55 / 2.54 | keep |
+| | terrain | 2.66 / 3.67 | 5.53 / 7.68 | 5.29 / 7.57 | 5.41 / 7.12 | |
+
+Region 8 had a keep rule of its own: edit latency no worse, edit CPU within 10%, and memory up to +10%.
+- The first A/B counted edit latency in frames, and region 8 looked worse on terrain (median 7.5 vs 5 frames).
+- Diagnosis:
+  - three r186 uploads only the update ranges of an edit;
+  - region 8's main-thread apply is cheaper (micro-bench: in place 0.09 vs 0.37 ms);
+  - region 4's long frames hide its wait in fewer frames.
+- The expert ruled that wall ms decides. In the re-A/B (worse run), r8 / r4:
+
+| | editMs median | editMs max | editMaxCpu | batchBytes |
+|---|---|---|---|---|
+| world | 42.8 / 45.4 | 56.5 / 68.8 | 5.53 / 7.86 | 80.7 / 74.8 MB (+8%) |
+| terrain | 44.9 / 67.6 | 50.2 / 116.7 | 15.97 / 29.46 | 101.8 / 98.4 MB (+3.5%) |
+
+### Part-1 gate (fps p5 ≥ 60, worse of two runs, default R)
+
+_(filled in after the gate on the final bundle)_
+
+### Same picture as `main` (default R)
+
+Main 90e5c97 bundle vs branch c41f0ec bundle, at the view-bench poses in both 1024² scenes. Conditions: `?still`,
+decorations off, clouds frozen, water hidden, WebGPU, tolerance 8 per channel. Camera matrices are bit-equal.
+
+| Scene | default | far | far-low | ground |
+|---|---|---|---|---|
+| world | 0.0031% | 0.0003% | 0.0004% | 0% |
+| terrain | 0.0007% | 0.0002% | 0.0005% | 0% |
+
+The batching e2e at region 8 (1024² showcase):
+- batched vs unbatched: 0.0150% on WebGPU, 0.0218% on WebGL2;
+- own cull vs three's: 0–0.0002%.
+
+### R sweep
+
+_(filled in after the window)_
+
+### Living benchmark, `main` vs branch (exit condition)
+
+_(filled in after the window)_
+
+## Screenshots (checkpoint 1)
+
+`../research/2026-10-08-view-checkpoint/<pose>-<preset>-<inf|384|256>.jpg`:
+- poses: ground (target 120, 120; pitch 0.15; distance 8) and orbit 400 at pitch 0.3;
+- presets: open, sunset and diorama.
+
+The edge dissolves into the sky colour in every preset, with no hard cut and no shadow seam. At orbit 400, a view
+distance of 256 or 384 is shorter than the camera distance, so even the orbit target fogs out: R is measured from the
+camera.
+
+## Verification
+
+At c41f0ec (+ docs):
+- `npm run typecheck`: 0.
+- Engine: 816 passed + 2 expected fail (78 files).
+- Sandbox: 104 passed (11 files).
+- Full sandbox e2e (Edge, port 5181, one worker): 33 passed, 13 skipped (benches and env-gated shot specs).
+
+## Open items
+
+_(filled in at the end)_
