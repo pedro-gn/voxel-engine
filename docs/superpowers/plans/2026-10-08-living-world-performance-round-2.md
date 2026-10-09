@@ -1904,3 +1904,83 @@ state" that §3.2 asks for. `sim.hash()` reaches `WaterSystem.mixState`, which c
 - the voxels.
 
 Step 3 reuses it, and may add a longer world if step 3's profile points at code the golden world does not reach.
+
+## Results: #5 steps 2 and 3 (Task 9 plus the expert's step-3 ruling, option A)
+
+**Window.** Two back-to-back windows, 2026-10-09, 10:13–10:33.
+- Free RAM stayed between 15.2 and 16.1 GB. Steam (~105 MB) was the only heavy app, and no game was running.
+- W1: a smoke run of `bench/nodeChain.node.mjs` (order `01`, not evidence; the tool was committed in `4ecf40c`), then
+  the Node chain.
+- W2: the browser tick A/B, then the gate.
+
+**Items and sizing** (Node profile at `b57f54c` and per-tick phase timers; not evidence):
+- In the dam window, the water step is ~48% of the tick, flush ~33% (publish 23%), `chunkStore.commit` 6% and random
+  ticks 5%.
+- The p95 ticks have the same mix as the median ones, about 1.9× larger. More tiles are awake in them; there is no rare
+  phase.
+- The expert's ruling added 3a–3c (`limitAll` inline, the dry-uneven early exit, the collapse witness) to step 2's 2a
+  and 2b. Each is its own commit and its own A/B item.
+
+**Node chain A/B** (`research/2026-10-08-living-r2-node-ab-5b.json`):
+- One scratch checkout steps through `21313ea` (base), `42a76b6` (2a), `8c8270e` (2b), `a5953da` (3a), `d0cfdfd`
+  (3b) and `9fe45d7` (3c), in the order `012345` then `543210`. So every item has two adjacent pairs, one in each
+  direction.
+- Noise between repeats of one build: dam p95 0.2–0.9 ms (~5%). Collapse p95 up to 2–4 ms, from single spikes in a
+  400-tick window. p50 is reported alongside it.
+
+Per item, the two adjacent pairs:
+
+| Item | dam p95 | collapse p95 | dam p50 | collapse p50 | Verdict |
+|---|---|---|---|---|---|
+| 2a publish dense loop | 11.06→10.88 ✓, 10.43→10.58 ✗ | 11.77→11.31 ✓, 11.75→10.91 ✓ | 7.88→7.62 ✓, 7.27→7.17 ✓ | 7.74→7.69 ✓, 7.67→7.39 ✓ | keep |
+| 2b flush mirror loop | 10.88→11.00 ✗, 10.58→10.05 ✓ | 11.31→15.21 ✗, 10.91→11.08 ✗ | 7.62→7.93 ✗, 7.17→7.19 ✗ | 7.69→8.14 ✗, 7.39→7.77 ✗ | **reverted** (`87b3df4`) |
+| 3a limitAll inline | 11.00→10.02 ✓, 10.05→10.81 ✗ | 15.21→10.82 ✓, 11.08→11.16 ✗ | 7.93→6.99 ✓, 7.19→7.23 ≈ | 8.14→7.82 ✓, 7.77→7.26 ✓ | keep (within noise, leaning better) |
+| 3b dry-edge exit | 10.02→10.62 ✗, 10.81→10.44 ✓ | 10.82→10.54 ✓, 11.16→13.52 ✗ | 6.99→7.21 ✗, 7.23→7.27 ≈ | 7.82→7.18 ✓, 7.26→8.86 ✗ | **reverted** (`d7e4f05`, no measured gain) |
+| 3c collapse witness | 10.62→9.12 ✓, 10.44→9.45 ✓ | 10.54→12.24 ✗, 13.52→9.99 ✓ | 7.21→6.13 ✓, 7.27→6.00 ✓ | 7.18→7.48 ✗, 8.86→7.02 ✓ | keep |
+
+- **Base to all five** (means of the two runs): dam p95 10.75 → 9.29 (−14%), p50 7.58 → 6.06 (−20%); collapse p95
+  11.76 → 11.11 (−6%), p50 7.71 → 7.25.
+- **Reverts.** The expert ruled to apply spec rule 4 (no measured gain, revert) to 2b and 3b. Both goldens are unchanged
+  after the reverts, as expected for pure refactors.
+
+**Browser tick A/B** (`research/2026-10-08-living-r2-browser-ab-5b.json`). Base dist against HEAD dist (`9fe45d7`, all
+five items) on one port via `E2E_PREVIEW_DIR`, ABBA, using the living-anatomy spec. Tick p50 / p95:
+
+| Run | Build | dam | collapse |
+|---|---|---|---|
+| 1 | A | 7.71 / 12.09 | 9.78 / 17.05 |
+| 2 | B | 5.90 / 9.89 | 7.39 / 10.89 |
+| 3 | B | 7.12 / 9.51 | 9.21 / 13.79 |
+| 4 | A | 6.09 / 8.13 | 7.32 / 10.05 |
+
+- **Inconclusive, because of a method limit.** Run 1, the first page of the session, is an outlier, and pair 3–4 goes
+  the other way. One 20 s window per page cannot resolve 5–15% effects.
+- This is not a finding that Node gains shrink in the browser. That question stays open, and answering it would take
+  more pages per build.
+
+**Gate** (`research/2026-10-08-living-r2-after-5b.json`, HEAD `9fe45d7`, before the two reverts; worse of two runs,
+`invalid: []`):
+
+| Phase | fps p5: baseline / after #2 → now | tick p95 | apply p95 | Pass |
+|---|---|---|---|---|
+| idle-default | 90.3 / 89.5 → 89.9 | 5.0 / 5.4 → 5.5 | 5.65 / 0.32 → 0.35 | yes |
+| idle-far | 89.8 / 89.4 → 89.8 | 5.4 / 5.3 → 5.2 | 6.0 / 0.33 → 0.33 | yes |
+| work-default | 89.9 / 89.4 → 89.9 | 7.2 / 8.0 → 7.8 | 6.4 / 0.31 → 0.38 | yes |
+| work-far | 60.1 / 89.5 → 89.7 | 7.7 / 8.1 → 7.9 | 6.9 / 0.32 → 0.37 | yes |
+| dam | 36.0 / 60.2 → 60.1 | 13.4 / 12.3 → **11.8** (run 2: 11.4) | 21.6 / 0.69 → 0.76 | no (tick) |
+| collapse | 30.1 / 88.6 → 60.0 | 15.6 / 13.9 → **13.9** (run 2: 12.7) | 22.6 / 0.79 → 0.88 | no (tick) |
+
+- fps p5 ≥ 60 and apply p95 ≤ 4 still pass in every phase.
+- Tick p95 still misses 10 in dam and collapse.
+- 2b and 3b were reverted after the gate. Neither showed a gain, so the gate stands for the kept set.
+
+**Decision.**
+- Kept: 2a `42a76b6`, 3a `a5953da`, 3c `9fe45d7`.
+- Reverted: 2b and 3b.
+- The tick target is not met by pure refactors. The expert took the re-scope question to main and the user, with the
+  options:
+  - (i) a tile-major layout;
+  - (ii) stepping fewer tiles, a visible change;
+  - (iii) re-scope, since after #2 the tick runs only in the sim worker at 20 Hz.
+
+  Neither (i) nor (ii) is started.
