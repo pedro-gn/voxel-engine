@@ -60,6 +60,8 @@ if (flag('opcost') !== undefined) {
 const q = (a: number[], p: number) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))]! }
 const r3 = (n: number | null) => n === null ? null : +n.toFixed(3)
 const WALKING = WORKER_STATES.indexOf('walking')
+/** The hierarchy's region store, read defensively: absent before it exists (the baseline), so cold or warm shows. */
+const regions = () => { const s = (w.nav as unknown as { regions?: { size?: number; bytes?: number } }).regions; return { count: s?.size ?? 0, bytes: s?.bytes ?? 0 } }
 
 /** Despawns everyone and cancels every open order, then spawns `UNITS` on `pads`; returns the new ids. */
 function respawn(pads: PadName[], before: Command[] = [], stock: { block: number; count: number }[] = []): { ids: number[]; spawnFailed: number } {
@@ -140,11 +142,12 @@ results.setup = { spawnFailed: setup.spawnFailed, ...measure(120, []) }
 for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
-  const orders = phase.orders(ids); submit(orders)
+  const atOrder = regions(), orders = phase.orders(ids); submit(orders)
   const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as { ids: number[] }).ids : [])
   churnEdits = 0
   const m = measure(TICKS, moved, phase.each)
-  results[name] = { units: ids.length, spawnFailed, ...m, ...(phase.each && { churnEdits }) }
+  const atEnd = regions()
+  results[name] = { units: ids.length, spawnFailed, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
   console.error(`${name} done`)
 }
 console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
