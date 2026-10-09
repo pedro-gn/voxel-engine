@@ -45,13 +45,14 @@ for (const k of ['beforePhysics', 'afterPhysics'] as const) {
 
 if (flag('opcost') !== undefined) {
   // One long flat search, west pad to east pad, sliced like the workers slice it; three runs (the first warms the JIT).
+  // Then the same search at the workers' node limit (16,384), which ends limited: the cost of the searches units run today.
   const L = sim.layout, from = L.voxelIndex(PADS.west.min[0] + 32, PADS.west.y, PADS.west.min[2] + 32), to = L.voxelIndex(PADS.east.min[0] + 32, PADS.east.y, PADS.east.min[2] + 32)
   const runs = []
-  for (let run = 0; run < 3; run++) {
-    const nav = new NavigationSystem(w.nav.port, 1 << 20), s = nav.request(from, [to])
+  for (let run = 0; run < 6; run++) {
+    const nav = new NavigationSystem(w.nav.port, run < 3 ? 1 << 20 : 16384), s = nav.request(from, [to])
     let visited = 0, ms = 0, slices = 0
     while (s.status === 'pending') { const a = performance.now(); nav.step(4096); ms += performance.now() - a; visited += nav.visited; slices++ }
-    runs.push({ status: s.status, visited, slices, ms: +ms.toFixed(1), nsPerOp: +(ms * 1e6 / visited).toFixed(1), pathNodes: s.path.length, cost: s.cost })
+    runs.push({ maxNodes: nav.maxNodes, status: s.status, visited, slices, ms: +ms.toFixed(1), nsPerOp: +(ms * 1e6 / visited).toFixed(1), pathNodes: s.path.length, cost: s.cost })
   }
   console.log(JSON.stringify({ node: process.version, opcost: runs }, null, 2))
   process.exit(0)
