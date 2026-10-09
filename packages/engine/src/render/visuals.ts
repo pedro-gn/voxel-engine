@@ -146,6 +146,9 @@ export class Visuals {
     this.waterSurface.setRange(eye, range)
     const cf = cameraFar(range)
     if (this.o.camera.far !== cf) { this.o.camera.far = cf; this.o.camera.updateProjectionMatrix() }
+    this.sky.setViewDistance(range)
+    const fogNode = this.sky.fogFor(this.effects.fog, range)
+    if (this.o.scene.fogNode !== fogNode) this.o.scene.fogNode = fogNode
     ripples.update(dt)
     syncRipples()
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
