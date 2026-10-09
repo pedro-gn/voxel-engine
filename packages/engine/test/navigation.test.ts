@@ -124,6 +124,40 @@ it('a region-confined search with no way out of its own enclosure is still limit
   while (s.status === 'pending') nav.step(128)
   expect(s.status).toBe('unreachable')
 })
+it('schedules route searches with flat ones inside one budget and keeps short searches fast', () => {
+  const { nav, layout } = fixture(256)
+  const long = nav.route(layout.voxelIndex(2, 4, 2), [layout.voxelIndex(250, 4, 250)])
+  const short = nav.request(layout.voxelIndex(5, 4, 20), [layout.voxelIndex(8, 4, 20)])
+  for (let tick = 0; tick < 3 && short.status === 'pending'; tick++) { nav.step(4096); expect(nav.visited).toBeLessThanOrEqual(4096) }
+  expect(short.status).toBe('found')
+  while (long.status === 'pending') { nav.step(4096); expect(nav.visited).toBeLessThanOrEqual(4096) }
+  expect(long.status).toBe('found')
+  expect(nav.bytes).toBeGreaterThan(nav.regions.bytes)
+  expect(nav.regions.size).toBeGreaterThan(0)
+})
+it('schedules group fields and cancels abstract queries only on geometry, never on policy', () => {
+  const { nav, layout } = fixture(128)
+  const g = nav.group([layout.voxelIndex(120, 4, 120)], [layout.voxelIndex(4, 4, 4), layout.voxelIndex(8, 4, 4)])
+  const r = nav.route(layout.voxelIndex(4, 4, 4), [layout.voxelIndex(120, 4, 120)])
+  nav.step(4096); nav.invalidatePolicy()
+  expect(g.status).toBe('pending'); expect(r.status).toBe('pending')
+  while (g.status === 'pending' || r.status === 'pending') { nav.step(4096); expect(nav.visited).toBeLessThanOrEqual(4096) }
+  expect(g.status).toBe('found'); expect(g.next(layout.voxelIndex(4, 4, 4))!.cost).toBe(r.cost)
+  expect(nav.explored(r, [4, 4, 4], [4, 4, 4])).toBe(true)
+})
+it('mixes the kind of each query', () => {
+  const { nav, layout } = fixture(64)
+  const sig = () => { const v: number[] = []; nav.mixState(n => v.push(n)); return v }
+  nav.request(layout.voxelIndex(2, 4, 2), [layout.voxelIndex(60, 4, 60)]); const a = sig()
+  nav.reset(); nav.route(layout.voxelIndex(2, 4, 2), [layout.voxelIndex(60, 4, 60)]); const b = sig()
+  expect(a).not.toEqual(b)
+})
+it('reset drops region records and cancels routes', () => {
+  const { nav, layout } = fixture(128)
+  const r = nav.route(layout.voxelIndex(2, 4, 2), [layout.voxelIndex(120, 4, 120)]); nav.step(8192)
+  nav.reset()
+  expect(r.status).toBe('cancelled'); expect(nav.regions.size).toBe(0)
+})
 it('marks an exhausted engineering search as limited when a viable detour exits its radius', () => {
   const { nav, layout, blocked } = fixture(32)
   for (let z = 4; z <= 20; z++) for (let y = 4; y <= 7; y++) blocked.add(layout.voxelIndex(13, y, z))

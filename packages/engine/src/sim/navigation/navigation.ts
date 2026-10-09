@@ -1,10 +1,15 @@
 import type { Layout } from '../../world/layout.ts'
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
+import { RegionStore } from './regions.ts'
+import { RouteSearch, type RouteOptions } from './routeSearch.ts'
+import { GroupField } from './groupField.ts'
 
 export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean }
 export type PathStatus = 'pending' | 'found' | 'unreachable' | 'limited' | 'stale' | 'cancelled'
 export interface PathResult { status: PathStatus; path: number[]; cost: number }
+/** A sliced query the navigation budget schedules: flat searches, route searches and group fields. */
+export interface NavQuery { status: PathStatus; spent: number; readonly estimate: number; readonly seen: Map<number, number>; step(cap: number): number; cancel(): void; mixState(mix: (n: number) => void): void; readonly bytes: number }
 /**
  * `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit
  * goals); `region` confines expansions to one tile, and a search that had to skip a pose outside it ends `limited`.
@@ -14,6 +19,8 @@ const DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1]
 const UNSET = -2
 /** First slice of a new search estimated short: such routes finish in it instead of queueing behind long searches. */
 const FRESH_SLICE = 512, SHORT_ESTIMATE = 32 * 4
+/** Long queries sliced together; the rest wait their turn. */
+const WINDOW = 8
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
 /** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
 export const edgeCost = (L: Layout, from: number, to: number): number => { const sy = L.voxelCoords(from)[1], ty = L.voxelCoords(to)[1]; return 4 + (ty > sy ? 2 : sy - ty) }
@@ -27,7 +34,9 @@ export class NavigationSystem {
   private readonly tiles = new Map<number, Tile>()
   private readonly tx: number
   private readonly tz: number
-  private requests: PathSearch[] = []
+  private requests: NavQuery[] = []
+  /** Geometry-only region records shared by route and group queries. */
+  readonly regions: RegionStore
   private cursor = 0
   readonly maxNodes: number
   readonly cacheLimit: number
@@ -36,11 +45,12 @@ export class NavigationSystem {
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4))
+    this.regions = new RegionStore(this)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
   get cacheTiles(): number { return this.tiles.size }
   get bytes(): number {
-    let n = this.revisions.byteLength
+    let n = this.revisions.byteLength + this.regions.bytes
     for (const t of this.tiles.values()) n += t.slots.byteLength + t.edges.byteLength
     for (const s of this.requests) n += s.bytes
     return n
@@ -56,14 +66,17 @@ export class NavigationSystem {
         for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) this.revisions[xx + zz * this.tx + yy * this.tx * this.tz]!++
     this.revision++
   }
-  reset(): void { this.tiles.clear(); this.revisions.fill(0); this.revision++; for (const s of this.requests) s.cancel(); this.requests = [] }
-  /** Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that expanded next to it. */
+  reset(): void { this.tiles.clear(); this.regions.clear(); this.revisions.fill(0); this.revision++; for (const s of this.requests) s.cancel(); this.requests = [] }
+  /**
+   * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
+   * expanded next to it. Route and group queries read geometry only, so policy never cancels them.
+   */
   invalidatePolicy(min?: readonly number[], max?: readonly number[]): void {
     this.revision++
-    for (const s of this.requests) if (!min || !max || this.explored(s, min, max)) s.cancel()
+    for (const s of this.requests) if (s instanceof PathSearch && (!min || !max || this.explored(s, min, max))) s.cancel()
   }
   /** Whether a search expanded a pose with an edge that may reach a pose in the voxel box [min, max]. */
-  explored(s: PathSearch, min: readonly number[], max: readonly number[]): boolean {
+  explored(s: NavQuery, min: readonly number[], max: readonly number[]): boolean {
     const x0 = (min[0]! - 1) >> 4, x1 = (max[0]! + 1) >> 4, y0 = (min[1]! - 3) >> 4, y1 = (max[1]! + 2) >> 4, z0 = (min[2]! - 1) >> 4, z1 = (max[2]! + 1) >> 4
     for (const ti of s.seen.keys()) {
       const x = ti % this.tx, z = Math.floor(ti / this.tx) % this.tz, y = Math.floor(ti / (this.tx * this.tz))
@@ -107,6 +120,14 @@ export class NavigationSystem {
   request(start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions): PathSearch {
     const s = new PathSearch(this, start, goals, blocked, options); this.requests.push(s); return s
   }
+  /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
+  route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {
+    const s = new RouteSearch(this, this.regions, start, goals, options); this.requests.push(s); return s
+  }
+  /** One reverse abstract search from the goals that every start descends. */
+  group(goals: readonly number[], starts: readonly number[]): GroupField {
+    const s = new GroupField(this, this.regions, goals, starts); this.requests.push(s); return s
+  }
   step(cap: number): void {
     this.visited = 0
     this.requests = this.requests.filter(s => s.status === 'pending')
@@ -121,7 +142,7 @@ export class NavigationSystem {
     this.requests = this.requests.filter(s => s.status === 'pending')
     let guard = this.requests.length
     while (cap > 0 && this.requests.length && guard > 0) {
-      this.cursor %= Math.min(4, this.requests.length)
+      this.cursor %= Math.min(WINDOW, this.requests.length)
       const s = this.requests[this.cursor]!, used = s.step(Math.min(cap, 128))
       cap -= used; this.visited += used
       if (s.status !== 'pending') { this.requests.splice(this.cursor, 1); guard = this.requests.length }
@@ -131,7 +152,7 @@ export class NavigationSystem {
   mixState(mix: (n: number) => void): void {
     mix(this.revision); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
     mix(this.requests.length)
-    for (const s of this.requests) s.mixState(mix)
+    for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
   }
 }
 

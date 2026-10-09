@@ -838,7 +838,7 @@ export class WorkerSystem {
     const barriers = [...this.barriers].map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })); this.barriers.clear()
     const drops = [...this.dirtyDrops.values()]; this.dirtyDrops.clear()
     return { poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }) })),
-      stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles } }
+      stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles, regionBytes: this.nav.regions.bytes, regions: this.nav.regions.size } }
   }
   mixState(mix: (n: number) => void): void {
     const reason = (r: WorkBlockReason | undefined) => mix(r === undefined ? -1 : ['no-access', 'missing-material', 'missing-tool', 'unsafe', 'traffic', 'search-limited', 'target-changed'].indexOf(r))

@@ -195,7 +195,7 @@ export class Simulation {
 
   /** Writes a generated column into the world. Chunks stay open until finishGenerate or replaceColumns commits. */
   applyColumn(cx: number, cz: number, column: Uint16Array): void {
-    if (this.workers && (this.workers.units.size || this.workers.nav.cacheTiles || this.workers.nav.pending)) this.workers.invalidateAll()
+    if (this.workers && (this.workers.units.size || this.workers.nav.cacheTiles || this.workers.nav.regions.size || this.workers.nav.pending)) this.workers.invalidateAll()
     const L = this.layout
     if (column.length !== 32 * 32 * L.size[1]) throw new RangeError(`column has ${column.length} voxels, expected ${32 * 32 * L.size[1]}`)
     for (let cy = 0; cy < L.cy; cy++) {

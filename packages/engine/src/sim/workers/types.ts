@@ -24,7 +24,7 @@ export interface WorkOrderView {
   id: number; kind: 'dig' | 'build'; min: Vec3; max: Vec3; voxel: number
   total: number; done: number; pending: number; cancelled: boolean; reason?: WorkBlockReason
 }
-export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number }
+export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number; regionBytes: number; regions: number }
 export interface WorkerTick {
   barriers: { chunk: number; version: number }[]
   /** Persistent pile deltas; count 0 removes a stack. */
