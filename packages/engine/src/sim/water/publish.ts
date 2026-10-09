@@ -1,6 +1,6 @@
 import type { WaterBuffers } from '../../world/waterBuffers.ts'
 import { moved, type WaterColumns } from './columns.ts'
-import { RANKS, SUB, TILE } from './constants.ts'
+import { FLUX_FP, RANKS, SUB, TILE } from './constants.ts'
 import type { WaterEdges } from './edges.ts'
 import { LINK_GROUND, LINK_WALL, SIDE_X, SIDE_Z } from './links.ts'
 import type { UnderSegments } from './under.ts'
@@ -79,19 +79,25 @@ export class WaterPublisher {
     if (tiles.length === 0) return null
     const seq = ++this.seq, p = seq & 1, base = p * cols.n, T = cols.tiles, sx = cols.sx
     if (this.shown.length !== cols.n) this.shown = new Uint8Array(cols.n)
-    const shown = this.shown
+    const shown = this.shown, depth = cols.depth, floor = cols.floor, cflux = cols.flux, surface = this.surface, flux = this.flux
     // A full barrier, not just a release store: no data store below may become visible before the stamp reads −1.
     Atomics.exchange(this.stamp, p, -1)
     for (const t of tiles) {
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
-      for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
-        const c = x + z * sx, d = cols.depth[c]!
-        if (d >= SHOW_DEPTH) shown[c] = 1
-        else if (d < HIDE_DEPTH) shown[c] = 0
-        const s = cols.floor[c]! * SUB + (shown[c] === 1 && d < SHOW_DEPTH ? SHOW_DEPTH : d)
-        this.surface[base + c] = d > 0 ? s : ~s
-        this.flux[2 * (base + c)] = clamp16(moved(cols.flux[2 * c]!))
-        this.flux[2 * (base + c) + 1] = clamp16(moved(cols.flux[2 * c + 1]!))
+      for (let z = z0; z < z0 + TILE; z++) {
+        // c walks the row in the columns, o in the parity buffer; moved and clamp16 inline.
+        for (let c = x0 + z * sx, o = base + c, e = c + TILE; c < e; c++, o++) {
+          const d = depth[c]!
+          let on = shown[c]!
+          if (d >= SHOW_DEPTH) on = shown[c] = 1
+          else if (d < HIDE_DEPTH) on = shown[c] = 0
+          const s = floor[c]! * SUB + (on === 1 && d < SHOW_DEPTH ? SHOW_DEPTH : d)
+          surface[o] = d > 0 ? s : ~s
+          const f0 = cflux[2 * c]!, f1 = cflux[2 * c + 1]!
+          const m0 = f0 >= 0 ? f0 >> FLUX_FP : -((-f0) >> FLUX_FP) | 0, m1 = f1 >= 0 ? f1 >> FLUX_FP : -((-f1) >> FLUX_FP) | 0
+          flux[2 * o] = m0 > 32767 ? 32767 : m0 < -32768 ? -32768 : m0
+          flux[2 * o + 1] = m1 > 32767 ? 32767 : m1 < -32768 ? -32768 : m1
+        }
       }
     }
     Atomics.store(this.stamp, p, seq)
