@@ -1,18 +1,11 @@
 import { test, type Page } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import type { Engine } from '@elovox/engine'
+import { VIEW_POSES as POSES } from './shots.ts'
 
 type W = Window & { __elovox?: { engine: Engine; ready: boolean } }
 test.skip(!process.env.BENCH_VIEW, 'set BENCH_VIEW=1 for the view-distance benchmark')
 
-/** Camera poses: orbit target (x, z; y comes from the terrain), yaw, pitch, distance. */
-const POSES: Record<string, { at: [number, number]; yaw: number; pitch: number; distance: number }> = {
-  'orbit-default': { at: [0.5, 0.5], yaw: 0.7, pitch: 0.85, distance: 70 },
-  'orbit-far': { at: [0.5, 0.5], yaw: 0.7, pitch: 0.85, distance: 400 },
-  'orbit-far-low': { at: [0.5, 0.5], yaw: 0.7, pitch: 0.3, distance: 400 },
-  // Near-first-person: 1–2 blocks above the ground, looking across the world's diagonal to the far corner.
-  'ground-horizon': { at: [0.12, 0.12], yaw: -3 * Math.PI / 4, pitch: 0.15, distance: 8 },
-}
 const WINDOW_MS = Number(process.env.VIEW_WINDOW_MS ?? 8000)
 
 async function settle(page: Page, ms: number): Promise<boolean> {
@@ -110,17 +103,20 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
       })
       const frame = () => new Promise<void>(r => requestAnimationFrame(() => r()))
       const [tx, , tz] = e.controls.current.target
-      const editFrames: number[] = []
+      // Frames AND milliseconds: a variant with shorter frames counts more of them for the same wait.
+      const editFrames: number[] = [], editMs: number[] = []
       for (let i = 0; i < 10; i++) {
         const x = Math.floor(tx!) + i * 3, z = Math.floor(tz!)
         let y = e.layout.size[1] - 1
         while (y > 0 && e.world.get(x, y, z) === 0) y--
         const ci = e.layout.chunkIndex(x >> 5, y >> 5, z >> 5)
         const before = e.meshVersion(ci)
+        const t0 = performance.now()
         e.submit({ type: 'setBlock', pos: [x, y, z], voxel: 0 })
         let frames = 0
         while (e.meshVersion(ci) === before && frames < 120) { await frame(); frames++ }
         editFrames.push(frames)
+        editMs.push(Math.round((performance.now() - t0) * 10) / 10)
         await frame()
       }
       let editMaxCpu = 0
@@ -129,7 +125,7 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
       const t0 = performance.now()
       while (performance.now() - t0 < 3000) { await frame(); editMaxCpu = Math.max(editMaxCpu, e.stats().frameMs) }
       const s = e.stats() as unknown as { batchBytes?: number }
-      return { layers, editFrames, editMaxCpu: Math.round(editMaxCpu * 100) / 100, batchBytes: s.batchBytes ?? -1 }
+      return { layers, editFrames, editMs, editMaxCpu: Math.round(editMaxCpu * 100) / 100, batchBytes: s.batchBytes ?? -1 }
     })
   }
   const result = { date: new Date().toISOString(), query, userAgent: await page.evaluate(() => navigator.userAgent), poses: out }
