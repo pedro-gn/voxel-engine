@@ -821,6 +821,39 @@ describe('simulated workers', () => {
     for (let i = 0; i < 20; i++) sim.step()
     expect(w.park()).toBe(true)
   })
+  it('lets two units work neighbouring tasks at once when one task has a single work pose the other could use', () => {
+    // (8,4,7) sits in a stone pocket: its only work pose is (8,4,6), which is also a pose of (8,4,5).
+    const sim = make(ctx => {
+      ctx.set(8, 4, 5, 1); ctx.set(8, 4, 7, 1)
+      for (let y = 4; y <= 6; y++) { ctx.set(7, y, 7, 1); ctx.set(9, y, 7, 1); for (let x = 7; x <= 9; x++) ctx.set(x, y, 8, 1) }
+    })
+    spawn(sim, [6, 4, 5]); spawn(sim, [10, 4, 6])
+    cmd(sim, { type: 'workDig', min: [8, 4, 5], max: [8, 4, 7] })
+    let together = false
+    for (let i = 0; i < 200 && !together; i++) {
+      sim.step()
+      const views = [1, 2].map(id => sim.workers!.view(id)!)
+      for (const v of views) expect(v.reason, JSON.stringify(v)).not.toBe('traffic')
+      expect(sim.workers!.publication().orders[0]?.reason).not.toBe('traffic')
+      together = views.every(v => v.state === 'working')
+    }
+    expect(together).toBe(true)
+  })
+  it('releases the claim of a unit that neither moves nor works for 200 ticks and records the failure', () => {
+    const sim = make(ctx => ctx.set(28, 4, 5, 1), { searchCap: 16 }); spawn(sim, [2, 4, 5])
+    cmd(sim, { type: 'workDig', min: [28, 4, 5], max: [28, 4, 5] })
+    const w = sim.workers as unknown as { tasks: { claim: number; failures: Map<number, { reason: string }> }[] }
+    expect(w.tasks[0]!.claim).toBe(1)
+    // An edit next to the unit every tick keeps its sliced search stale, so it never sets off.
+    let released = -1
+    for (let i = 0; i < 260 && released < 0; i++) { cmd(sim, { type: 'setBlock', pos: [3, 8, 5], voxel: i & 1 }); if (!w.tasks[0]!.claim) released = i }
+    expect(released).toBeGreaterThanOrEqual(190); expect(released).toBeLessThanOrEqual(205)
+    expect(w.tasks[0]!.failures.get(1)?.reason).toBe('traffic')
+  })
+  it('hashes the tick of a unit\'s last progress', () => {
+    const sim = make(); spawn(sim); const u = sim.workers!.units.get(1)! as unknown as { progressAt: number }, before = sim.hash()
+    u.progressAt--; expect(sim.hash()).not.toBe(before)
+  })
   it('hashes when an order last had an eligible worker', () => {
     const sim = make(); spawn(sim); cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [8, 3, 8], ids: [1] })
     const o = (sim.workers as unknown as { orders: { noCrewSince: number }[] }).orders[0]!, before = sim.hash()

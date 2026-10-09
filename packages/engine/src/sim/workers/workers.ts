@@ -38,6 +38,8 @@ interface Unit {
   unsafeHere: boolean
   /** Consecutive stale searches; each one doubles the wait before the next attempt. */
   stale: number
+  /** The tick of the last move or work progress; a task claim lapses LEASE_TICKS after it. */
+  progressAt: number
 }
 interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
   cursor: number; ids: Set<number> | null; priority: number; parked: number[]; parkedRevision: number
@@ -55,7 +57,7 @@ interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
 /** A failure holds until the unit moves, the reservation policy changes, or a nav tile it depended on changes. */
 interface TaskFailure { origin: number; policy: number; nav: number; tiles: ReadonlyMap<number, number>; retry: number; reason: WorkBlockReason }
 interface Task { order: Order; i: number; pos: Vec3; p: number; expected: number; claim: number; added: number; reason?: WorkBlockReason; failures: Map<number, TaskFailure> }
-const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200
+const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200, LEASE_TICKS = 200
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
@@ -287,7 +289,7 @@ export class WorkerSystem {
       }
       const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
         goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
-        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0 }
+        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time }
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
       this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return
@@ -592,7 +594,8 @@ export class WorkerSystem {
         const goals = reason ? [] : this.workGoals(u, t)
         if (reason || !goals.length) { this.taskFailure(t, u, reason ?? (this.workGoals(u, t, true).length ? 'traffic' : 'no-access')); continue }
         t.claim = u.id; t.expected = this.port.get(...t.pos); t.reason = undefined; u.task = t; u.reason = undefined; u.stale = 0
-        u.workPoses = goals; for (const p of goals) this.workPositions.set(p, u.id)
+        // The goals are only the search's targets; the unit claims the one its route ends on when the route is found.
+        u.workPoses = goals; u.progressAt = this.time
         u.search = this.request(u, goals); u.state = 'planning'; this.dirty.add(u.id); break
       }
     }
@@ -711,7 +714,7 @@ export class WorkerSystem {
     this.resetRoute(u)
     u.state = 'falling'; u.motion = null
     if (u.task) { if (u.task.order.id < 0) this.targets.delete(u.task.p); u.task.claim = 0; u.task = null }
-    u.vy = Math.min(512, u.vy + 24)
+    u.vy = Math.min(512, u.vy + 24); u.progressAt = this.time
     const target = Math.max(0, u.y - u.vy)
     for (let yy = Math.ceil(u.y / 256) - 1; yy >= Math.floor(target / 256); yy--) {
       let floor = yy < 0
@@ -746,6 +749,11 @@ export class WorkerSystem {
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
         if (!u.motion) u.unsafeHere = !this.safePose(this.pose(u))
       }
+      // A claim lapses when its unit neither moves nor works for LEASE_TICKS; a waiting flat step stops where it stands.
+      if (u.task && u.state !== 'falling' && (!u.motion || u.motion.flat) && this.time - u.progressAt >= LEASE_TICKS) {
+        if (u.motion) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)) }
+        this.block(u, 'traffic'); continue
+      }
       if (u.motion) {
         const m = u.motion
         // Ascent lifts above the source before translating; validate its original floor, not the interpolated height.
@@ -766,7 +774,7 @@ export class WorkerSystem {
         }
         if (u.wait || u.reason) { u.wait = 0; u.reason = undefined; this.dirty.add(u.id) }
         m.cells = cells
-        m.elapsed++; [u.x, u.y, u.z] = this.motionPose(m.to, m.elapsed, m.ticks, m.start)
+        m.elapsed++; [u.x, u.y, u.z] = this.motionPose(m.to, m.elapsed, m.ticks, m.start); u.progressAt = this.time
         if (m.elapsed === m.ticks) { u.motion = null; u.cursor = m.cursor; this.reserve(u, this.body(u.x, u.y, u.z)); u.state = u.goal === null && !u.task ? 'idle' : 'planning'; this.dirty.add(u.id) }
         if (u.motion) continue
       }
@@ -783,7 +791,7 @@ export class WorkerSystem {
         u.search = this.request(u, [], undefined, p => this.safePose(this.port.layout.voxelCoords(p))); u.state = 'planning'; u.retry = this.time + 40; this.dirty.add(u.id); continue
       }
       if (u.state === 'working' && u.task) {
-        if (this.canWork(this.pose(u), u.task)) u.progress = Math.min(u.duration, u.progress + 1)
+        if (this.canWork(this.pose(u), u.task)) { u.progress = Math.min(u.duration, u.progress + 1); u.progressAt = this.time }
         else this.block(u, 'unsafe')
         continue
       }
@@ -815,8 +823,17 @@ export class WorkerSystem {
         if (s.status === 'found') {
           u.stale = 0
           if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
+          if (u.task) {
+            const p = s.path.at(-1)!, owner = this.workPositions.get(p)
+            // Another unit took this pose while the search ran: search again for the poses still free.
+            if (owner !== undefined && owner !== u.id) {
+              const goals = this.workGoals(u, u.task)
+              if (!goals.length) { this.block(u, 'traffic'); continue }
+              u.workPoses = goals; u.search = this.request(u, goals); continue
+            }
+            this.releaseWorkPoses(u); u.workPoses = [p]; this.workPositions.set(p, u.id)
+          }
           u.path = s.path; u.cursor = 1
-          if (u.task) { this.releaseWorkPoses(u); const p = s.path.at(-1)!; u.workPoses = [p]; this.workPositions.set(p, u.id) }
         }
         else if (s.status === 'stale' || s.status === 'cancelled') { u.path = []; if (s.status === 'stale') u.retry = this.time + staleBackoff(++u.stale) }
         else {
@@ -888,7 +905,7 @@ export class WorkerSystem {
     mix(this.units.size)
     for (const u of this.units.values()) {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
-      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.stale); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
+      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)
       for (const [b, n] of u.stock) { mix(b); mix(n) }
