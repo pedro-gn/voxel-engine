@@ -11,6 +11,23 @@ import {
 } from './surfaceMesh.ts'
 
 /**
+ * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by WaterMirror.
+ * `value[c × RANKS + r]`: rank 0 the published value of column c; rank r ≥ 1 the slot's published value, NO_SLOT when c has
+ * no slot r. `floor[c × (RANKS − 1) + r − 1]`: the floor (blocks) of slot r ≥ 1. Plain stores into shared memory: a query
+ * racing an apply may see some columns at the new step and some at the old, never a torn value.
+ */
+export interface DrawnSurfaces { value: Int32Array; floor: Int16Array }
+/** No slot at this rank (never a published value: those are ≥ 0, or ~level ≥ −(128 × SUB + 1)). */
+export const NO_SLOT = -0x80000000
+
+/** DrawnSurfaces for n columns over SharedArrayBuffers, as before any apply: rank 0 −1 (SurfaceView.cur's start), no slots. */
+export function drawnSurfaces(n: number): DrawnSurfaces {
+  const value = new Int32Array(new SharedArrayBuffer(n * RANKS * 4)).fill(NO_SLOT)
+  for (let c = 0; c < n; c++) value[c * RANKS] = -1
+  return { value, floor: new Int16Array(new SharedArrayBuffer(n * (RANKS - 1) * 2)) }
+}
+
+/**
  * The curtains of one chunk column, per curtain:
  * - `prev`, `cur` (4 floats): (top A, top B, foot A, foot B) heights in blocks;
  * - `reach`, `thick`, `flare` (4 floats each): per end, (A, B) of the previous step then (A, B) of the current one: how far
@@ -96,6 +113,8 @@ export class SurfaceView {
   forceLayered = false
   /** Tests: every column of a layered tile through refreshSlot (the path before 4a #1), for the mixed path's differential test. */
   forceSlots = false
+  /** When set, every column of the tiles an apply reads is written here after the apply (see DrawnSurfaces). */
+  surfaces: DrawnSurfaces | null = null
   /** Encoded surfaces (WaterBuffers.surface) of the previous and the current step. */
   readonly prev: Int32Array
   readonly cur: Int32Array
@@ -333,6 +352,7 @@ export class SurfaceView {
       if (first) this.tileFresh[tile] = e
       this.tileSettled[tile] = moving ? 0 : 1
     }
+    if (this.surfaces) for (const tile of tiles) this.writeSurfaces(tile)
     this.lastCc = -1
     this.shown = shown ?? -1
     for (const tile of tiles) if (this.tileChanged[tile] === e) this.refreshTile(tile, e)
@@ -426,6 +446,21 @@ export class SurfaceView {
     }
     this.movingMark[s] = this.epoch
     this.nextMoving.push(s)
+  }
+
+  /** Writes the drawn surfaces of tile's columns (see DrawnSurfaces): after the commit, so cur and the layers are this step's. */
+  private writeSurfaces(tile: number): void {
+    const { value, floor } = this.surfaces!
+    const x0 = (tile % this.tx) * TILE, z0 = Math.floor(tile / this.tx) * TILE
+    for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
+      const c = x + z * this.sx
+      value[c * RANKS] = this.cur[c]!
+      for (let r = 1; r < RANKS; r++) {
+        const has = this.layers.has(c, r)
+        value[c * RANKS + r] = has ? this.layers.cur(c, r) : NO_SLOT
+        floor[c * (RANKS - 1) + r - 1] = has ? this.layers.floor(c, r) : 0
+      }
+    }
   }
 
   private defer(tiles: readonly number[]): false {

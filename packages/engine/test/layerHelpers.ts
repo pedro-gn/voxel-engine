@@ -63,3 +63,14 @@ export function layered(fill: LFill, size: [number, number, number] = [32, 32, 3
   }
   return { store, buffers, cols, under, edges, bodies, mirror, step, settle, segs, total: () => cols.total(), wakeWet }
 }
+
+/** A lake behind a gate with a hole under a deck: water runs through the hole into a lower channel, under the deck (lower slots). 64 × 32 × 32. */
+export function gateWorld() {
+  return layered((x, y, z) => {
+    if (y < 2 || z === 0 || z >= 5 || x === 0 || x === 63) return STONE
+    if (x === 31 && !(y >= 3 && y <= 4 && z === 2)) return STONE // the gate, a 1 × 2 hole at z 2
+    if (x >= 26 && x <= 40 && y === 7) return STONE // the deck over the gate
+    if (x < 31) return y <= 10 ? wv(7) : AIR // the lake
+    return AIR
+  }, [64, 32, 32])
+}
