@@ -66,7 +66,7 @@ describe('workers view input and proxy picking', () => {
   afterEach(() => { view?.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
   function publish(units: WorkerView[], barriers: { chunk: number; version: number }[] = [], now = 50) {
-    const tick = { barriers, details: units, poses: Int32Array.from(units.flatMap(u => [u.id, u.x256, u.y256, u.z256, u.facing, WORKER_STATES.indexOf(u.state), 0, 0, 0])) } as unknown as WorkerTick
+    const tick = { barriers: barriers.length ? [{ unit: 0, pos: [0, 0, 0], chunks: barriers }] : [], details: units, poses: Int32Array.from(units.flatMap(u => [u.id, u.x256, u.y256, u.z256, u.facing, WORKER_STATES.indexOf(u.state), 0, 0, 0])) } as unknown as WorkerTick
     emit('workers', tick); emit('frame', { dt: .05, now }); engine.scene.updateMatrixWorld(true)
   }
   function click(button = 0) { pointer(canvas, 'pointerdown', button); pointer(canvas, 'pointerup', button) }

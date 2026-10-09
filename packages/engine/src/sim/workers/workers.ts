@@ -80,7 +80,7 @@ export class WorkerSystem {
   private occupiedColumns = new Map<number, Set<number>>()
   private loose = new Map<number, Map<number, number>>()
   private dirtyDrops = new Map<string, { pos: Vec3; block: number; count: number }>()
-  private barriers = new Set<number>()
+  private barriers: { unit: number; pos: Vec3 }[] = []
   private dirty = new Set<number>()
   private dig: Uint16Array
   private build: Uint16Array
@@ -475,7 +475,7 @@ export class WorkerSystem {
           if (this.stockCount(u) < this.capacity) u.stock.set(drop, (u.stock.get(drop) ?? 0) + 1)
           else { let pile = this.loose.get(t.p); if (!pile) { pile = new Map(); this.loose.set(t.p, pile) }; const count = (pile.get(drop) ?? 0) + 1; pile.set(drop, count); this.dirtyDrops.set(`${t.p}:${drop}`, { pos: t.pos, block: drop, count }); this.port.emit('workDrop', { pos: t.pos, block: drop, count: 1 }) }
         }
-        this.barriers.add(this.port.layout.chunkOf(...t.pos)); this.finish(u); this.mutations++
+        this.barriers.push({ unit: u.id, pos: t.pos }); this.finish(u); this.mutations++
       })
       if (!ok) this.block(u, 'unsafe')
     }
@@ -830,14 +830,14 @@ export class WorkerSystem {
     return u && { id, available: u.available, x256: u.x, y256: u.y, z256: u.z, facing: u.facing, state: u.state, order: u.task?.order.id ?? 0, progress: u.progress, duration: u.duration, ...(u.reason && { reason: u.reason }), stock: [...u.stock].map(([block, count]) => ({ block, count })) }
   }
   viewDrops(): { pos: Vec3; block: number; count: number }[] { return [...this.loose].flatMap(([p, pile]) => [...pile].map(([block, count]) => ({ pos: this.port.layout.voxelCoords(p), block, count }))) }
-  publication(versions?: Uint32Array): WorkerTick {
+  publication(versions?: Uint32Array, tick = 0): WorkerTick {
     const poses = new Int32Array(this.units.size * 9)
     let at = 0
     for (const u of this.units.values()) { poses.set([u.id, u.x, u.y, u.z, u.facing, WORKER_STATES.indexOf(u.state), u.task?.order.id ?? 0, u.progress, u.duration], at); at += 9 }
     const details = [...this.dirty].flatMap(id => { const view = this.view(id); return view ? [view] : [] }); this.dirty.clear()
-    const barriers = [...this.barriers].map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })); this.barriers.clear()
+    const barriers = this.barriers.map(({ unit, pos }) => ({ unit, pos, chunks: this.port.layout.chunksAround(...pos).map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })) })); this.barriers = []
     const drops = [...this.dirtyDrops.values()]; this.dirtyDrops.clear()
-    return { poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }) })),
+    return { tick, poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }) })),
       stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles } }
   }
   mixState(mix: (n: number) => void): void {

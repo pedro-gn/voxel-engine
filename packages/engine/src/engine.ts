@@ -82,6 +82,8 @@ export interface EngineOptions {
 
 export interface EngineEvents {
   workers: WorkerTick
+  /** Top of the frame, before the camera update: place what a following camera looks at here. */
+  preFrame: { dt: number; now: number }
   frame: { dt: number; now: number }
   ready: { chunks: number }
   tick: { tick: number; tickMs: number }
@@ -140,6 +142,8 @@ export interface EngineStats {
 export interface Engine {
   readonly workers: WorkerTick | null
   meshVersion(chunk: number): number
+  /** True while chunk `chunk` failed to mesh and keeps its last mesh: its version will not advance until it is edited again. */
+  meshFailed(chunk: number): boolean
   readonly scene: THREE.Scene
   readonly camera: THREE.PerspectiveCamera
   readonly renderer: THREE.WebGPURenderer
@@ -611,6 +615,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const now = performance.now()
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
+    events.emit('preFrame', { dt, now })
     if (cameraMode === 'orbit') { controls.update(dt); controls.apply(camera) } else { firstPerson.update(dt); firstPerson.apply(camera) }
     visuals.setUnderwater(underwaterFade.update(dt, cameraInWater !== null && cameraInWater()))
     queue.releaseRetries()
@@ -720,6 +725,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     get workers() { return latestWorkers },
     // A staged mesh is accepted but not drawn until its fragment sources release together.
     meshVersion: ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci),
+    meshFailed: ci => failed.has(ci),
     atmosphere: visuals.atmosphere,
     get quality(): Quality { return visuals.getQuality() },
     set quality(value: Partial<Quality>) { visuals.setQuality(value) },

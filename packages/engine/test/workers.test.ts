@@ -18,6 +18,21 @@ function spawn(sim: Simulation, pos = [5, 4, 5], stock: { block: number; count: 
 function until(sim: Simulation, predicate: () => boolean, cap = 500) { for (let i = 0; i < cap; i++) { if (predicate()) return; sim.step() }; expect(predicate(), JSON.stringify(sim.workers!.publication())).toBe(true) }
 
 describe('simulated workers', () => {
+  it('publishes the tick and one barrier per edit, over every chunk whose mesh the edit changes', () => {
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { materials: { stone: { digTicks: 4 } } } })
+    sim.generate({ generateColumn(ctx, cx, cz) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); if (cx === 0 && cz === 0) ctx.set(31, 4, 31, 1) } })
+    spawn(sim, [28, 4, 28]); cmd(sim, { type: 'workDig', min: [31, 4, 31], max: [31, 4, 31] })
+    const around = [sim.layout.chunkOf(31, 4, 31), sim.layout.chunkOf(32, 4, 31), sim.layout.chunkOf(31, 4, 32), sim.layout.chunkOf(32, 4, 32)].sort((a, b) => a - b)
+    const before = around.map(ci => sim.store.versions[ci]!)
+    let r = sim.step()
+    for (let i = 0; i < 500 && !r.workers!.barriers.length; i++) r = sim.step()
+    expect(sim.store.getVoxel(31, 4, 31)).toBe(0)
+    expect(r.workers!.tick).toBe(r.tick)
+    expect(r.workers!.barriers).toEqual([{ unit: 1, pos: [31, 4, 31], chunks: around.map(chunk => ({ chunk, version: sim.store.versions[chunk]! })) }])
+    // Every chunk of the barrier moved its version, so a mesh from before the edit cannot release it.
+    for (const [i, ci] of around.entries()) expect(sim.store.versions[ci]!).toBeGreaterThan(before[i]!)
+    expect(sim.step().workers!.barriers).toEqual([])
+  })
   it('keeps advancing every walking tick across intermediate waypoints', () => {
     const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [12, 4, 5] })
     until(sim, () => sim.workers!.view(1)?.state === 'walking')

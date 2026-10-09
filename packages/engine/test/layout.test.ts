@@ -39,6 +39,11 @@ describe('Layout', () => {
     expect(L.voxelCoords(i)).toEqual([1023, 127, 1023])
     expect(L.voxelCoords(L.voxelIndex(5, 6, 7))).toEqual([5, 6, 7])
   })
+  it('lists the chunks around a voxel, sorted and clipped to the world', () => {
+    expect(L.chunksAround(5, 6, 7)).toEqual([L.chunkOf(5, 6, 7)])
+    expect(L.chunksAround(31, 32, 64)).toEqual([L.chunkIndex(0, 0, 1), L.chunkIndex(0, 0, 2), L.chunkIndex(1, 0, 1), L.chunkIndex(1, 0, 2), L.chunkIndex(0, 1, 1), L.chunkIndex(0, 1, 2), L.chunkIndex(1, 1, 1), L.chunkIndex(1, 1, 2)].sort((a, b) => a - b))
+    expect(L.chunksAround(0, 0, 1023)).toEqual([L.chunkIndex(0, 0, 31)])
+  })
   it('rejects sizes that are not positive multiples of 32', () => {
     expect(() => new Layout([100, 128, 128])).toThrow(RangeError)
     expect(() => new Layout([0, 32, 32])).toThrow(RangeError)

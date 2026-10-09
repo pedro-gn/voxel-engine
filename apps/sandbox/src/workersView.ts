@@ -63,7 +63,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   callbacks.push(engine.on('ack', ack => { if (!ack.ok) status.textContent = ack.error ?? 'Ordem recusada.' }))
   callbacks.push(engine.on('workers', tick => {
     at = performance.now()
-    for (const b of tick.barriers) { const old = barriers.get(b.chunk); barriers.set(b.chunk, { version: Math.max(old?.version ?? 0, b.version), since: old?.since ?? at }) }
+    for (const b of tick.barriers.flatMap(e => e.chunks)) { const old = barriers.get(b.chunk); barriers.set(b.chunk, { version: Math.max(old?.version ?? 0, b.version), since: old?.since ?? at }) }
     for (const u of views.values()) { let p = previous.get(u.id); if (!p) { p = new Vector3(); previous.set(u.id, p) }; p.set(u.x256 / 256, u.y256 / 256, u.z256 / 256) }
     for (const u of tick.details) views.set(u.id, u)
     const alive = new Set<number>()
