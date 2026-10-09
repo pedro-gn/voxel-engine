@@ -132,6 +132,9 @@ export class Visuals {
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
 
+  /** The underwater view's amount (0–1), coloured from the water parameters (spec 4d). Needs effects.post. */
+  setUnderwater(amount: number): void { this.post.setUnderwater(amount, this.waterParams) }
+
   /** An edit was submitted: starts the ripples of one at a water line (see editRipples); `get` is the main thread's voxel copy. */
   noteEdit(cmd: EditCommand, get: (x: number, y: number, z: number) => number): void {
     editRipples(this.o.water, ripples, cmd, get)

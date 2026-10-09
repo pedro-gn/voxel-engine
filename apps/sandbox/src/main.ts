@@ -18,6 +18,7 @@ import showcaseDoc from './terrain/showcase.terrain.json'
 import { randomTickRate } from './rules.ts'
 import { COLLAPSE_SIZE, cutLeftCommands, cutRightCommands, cutTowerCommands, cutNormalCommands, stressCollapseCommands } from './scenes/collapse.ts'
 import { createTerrainPanel } from './terrainPanel.ts'
+import { createFirstPerson } from './firstPerson.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
@@ -138,6 +139,7 @@ const bean = unitsScene ? null : await spawnCharacter(engine, `${import.meta.env
 const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers' }) : null
 
 let selected = 0
+const hotbarVoxel = () => { const id = engine.blocks.id(HOTBAR[selected]!); return engine.blocks.liquid[id] ? packVoxel(id, 7) : id }
 createHud(engine, () => HOTBAR[selected]!, editing ? 'terrain · edit' : sceneName, editing ? { corner: 'bottom', hint: EDIT_HINT } : {})
 window.addEventListener('keydown', (e) => {
   if (unitsScene) return
@@ -145,6 +147,8 @@ window.addEventListener('keydown', (e) => {
   const k = e.key === '0' ? 10 : Number(e.key)
   if (k >= 1 && k <= HOTBAR.length) selected = k - 1
 })
+// C: first person (not in the terrain editor); dig/place from the crosshair only where orbit digs/places.
+const fp = editing ? null : createFirstPerson(engine, canvas, { edits: !unitsScene, voxel: hotbarVoxel })
 
 canvas.addEventListener('pointermove', (e) => {
   if (editing || workers) return
@@ -161,8 +165,7 @@ canvas.addEventListener('pointerup', (e) => {
     if (nx === 0 && ny === 0 && nz === 0) return
     const p = [hit.pos[0] + nx, hit.pos[1] + ny, hit.pos[2] + nz] as const
     if (!engine.layout.inBounds(p[0], p[1], p[2])) return
-    const id = engine.blocks.id(HOTBAR[selected]!)
-    engine.submit({ type: 'setBlock', pos: p, voxel: engine.blocks.liquid[id] ? packVoxel(id, 7) : id })
+    engine.submit({ type: 'setBlock', pos: p, voxel: hotbarVoxel() })
   }
   engine.setHighlight(engine.pickScreen(e.clientX, e.clientY)?.pos ?? null)
 })
@@ -203,4 +206,4 @@ if (collapse) {
 }
 const living = sceneName === 'living' ? createLiving(engine) : null
 if (living) { living.camera('default'); await living.setup(); createLivingBar(living) }
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, ready: true } })
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, fp, ready: true } })

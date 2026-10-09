@@ -23,6 +23,14 @@ export class OrbitCamera {
   private readonly o: Required<Omit<OrbitOptions, 'heightAt'>> & Pick<OrbitOptions, 'heightAt'>
   private readonly keys = new Set<string>()
   private edge: [number, number] = [0, 0]
+  private _enabled = true
+  /** False while another controller (first person) owns the input: handlers ignore events; held keys and edge pan clear. */
+  get enabled(): boolean { return this._enabled }
+  set enabled(v: boolean) {
+    this._enabled = v
+    if (!v) { this.keys.clear(); this.edge = [0, 0] }
+  }
+  get minDistance(): number { return this.o.minDistance }
 
   constructor(options: OrbitOptions) {
     this.o = {
@@ -80,6 +88,7 @@ export class OrbitCamera {
     let dragPointer = -1
     let lx = 0, ly = 0
     const down = (e: PointerEvent) => {
+      if (!this._enabled) return
       if (e.button !== 1 && e.button !== 2) return
       dragging = true
       dragPointer = e.pointerId
@@ -88,6 +97,7 @@ export class OrbitCamera {
       canvas.setPointerCapture(e.pointerId)
     }
     const move = (e: PointerEvent) => {
+      if (!this._enabled) return
       const rect = canvas.getBoundingClientRect()
       const ex = e.clientX - rect.left, ey = e.clientY - rect.top
       this.edge = [ex < EDGE_PX ? -1 : ex > rect.width - EDGE_PX ? 1 : 0, ey < EDGE_PX ? -1 : ey > rect.height - EDGE_PX ? 1 : 0]
@@ -103,9 +113,9 @@ export class OrbitCamera {
       endDrag(e)
     }
     const leave = () => { this.edge = [0, 0] }
-    const wheel = (e: WheelEvent) => { e.preventDefault(); this.zoom(e.deltaY) }
+    const wheel = (e: WheelEvent) => { if (!this._enabled) return; e.preventDefault(); this.zoom(e.deltaY) }
     const menu = (e: Event) => e.preventDefault()
-    const kd = (e: KeyboardEvent) => this.keys.add(e.code)
+    const kd = (e: KeyboardEvent) => { if (this._enabled) this.keys.add(e.code) }
     const ku = (e: KeyboardEvent) => this.keys.delete(e.code)
     const blur = () => this.keys.clear()
     canvas.addEventListener('pointerdown', down)

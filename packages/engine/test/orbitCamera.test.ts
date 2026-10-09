@@ -107,4 +107,71 @@ describe('OrbitCamera robustness', () => {
       delete (globalThis as { window?: unknown }).window
     }
   })
+  it('ignores and clears input while disabled, unchanged while enabled', () => {
+    const c = make()
+    expect(c.enabled).toBe(true)
+    const keys = (c as unknown as { keys: Set<string> }).keys
+    keys.add('KeyW')
+    ;(c as unknown as { edge: [number, number] }).edge = [1, 0]
+    c.enabled = false
+    expect(keys.size).toBe(0)
+    expect((c as unknown as { edge: [number, number] }).edge).toEqual([0, 0])
+    const before = [...c.goal.target]
+    c.update(0.1)
+    expect(c.goal.target[0]).toBe(before[0])
+    expect(c.goal.target[2]).toBe(before[2])
+    c.enabled = true
+    keys.add('KeyW')
+    c.update(0.1)
+    expect(c.goal.target[2]).toBeLessThan(before[2]!)
+  })
+  it('exposes its minimum distance read-only', () => {
+    const c = make()
+    expect(c.minDistance).toBe(8)
+    expect(() => { (c as unknown as { minDistance: number }).minDistance = 3 }).toThrow(TypeError)
+  })
+  it('handlers ignore events while disabled and behave identically once re-enabled', () => {
+    const rig = () => {
+      const handlers = new Map<string, (e: unknown) => void>()
+      const canvas = {
+        addEventListener: (n: string, h: (e: unknown) => void) => handlers.set(n, h),
+        removeEventListener: (n: string) => handlers.delete(n),
+        setPointerCapture: () => {}, releasePointerCapture: () => {},
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1000 }),
+      }
+      return { handlers, canvas: canvas as unknown as HTMLCanvasElement }
+    }
+    const winHandlers = new Map<string, Set<(e: unknown) => void>>()
+    ;(globalThis as { window?: unknown }).window = {
+      addEventListener: (n: string, h: (e: unknown) => void) => { if (!winHandlers.has(n)) winHandlers.set(n, new Set()); winHandlers.get(n)!.add(h) },
+      removeEventListener: (n: string, h: (e: unknown) => void) => winHandlers.get(n)?.delete(h),
+    }
+    try {
+      const a = make(), b = make()
+      const ra = rig(), rb = rig()
+      const da = a.attach(ra.canvas), db = b.attach(rb.canvas)
+      const script = (r: ReturnType<typeof rig>, x0: number) => {
+        r.handlers.get('pointerdown')!({ pointerId: 1, button: 2, clientX: x0, clientY: 500 })
+        r.handlers.get('pointermove')!({ pointerId: 1, clientX: x0 + 40, clientY: 530 })
+        r.handlers.get('pointerup')!({ pointerId: 1, button: 2, clientX: x0 + 40, clientY: 530 })
+        r.handlers.get('wheel')!({ deltaY: 300, preventDefault: () => {} })
+        r.handlers.get('pointermove')!({ pointerId: 2, clientX: 2, clientY: 500 }) // left edge
+      }
+      a.enabled = false
+      script(ra, 500)
+      for (const h of winHandlers.get('keydown')!) h({ code: 'KeyW' })
+      a.update(0.05)
+      expect(a.goal).toEqual(make().goal)                         // nothing reached the disabled camera
+      a.enabled = true
+      const keysOf = (c: unknown) => (c as { keys: Set<string> }).keys
+      keysOf(b).clear() // the shared window keydown above reached b (enabled): reset so both start equal
+      script(ra, 500); script(rb, 500)
+      a.update(0.05); b.update(0.05)
+      expect(a.goal).toEqual(b.goal)
+      expect(a.current).toEqual(b.current)
+      da(); db()
+    } finally {
+      delete (globalThis as { window?: unknown }).window
+    }
+  })
 })
