@@ -241,11 +241,11 @@ apply takes ~20 ms against a 50 ms tick.
 **Relight.** `relightWater(dirtyChunks)` becomes a message with the chunk-column ranges, handled in order after the tick's
 apply. The worker is single-threaded, so the order is today's.
 
-**The main thread's view of the water.** It becomes a small `WaterMirror`:
+**The main thread's view of the water.** It becomes a small `SurfaceMirror`:
 - the ColumnData mirror, `takeDirty()`, `ccCount`/`cx`;
 - the drawn-surface lookup (§4.3).
 
-`WaterSurface` is typed against an interface that both `SurfaceView` and `WaterMirror` implement, so it stays unchanged.
+`WaterSurface` is typed against an interface that both `SurfaceView` and `SurfaceMirror` implement, so it stays unchanged.
 
 **Why a freeze, not a carry at the copy.** The carry (`hPrev ← mix(hPrev, hCur, shown)`) is interleaved through
 `refreshColumn`, `refreshSlot`, `settleRest` and `buildCurtains`. Moving it to the copy would re-implement apply's alpha
@@ -279,13 +279,13 @@ the tick message's arrival to the first frame that draws its step. It is reporte
 holds the encoded surface the view would answer with (`cur` / `layers.cur`) when `shows(v, floor)`, else a sentinel.
 - The worker rewrites the entries of every column of the tiles an apply read, and of the tiles it read again at the next
   apply.
-- `WaterMirror.surfaceNear` / `surfaceAt` implement today's logic over that buffer.
+- `SurfaceMirror.surfaceNear` / `surfaceAt` implement today's logic over that buffer.
 - An aligned Int32 element is never torn. A query racing an apply may see some columns at the new step and some at the
   old, which is harmless for a ripple's start height.
 
 **Memory:** 4 MB at 512², 16 MB at the default 1024² world.
 
-**Proof:** a Node differential test checks that `WaterMirror.surfaceNear(x, z, y)` = `SurfaceView.surfaceNear(x, z, y)`
+**Proof:** a Node differential test checks that `SurfaceMirror.surfaceNear(x, z, y)` = `SurfaceView.surfaceNear(x, z, y)`
 over every column and several heights, after each apply of a layered running-water scenario.
 
 **Other main-thread consumers, all accounted for:**
@@ -297,9 +297,9 @@ The sandbox reads nothing of `SurfaceView`, and collision reads the voxel mirror
 
 ### 4.4 Bit-identical output
 
-A Node differential test (`packages/engine/test/waterMirror.test.ts`) runs one scenario through two paths:
+A Node differential test (`packages/engine/test/surfaceMirror.test.ts`) runs one scenario through two paths:
 - **reference:** `SurfaceView` applied in-thread;
-- **worker path:** `SurfaceView` → pack → `WaterMirror.copy`.
+- **worker path:** `SurfaceView` → pack → `SurfaceMirror.copy`.
 
 The scenario has layered running water, curtains and relights, with alpha mode on (`shown` given). After every apply,
 each key's `hPrev`, `hCur` and `info` (all 4096 floats) and its curtains (count and the six arrays up to count × 4) must

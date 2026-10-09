@@ -5,7 +5,7 @@ import { shows } from './surfaceMesh.ts'
 import { ColumnData, NO_SLOT, drawnSurfaces, type DrawnSurfaces } from './surfaceView.ts'
 import { KEY_INTS, type WaterReply } from './waterHost.ts'
 
-/** What the renderer and the edit ripples read of the water: SurfaceView in-thread, WaterMirror beside a water host. */
+/** What the renderer and the edit ripples read of the water: SurfaceView in-thread, SurfaceMirror beside a water host. */
 export interface SurfaceSource {
   readonly ccCount: number
   readonly cx: number
@@ -22,7 +22,7 @@ function byIndex(a: number, b: number): number { return a - b }
  * The main thread's copy of the water view's draw data (4a-r2 #2): ColumnData filled from WaterReply copies, the dirty keys
  * for WaterSurface, and synchronous surface queries over the shared DrawnSurfaces the host writes.
  */
-export class WaterMirror implements SurfaceSource {
+export class SurfaceMirror implements SurfaceSource {
   readonly sx: number
   readonly sz: number
   readonly cx: number

@@ -11,7 +11,7 @@ import {
 } from './surfaceMesh.ts'
 
 /**
- * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by WaterMirror.
+ * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by SurfaceMirror.
  * `value[c × RANKS + r]`: rank 0 the published value of column c; rank r ≥ 1 the slot's published value, NO_SLOT when c has
  * no slot r. `floor[c × (RANKS − 1) + r − 1]`: the floor (blocks) of slot r ≥ 1. Plain stores into shared memory: a query
  * racing an apply may see some columns at the new step and some at the old, never a torn value.

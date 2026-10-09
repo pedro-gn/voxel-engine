@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterHost, type WaterReply, type WaterRequest } from '../src/render/water/waterHost.ts'
 import { WaterLink } from '../src/render/water/waterLink.ts'
-import { WaterMirror } from '../src/render/water/waterMirror.ts'
+import { SurfaceMirror } from '../src/render/water/surfaceMirror.ts'
 import { WaterPublisher, type WaterTick } from '../src/sim/water/publish.ts'
 import { gateWorld } from './layerHelpers.ts'
 
@@ -83,7 +83,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const SIZE: [number, number, number] = [64, 32, 32]
     const pub = new WaterPublisher(w.buffers.water)
     const ref = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
-    const mirror = new WaterMirror(SIZE, w.buffers.water)
+    const mirror = new SurfaceMirror(SIZE, w.buffers.water)
     const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
     const posted: WaterRequest[] = [], applied: number[] = [], replies: boolean[] = []
     const link = new WaterLink({ post: (r) => posted.push(r), copy: (r) => { replies.push(r.applied); mirror.copy(r) }, applied: (t) => applied.push(t), settled: () => {}, shown: () => 1 })

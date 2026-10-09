@@ -1,62 +1,125 @@
 import { describe, expect, it } from 'vitest'
-import { SurfaceView } from '../src/render/water/surfaceView.ts'
-import { WaterHost } from '../src/render/water/waterHost.ts'
-import { WaterMirror } from '../src/render/water/waterMirror.ts'
-import { RANKS } from '../src/sim/water/constants.ts'
-import { WaterPublisher } from '../src/sim/water/publish.ts'
-import { gateWorld } from './layerHelpers.ts'
+import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
+import { SUB } from '../src/sim/water/constants.ts'
+import { WaterMirror, quantize } from '../src/sim/water/mirror.ts'
+import { waterKinds } from '../src/sim/water/rebuild.ts'
+import { AIR, packVoxel } from '../src/world/voxel.ts'
+import { ID, TEST_BLOCKS } from './helpers.ts'
+import { mirrorRun } from '../src/sim/water/mirror.ts'
 
-/** The first index where two arrays differ (Object.is), −1 when equal. */
-const diff = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
-  if (x.length !== y.length) return -2
-  for (let i = 0; i < x.length; i++) if (!Object.is(x[i], y[i])) return i
-  return -1
+const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
+const kind = waterKinds(reg, ID.water)
+const SPRING = 8
+const water = (level: number) => packVoxel(ID.water, level)
+
+/** One column at (0, 0): y → voxel. */
+function column() {
+  const cells = new Map<number, number>()
+  return {
+    cells,
+    get: (_x: number, y: number, _z: number) => cells.get(y) ?? AIR,
+    set: (_x: number, y: number, _z: number, v: number) => { if (v === AIR) cells.delete(y); else cells.set(y, v) },
+  }
 }
-const SIZE: [number, number, number] = [64, 32, 32]
 
-describe('WaterMirror (4a-r2 #2)', () => {
-  it('holds exactly what an in-thread view holds after every request, with alpha, relights and queued publishes (differential)', () => {
-    const w = gateWorld()
-    w.edges.ensure(w.cols, w.under, 32)
-    let shift = 0
-    const light = (x: number, y: number, z: number) => (x * 7 + y * 3 + z + shift) & 0xff
-    const pub = new WaterPublisher(w.buffers.water)
-    const ref = new SurfaceView(SIZE, w.buffers.water, light, 20)
-    const mirror = new WaterMirror(SIZE, w.buffers.water)
-    const host = new WaterHost(SIZE, w.buffers.water, light, 20, mirror.surfaces)
-    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
-    let id = 0, compared = 0
-    for (let tick = 0; tick < 48; tick++) {
-      // Every 5th tick two publishes come before a reply: WaterLink forwards the second after the first's copy, at alpha 0.
-      for (let q = 0; q < (tick % 5 === 0 ? 2 : 1); q++) {
-        const water = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
-        const shown = q === 0 ? (tick % 3) / 3 : 0
-        if (tick % 4 === 0) shift++
-        const relight = tick % 4 === 0 ? [0, 0, 32, 1, 0, 16] : []
-        ref.apply(water, shown)
-        for (let i = 0; i < relight.length; i += 3) ref.relight(relight[i]!, relight[i + 1]!, relight[i + 2]!)
-        mirror.copy(host.handle({ type: 'apply', id: ++id, tick, water, shown, relight }))
-        for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < ref.ccCount; cc++) {
-          const a = ref.column(cc, r), m = mirror.column(cc, r)
-          expect([tick, r, cc, !!a]).toEqual([tick, r, cc, !!m])
-          if (!a || !m) continue
-          const n = a.curtains.count * 4
-          expect([tick, r, cc, diff(m.hPrev, a.hPrev), diff(m.hCur, a.hCur), diff(m.info, a.info), m.curtains.count - a.curtains.count,
-            diff(m.curtains.prev.subarray(0, n), a.curtains.prev.subarray(0, n)), diff(m.curtains.cur.subarray(0, n), a.curtains.cur.subarray(0, n)),
-            diff(m.curtains.reach.subarray(0, n), a.curtains.reach.subarray(0, n)), diff(m.curtains.thick.subarray(0, n), a.curtains.thick.subarray(0, n)),
-            diff(m.curtains.flare.subarray(0, n), a.curtains.flare.subarray(0, n)), diff(m.curtains.info.subarray(0, n), a.curtains.info.subarray(0, n)),
-          ]).toEqual([tick, r, cc, -1, -1, -1, 0, -1, -1, -1, -1, -1, -1])
-          compared++
-        }
-        for (let z = 0; z < SIZE[2]; z++) for (let x = 0; x < SIZE[0]; x++) {
-          expect([x, z, mirror.surfaceAt(x, z)]).toEqual([x, z, ref.surfaceAt(x, z)])
-          for (const y of [2, 4, 7, 10]) expect([x, z, y, mirror.surfaceNear(x, z, y)]).toEqual([x, z, y, ref.surfaceNear(x, z, y)])
-        }
-        w.step()
-      }
-    }
-    expect(compared).toBeGreaterThan(100)
-    // The world must reach the layered path: some layer-1 column data exists.
-    expect(Array.from({ length: ref.ccCount }, (_, cc) => ref.column(cc, 1)).some(Boolean)).toBe(true)
-  }, 120_000)
+/** A mirror whose single column was rebuilt dry at `floor`. */
+function mirrorAt(floor: number): WaterMirror {
+  const m = new WaterMirror(1)
+  m.lo[0] = floor
+  m.q[0] = floor * 8
+  return m
+}
+
+describe('quantize', () => {
+  it('rounds the surface to eighths; less than 1/16 block over a cell top is no water', () => {
+    expect(quantize(4 * SUB + 15)).toBe(32)
+    expect(quantize(4 * SUB + 16)).toBe(33)
+    expect(quantize(4 * SUB + 239)).toBe(39)
+    expect(quantize(4 * SUB + 240)).toBe(40)
+  })
+})
+
+describe('WaterMirror', () => {
+  it('a deep lake changing only its top level reads the surface band, leaving full cells below untouched', () => {
+    const m = mirrorAt(2), w = column()
+    m.flush(0, 0, 0, 2, 16 * SUB, ID.water, kind, 32, w.get, w.set)
+    const reads: number[] = []
+    const get = (x: number, y: number, z: number) => { reads.push(y); return w.get(x, y, z) }
+    m.flush(0, 0, 0, 2, 16 * SUB + SUB / 8, ID.water, kind, 32, get, w.set)
+    expect(reads).toEqual([18])
+    expect(w.get(0, 17, 0)).toBe(water(7))
+    expect(w.get(0, 18, 0)).toBe(water(0))
+    reads.length = 0
+    m.flush(0, 0, 0, 2, 15 * SUB + 3 * SUB / 4, ID.water, kind, 32, get, w.set)
+    expect(reads).toEqual([17, 18])
+    expect(w.get(0, 17, 0)).toBe(water(5))
+    expect(w.get(0, 18, 0)).toBe(AIR)
+    w.cells.delete(6)
+    m.touch(0, 6)
+    m.flush(0, 0, 0, 2, 15 * SUB + 3 * SUB / 4, ID.water, kind, 32, w.get, w.set)
+    expect(w.get(0, 6, 0)).toBe(water(7)) // touched columns still get their complete canonical mirror
+  })
+  it('writes full cells under the quantized surface and a partial cell at it', () => {
+    const m = mirrorAt(2), w = column()
+    expect(m.flush(0, 0, 0, 2, 2 * SUB + 100, ID.water, kind, 32, w.get, w.set)).toBe(true)
+    expect([...w.cells].sort((a, b) => a[0] - b[0])).toEqual([[2, water(7)], [3, water(7)], [4, water(2)]])
+    expect(m.flush(0, 0, 0, 2, 2 * SUB + 100, ID.water, kind, 32, w.get, w.set)).toBe(false) // nothing changed
+  })
+
+  it('clears what is above a lower surface, and everything once the column is dry', () => {
+    const m = mirrorAt(2), w = column()
+    m.flush(0, 0, 0, 2, 3 * SUB, ID.water, kind, 32, w.get, w.set)
+    m.flush(0, 0, 0, 2, SUB, ID.water, kind, 32, w.get, w.set)
+    expect([...w.cells.keys()]).toEqual([2])
+    m.flush(0, 0, 0, 2, 0, ID.water, kind, 32, w.get, w.set)
+    expect(w.cells.size).toBe(0)
+  })
+
+  it('empties the cells a risen floor left under it, and leaves static water further down alone', () => {
+    const m = mirrorAt(2), w = column()
+    w.cells.set(1, water(7)) // static, under the floor
+    m.flush(0, 0, 0, 2, 3 * SUB, ID.water, kind, 32, w.get, w.set)
+    w.cells.set(4, ID.stone) // a wall dropped in the water: the floor is now 5, the water pushed up
+    m.flush(0, 0, 0, 5, 3 * SUB, ID.water, kind, 32, w.get, w.set)
+    expect([...w.cells].sort((a, b) => a[0] - b[0])).toEqual([[1, water(7)], [4, ID.stone], [5, water(7)], [6, water(7)], [7, water(7)]])
+  })
+
+  it('never writes a wall or a spring inside the water (a floating block, a spring)', () => {
+    const m = mirrorAt(2), w = column()
+    w.cells.set(3, ID.stone)
+    w.cells.set(5, packVoxel(SPRING, 2))
+    m.flush(0, 0, 0, 2, 5 * SUB, ID.water, kind, 32, w.get, w.set)
+    expect([2, 3, 4, 5, 6].map((y) => w.get(0, y, 0))).toEqual([water(7), ID.stone, water(7), packVoxel(SPRING, 2), water(7)])
+  })
+
+  it('rewrites a touched column up to the touched cell: a stray water voxel above the surface goes', () => {
+    const m = mirrorAt(2), w = column()
+    m.flush(0, 0, 0, 2, SUB, ID.water, kind, 32, w.get, w.set)
+    w.cells.set(10, water(7)) // a command placed it; its volume already joined the column
+    expect(m.flush(0, 0, 0, 2, SUB, ID.water, kind, 32, w.get, w.set)).toBe(false)
+    m.touch(0, 10)
+    expect(m.flush(0, 0, 0, 2, SUB, ID.water, kind, 32, w.get, w.set)).toBe(true)
+    expect([...w.cells.keys()]).toEqual([2])
+  })
+})
+
+
+describe('mirrorRun', () => {
+  it('writes a lower segment cells only inside [floor, ceil): never the cells of the segment above', () => {
+    const w = column()
+    w.cells.set(5, ID.stone) // the roof of [2, 5)
+    w.cells.set(6, water(7)) // the segment above holds water
+    const lo = new Int16Array([2]), q = new Int32Array([~(5 * 8)])
+    mirrorRun(lo, q, 0, 0, 0, 2, 5, 3 * SUB, ID.water, kind, w.get, w.set)
+    expect([2, 3, 4, 5, 6].map((y) => w.get(0, y, 0))).toEqual([water(7), water(7), water(7), ID.stone, water(7)])
+    expect(q[0]).toBe(5 * 8)
+  })
+
+  it('clears a drained lower segment cells and leaves its partial top at the right level', () => {
+    const w = column()
+    for (const y of [2, 3, 4]) w.cells.set(y, water(7))
+    const lo = new Int16Array([2]), q = new Int32Array([5 * 8])
+    mirrorRun(lo, q, 0, 0, 0, 2, 5, SUB + SUB / 2, ID.water, kind, w.get, w.set)
+    expect([2, 3, 4].map((y) => w.get(0, y, 0))).toEqual([water(7), water(3), AIR])
+  })
 })

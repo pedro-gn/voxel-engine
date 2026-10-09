@@ -563,7 +563,7 @@ machine was loaded, so no absolute number from this gate counts against the targ
   `WaterReply` that packs every dirty key's changed rows and curtains.
 - **`render/water/water.worker.ts`** runs the host. With `EngineOptions.waterWorker: false` (`?nowaterworker`) the host
   runs in-thread and replies at once: that is the A of the A/B, in the same build.
-- **`WaterMirror`** (main thread) holds the ColumnData that three uploads. It answers `surfaceNear`/`surfaceAt` from a
+- **`SurfaceMirror`** (main thread) holds the ColumnData that three uploads. It answers `surfaceNear`/`surfaceAt` from a
   shared Int32 buffer that the host writes.
 - **`WaterLink`** (pure, main thread) keeps one request in flight and queues the rest in order. It freezes the drawn alpha
   while a publish is in flight and calls the engine's clock hooks in tick order.
@@ -574,7 +574,7 @@ machine was loaded, so no absolute number from this gate counts against the targ
 |---|---|
 | `packages/engine/src/render/water/surfaceView.ts` (modify) | `DrawnSurfaces`, `NO_SLOT`, `drawnSurfaces(n)`, `SurfaceView.surfaces` written after each apply |
 | `packages/engine/src/render/water/waterHost.ts` (create) | `WaterRequest`, `WaterReply`, `packDirty(view)`, `WaterHost` |
-| `packages/engine/src/render/water/waterMirror.ts` (create) | `SurfaceSource` interface, `WaterMirror` (copy, takeDirty, surfaceNear/At, reset) |
+| `packages/engine/src/render/water/surfaceMirror.ts` (create) | `SurfaceSource` interface, `SurfaceMirror` (copy, takeDirty, surfaceNear/At, reset) |
 | `packages/engine/src/render/water/waterLink.ts` (create) | `WaterLink` scheduler and its hooks |
 | `packages/engine/src/render/water/water.worker.ts` (create) | Worker shell around `WaterHost` |
 | `packages/engine/src/render/water/waterSurface.ts`, `ripples.ts`, `render/visuals.ts` (modify) | Typed against `SurfaceSource` instead of `SurfaceView`; nothing else changes |
@@ -582,7 +582,7 @@ machine was loaded, so no absolute number from this gate counts against the targ
 | `packages/engine/src/engine.ts` (modify, water path only) | Host, worker and link wiring; freeze, lag, crash handling, stats; `EngineOptions.waterWorker` |
 | `apps/sandbox/src/main.ts` (modify, one line) | `waterWorker: !params.has('nowaterworker')` |
 | `packages/engine/test/layerHelpers.ts` (modify) | export `gateWorld()` |
-| `packages/engine/test/waterMirror.test.ts`, `waterLink.test.ts`, `waterResync.test.ts` (create) | Tests for Tasks 4–6 |
+| `packages/engine/test/surfaceMirror.test.ts`, `waterLink.test.ts`, `waterResync.test.ts` (create) | Tests for Tasks 4–6 |
 | `apps/sandbox/e2e/water-worker.spec.ts`, `water-ab.spec.ts`, `living-anatomy.spec.ts`, `bench/anatomy.node.mjs` (create) | Task 7 e2e, Task 8 measurement |
 
 **One known difference: when light is read.** The worker reads voxel light a few ms after the tick's message. If light
@@ -611,13 +611,13 @@ value, so nothing visible changes. Node tests run single-threaded and cannot see
 
 ---
 
-### Task 4: `WaterHost`, `WaterMirror` and the drawn-surface buffer, bit-identical to an in-thread view
+### Task 4: `WaterHost`, `SurfaceMirror` and the drawn-surface buffer, bit-identical to an in-thread view
 
 **Files:**
 - Modify: `packages/engine/src/render/water/surfaceView.ts`
-- Create: `packages/engine/src/render/water/waterHost.ts`, `packages/engine/src/render/water/waterMirror.ts`
+- Create: `packages/engine/src/render/water/waterHost.ts`, `packages/engine/src/render/water/surfaceMirror.ts`
 - Modify: `packages/engine/test/layerHelpers.ts`: add `gateWorld()`, a copy of `surfaceLayers.test.ts`'s local one.
-- Test: `packages/engine/test/waterMirror.test.ts`
+- Test: `packages/engine/test/surfaceMirror.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -630,7 +630,7 @@ value, so nothing visible changes. Node tests run single-threaded and cannot see
   - `packDirty(view): { keys; data }`
   - `class WaterHost { constructor(size, b, light, stepHz, surfaces); readonly view; handle(req): WaterReply }`
   - `interface SurfaceSource { ccCount; cx; column(cc, r?); takeDirty(); surfaceNear(x, z, y) }`
-  - `class WaterMirror implements SurfaceSource { constructor(size, b); readonly surfaces; copy(reply); reset(); surfaceAt(x, z) }`
+  - `class SurfaceMirror implements SurfaceSource { constructor(size, b); readonly surfaces; copy(reply); reset(); surfaceAt(x, z) }`
 
 - [ ] **Step 1: Add `gateWorld()` to `test/layerHelpers.ts`**
 
@@ -649,13 +649,13 @@ export function gateWorld() {
 
 - [ ] **Step 2: Write the failing differential test**
 
-`packages/engine/test/waterMirror.test.ts`:
+`packages/engine/test/surfaceMirror.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterHost } from '../src/render/water/waterHost.ts'
-import { WaterMirror } from '../src/render/water/waterMirror.ts'
+import { SurfaceMirror } from '../src/render/water/surfaceMirror.ts'
 import { RANKS } from '../src/sim/water/constants.ts'
 import { WaterPublisher } from '../src/sim/water/publish.ts'
 import { gateWorld } from './layerHelpers.ts'
@@ -668,7 +668,7 @@ const diff = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
 }
 const SIZE: [number, number, number] = [64, 32, 32]
 
-describe('WaterMirror (4a-r2 #2)', () => {
+describe('SurfaceMirror (4a-r2 #2)', () => {
   it('holds exactly what an in-thread view holds after every request, with alpha, relights and queued publishes (differential)', () => {
     const w = gateWorld()
     w.edges.ensure(w.cols, w.under, 32)
@@ -676,7 +676,7 @@ describe('WaterMirror (4a-r2 #2)', () => {
     const light = (x: number, y: number, z: number) => (x * 7 + y * 3 + z + shift) & 0xff
     const pub = new WaterPublisher(w.buffers.water)
     const ref = new SurfaceView(SIZE, w.buffers.water, light, 20)
-    const mirror = new WaterMirror(SIZE, w.buffers.water)
+    const mirror = new SurfaceMirror(SIZE, w.buffers.water)
     const host = new WaterHost(SIZE, w.buffers.water, light, 20, mirror.surfaces)
     const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
     let id = 0, compared = 0
@@ -716,8 +716,8 @@ describe('WaterMirror (4a-r2 #2)', () => {
 })
 ```
 
-Run: `npx vitest run --root packages/engine test/waterMirror.test.ts`. Expected: FAIL, because `waterHost.ts` and
-`waterMirror.ts` do not exist yet.
+Run: `npx vitest run --root packages/engine test/surfaceMirror.test.ts`. Expected: FAIL, because `waterHost.ts` and
+`surfaceMirror.ts` do not exist yet.
 
 - [ ] **Step 3: The drawn-surface buffer in `surfaceView.ts`**
 
@@ -725,7 +725,7 @@ At module level, after the imports:
 
 ```ts
 /**
- * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by WaterMirror.
+ * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by SurfaceMirror.
  * `value[c × RANKS + r]`: rank 0 the published value of column c; rank r ≥ 1 the slot's published value, NO_SLOT when c has
  * no slot r. `floor[c × (RANKS − 1) + r − 1]`: the floor (blocks) of slot r ≥ 1. Plain stores into shared memory: a query
  * racing an apply may see some columns at the new step and some at the old, never a torn value.
@@ -849,7 +849,7 @@ export class WaterHost {
 }
 ```
 
-- [ ] **Step 5: `waterMirror.ts`**
+- [ ] **Step 5: `surfaceMirror.ts`**
 
 ```ts
 import { RANKS } from '../../sim/water/constants.ts'
@@ -859,7 +859,7 @@ import { shows } from './surfaceMesh.ts'
 import { ColumnData, NO_SLOT, drawnSurfaces, type DrawnSurfaces } from './surfaceView.ts'
 import { KEY_INTS, type WaterReply } from './waterHost.ts'
 
-/** What the renderer and the edit ripples read of the water: SurfaceView in-thread, WaterMirror beside a water host. */
+/** What the renderer and the edit ripples read of the water: SurfaceView in-thread, SurfaceMirror beside a water host. */
 export interface SurfaceSource {
   readonly ccCount: number
   readonly cx: number
@@ -876,7 +876,7 @@ function byIndex(a: number, b: number): number { return a - b }
  * The main thread's copy of the water view's draw data (4a-r2 #2): ColumnData filled from WaterReply copies, the dirty keys
  * for WaterSurface, and synchronous surface queries over the shared DrawnSurfaces the host writes.
  */
-export class WaterMirror implements SurfaceSource {
+export class SurfaceMirror implements SurfaceSource {
   readonly sx: number
   readonly sz: number
   readonly cx: number
@@ -981,7 +981,7 @@ export class WaterMirror implements SurfaceSource {
 
 - [ ] **Step 6: Run the tests**
 
-Run: `npx vitest run --root packages/engine test/waterMirror.test.ts test/surfaceView.test.ts test/surfaceLayers.test.ts test/waterSurface.test.ts test/ripples.test.ts`
+Run: `npx vitest run --root packages/engine test/surfaceMirror.test.ts test/surfaceView.test.ts test/surfaceLayers.test.ts test/waterSurface.test.ts test/ripples.test.ts`
 Expected: PASS.
 
 If the differential test fails, find the first `(tick, r, cc, index)`. The likely causes:
@@ -994,8 +994,8 @@ also be a latent upload bug.
 - [ ] **Step 7: Commit**
 
 ```powershell
-git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/render/water/surfaceView.ts packages/engine/src/render/water/waterHost.ts packages/engine/src/render/water/waterMirror.ts packages/engine/test/layerHelpers.ts packages/engine/test/waterMirror.test.ts
-git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "feat(water): WaterHost packs the view's changed rows; WaterMirror copies them and answers surface queries (bit-identical)"
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/render/water/surfaceView.ts packages/engine/src/render/water/waterHost.ts packages/engine/src/render/water/surfaceMirror.ts packages/engine/test/layerHelpers.ts packages/engine/test/surfaceMirror.test.ts
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "feat(water): WaterHost packs the view's changed rows; SurfaceMirror copies them and answers surface queries (bit-identical)"
 ```
 
 ### Task 5: `WaterLink`: one request in flight, the rest in order
@@ -1005,7 +1005,7 @@ git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commi
 - Test: `packages/engine/test/waterLink.test.ts`
 
 **Interfaces:**
-- Consumes: `WaterRequest`, `WaterReply`, `WaterHost` and `WaterMirror` from Task 4.
+- Consumes: `WaterRequest`, `WaterReply`, `WaterHost` and `SurfaceMirror` from Task 4.
 - Produces:
   - `interface WaterLinkHooks { post(req); copy(reply, publish: boolean); applied(tick, arrived); settled(); shown(): number }`
   - `class WaterLink { constructor(hooks); submit(tick, water, relight, settles, arrived); receive(reply); reset(); readonly depth; maxDepth(); readonly frozen: number | null }`
@@ -1017,7 +1017,7 @@ import { describe, expect, it } from 'vitest'
 import { SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterHost, type WaterReply, type WaterRequest } from '../src/render/water/waterHost.ts'
 import { WaterLink } from '../src/render/water/waterLink.ts'
-import { WaterMirror } from '../src/render/water/waterMirror.ts'
+import { SurfaceMirror } from '../src/render/water/surfaceMirror.ts'
 import { WaterPublisher, type WaterTick } from '../src/sim/water/publish.ts'
 import { gateWorld } from './layerHelpers.ts'
 
@@ -1098,7 +1098,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const SIZE: [number, number, number] = [64, 32, 32]
     const pub = new WaterPublisher(w.buffers.water)
     const ref = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
-    const mirror = new WaterMirror(SIZE, w.buffers.water)
+    const mirror = new SurfaceMirror(SIZE, w.buffers.water)
     const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
     const posted: WaterRequest[] = [], applied: number[] = [], replies: boolean[] = []
     const link = new WaterLink({ post: (r) => posted.push(r), copy: (r) => { replies.push(r.applied); mirror.copy(r) }, applied: (t) => applied.push(t), settled: () => {}, shown: () => 1 })
@@ -1235,7 +1235,7 @@ loop resumes, and the outer loop picks up the queue as the inner one left it. Th
 
 - [ ] **Step 3: Run the tests**
 
-Run: `npx vitest run --root packages/engine test/waterLink.test.ts test/waterMirror.test.ts`. Expected: PASS.
+Run: `npx vitest run --root packages/engine test/waterLink.test.ts test/surfaceMirror.test.ts`. Expected: PASS.
 
 - [ ] **Step 4: Commit**
 
@@ -1389,12 +1389,12 @@ scope.onmessage = (e) => {
 
 - [ ] **Step 2: Retype the consumers**
 
-- `waterSurface.ts`: use `import type { ColumnData } from './surfaceView.ts'` and `import type { SurfaceSource } from './waterMirror.ts'`,
+- `waterSurface.ts`: use `import type { ColumnData } from './surfaceView.ts'` and `import type { SurfaceSource } from './surfaceMirror.ts'`,
   and type `view` as `SurfaceSource` in the field and the constructor. Nothing else changes there; lod's visibility hunk
   lands beside it at merge.
 - `ripples.ts`: `waterLineSurface(view: Pick<SurfaceSource, 'surfaceNear'>, …)`, and the same in `atWaterLine` and
   `editRipples`. Replace the import.
-- `visuals.ts`: `water: SurfaceSource` in `VisualsOptions`, imported from `./water/waterMirror.ts`.
+- `visuals.ts`: `water: SurfaceSource` in `VisualsOptions`, imported from `./water/surfaceMirror.ts`.
 
 - [ ] **Step 3: Engine wiring (water path only)**
 
@@ -1427,7 +1427,7 @@ Then append:
 
 ```ts
   // The water's draw data: copied from a WaterHost, in a worker or in-thread (4a-r2 #2).
-  const waterMirror = new WaterMirror(size, buffers.water)
+  const surfaceMirror = new SurfaceMirror(size, buffers.water)
   const inWorker = o.waterWorker ?? true
   /** Per chunk column, the layers [lo, hi) of the dirty chunks in it (relightRanges' scratch). */
   const relightRange = new Map<number, [number, number]>()
@@ -1436,7 +1436,7 @@ Then append:
     if (chunks.length === 0) return []
     for (const ci of chunks) {
       const [cx, cy, cz] = layout.chunkCoords(ci)
-      const cc = cx + cz * waterMirror.cx, r = relightRange.get(cc)
+      const cc = cx + cz * surfaceMirror.cx, r = relightRange.get(cc)
       if (r) { r[0] = Math.min(r[0], cy * 32); r[1] = Math.max(r[1], cy * 32 + 32) } else relightRange.set(cc, [cy * 32, cy * 32 + 32])
     }
     const out: number[] = []
@@ -1454,7 +1454,7 @@ Then append:
   /** The arrival time of the publish whose step the next frame draws first (waterLag), or null. */
   let lagFrom: number | null = null
   /** The in-thread host (waterWorker false); otherwise the worker and its crash count. */
-  const localHost = inWorker ? null : new WaterHost(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs, waterMirror.surfaces)
+  const localHost = inWorker ? null : new WaterHost(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs, surfaceMirror.surfaces)
   let waterWorker: Worker | null = null, waterCrashes = 0
   const waterLink: WaterLink = new WaterLink({
     post: (req) => {
@@ -1463,17 +1463,17 @@ Then append:
     },
     copy: (reply, publish) => {
       const t0 = performance.now()
-      waterMirror.copy(reply)
+      surfaceMirror.copy(reply)
       waterHostCost.record(reply.hostMs)
       if (publish) waterApply.record(performance.now() - t0 + (localHost ? reply.hostMs : 0))
     },
-    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(waterMirror, tick + 1); lagFrom = arrived },
-    settled: () => clock.hold(waterMirror, null), // every tile settled (prev = cur): nothing to time
+    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(surfaceMirror, tick + 1); lagFrom = arrived },
+    settled: () => clock.hold(surfaceMirror, null), // every tile settled (prev = cur): nothing to time
     shown: () => waterShown,
   })
 ```
 
-**Visuals.** Replace `water: waterView` with `water: waterMirror`.
+**Visuals.** Replace `water: waterView` with `water: surfaceMirror`.
 
 **The worker.** After `for (let i = 0; i < poolSize; i++) spawn(i, 0)`, add:
 
@@ -1488,14 +1488,14 @@ Then append:
       if (++waterCrashes >= 2) { fail(`water worker crashed twice: ${reason}`); return }
       console.error(`[elovox] water worker lost (${reason}); restarting it`)
       waterLink.reset()
-      waterMirror.reset()
+      surfaceMirror.reset()
       waterWorker = spawnWater()
       sim.postMessage({ type: 'waterResync' } satisfies ToSim)
     }
     worker.onmessage = (e: MessageEvent<WaterReply>) => { if (waterWorker === worker) waterLink.receive(e.data) }
     worker.onerror = (e) => { e.preventDefault(); lost(e.message || 'the worker failed to load or crashed') }
     worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
-    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, pages: [...pages], stepHz: 1000 / tickMs, surfaces: waterMirror.surfaces } satisfies ToWater)
+    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, pages: [...pages], stepHz: 1000 / tickMs, surfaces: surfaceMirror.surfaces } satisfies ToWater)
     return worker
   }
   if (inWorker) waterWorker = spawnWater()
@@ -1531,7 +1531,7 @@ Then append:
 ```
 
 **Imports.** Add:
-- `WaterMirror` from `./render/water/waterMirror.ts`;
+- `SurfaceMirror` from `./render/water/surfaceMirror.ts`;
 - `WaterHost` and `type WaterReply` from `./render/water/waterHost.ts`;
 - `WaterLink` from `./render/water/waterLink.ts`;
 - `type ToWater` from `./render/water/water.worker.ts`.
@@ -1666,3 +1666,8 @@ Per the expert's decision, in order:
 2. **#5 step 3:** the water step's hot loops, behind a second golden hash on column state.
 
 Each step is planned here, as Tasks 9+, once #2's results are in.
+
+**Rename during execution (Task 6):** the main-thread mirror is `SurfaceMirror` (`render/water/surfaceMirror.ts`,
+`test/surfaceMirror.test.ts`), not `WaterMirror`. The sim already has a `WaterMirror` (`sim/water/mirror.ts`, the voxel
+mirror), and its test file `test/waterMirror.test.ts` was overwritten by mistake in Task 4's commit `8abaf86`. That file is
+restored from `90e5c97` in Task 6's commit.
