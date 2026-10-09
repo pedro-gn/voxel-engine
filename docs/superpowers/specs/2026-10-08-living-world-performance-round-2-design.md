@@ -232,6 +232,27 @@ apply takes ~20 ms against a 50 ms tick.
     turns, so on a main thread making fewer turns per second than the sim ticks, the FIFO grew without bound.
     Headless SwiftShader, at ~1.4 fps, makes about two round trips a second. There, the flood scene's first water never
     showed: its FIFO grew by ~18 a second. With batching, one round trip clears the whole backlog.
+- **Catch-up read (amended 2026-10-09).** Batching alone left the worker reading only stale buffers at ~1.5 fps. Every
+  publish reached it one main-thread turn after the sim had reused the publish's parity, so every one deferred and the
+  first publish's tiles (a sleeping lake) were never drawn.
+  - **The rule.** `SurfaceView.apply` reads a stale tick's tiles, and the pending ones, from the newest publish's
+    buffer. That is valid because the writer keeps each parity complete as of its last publish.
+  - **Validation.** The read is seqlock-validated: that buffer's stamp must read the same newer seq before and after the
+    copy. Otherwise the tick defers as before. There is no partial apply.
+  - **No stepping back.** A later tick older than the publish just read is never read from its own, older buffer, so
+    the tops never step back.
+  - **Who may catch up.** Only the water worker, and in a batch only its last publish. Earlier stale entries defer
+    cheaply, and the last one reads their tiles along with its own.
+    - The in-thread host never catches up: its path is exactly the old one. It recovers through bursts of tick messages,
+      the last of which is fresh.
+    - A first version let every stale tick catch up. At low fps each one then paid a full apply, and the in-thread path
+      spiralled: its e2e timed out.
+  - **The healthy path is unchanged.** A reader that keeps up never takes this path; a test pins that.
+  - **Degraded mode.** In a catch-up the tops are read as of the newer publish, while the lower layers' records still
+    come with the tick messages. Until the later ticks arrive, the lower layers trail the tops by those ticks. This
+    happens only when reads are stale, which means a main thread making fewer turns per second than the sim ticks.
+  - **The clean fix, not started.** Route publishes from the sim straight to the water worker over a MessageChannel, so
+    the data path leaves the main thread; the main thread would send only its alpha.
 - **Relights.** A tick's relight goes with its publish: it is queued behind it, never ahead.
 - **No coalescing.** Consecutive publishes are deltas: each lists the tiles changed since the last, plus that one's tiles.
   `SurfaceView` must see them all, in order.
