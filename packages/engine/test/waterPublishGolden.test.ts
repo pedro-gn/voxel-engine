@@ -8,6 +8,11 @@ import { B, WATER_BLOCKS, fillGenerator, w, type Fill } from './waterHelpers.ts'
 
 /** The hash of every publish of the world below over TICKS ticks, recorded on the code before 4a round 2 #5. */
 const GOLDEN = 1262533496
+/**
+ * The hash of the simulation state (sim.hash(): voxels, columns, lower segments and their mirror, edges, tiles) after every
+ * tick of the same run, recorded on the code before 4a round 2 #5 step 2. It pins the voxel mirror and the water step.
+ */
+const GOLDEN_STATE = 770174122
 const TICKS = 160
 const SIZE: [number, number, number] = [64, 32, 32]
 
@@ -43,13 +48,18 @@ const EDITS: Record<number, { min: [number, number, number]; max: [number, numbe
   60: [{ min: [56, 1, 20], max: [60, 5, 25] }],
 }
 
+function setup() {
+  const buffers = createWorldBuffers(SIZE)
+  const sim = new Simulation({ buffers, blocks: WATER_BLOCKS, seed: 1, log: () => {}, randomTicksPerChunk: 0 })
+  const gen = fillGenerator(world)
+  sim.configure(gen, null)
+  sim.generate(gen)
+  return { buffers, sim }
+}
+
 describe('water publish golden (4a round 2 #5)', () => {
   it('publishes exactly what the code before #5 published, tick by tick', () => {
-    const buffers = createWorldBuffers(SIZE)
-    const sim = new Simulation({ buffers, blocks: WATER_BLOCKS, seed: 1, log: () => {}, randomTicksPerChunk: 0 })
-    const gen = fillGenerator(world)
-    sim.configure(gen, null)
-    sim.generate(gen)
+    const { buffers, sim } = setup()
     const n = SIZE[0] * SIZE[2], tx = SIZE[0] / TILE
     const surface = new Int32Array(buffers.water.surface), flux = new Int16Array(buffers.water.flux)
     let h = 0x811c9dc5
@@ -88,5 +98,16 @@ describe('water publish golden (4a round 2 #5)', () => {
     // The world must exercise what the hash pins: top records, lower records and hidden segments.
     expect([rank0 > 0, lower > 0, maxHidden > 0]).toEqual([true, true, true])
     expect(h).toBe(GOLDEN)
+  }, 60_000)
+
+  it('mirrors and steps exactly what the code before #5 step 2 did, tick by tick', () => {
+    const { sim } = setup()
+    let h = 0x811c9dc5, seq = 0
+    for (let tick = 0; tick < TICKS; tick++) {
+      for (const e of EDITS[tick] ?? []) sim.submit(0, ++seq, { type: 'fillRegion', min: e.min, max: e.max, voxel: AIR })
+      sim.step()
+      h = Math.imul(h ^ sim.hash(), 0x01000193) >>> 0
+    }
+    expect(h).toBe(GOLDEN_STATE)
   }, 60_000)
 })
