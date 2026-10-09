@@ -2,7 +2,7 @@ import type { WaterBuffers } from '../../world/waterBuffers.ts'
 import { moved, type WaterColumns } from './columns.ts'
 import { RANKS, SUB, TILE } from './constants.ts'
 import type { WaterEdges } from './edges.ts'
-import { linkOf } from './links.ts'
+import { LINK_GROUND, LINK_WALL, SIDE_X, SIDE_Z } from './links.ts'
 import type { UnderSegments } from './under.ts'
 
 /** One publish: its sequence number, the parity buffer it wrote, its tiles, and their layer records (3d; null without lower segments). */
@@ -52,10 +52,15 @@ export class WaterPublisher {
   private readonly hiddenOf = new Map<number, number>()
   private rec = new Int32Array(1024)
   private recN = 0
-  private readonly segs: number[] = []
-  private readonly chain: number[] = []
-  private readonly fx = new Map<number, number>()
-  private readonly fz = new Map<number, number>()
+  /**
+   * records' flux sums: water moved last step through each segment's +x / +z sides, summed over the tile's edges, by segment
+   * ref. An entry counts only when its stamp is the current tile's `gen`, so nothing is cleared between tiles.
+   */
+  private sumX = new Float64Array(0)
+  private sumZ = new Float64Array(0)
+  private stampX = new Uint32Array(0)
+  private stampZ = new Uint32Array(0)
+  private gen = 0
 
   constructor(b: WaterBuffers) {
     this.surface = new Int32Array(b.surface)
@@ -101,9 +106,11 @@ export class WaterPublisher {
   private records(tiles: readonly number[], cols: WaterColumns, U: UnderSegments, E: WaterEdges, height: number): Int32Array {
     this.recN = 0
     const n = cols.n, T = cols.tiles, sx = cols.sx, sz = cols.sz
-    const shown = (r: number) => (r < n ? this.shown[r] === 1 : U.shown[r - n] === 1)
-    // A lower segment full to its ceiling, or in a body, has no free surface: never drawn (spec §6), and a wall to its neighbours.
-    const noSurface = (r: number) => r >= n && (U.body[r - n]! >= 0 || U.depth[r - n]! >= U.cap(r - n))
+    const refs = n + U.col.length
+    if (this.sumX.length < refs) {
+      this.sumX = new Float64Array(refs); this.sumZ = new Float64Array(refs)
+      this.stampX = new Uint32Array(refs); this.stampZ = new Uint32Array(refs)
+    }
     for (const t of tiles) {
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       this.push(t)
@@ -124,40 +131,30 @@ export class WaterPublisher {
         }
       }
       // Water moved last step through each segment's +x / +z sides, summed over its edges (the dense edge for a top).
-      this.fx.clear(); this.fz.clear()
+      const gen = ++this.gen
       const L = E.tiles[t]
       if (L) for (let e = 0; e < L.count; e++) {
-        const m = moved(L.flux[e]!), a = L.a[e]!, map = L.axis[e] === 0 ? this.fx : this.fz
-        map.set(a, (map.get(a) ?? 0) + m)
+        const m = moved(L.flux[e]!), a = L.a[e]!
+        if (L.axis[e] === 0) {
+          if (this.stampX[a] === gen) this.sumX[a] = this.sumX[a]! + m
+          else { this.stampX[a] = gen; this.sumX[a] = m }
+        } else if (this.stampZ[a] === gen) this.sumZ[a] = this.sumZ[a]! + m
+        else { this.stampZ[a] = gen; this.sumZ[a] = m }
       }
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
         const c = x + z * sx, local = (x - x0) + (z - z0) * TILE
-        const fx = (r: number) => clamp16((r < n ? moved(cols.flux[2 * c]!) : 0) + (this.fx.get(r) ?? 0))
-        const fz = (r: number) => clamp16((r < n ? moved(cols.flux[2 * c + 1]!) : 0) + (this.fz.get(r) ?? 0))
-        const link = (r: number, dir: number) => {
-          const nx = x + (dir === 0 ? 1 : dir === 1 ? -1 : 0), nz = z + (dir === 2 ? 1 : dir === 3 ? -1 : 0)
-          return nx < 0 || nz < 0 || nx >= sx || nz >= sz ? 0 : linkOf(r, c, dir, cols, U, height, shown, this.segs, noSurface)
-        }
-        const record = (r: number, rank: number, surface: number, floor: number, ceil: number) => {
-          const l0 = link(r, 0), l1 = link(r, 1), l2 = link(r, 2), l3 = link(r, 3)
-          if (rank === 0 && l0 === 0 && l1 === 0 && l2 === 0 && l3 === 0) return
-          this.push(local | (rank << 8))
-          this.push(surface)
-          this.push(floor | (ceil << 16))
-          this.push((fx(r) & 0xffff) | (fz(r) << 16))
-          this.push(l0 | (l1 << 16))
-          this.push(l2 | (l3 << 16))
-          count++
-        }
-        if (U.first[c]! >= 0 || this.sideHasLower(x, z, sx, sz, U)) record(c, 0, 0, cols.floor[c]!, height)
-        const chain = U.chain(c, this.chain), k = chain.length
-        for (let j = 0; j < k; j++) {
-          const i = chain[j]!, rank = k - j
+        if ((U.first[c]! >= 0 || this.sideHasLower(x, z, sx, sz, U)) && this.record(c, 0, 0, cols.floor[c]!, height, c, x, z, local, cols, U, height)) count++
+        // Lower segments bottom-up; the one at position j of k has rank k − j (the top is rank 0).
+        let k = 0
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) k++
+        let j = 0
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!, j++) {
+          const rank = k - j
           if (U.shown[i] !== 1) continue
           if (rank >= RANKS) { hidden++; continue }
           if (U.body[i]! >= 0 || U.depth[i]! >= U.cap(i)) continue // no free surface: its slot sinks away like a dried one
           const d = U.depth[i]!
-          record(n + i, rank, U.floor[i]! * SUB + (d < SHOW_DEPTH ? SHOW_DEPTH : d), U.floor[i]!, U.ceil[i]!)
+          if (this.record(n + i, rank, U.floor[i]! * SUB + (d < SHOW_DEPTH ? SHOW_DEPTH : d), U.floor[i]!, U.ceil[i]!, c, x, z, local, cols, U, height)) count++
         }
       }
       this.rec[at] = count
@@ -166,6 +163,68 @@ export class WaterPublisher {
       else this.hiddenOf.delete(t)
     }
     return this.rec.slice(0, this.recN)
+  }
+
+  /**
+   * Pushes the record of segment ref r (rank, surface, floor, ceil) of column c at (x, z), tile-local `local`, and returns
+   * true; a top whose four links are the default (0) has none (false). A side outside the world links 0.
+   */
+  private record(r: number, rank: number, surface: number, floor: number, ceil: number, c: number, x: number, z: number, local: number,
+    cols: WaterColumns, U: UnderSegments, height: number): boolean {
+    const n = cols.n, sx = cols.sx, sz = cols.sz
+    const f = r < n ? cols.floor[r]! : U.floor[r - n]!, ce = r < n ? height : U.ceil[r - n]!
+    const S = f * SUB + (r < n ? cols.depth[r]! : U.depth[r - n]!)
+    const l0 = x + 1 < sx ? this.link(c, 0, cols, U, height, f, ce, S) : 0
+    const l1 = x > 0 ? this.link(c, 1, cols, U, height, f, ce, S) : 0
+    const l2 = z + 1 < sz ? this.link(c, 2, cols, U, height, f, ce, S) : 0
+    const l3 = z > 0 ? this.link(c, 3, cols, U, height, f, ce, S) : 0
+    if (rank === 0 && l0 === 0 && l1 === 0 && l2 === 0 && l3 === 0) return false
+    const g = this.gen
+    const fx = clamp16((r < n ? moved(cols.flux[2 * c]!) : 0) + (this.stampX[r] === g ? this.sumX[r]! : 0))
+    const fz = clamp16((r < n ? moved(cols.flux[2 * c + 1]!) : 0) + (this.stampZ[r] === g ? this.sumZ[r]! : 0))
+    this.push(local | (rank << 8))
+    this.push(surface)
+    this.push(floor | (ceil << 16))
+    this.push((fx & 0xffff) | (fz << 16))
+    this.push(l0 | (l1 << 16))
+    this.push(l2 | (l3 << 16))
+    return true
+  }
+
+  /**
+   * The link on side dir of a segment of column c (floor f, ceiling ce, surface S in 1/SUB block), the neighbour lying in
+   * the world (plan decision 13 of 3d). Among the neighbour's segments overlapping the run [f, ce):
+   * - the one with the highest floor below S, else the lowest;
+   * - its rank when it is a top or drawn (U.shown);
+   * - LINK_GROUND | its floor when it is a dry lower one;
+   * - LINK_WALL when none overlaps, when the one met ranks past RANKS − 1, when its ceiling is at or under S, or when it is a
+   *   lower segment full to its ceiling or in a body (no free surface).
+   * The neighbour's chain is walked once, bottom-up then its top, counting ranks on the way; on a tie the first met wins.
+   * The golden publish hash (waterPublishGolden.test.ts) pins it to 3d's reference.
+   */
+  private link(c: number, dir: number, cols: WaterColumns, U: UnderSegments, height: number, f: number, ce: number, S: number): number {
+    const n = cols.n, nc = c + SIDE_X[dir]! + SIDE_Z[dir]! * cols.sx
+    let best = -1, bestF = -1, bestP = -1, low = -1, lowF = Infinity, lowP = -1, k = 0
+    for (let i = U.first[nc]!; i >= 0; i = U.next[i]!, k++) {
+      const rf = U.floor[i]!, rc = U.ceil[i]!
+      if (rf >= ce || rc <= f || rf >= rc) continue
+      if (rf * SUB < S && rf > bestF) { best = n + i; bestF = rf; bestP = k }
+      if (rf < lowF) { low = n + i; lowF = rf; lowP = k }
+    }
+    const tf = cols.floor[nc]!
+    if (!(tf >= ce || height <= f || tf >= height)) {
+      if (tf * SUB < S && tf > bestF) { best = nc; bestF = tf; bestP = k }
+      if (tf < lowF) { low = nc; lowF = tf; lowP = k }
+    }
+    const m = best >= 0 ? best : low
+    if (m < 0) return LINK_WALL
+    // k lower segments: the one at position p (bottom-up) has k − p segments from the top, itself included.
+    const rank = m < n ? 0 : k - (best >= 0 ? bestP : lowP)
+    if (rank >= RANKS) return LINK_WALL
+    if (m < n) return height * SUB <= S ? LINK_WALL : 0
+    const i = m - n
+    if (U.ceil[i]! * SUB <= S || U.body[i]! >= 0 || U.depth[i]! >= U.cap(i)) return LINK_WALL
+    return U.shown[i] === 1 ? rank : LINK_GROUND | U.floor[i]!
   }
 
   /** Whether a column of the tile at (x0, z0), or of the columns just outside its four sides, has a lower segment. */
