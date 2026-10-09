@@ -13,6 +13,8 @@ test.skip(!process.env.BENCH_WATER_AB, 'set BENCH_WATER_AB=1 for the water worke
 
 /** ABBA then BABA; WATER_AB_ORDER overrides it (e.g. 'AB' for a smoke check of the spec itself). */
 const ORDER = process.env.WATER_AB_ORDER ?? 'ABBABABA'
+/** How many leading runs record video; WATER_AB_VIDEO_RUNS=0 for the second half of an order split across two invocations. */
+const VIDEO_RUNS = Number(process.env.WATER_AB_VIDEO_RUNS ?? 2)
 const WINDOWS: [string, 'far' | 'dam' | 'tower', Event, number][] = [
   ['work-far', 'far', 'startWork', 15_000], ['dam', 'dam', 'breach', 20_000], ['collapse', 'tower', 'collapse', 15_000],
 ]
@@ -69,7 +71,7 @@ test('water host in-thread (A) against in its worker (B), alternating', async ({
   const runs = []
   for (let i = 0; i < ORDER.length; i++) {
     const build = ORDER[i]!
-    const { windows, errors } = await runPage(browser, build, i < 2)
+    const { windows, errors } = await runPage(browser, build, i < VIDEO_RUNS)
     runs.push({ run: i + 1, build, windows, errors })
     console.log(`run ${i + 1} ${build}`, JSON.stringify(windows))
   }
