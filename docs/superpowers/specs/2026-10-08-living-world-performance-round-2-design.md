@@ -220,9 +220,18 @@ so the sandbox does not change. It owns:
 water while N is still in the worker, the main thread does not forward it. A slow frame or GC can bunch ticks; a dam
 apply takes ~20 ms against a 50 ms tick.
 - **Queueing.** The main thread appends N + 1's `{ tick, water }` to a FIFO.
-- **Forwarding.** Right after N's copy, the main thread forwards the head of the FIFO. Its `shown` is computed then: the
-  alpha on screen after N's copy, which is 0. Only one request is ever in flight, so publishes apply in tick order and each
-  `shown` matches the screen.
+- **Forwarding (amended 2026-10-09, batched).** Right after N's copy, the main thread forwards the whole FIFO as one
+  request: its entries in tick order, with `shown` computed then (the alpha on screen after N's copy, 0 when N applied).
+  - The worker applies the entries in turn. The first starts from `shown`; each one after an applied publish starts from
+    0. That is exactly what one-entry requests a round trip apart would give, with no frame between them.
+  - The worker packs once, after the last entry, so the reply carries every key any entry changed, at its final data.
+  - The reply says per entry whether its publish applied. The main thread runs each entry's hooks in tick order: applied
+    for the ones that applied, the clock's release for ticks without a publish.
+  - Only one request is ever in flight, so publishes still apply in tick order.
+  - **Why.** The first design forwarded only the FIFO's head, one tick per round trip. A round trip needs main-thread
+    turns, so on a main thread making fewer turns per second than the sim ticks, the FIFO grew without bound.
+    Headless SwiftShader, at ~1.4 fps, makes about two round trips a second. There, the flood scene's first water never
+    showed: its FIFO grew by ~18 a second. With batching, one round trip clears the whole backlog.
 - **Relights.** A tick's relight goes with its publish: it is queued behind it, never ahead.
 - **No coalescing.** Consecutive publishes are deltas: each lists the tiles changed since the last, plus that one's tiles.
   `SurfaceView` must see them all, in order.
@@ -231,7 +240,8 @@ apply takes ~20 ms against a 50 ms tick.
   - It is then deferred and read from the next publish's buffer, exactly as today's recovery does on the main thread.
   - So a long queue degrades into today's tested recovery path, not into wrong data.
 - **Lag with a queue.** `waterLagMs` runs from the tick message's arrival to the first frame that draws its step, so it
-  includes the time spent queued. A growing queue shows up in the stat's p95.
+  includes the time spent queued. A growing queue shows up in the stat's p95. With batching, every applied publish in
+  a reply is one sample, measured to the frame that first draws it.
 - **Queue length.** A new stat `waterQueue` (current length, and the max over the last 200 ticks) is appended in the water
   path, so the benchmark can see bunching.
 - **Test.** A Node test of the main-side scheduler (`WaterLink`, pure, with a fake worker port):
