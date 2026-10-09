@@ -27,6 +27,18 @@ it('an open floor region has 256 poses and exits on its four sides in runs of at
   expect(costs.every(c => c !== UNREACHED)).toBe(true)
   r.exits.forEach((e, i) => { const [x, , z] = layout.voxelCoords(e.from); expect(costs[i]).toBe((x - 16 + z - 16) * 4) })
 })
+it('crossings whose heights alternate by one block still join into runs of 8 when they step to each other', () => {
+  const { nav, layout, solid } = fixture()
+  for (let x = 0; x < 64; x++) for (let z = 1; z < 64; z += 2) solid.add(layout.voxelIndex(x, 4, z))
+  const r = build(nav, nav.tileOf(16, 4, 16))
+  expect(r.poses.length).toBe(256)
+  expect(r.exits).toHaveLength(8)
+  // A ledge two blocks high cannot be climbed: its crossings stay apart from the floor's.
+  for (let x = 0; x < 64; x++) for (let y = 4; y < 7; y++) solid.add(layout.voxelIndex(x, y, 20))
+  nav.invalidateBox(0, 4, 20, 63, 6, 20)
+  const s = build(nav, nav.tileOf(16, 4, 16))
+  expect(s.exits.length).toBeGreaterThan(8)
+})
 it('a drop is a one-way exit: the lower region has no exit back up the cliff', () => {
   const { nav, layout, solid } = fixture()
   // Upper shelf x < 16 at y=4..5 (top at 6), lower floor x >= 16 at y=4.

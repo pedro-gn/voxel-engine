@@ -20,6 +20,8 @@ export interface Region {
   fields: Uint16Array
   /** More runs than an exit key can address: searches that need this region end limited. */
   overflow: boolean
+  /** Bit k set when tile SOURCES[k] may hold poses that step into this region (conservative, from this region's poses). */
+  sources: number
   bytes: number
 }
 /** Exit keys used by route and group searches: 1 + region * 4096 + exit index. */
@@ -30,6 +32,17 @@ export const localOf = (L: Layout, p: number): number => { const [x, y, z] = L.v
 export const slotOf = (region: Region, p: number, L: Layout): number => {
   const slot = region.slots[localOf(L, p)]!
   return slot >= 0 && region.poses[slot] === p ? slot : -1
+}
+/** Tiles whose poses can step into a tile: the tile below or above, or a face neighbour one tile down, level or up. */
+export const SOURCES: readonly (readonly [number, number, number])[] = [[0, -1, 0], [0, 1, 0], ...[-1, 0, 1].flatMap(dy => [[1, dy, 0], [-1, dy, 0], [0, dy, 1], [0, dy, -1]] as [number, number, number][])]
+/** Climbs rise one block and drops fall at most two: which source tiles can land on a pose at local (x, y, z). */
+function sourceBits(x: number, y: number, z: number): number {
+  let bits = 0
+  SOURCES.forEach(([dx, dy, dz], k) => {
+    const face = dx === 1 ? x === 15 : dx === -1 ? x === 0 : dz === 1 ? z === 15 : dz === -1 ? z === 0 : true
+    if (face && (dy === 0 ? dx !== 0 || dz !== 0 : dy < 0 ? y === 0 : y >= 14)) bits |= 1 << k
+  })
+  return bits
 }
 interface Crossing { slot: number; d: number; to: number; cost: number; target: number; sy: number; ty: number; along: number; across: number }
 type Phase = 'poses' | 'edges' | 'exits' | 'reverse' | 'fields' | 'done'
@@ -55,9 +68,10 @@ export class RegionBuild {
   private fill = new Int32Array(0)
   private crossings: Crossing[] = []
   private exits: Exit[] = []
-  private runs: Crossing[] = []
+  private runs: Crossing[][] = []
   private fields = new Uint16Array(0)
   private overflow = false
+  private sources = 0
   private readonly heap = new IdHeap()
   private field = 0
   private expanding = -1
@@ -70,7 +84,7 @@ export class RegionBuild {
   }
   private restart(): void {
     this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0
-    this.slots = new Int16Array(4096).fill(-1); this.crossings = []; this.exits = []; this.runs = []; this.overflow = false
+    this.slots = new Int16Array(4096).fill(-1); this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0
     this.heap.clear(); this.field = 0; this.expanding = -1; this.edge = 0
   }
   private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) }
@@ -83,7 +97,7 @@ export class RegionBuild {
       used++
       if (this.phase === 'poses') {
         const c = this.cursor++, x = ox + (c & 15), z = oz + ((c >> 4) & 15), y = oy + (c >> 8)
-        if (this.nav.stand(x, y, z)) { this.slots[c] = this.count; this.locals[this.count++] = c }
+        if (this.nav.stand(x, y, z)) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
         if (this.cursor === 4096) {
           const P = this.count
           this.poses = new Int32Array(P); this.next = new Int16Array(P * 4).fill(-1); this.degree = new Int32Array(P)
@@ -101,13 +115,8 @@ export class RegionBuild {
         this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
       } else if (this.phase === 'exits') {
         const cr = this.crossings
-        if (this.cursor < cr.length) {
-          const c = cr[this.cursor++]!, last = this.runs.at(-1)
-          if (last && (this.runs.length === RUN || c.d !== last.d || c.target !== last.target || c.sy !== last.sy || c.ty !== last.ty || c.along !== last.along || c.across !== last.across + 1)) this.closeRun()
-          this.runs.push(c)
-          continue
-        }
-        if (this.runs.length) this.closeRun()
+        if (this.cursor < cr.length) { this.extend(cr[this.cursor++]!); continue }
+        while (this.runs.length) this.closeRun(0)
         if (this.exits.length > MAX_EXITS) { this.overflow = true; this.exits = [] }
         const P = this.count
         this.revStart = new Int32Array(P + 1)
@@ -139,11 +148,30 @@ export class RegionBuild {
     return used
   }
   private sortCrossings(): void {
-    this.crossings.sort((a, b) => a.d - b.d || a.target - b.target || a.sy - b.sy || a.ty - b.ty || a.along - b.along || a.across - b.across)
+    this.crossings.sort((a, b) => a.d - b.d || a.target - b.target || a.along - b.along || a.across - b.across || a.sy - b.sy || a.ty - b.ty)
   }
-  private closeRun(): void {
-    const c = this.runs[Math.floor(this.runs.length / 2)]!
-    this.exits.push({ from: this.poses[c.slot]!, to: c.to, cost: c.cost, target: c.target }); this.runs = []
+  /**
+   * Adds a crossing to an open run of the same face and target whose last crossing is its neighbour across the face,
+   * with edges both ways between their sources and between their targets: every crossing of a run then reaches its
+   * representative and back, on both sides, so one exit per run keeps reachability exact.
+   */
+  private extend(c: Crossing): void {
+    const runs = this.runs, first = runs[0]?.[0]
+    if (first && (first.d !== c.d || first.target !== c.target || first.along !== c.along)) while (runs.length) this.closeRun(0)
+    for (let i = 0; i < runs.length;) { if (runs[i]!.at(-1)!.across < c.across - 1) this.closeRun(i); else i++ }
+    const up = c.d < 2 ? 2 : 0, down = up + 1
+    const run = runs.find(r => {
+      const last = r.at(-1)!
+      return last.across === c.across - 1 && this.next[last.slot * 4 + up] === c.slot && this.next[c.slot * 4 + down] === last.slot
+        && this.nav.neighbor(last.to, up) === c.to && this.nav.neighbor(c.to, down) === last.to
+    })
+    if (run) run.push(c); else runs.push([c])
+    const full = runs.findIndex(r => r.length === RUN)
+    if (full >= 0) this.closeRun(full)
+  }
+  private closeRun(i: number): void {
+    const run = this.runs.splice(i, 1)[0]!, c = run[Math.floor(run.length / 2)]!
+    this.exits.push({ from: this.poses[c.slot]!, to: c.to, cost: c.cost, target: c.target })
   }
   private seed(): void {
     if (this.field >= this.exits.length) return
@@ -152,12 +180,12 @@ export class RegionBuild {
   }
   result(): Region {
     if (!this.done) throw new Error('region build is not done')
-    const r: Region = { index: this.index, epoch: this.epoch, slots: this.slots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, bytes: 0 }
+    const r: Region = { index: this.index, epoch: this.epoch, slots: this.slots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
     r.bytes = r.slots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32
     return r
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.index); mix(this.epoch); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length)
+    mix(this.index); mix(this.epoch); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length); mix(this.sources)
     mix(this.field); mix(this.expanding); mix(this.edge); this.heap.mixState(mix)
   }
 }
