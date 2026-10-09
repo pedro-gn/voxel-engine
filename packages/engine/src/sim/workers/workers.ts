@@ -415,10 +415,12 @@ export class WorkerSystem {
       const pos: Vec3 = [x + dx, yy, z + dz]
       if (!this.canWork(pos, t)) continue
       const p = this.port.layout.voxelIndex(...pos)
-      if (ignoreOccupancy || (!this.occupied.has(p) || this.occupied.get(p) === u.id) && (!this.workPositions.has(p) || this.workPositions.get(p) === u.id)) out.push(p)
+      if (ignoreOccupancy || (!this.occupied.has(p) || this.occupied.get(p) === u.id) && (!this.workPositions.has(p) || this.workPositions.get(p) === u.id) && !this.poseHeld(p, u)) out.push(p)
     }
     return out
   }
+  /** Hook for the reservation table: whether another unit holds pose p (untimed hold). No table yet, so never. */
+  private poseHeld(_p: number, _u: Unit): boolean { return false }
   /** Nav tiles whose edges decide whether the task's work poses are reachable from nearby. */
   private tilesAround(pos: Vec3): Map<number, number> {
     const [sx, sy, sz] = this.port.layout.size, tiles = new Map<number, number>()
