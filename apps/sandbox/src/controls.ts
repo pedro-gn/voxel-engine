@@ -39,6 +39,8 @@ export function createControls(engine: Engine, o: { collapsed?: boolean } = {}):
   input.style.width = '6em'
   const shown = () => Number.isFinite(engine.quality.viewDistance) ? String(engine.quality.viewDistance) : ''
   input.value = shown()
+  // An R set elsewhere (?view=, the engine API) shows here too, except while the field is being edited.
+  engine.on('frame', () => { if (document.activeElement !== input && input.value !== shown()) input.value = shown() })
   input.addEventListener('change', () => {
     const v = input.value.trim() === '' ? Infinity : Number(input.value)
     try { engine.quality = { viewDistance: v } } catch { input.value = shown() }

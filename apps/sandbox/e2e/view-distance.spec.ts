@@ -61,8 +61,13 @@ test('a finite view distance draws less, hides batches beyond it, ties camera.fa
   expect(near).toBeLessThan(all)
   expect(state.beyond).toBe(0)
   expect(state.far).toBe(320)
+  // The sandbox's view field follows an R set through the API, not only one typed into it.
+  await frames(page)
+  expect(await page.inputValue('#view-distance')).toBe('256')
   await view(page, -1)
   expect(await drawn(page)).toBe(all)
+  await frames(page)
+  expect(await page.inputValue('#view-distance')).toBe('')
   expect(await page.evaluate(() => (window as W).__elovox!.engine.camera.far)).toBe(3000)
   expect(errors).toEqual([])
 })
