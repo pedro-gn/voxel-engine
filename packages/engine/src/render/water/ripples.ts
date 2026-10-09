@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu'
 import { Fn, If, exp, float, max, normalize, step, uniform, uniformArray, vec2, vec3 } from 'three/tsl'
-import type { SurfaceView } from './surfaceView.ts'
+import type { SurfaceSource } from './surfaceMirror.ts'
 
 /** Loose TSL node type (see voxelLighting.ts). */
 type N = any
@@ -36,7 +36,7 @@ export function rippleHeightWeight(dy: number): number {
  * one nearest the block when several are). A block dropped in or pulled out of the surface counts; a deck a few blocks above
  * the lake, or a block far under it, does not.
  */
-export function waterLineSurface(view: SurfaceView, x: number, y: number, z: number): number | null {
+export function waterLineSurface(view: Pick<SurfaceSource, 'surfaceNear'>, x: number, y: number, z: number): number | null {
   let best: number | null = null
   for (let k = 0; k < 5; k++) {
     // The slot nearest the block (3d: under a bridge, the lake, not the deck above it).
@@ -48,7 +48,7 @@ export function waterLineSurface(view: SurfaceView, x: number, y: number, z: num
 }
 
 /** Whether a block edited at (x, y, z) is at a water line (see waterLineSurface). */
-export function atWaterLine(view: SurfaceView, x: number, y: number, z: number): boolean {
+export function atWaterLine(view: Pick<SurfaceSource, 'surfaceNear'>, x: number, y: number, z: number): boolean {
   return waterLineSurface(view, x, y, z) !== null
 }
 
@@ -62,7 +62,7 @@ export type EditCommand =
  * cells of its shell (the region's sides), spaced RIPPLE_SPACING apart and at most REGION_RIPPLES of them, so one edit cannot
  * take the whole pool. An edit that changes nothing (`get` already gives its voxel there) rings nothing.
  */
-export function editRipples(view: SurfaceView, set: RippleSet, cmd: EditCommand, get: (x: number, y: number, z: number) => number): void {
+export function editRipples(view: Pick<SurfaceSource, 'surfaceNear'>, set: RippleSet, cmd: EditCommand, get: (x: number, y: number, z: number) => number): void {
   if (cmd.type === 'setBlock') {
     const [x, y, z] = cmd.pos
     if (get(x, y, z) === cmd.voxel) return

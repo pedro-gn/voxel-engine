@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore, WorldFullError } from '../src/world/chunkStore.ts'
+import { CHUNK_VOLUME } from '../src/world/layout.ts'
 import { AIR, FULL_SKY } from '../src/world/voxel.ts'
 import { ID, testRegistry } from './helpers.ts'
 
@@ -189,5 +190,48 @@ describe('ChunkStore', () => {
     store.setVoxelQuiet(1, 31, 1, ID.water)
     store.commit()
     expect(store.slotOf(0)).toBe(-1)
+  })
+
+  it('collapses a chunk exactly when a full scan finds it uniform, under random writes (4a-r2 #5 step 3c)', () => {
+    // A seeded walk over one 32³ chunk of four voxels, none opaque (so light never blocks a collapse): writes to voxel 0, to
+    // cells that differ from it (whichever the store remembers among them), and writes that make the chunk uniform again.
+    // After every commit the store's decision must be the full scan's, and its cells must be the model's.
+    const store = new ChunkStore({ buffers: createWorldBuffers([32, 32, 32]), opaque: new Uint8Array(4096) })
+    const model = new Uint16Array(CHUNK_VOLUME)
+    let seed = 0x5eed
+    const rand = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) % n
+    }
+    // The cells ever written; at most 32 of them, so the walk keeps returning to the same few (the remembered one among them).
+    const touched: number[] = [0]
+    const write = (i: number, v: number) => {
+      store.setVoxel(i & 31, i >> 10, (i >> 5) & 31, v)
+      model[i] = v
+      if (!touched.includes(i)) touched.push(i)
+    }
+    const at = (i: number) => store.getVoxel(i & 31, i >> 10, (i >> 5) & 31)
+    let collapsed = 0, kept = 0
+    for (let round = 0; round < 2000; round++) {
+      for (let k = 1 + rand(3); k > 0; k--) {
+        const op = rand(touched.length > 8 ? 5 : 4)
+        if (op === 0) write(0, rand(4)) // voxel 0 itself
+        else if (op === 1) write(touched[rand(touched.length)]!, model[0]!) // a cell back to voxel 0's value
+        else if (op === 2 && touched.length < 32) write(rand(CHUNK_VOLUME), rand(4)) // anywhere
+        else if (op <= 3) write(touched[rand(touched.length)]!, rand(4)) // a cell written before, maybe the remembered one
+        else for (const i of [...touched]) write(i, model[0]!) // uniform again
+      }
+      store.commit()
+      const uniform = model.every(v => v === model[0]) // the full scan
+      expect(store.slotOf(0) < 0).toBe(uniform)
+      if (uniform) collapsed++
+      else kept++
+      const bad = touched.filter(i => at(i) !== model[i])
+      expect(bad).toEqual([])
+    }
+    // The walk must exercise both decisions many times.
+    expect([collapsed > 100, kept > 100]).toEqual([true, true])
   })
 })

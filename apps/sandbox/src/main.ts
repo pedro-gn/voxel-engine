@@ -79,6 +79,8 @@ const engine = await createEngine({
   gpuTiming: params.has('gpu'),
   // ?nobatch: one mesh per chunk layer instead of region batches (the before/after of perf candidate #3).
   batchChunks: !params.has('nobatch'),
+  // ?nowaterworker: the water host runs on the main thread (the before of 4a-r2 #2's A/B).
+  waterWorker: !params.has('nowaterworker'),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
   // render at full resolution (~14 layers ≈ 19 MB with mipmaps).
   tileSize: 512,

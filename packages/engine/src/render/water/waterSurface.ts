@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu'
 import { ARC_GAP, ARC_REACH, ARC_SEGMENTS } from './surfaceMesh.ts'
-import type { ColumnData, SurfaceView } from './surfaceView.ts'
+import type { ColumnData } from './surfaceView.ts'
+import type { SurfaceSource } from './surfaceMirror.ts'
 
 /** Base quad corners, in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z). */
 const CORNERS = [0, 1, 2, 3]
@@ -130,13 +131,13 @@ function uploadRows(a: THREE.BufferAttribute, start: number, count: number): voi
  */
 export class WaterSurface {
   readonly group = new THREE.Group()
-  private readonly view: SurfaceView
+  private readonly view: SurfaceSource
   private readonly height: number
   private readonly slots = new Map<number, Slot>()
   private surfaceMaterial: THREE.Material
   private curtainMaterial: THREE.Material
 
-  constructor(height: number, view: SurfaceView, surface: THREE.Material, curtain: THREE.Material) {
+  constructor(height: number, view: SurfaceSource, surface: THREE.Material, curtain: THREE.Material) {
     this.height = height
     this.view = view
     this.surfaceMaterial = surface

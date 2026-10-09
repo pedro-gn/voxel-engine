@@ -30,6 +30,8 @@ export class ChunkStore {
   private readonly dirty = new Set<number>()
   /** Chunks opened only by quiet writes since the last commit: their versions move, but commit() asks for no remesh. */
   private readonly quiet = new Set<number>()
+  /** Per slot: a cell its last tryCollapse found differing from voxel 0 (0: none known), checked first next time. */
+  private witness = new Uint16Array(0)
 
   constructor(o: ChunkStoreOptions) {
     this.layout = new Layout(o.buffers.size)
@@ -207,7 +209,12 @@ export class ChunkStore {
     if (e < 0) return
     const vox = this.views.voxels(e)
     const v0 = vox[0]!
-    for (let i = 1; i < CHUNK_VOLUME; i++) if (vox[i] !== v0) return
+    // The slot's witness, the cell its last scan found differing from voxel 0, is only a hint checked against the cells now:
+    // a stale one (rewritten, or from the slot's previous chunk) just falls through to the full scan.
+    if (e >= this.witness.length) { const w = new Uint16Array(Math.max(64, e * 2)); w.set(this.witness); this.witness = w }
+    const w = this.witness[e]!
+    if (w !== 0 && vox[w] !== v0) return
+    for (let i = 1; i < CHUNK_VOLUME; i++) if (vox[i] !== v0) { this.witness[e] = i; return }
     const l0 = impliedLight(v0, this.opaque)
     const light = this.views.light(e)
     for (let i = 0; i < CHUNK_VOLUME; i++) if (light[i] !== l0) return

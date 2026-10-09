@@ -164,6 +164,9 @@ export class SimHost {
       case 'setPaused':
         this.sim?.setPaused(msg.paused === true)
         return
+      case 'waterResync':
+        this.sim?.water.republishAll()
+        return
       case 'genLost': {
         const pool = this.pool
         if (!pool) return

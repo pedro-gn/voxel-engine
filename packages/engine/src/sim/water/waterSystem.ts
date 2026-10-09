@@ -389,6 +389,12 @@ export class WaterSystem {
     return out
   }
 
+  /**
+   * The next flush publishes every tile, with its layer records, as the first publish after generation does: for a water
+   * view that starts over (a respawned water worker, 4a-r2 #2). `dirty` is publish bookkeeping, not world state (tiles.ts).
+   */
+  republishAll(): void { this.cols.tiles.dirty.fill(1) }
+
   /** The conservation identity and non-negative depths (spec §8). Whole world: for debug builds and tests. */
   check(): string[] {
     const out: string[] = []

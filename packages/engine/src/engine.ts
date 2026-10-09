@@ -19,7 +19,10 @@ import { FallingTrack } from './render/fallingTrack.ts'
 import { FragmentTrack } from './render/fragmentTrack.ts'
 import type { ChunkMeshData } from './mesh/mesher.ts'
 import { SimClock, stepAlpha } from './render/simClock.ts'
-import { SurfaceView } from './render/water/surfaceView.ts'
+import { SurfaceMirror } from './render/water/surfaceMirror.ts'
+import { WaterHost, type WaterReply } from './render/water/waterHost.ts'
+import { WaterLink } from './render/water/waterLink.ts'
+import type { ToWater } from './render/water/water.worker.ts'
 import { CostMeter } from './render/costMeter.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
 import { buildTextureArray } from './render/textureArray.ts'
@@ -63,6 +66,11 @@ export interface EngineOptions {
    * (far fewer render objects, less CPU per frame). Same picture either way. Default true.
    */
   batchChunks?: boolean
+  /**
+   * Apply the water publishes in a dedicated worker (4a-r2 #2): the main thread only copies changed rows. False: the same
+   * host runs in-thread, the A of the A/B. Default true.
+   */
+  waterWorker?: boolean
 }
 
 export interface EngineEvents {
@@ -100,10 +108,21 @@ export interface EngineStats {
   waterLayersHidden: number
   /** True while a water tile was awake, a region job queued or a block falling after the last tick. */
   physicsBusy: boolean
-  /** Main-thread cost (ms) of reading a water publish into the surface view: the last one and the p95 of the last 200. */
+  /**
+   * Main-thread cost (ms) of a water publish: the copy of the host's reply, plus the host's own cost when it runs in-thread.
+   * The last one and the p95 of the last 200.
+   */
   waterApplyMs: number; waterApplyP95: number
   /** GPU render time in ms; null when not tracked or unsupported. */
   gpuMs: number | null
+  /** The water host's cost (ms) per request (apply + relights + packing), in the worker or in-thread: last and p95. */
+  waterHostMs: number; waterHostP95: number
+  /** From a tick message's arrival to the first frame that draws its water step (ms), queue wait included: last and p95. */
+  waterLagMs: number; waterLagP95: number
+  /** Water requests in flight or queued, now and the most over the last 200 ticks. */
+  waterQueue: number; waterQueueMax: number
+  /** Whether the water host runs in a worker (EngineOptions.waterWorker). */
+  waterInWorker: boolean
 }
 
 export interface Engine {
@@ -165,6 +184,8 @@ const MAX_FAILURES = 3
 /** Per pool slot: consecutive worker crashes before the engine gives up. */
 const MAX_WORKER_CRASHES = 3
 const NO_CUSTOM_COMMANDS: ReadonlySet<string> = new Set()
+/** @internal The water worker crash hook's key (see the end of createEngine). */
+const WATER_CRASH = Symbol.for('elovox.waterCrash')
 
 class Emitter<E> {
   private readonly fns = new Map<keyof E, Set<(e: never) => void>>()
@@ -216,25 +237,50 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const falling = new FallingTrack(tickMs, clock)
   const fragments = new FragmentTrack(clock)
   const stagedSources = new Map<number, ChunkMeshData>()
-  // Made before the sim starts, so it reads the first publish after generation, which lists every tile once.
-  const waterView = new SurfaceView(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs)
+  // The water's draw data: copied from a WaterHost, in a worker or in-thread (4a-r2 #2). The host is made before the sim
+  // starts, so it reads the first publish after generation, which lists every tile once.
+  const surfaceMirror = new SurfaceMirror(size, buffers.water)
+  const inWorker = o.waterWorker ?? true
   /** The sim tick of the last water publish applied: the surface moves from the step before it to it (stepAlpha). */
   let waterTick: number | null = null
   /** The waterAlpha on screen: an apply starts the new step from it, after which alpha 0 shows the same heights. */
   let waterShown = 1
-  /** Per chunk column, the layers [lo, hi) of the dirty chunks in it (relightWater's scratch). */
+  /** Per chunk column, the layers [lo, hi) of the dirty chunks in it (relightRanges' scratch). */
   const relightRange = new Map<number, [number, number]>()
-  /** Re-reads the water's light where the sim changed voxel light (dirty chunks): still water is not republished. */
-  const relightWater = (chunks: readonly number[]) => {
-    if (chunks.length === 0) return
+  /** The light ranges [cc, y0, y1]* where the sim changed voxel light (dirty chunks): still water is not republished. */
+  const relightRanges = (chunks: readonly number[]): number[] => {
+    if (chunks.length === 0) return []
     for (const ci of chunks) {
       const [cx, cy, cz] = layout.chunkCoords(ci)
-      const cc = cx + cz * waterView.cx, r = relightRange.get(cc)
+      const cc = cx + cz * surfaceMirror.cx, r = relightRange.get(cc)
       if (r) { r[0] = Math.min(r[0], cy * 32); r[1] = Math.max(r[1], cy * 32 + 32) } else relightRange.set(cc, [cy * 32, cy * 32 + 32])
     }
-    for (const [cc, [lo, hi]] of relightRange) waterView.relight(cc, lo, hi)
+    const out: number[] = []
+    for (const [cc, [lo, hi]] of relightRange) out.push(cc, lo, hi)
     relightRange.clear()
+    return out
   }
+  const waterApply = new CostMeter(200), waterHostCost = new CostMeter(200), waterLag = new CostMeter(200)
+  /** The arrival times of the publishes applied since the last frame, which draws them first (waterLag: one sample each, queue wait included). */
+  const lagFrom: number[] = []
+  /** The in-thread host (waterWorker false); otherwise the worker (spawned with the pools) and its crash count. */
+  const localHost = inWorker ? null : new WaterHost(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs, surfaceMirror.surfaces)
+  let waterWorker: Worker | null = null, waterCrashes = 0
+  const waterLink: WaterLink = new WaterLink({
+    post: (req) => {
+      if (localHost) waterLink.receive(localHost.handle(req))
+      else waterWorker?.postMessage(req satisfies ToWater)
+    },
+    copy: (reply, publish) => {
+      const t0 = performance.now()
+      surfaceMirror.copy(reply)
+      waterHostCost.record(reply.hostMs)
+      if (publish) waterApply.record(performance.now() - t0 + (localHost ? reply.hostMs : 0))
+    },
+    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(surfaceMirror, tick + 1); lagFrom.push(arrived) },
+    settled: () => clock.hold(surfaceMirror, null), // every tile settled (prev = cur): nothing to time
+    shown: () => waterShown,
+  })
   const events = new Emitter<EngineEvents>()
   const pages: SharedArrayBuffer[] = []
 
@@ -288,7 +334,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     faceLayers,
-    water: waterView,
+    water: surfaceMirror,
     batchChunks: o.batchChunks ?? true,
   })
 
@@ -312,6 +358,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     halted = true
     renderer.setAnimationLoop(null)
     sim.terminate()
+    waterWorker?.terminate()
     for (const s of pool) s.worker.terminate()
     for (const w of genWorkers) w.terminate()
   }
@@ -386,6 +433,28 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const poolSize = o.meshWorkers ?? Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 2))
   for (let i = 0; i < poolSize; i++) spawn(i, 0)
 
+  // ---- water worker (4a-r2 #2) ----
+  const spawnWater = (): Worker => {
+    const worker = new Worker(new URL('./render/water/water.worker.ts', import.meta.url), { type: 'module' })
+    const lost = (reason: string) => {
+      worker.terminate()
+      if (halted || waterWorker !== worker) return
+      // One respawn: the new view starts empty and the sim republishes every tile (spec 4.5). A second loss is fatal.
+      if (++waterCrashes >= 2) { fail(`water worker crashed twice: ${reason}`); return }
+      console.error(`[elovox] water worker lost (${reason}); restarting it`)
+      waterLink.reset()
+      surfaceMirror.reset()
+      waterWorker = spawnWater()
+      sim.postMessage({ type: 'waterResync' } satisfies ToSim)
+    }
+    worker.onmessage = (e: MessageEvent<WaterReply>) => { if (waterWorker === worker) waterLink.receive(e.data) }
+    worker.onerror = (e) => { e.preventDefault(); lost(e.message || 'the worker failed to load or crashed') }
+    worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
+    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, pages: [...pages], stepHz: 1000 / tickMs, surfaces: surfaceMirror.surfaces } satisfies ToWater)
+    return worker
+  }
+  if (inWorker) waterWorker = spawnWater()
+
   // ---- generation workers (optional) ----
   const genPorts: MessagePort[] = []
   if (o.genWorker) {
@@ -418,7 +487,6 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   // ---- sim worker ----
   let lastTick = 0, lastTickMs = 0, slotsUsed = 0
   let physicsStats: Extract<FromSim, { type: 'tick' }>['physics'] = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
-  const waterApply = new CostMeter(200)
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
     switch (m.type) {
@@ -426,6 +494,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         pages[m.index] = m.page
         reader.addPage(m.index, m.page)
         for (const s of pool) s.worker.postMessage({ type: 'page', index: m.index, page: m.page } satisfies ToMesh)
+        waterWorker?.postMessage({ type: 'page', index: m.index, page: m.page } satisfies ToWater)
         break
       case 'ready':
         generated = true
@@ -443,13 +512,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         markTick(m, CLIENT_ID, ghosts, markDirty)
         falling.update(m.tick, m.falling, m.landed, performance.now())
         fragments.update(m.tick, m.collapse, performance.now())
-        if (m.water) {
-          // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
-          const t0 = performance.now(), applied = waterView.apply(m.water, waterShown)
-          waterApply.record(performance.now() - t0)
-          if (applied) { waterTick = m.tick; waterShown = 0; clock.hold(waterView, m.tick + 1) }
-        } else clock.hold(waterView, null) // every tile settled (prev = cur): nothing to time
-        relightWater(m.dirtyChunks)
+        // While the water moves it holds the clock at the end of its step: a late publish holds it, nothing is extrapolated.
+        // The host applies it, then the tick's relights; the link calls back applied/settled in tick order (spec 4.1).
+        waterLink.submit(m.tick, m.water, relightRanges(m.dirtyChunks), true, performance.now())
         physicsStats = m.physics
         if (m.workers) { latestWorkers = m.workers; events.emit('workers', m.workers) }
         for (const a of m.acks) events.emit('ack', a)
@@ -469,7 +534,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         if (!m.ok) { w?.reject(new EngineError('terrain', m.message)); break }
         slotsUsed = m.slotsUsed
         for (const ci of m.dirtyChunks) markDirty(ci, PRIORITY.DIRTY)
-        relightWater(m.dirtyChunks)
+        { const ranges = relightRanges(m.dirtyChunks); if (ranges.length > 0) waterLink.submit(-1, null, ranges, false, performance.now()) }
         events.emit('generated', { ms: m.ms, columns: w?.columns ?? 0 })
         w?.resolve({ ms: m.ms, chunks: m.dirtyChunks.length } as never)
         break
@@ -540,7 +605,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     // FallingTrack.frame advances the shared clock for this frame; the water reads it after.
     visuals.drawFalling(falling.frame(performance.now(), (ci) => queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     visuals.drawFragments(fragments.frame(performance.now(), ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
-    waterShown = waterTick === null ? 1 : stepAlpha(clock.due, waterTick)
+    // A publish in the host is drawn at the alpha it was sent with until its copy (spec 4.1: freeze, not carry).
+    waterShown = waterLink.frozen ?? (waterTick === null ? 1 : stepAlpha(clock.due, waterTick))
+    for (const from of lagFrom) waterLag.record(now - from)
+    lagFrom.length = 0
     visuals.setWaterAlpha(waterShown)
     // Before rendering, so listeners' scene changes show in this frame.
     events.emit('frame', { dt, now })
@@ -622,7 +690,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     },
   }
 
-  return {
+  const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
     firstPerson, get cameraMode() { return cameraMode }, setCameraMode, get underwater() { return underwaterFade.amount },
     terrain: {
@@ -684,9 +752,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         collapseVisited: physicsStats.collapse?.visited ?? 0, collapseMutations: physicsStats.collapse?.mutations ?? 0,
         waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
+        waterHostMs: waterHostCost.last, waterHostP95: waterHostCost.p95(), waterLagMs: waterLag.last, waterLagP95: waterLag.p95(),
+        waterQueue: waterLink.depth, waterQueueMax: waterLink.maxDepth(), waterInWorker: inWorker,
         ...(latestWorkers && { workers: latestWorkers.stats }),
       }
     },
     dispose,
   }
+  // @internal, tests only: crashes the water worker through its error path (spec 4.5). Symbol-keyed and not on the Engine
+  // type, so nothing public reaches it; e2e calls `engine[Symbol.for('elovox.waterCrash')]()`.
+  Object.defineProperty(api, WATER_CRASH, { value: () => waterWorker?.dispatchEvent(new ErrorEvent('error', { message: 'test crash' })) })
+  return api
 }

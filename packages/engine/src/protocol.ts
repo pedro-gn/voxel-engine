@@ -48,6 +48,8 @@ export type ToSim =
   | { type: 'setPaused'; paused: boolean }
   /** Main thread: generation worker `index` died. */
   | { type: 'genLost'; index: number }
+  /** Main thread: the water view starts over (its worker was respawned); the next publish lists every tile. */
+  | { type: 'waterResync' }
 
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
