@@ -86,6 +86,8 @@ const engine = await createEngine({
 })
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
+// ?view=<blocks>: the view distance (Quality.viewDistance), for the 4b checkpoints.
+if (params.has('view')) engine.quality = { viewDistance: Number(params.get('view')) }
 if (sceneName === 'diorama') {
   engine.quality = { decorationRadius: 256 } // the 128-block diorama is viewed from ~150 blocks; the engine default (96) would fade all grass out
   for (const s of [engine.controls.goal, engine.controls.current]) {
