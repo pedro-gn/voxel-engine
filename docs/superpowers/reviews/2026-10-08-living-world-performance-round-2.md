@@ -10,9 +10,14 @@ Date: 2026-10-09. Branch `feat/living-perf-2`, from `main` 90e5c97.
   - `water-ab.json`, `anatomy-after-2.json` and `after-2.json`;
   - `node-ab-5b.json`, `browser-ab-5b.json` and `after-5b.json`.
 
-Round 2 took the targets 4a left open. fps p5 ≥ 60 and main-thread water apply p95 ≤ 4 ms now hold in every phase of
-the living benchmark. Sim tick p95 ≤ 10 ms still misses in the dam and collapse phases. The expert has taken that
-target's re-scope to main and the user; see "Still open".
+Round 2 took the targets 4a left open. The living benchmark now passes every phase:
+- fps p5 ≥ 60;
+- main-thread water apply p95 ≤ 4 ms;
+- sim tick p95 ≤ 15 ms.
+
+The user re-scoped the tick target on 2026-10-09, from 10 ms to 15 ms. That keeps at least 3× headroom inside the sim
+worker's 50 ms budget, and since #2 the tick no longer runs on the main thread. 10 ms stays a stretch goal: dam is at
+11.4–11.8 and collapse at 12.7–13.9.
 
 ## What was delivered
 
@@ -42,7 +47,8 @@ target's re-scope to main and the user; see "Still open".
 
 ## Results
 
-**Gate** (worse of two runs, Edge headed, prod build, 179 Hz display; ms except fps):
+**Gate** (worse of two runs, Edge headed, prod build, 179 Hz display; ms except fps). Every phase passes: fps p5 ≥ 60,
+tick p95 ≤ 15 (re-scoped) and apply p95 ≤ 4.
 
 | Phase | fps p5: baseline → after #2 → final | tick p95: baseline → final | apply p95: baseline → final |
 |---|---|---|---|
@@ -87,15 +93,13 @@ target's re-scope to main and the user; see "Still open".
 
 ## Still open
 
-- **Tick p95 misses 10 ms in dam (11.8) and collapse (13.9).** It is pending the expert's re-scope question to main and
-  the user. The options, none of them started:
-  - (i) a tile-major water layout: a large 3c/3d refactor with an unproven gain;
-  - (ii) stepping fewer tiles per tick: a behaviour change, visible;
-  - (iii) re-scoping the target. Since #2 the tick runs only in the sim worker at 20 Hz (50 ms budget), and fps and
-    apply pass.
-
-  The profile shows that the remaining cost scales with the number of awake tiles and is mostly memory traffic. Pure
-  refactors are spent.
+- **Stretch goal: tick p95 ≤ 10 ms.** It misses in the dam (11.8) and the collapse (13.9). The target that counts is
+  now 15 ms, which both meet.
+  - The profile shows that the remaining cost scales with the number of awake tiles and is mostly memory traffic. Pure
+    refactors are spent.
+  - What is left, none of it started:
+    - (i) a tile-major water layout, a large 3c/3d refactor with an unproven gain;
+    - (ii) stepping fewer tiles per tick, a behaviour change and a visible one, so it needs a user checkpoint.
 - **Water lag under CPU load** (informational, no checkpoint by expert ruling):
   - Quiet machine: the worker adds +6–15 ms of lag at p95, under one 60 Hz frame, and the queue stays at most 2.
   - With video recording loading the CPU: the queue reaches 3 and lag p95 72 ms (dam) / 120 ms (collapse), 4–7 frames

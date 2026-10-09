@@ -1984,3 +1984,5 @@ five items) on one port via `E2E_PREVIEW_DIR`, ABBA, using the living-anatomy sp
   - (iii) re-scope, since after #2 the tick runs only in the sim worker at 20 Hz.
 
   Neither (i) nor (ii) is started.
+- **The user's answer, 2026-10-09: (iii).** The tick target is now p95 ≤ 15 ms, with 10 ms as a stretch goal. The gate
+  above passes every phase under it.

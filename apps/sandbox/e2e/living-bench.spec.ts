@@ -9,7 +9,8 @@ type W = Window & { __elovox?: { engine: Engine; living: Living | null; ready: b
 type Event = 'startWork' | 'breach' | 'collapse'
 test.skip(!process.env.BENCH_LIVING, 'set BENCH_LIVING=1 for the living-world benchmark')
 
-const TARGETS = { fpsP5: 60, tickP95: 10, applyP95: 4 }
+/** 4a §2; tick p95 re-scoped from 10 to 15 ms by the user on 2026-10-09 (4a-r2: ≥ 3× headroom in the 50 ms worker budget). */
+const TARGETS = { fpsP5: 60, tickP95: 15, applyP95: 4 }
 /** LIVING_BENCH_SHORT=1 shrinks every window tenfold, for smoke checks of the benchmark itself. */
 const SCALE = process.env.LIVING_BENCH_SHORT ? 0.1 : 1
 /** Phase script (spec §4): [phase, camera, event fired 1 s into the window, window ms]. */

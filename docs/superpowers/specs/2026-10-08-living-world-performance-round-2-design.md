@@ -96,6 +96,10 @@ Expert, 2026-10-08:
 - sim tick p95 ≤ 10 ms;
 - main-thread water apply p95 ≤ 4 ms.
 
+**Re-scope, 2026-10-09 (user, through the expert).** The tick target is now sim tick p95 ≤ 15 ms, which keeps at least
+3× headroom inside the sim worker's 50 ms budget at 20 Hz. After #2, the tick runs only in that worker and no longer
+costs frames. 10 ms stays a stretch goal for later.
+
 **In scope:** #5 and #2 as below.
 
 **Out of scope:**
