@@ -71,8 +71,7 @@ export function createFirstPerson(engine: Engine, canvas: HTMLCanvasElement, o: 
     const on = active()
     crosshair.style.display = on ? 'block' : 'none'
     hint.style.display = on ? 'block' : 'none'
-    hint.textContent = on && !locked() ? `click to look
-${HINT}` : HINT
+    hint.textContent = on && !locked() ? `click to look\n${HINT}` : HINT
   }
   document.body.append(crosshair, hint)
 
