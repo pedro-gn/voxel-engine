@@ -21,11 +21,19 @@ async function pose(page: Page, p: { t: number[]; d: number; pitch: number; yaw:
     for (const s of [e.controls.goal, e.controls.current]) { s.target[0] = p.t[0]!; s.target[2] = p.t[1]!; s.distance = p.d; s.pitch = p.pitch; s.yaw = p.yaw }
   }, p)
   await page.waitForTimeout(1500)
+  await frames(page)
+}
+/** Waits for `n` engine frames (software GL in headless runs can be ~1 fps, so fixed timeouts are not enough). */
+async function frames(page: Page, n = 3): Promise<void> {
+  await page.evaluate(n => new Promise<void>(resolve => {
+    let k = 0
+    const off = (window as W).__elovox!.engine.on('frame', () => { if (++k >= n) { off(); resolve() } })
+  }), n)
 }
 /** Sets the view distance; a negative value stands for Infinity (JSON cannot carry it). */
 async function view(page: Page, r: number): Promise<void> {
   await page.evaluate(r => { (window as W).__elovox!.engine.quality = { viewDistance: r < 0 ? Infinity : r } }, r)
-  await page.waitForTimeout(500)
+  await frames(page)
 }
 const drawn = (page: Page) => page.evaluate(() => (window as W).__elovox!.engine.stats().chunksDrawn)
 
@@ -91,7 +99,7 @@ test('every drawn material takes the scene fog (units and their models included)
   expect(bad.out).toEqual([])
   expect(bad.fogNode).toBe(true)
   await page.evaluate(() => { (window as W).__elovox!.engine.effects = { fog: false } })
-  await page.waitForTimeout(300)
+  await frames(page)
   expect(await page.evaluate(() => (window as W).__elovox!.engine.scene.fogNode !== null)).toBe(true) // the edge-only node
   await view(page, -1)
   expect(await page.evaluate(() => (window as W).__elovox!.engine.scene.fogNode)).toBeNull() // as before 4b
