@@ -98,6 +98,16 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
     // and the bytes the region batches reserve (EngineStats.batchBytes; -1 before that stat exists).
     out.probes = await page.evaluate(async () => {
       const e = (window as W).__elovox!.engine
+      // Per batched layer: batches, chunk slots, vertices reserved by active chunks, and vertex capacity (three r186 privates).
+      const layers: Record<string, { batches: number; chunks: number; reservedVertices: number; capacityVertices: number }> = {}
+      e.scene.traverse(o => {
+        if (!(o as { isBatchedMesh?: boolean }).isBatchedMesh) return
+        const b = o as unknown as { name: string; _maxVertexCount: number; _instanceInfo: { active: boolean; geometryIndex: number }[]; _geometryInfo: { reservedVertexCount: number }[] }
+        const l = layers[b.name.split('-')[1]!] ??= { batches: 0, chunks: 0, reservedVertices: 0, capacityVertices: 0 }
+        l.batches++
+        l.capacityVertices += b._maxVertexCount
+        for (const inst of b._instanceInfo) if (inst.active) { l.chunks++; l.reservedVertices += b._geometryInfo[inst.geometryIndex]!.reservedVertexCount }
+      })
       const frame = () => new Promise<void>(r => requestAnimationFrame(() => r()))
       const [tx, , tz] = e.controls.current.target
       const editFrames: number[] = []
@@ -119,7 +129,7 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
       const t0 = performance.now()
       while (performance.now() - t0 < 3000) { await frame(); editMaxCpu = Math.max(editMaxCpu, e.stats().frameMs) }
       const s = e.stats() as unknown as { batchBytes?: number }
-      return { editFrames, editMaxCpu: Math.round(editMaxCpu * 100) / 100, batchBytes: s.batchBytes ?? -1 }
+      return { layers, editFrames, editMaxCpu: Math.round(editMaxCpu * 100) / 100, batchBytes: s.batchBytes ?? -1 }
     })
   }
   const result = { date: new Date().toISOString(), query, userAgent: await page.evaluate(() => navigator.userAgent), poses: out }

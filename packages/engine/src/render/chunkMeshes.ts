@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
-import { ChunkBatches } from './chunkBatches.ts'
+import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
 import { chunkInRange, type Vec3Like } from './viewDistance.ts'
 
@@ -52,7 +52,10 @@ export class ChunkMeshes {
     this.group.name = 'elovox-chunks'
     if (batched) {
       for (const name of ['opaque', 'cutout'] as const) {
-        const b = new ChunkBatches(layout, this.materials[name], name, true, { threeCull, ...(region !== undefined && { region }) })
+        const b = new ChunkBatches(layout, this.materials[name], name, true, {
+          threeCull, ...(region !== undefined && { region }),
+          ...(name === 'cutout' && { verticesPerSlot: CUTOUT_VERTICES_PER_SLOT, indicesPerSlot: CUTOUT_INDICES_PER_SLOT }),
+        })
         this.batches[name] = b
         this.group.add(b.group)
       }

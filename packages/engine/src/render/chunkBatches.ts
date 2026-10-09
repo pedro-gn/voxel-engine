@@ -35,6 +35,12 @@ const SLACK = 1.25
 const COMPACT_AT = 0.3
 /** Initial capacity per chunk slot of a batch; growth handles the rest, so memory scales with what is drawn. */
 const VERTICES_PER_SLOT = 1024, INDICES_PER_SLOT = 1536
+/**
+ * The cutout layer's initial capacity per slot. Measured at 1024² (spec 4b §4.2): the showcase's cutout chunks reserve
+ * 278 vertices per slot on average (925,700 over 52 batches × 64 slots), the default world none. The smallest power of
+ * two ≥ 1.25 × 278 halves the cutout batches' initial memory; growth handles a dense forest.
+ */
+export const CUTOUT_VERTICES_PER_SLOT = 512, CUTOUT_INDICES_PER_SLOT = 768
 
 /** The BatchedMesh private state this module reads or writes (three r186). */
 interface BatchInternals {

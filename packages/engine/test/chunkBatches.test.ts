@@ -2,7 +2,9 @@ import * as THREE from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { FACE, packA } from '../src/mesh/vertexFormat.ts'
-import { ChunkBatches, PassGuard, REGION } from '../src/render/chunkBatches.ts'
+import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches, PassGuard, REGION } from '../src/render/chunkBatches.ts'
+import { ChunkMeshes } from '../src/render/chunkMeshes.ts'
+import type { ChunkMaterials } from '../src/render/materials.ts'
 import { Layout } from '../src/world/layout.ts'
 
 /** n +Y quads in a row at y 2 (4 vertices, 6 indices each). */
@@ -130,6 +132,20 @@ describe('ChunkBatches', () => {
     b.set(0, 0, 0, 0, quads(1))
     expect(b.capacityBytes).toBe(REGION * REGION * 2 * (1024 * 8 + 1536 * 4)) // layout 64 tall: 2 chunk layers per column
   })
+  it('starts cutout batches at half the opaque capacity per slot', () => {
+    const opaque = batches()
+    const cutout = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'cutout', true, { verticesPerSlot: CUTOUT_VERTICES_PER_SLOT, indicesPerSlot: CUTOUT_INDICES_PER_SLOT })
+    opaque.set(0, 0, 0, 0, quads(1)); cutout.set(0, 0, 0, 0, quads(1))
+    expect(cutout.capacityBytes).toBe(opaque.capacityBytes / 2)
+  })
+  it('gives the cutout layer of ChunkMeshes the cutout slot sizes', () => {
+    const m = () => new THREE.MeshBasicMaterial()
+    const cm = new ChunkMeshes(layout, { opaque: m(), cutout: m(), translucent: m(), liquid: m() } as unknown as ChunkMaterials, { batched: true })
+    cm.apply(0, { opaque: quads(1), cutout: null, translucent: null, liquid: null, grass: null, flowers: null })
+    const opaqueOnly = cm.batchBytes
+    cm.apply(1, { opaque: null, cutout: quads(1), translucent: null, liquid: null, grass: null, flowers: null })
+    expect(cm.batchBytes - opaqueOnly).toBe(opaqueOnly / 2)
+  })
   it('groups 8 × 8 columns per batch with region 8', () => {
     const b = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { region: 8 })
     b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
@@ -137,6 +153,24 @@ describe('ChunkBatches', () => {
     b.set(layout.chunkIndex(8, 0, 0), 8, 0, 0, quads(1))
     expect(b.batchCount).toBe(2)
     expect(bm(b)[0]!.geometry.boundingBox!.max.toArray()).toEqual([256, 64, 256])
+  })
+  it('logs remesh costs per region size (spec 4b §4.2; numbers are logged, not asserted)', () => {
+    for (const region of [4, 8]) {
+      const big = new Layout([1024, 128, 1024])
+      const b = new ChunkBatches(big, new THREE.MeshBasicMaterial(), 'opaque', true, { region })
+      for (let i = 0; i < region * region * 4; i++) {
+        const cx = i % region, cz = ((i / region) | 0) % region, cy = (i / (region * region)) | 0
+        b.set(big.chunkIndex(cx, cy, cz), cx, cy, cz, quads(400))
+      }
+      const time = (f: () => void) => { const t = performance.now(); f(); return performance.now() - t }
+      const first = big.chunkIndex(0, 0, 0)
+      const inPlace = time(() => b.set(first, 0, 0, 0, quads(410)))
+      const append = time(() => b.set(first, 0, 0, 0, quads(900)))
+      for (let cx = 1; cx < region; cx++) b.remove(big.chunkIndex(cx, 0, 0))
+      const compact = time(() => b.set(big.chunkIndex(1, 0, 0), 1, 0, 0, quads(6000)))
+      console.log(`region ${region}: in place ${inPlace.toFixed(2)} ms, append ${append.toFixed(2)} ms, compact/grow ${compact.toFixed(2)} ms (stats ${JSON.stringify(b.stats)})`)
+      expect(b.instanceCount).toBe(region * region * 4 - (region - 1) + 1)
+    }
   })
   it('never raycasts', () => {
     const b = batches()
