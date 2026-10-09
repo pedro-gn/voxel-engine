@@ -132,6 +132,10 @@ export class SurfaceView {
   private pending: readonly number[] = []
   /** Tiles read through a recovery: read once more at the next apply, so they settle (prev = cur) like any other tile. */
   private again: readonly number[] = []
+  /** The publish the last apply read (its own, or the one a catch-up read): a later tick never reads older data. */
+  private readSeq = 0
+  /** Applies that read a newer publish's buffer because their own was reused (catch-up). For tests and diagnostics. */
+  catchUps = 0
   /** Per draw layer r, per chunk column. */
   private readonly data: (ColumnData | undefined)[][]
   /** Per tile: the epoch of the apply that changed its slots. */
@@ -289,7 +293,12 @@ export class SurfaceView {
 
   /**
    * Reads a tick's tiles (and any still pending) from shared memory. If the publish's buffer was reused before or while we
-   * read it, nothing is applied: the tiles wait for the next tick, whose buffer holds them complete. Returns whether it applied.
+   * read it, they are read from the newest publish's buffer instead (catch-up): the writer keeps each buffer complete as
+   * of its last publish, so any tile read there is that publish's. When that buffer is not newer than the tick, or changes
+   * under the read, nothing is applied: the tiles wait for the next tick. Returns whether it applied.
+   *
+   * A catch-up reads the tops ahead of the lower layers, whose records come with the tick messages: until the later ticks
+   * arrive, the lower layers trail. A reader that keeps up never takes this path.
    *
    * `shown`: the alpha the surface is drawn at now (waterAlpha). Given, each refreshed quad and curtain starts its new step
    * from where it is drawn (hPrev ← mix(hPrev, hCur, shown)) rather than from the previous step, so a publish that comes
@@ -299,35 +308,17 @@ export class SurfaceView {
     // No tile list is ever modified: mergeTiles may hand back one of its inputs, and the publisher keeps its own.
     const recovering = this.pending.length > 0
     const tiles = mergeTiles(mergeTiles(t.tiles, this.pending), this.again)
-    const p = t.parity
     // Each tick's records are complete per tile: staged even when this buffer is lost, the latest wins at the commit.
     if (t.layers) this.layers.stage(t.layers)
-    if (Atomics.load(this.stamp, p) !== t.seq) return this.defer(tiles)
-    const per = TILE * TILE
-    if (this.scratchS.length < tiles.length * per) {
-      this.scratchS = new Int32Array(tiles.length * per * 2)
-      this.scratchF = new Int16Array(tiles.length * per * 4)
-    }
-    const base = p * this.n
-    let k = 0
-    for (const tile of tiles) {
-      const x0 = (tile % this.tx) * TILE, z0 = Math.floor(tile / this.tx) * TILE
-      for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
-        const c = x + z * this.sx
-        this.scratchS[k] = this.surface[base + c]!
-        this.scratchF[2 * k] = this.flux[2 * (base + c)]!
-        this.scratchF[2 * k + 1] = this.flux[2 * (base + c) + 1]!
-        k++
-      }
-    }
-    Atomics.add(this.fenceWord, 0, 0) // orders the copies before the validating load (see WorldReader.fence)
-    if (Atomics.load(this.stamp, p) !== t.seq) return this.defer(tiles)
+    // A tick older than the publish a catch-up read is read from the newest buffer too: the tops never step back.
+    const caught = !(t.seq >= this.readSeq && this.read(tiles, t.parity, t.seq))
+    if (caught && !this.catchUp(tiles, t.seq)) return this.defer(tiles)
     this.pending = []
     // After a change a tile comes in twice (the writer adds the previous publish's tiles): moving, then settled. Tiles that
     // came in late through this tick may have missed the first, so they are read once more at the next apply.
-    this.again = recovering ? tiles : []
+    this.again = recovering || caught ? tiles : []
     const e = this.nextEpoch()
-    k = 0
+    let k = 0
     for (const tile of tiles) {
       const first = this.seen[tile] === 0
       this.seen[tile] = 1
@@ -461,6 +452,44 @@ export class SurfaceView {
         floor[c * (RANKS - 1) + r - 1] = has ? this.layers.floor(c, r) : 0
       }
     }
+  }
+
+  /**
+   * Copies `tiles` of buffer p into the scratch, seqlock style: the buffer's stamp must read `seq` before and after the
+   * copies, or nothing counts (false). On success, `seq` is the publish read.
+   */
+  private read(tiles: readonly number[], p: number, seq: number): boolean {
+    if (Atomics.load(this.stamp, p) !== seq) return false
+    const per = TILE * TILE
+    if (this.scratchS.length < tiles.length * per) {
+      this.scratchS = new Int32Array(tiles.length * per * 2)
+      this.scratchF = new Int16Array(tiles.length * per * 4)
+    }
+    const base = p * this.n
+    let k = 0
+    for (const tile of tiles) {
+      const x0 = (tile % this.tx) * TILE, z0 = Math.floor(tile / this.tx) * TILE
+      for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
+        const c = x + z * this.sx
+        this.scratchS[k] = this.surface[base + c]!
+        this.scratchF[2 * k] = this.flux[2 * (base + c)]!
+        this.scratchF[2 * k + 1] = this.flux[2 * (base + c) + 1]!
+        k++
+      }
+    }
+    Atomics.add(this.fenceWord, 0, 0) // orders the copies before the validating load (see WorldReader.fence)
+    if (Atomics.load(this.stamp, p) !== seq) return false
+    this.readSeq = seq
+    return true
+  }
+
+  /** The tick `seq` could not be read from its own buffer: reads `tiles` from the newest publish's, when it is newer. */
+  private catchUp(tiles: readonly number[], seq: number): boolean {
+    const s0 = Atomics.load(this.stamp, 0), s1 = Atomics.load(this.stamp, 1)
+    const q = s0 > s1 ? 0 : 1, s = Math.max(s0, s1)
+    if (s <= seq || s < this.readSeq || !this.read(tiles, q, s)) return false
+    this.catchUps++
+    return true
   }
 
   private defer(tiles: readonly number[]): false {

@@ -108,7 +108,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     expect(posted.map(ticks)).toEqual(['1', '2'])
   })
 
-  it('a queue deep enough that the sim reuses a parity buffer recovers like today: the stale publish defers, the next reads it (forced, real publisher)', () => {
+  it('a queue deep enough that the sim reuses a parity buffer: the stale publish catches up from the newest buffer, and the view ends as the prompt one (forced, real publisher)', () => {
     const w = gateWorld()
     w.edges.ensure(w.cols, w.under, 32)
     const SIZE: [number, number, number] = [64, 32, 32]
@@ -129,13 +129,18 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     step(1); step(2); step(3)
     let delivered = 0
     const deliver = () => { while (delivered < posted.length) link.receive(host.handle(posted[delivered++]!)) }
+    link.receive(host.handle(posted[delivered++]!))
+    // Tick 1's buffer was reused (the reuse really happened): it caught up from publish 3's, so its tops are 3's.
+    expect([replies[0], host.view.catchUps]).toEqual([true, 1])
+    expect(host.view.cur.every((v, c) => v === ref.cur[c])).toBe(true)
     deliver()
-    expect(replies.slice(0, 3)).toEqual([false, true, true]) // the reuse really happened
-    expect(applied.slice(0, 2)).toEqual([2, 3])
+    expect(applied.slice(0, 3)).toEqual([1, 2, 3])
     // Run on, replying at once, while the water still runs (it drains through the gate for thousands of ticks): once the
-    // recovery has re-read the stale tiles, what is drawn is what the prompt reference draws.
+    // later ticks have come in, what is drawn (tops and lower layers) is what the prompt reference draws, and the mirror
+    // holds what the host's own view holds.
     for (let tick = 4; tick < 14; tick++) { step(tick); deliver() }
     expect(w.cols.tiles.awakeCount()).toBeGreaterThan(0)
+    expect(sameColumns(host.view, mirror)).toEqual([])
     for (let r = 0; r < 4; r++) for (let cc = 0; cc < ref.ccCount; cc++) {
       const a = ref.column(cc, r), m = mirror.column(cc, r)
       expect([r, cc, !!a]).toEqual([r, cc, !!m])
@@ -218,7 +223,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const publish = (tick: number) => { w.step(); link.submit(tick, pub.publish(all, w.cols, layers), [], true, 0) }
     publish(1)
     link.receive(host.handle(posted[0]!))
-    publish(2); publish(3); publish(4) // 2 in flight, 3 and 4 queued (4 reuses 2's parity buffer: 2 defers)
+    publish(2); publish(3); publish(4) // 2 in flight, 3 and 4 queued (4 reuses 2's parity buffer: 2 catches up)
     link.receive(host.handle(posted[1]!))
     expect(posted.map(ticks)).toEqual(['1', '2', '3,4'])
     const lateReply = host.handle(posted[2]!)
@@ -226,14 +231,14 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     link.reset(); mirror.reset()
     host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
     link.receive(lateReply)
-    expect(applied).toEqual([1])
+    expect(applied).toEqual([1, 2])
     // The resync: the next publish lists every tile.
     w.step()
     const resync = pub.publish(all, w.cols, layers)!
     link.submit(5, resync, [], true, 0)
     expect(posted.map(ticks)).toEqual(['1', '2', '3,4', '5'])
     link.receive(host.handle(posted[3]!))
-    expect(applied).toEqual([1, 5])
+    expect(applied).toEqual([1, 2, 5])
     const fresh = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
     fresh.apply(resync, 0.5)
     expect(sameColumns(fresh, mirror)).toEqual([])

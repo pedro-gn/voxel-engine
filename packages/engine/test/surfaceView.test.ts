@@ -30,6 +30,9 @@ function scene(sx: number, sz: number, floor: (x: number, z: number) => number, 
   return { b, cols, pub, view, publish, set }
 }
 
+/** The view's stamp array (private), to tell its seqlock loads apart in a spy. */
+const stampView = (view: SurfaceView): Int32Array => (view as unknown as { stamp: Int32Array }).stamp
+
 function at(view: SurfaceView, x: number, z: number, field: 'hCur' | 'hPrev' | 'info'): number[] {
   const d = view.column((x >> 5) + (z >> 5) * view.cx)!
   const o = ((x & 31) + (z & 31) * 32) * 4
@@ -105,18 +108,60 @@ describe('SurfaceView', () => {
     expect(at(s.view, 10, 10, 'info')[3]).toBeGreaterThanOrEqual(0)
   })
 
-  it('keeps the tiles of a tick whose buffer was reused, and reads them from the next tick\'s complete buffer', () => {
+  it('reads the tiles of a tick whose buffer was reused from the newest complete buffer (catch-up), then the later ticks as usual', () => {
     const s = scene(32, 32, () => 2, () => SUB)
     const t1 = s.pub.publish([0], s.cols)!
     s.cols.depth[20 + 5 * 32] = 3 * SUB // tile 1 changes
     s.pub.publish([1], s.cols)
     s.cols.depth[5 + 20 * 32] = 4 * SUB // tile 2 changes; publish 3 reuses publish 1's buffer
     const t3 = s.pub.publish([2], s.cols)!
-    expect(s.view.apply(t1)).toBe(false)
+    expect([s.view.apply(t1), s.view.catchUps]).toEqual([true, 1]) // tile 0, as of publish 3
+    expect(at(s.view, 5, 5, 'hCur')).toEqual([3, 3, 3, 3])
     expect(s.view.apply(t3)).toBe(true) // tiles 0, 1 and 2, from publish 3's buffer
     expect(at(s.view, 5, 5, 'hCur')).toEqual([3, 3, 3, 3])
     expect(at(s.view, 20, 5, 'hCur')).toEqual([5, 5, 5, 5])
     expect(at(s.view, 5, 20, 'hCur')).toEqual([6, 6, 6, 6])
+    expect(s.view.catchUps).toBe(1)
+  })
+
+  it('never catches up while each tick is read before its buffer is reused (the healthy path is today\'s)', () => {
+    const s = scene(64, 64, () => 2, (x, z) => (x + z < 40 ? 3 * SUB : 0))
+    s.publish()
+    for (let i = 0; i < 40; i++) {
+      s.cols.depth[(i % 64) + ((i * 7) % 64) * 64] = (i % 5) * SUB
+      expect(s.publish([(i * 3) % s.cols.tiles.count])).toBe(true)
+    }
+    expect(s.view.catchUps).toBe(0)
+  })
+
+  it('defers when the catch-up buffer is torn under the read, or is not newer than the tick', () => {
+    const s = scene(32, 32, () => 2, () => SUB)
+    s.publish() // 1, parity 1
+    s.cols.depth[5 + 5 * 32] = 3 * SUB
+    const t2 = s.pub.publish([0], s.cols)! // 2, parity 0
+    s.pub.publish([0], s.cols) // 3, parity 1
+    s.cols.depth[5 + 5 * 32] = 7 * SUB
+    s.pub.publish([0], s.cols) // 4, parity 0: t2's buffer reused; the newest is 4 (parity 0)
+    const stamp = new Int32Array(s.b.stamp), surface = new Int32Array(s.b.surface)
+    // Loads: t2's own check (stale, 4 ≠ 2), the two stamps the catch-up compares, then its seqlock's first check, which
+    // a writer starting publish 5 over that buffer follows at once: the copy is torn.
+    let n = 0
+    const load = Atomics.load
+    const spy = vi.spyOn(Atomics, 'load').mockImplementation(((a: Int32Array, i: number): number => {
+      const v = load(a, i)
+      if (a === stampView(s.view) && ++n === 4) { Atomics.store(stamp, 0, -1); surface[5 + 5 * 32] = 99 * SUB }
+      return v
+    }) as unknown as typeof Atomics.load)
+    try {
+      expect(s.view.apply(t2)).toBe(false)
+    } finally { spy.mockRestore() }
+    expect([at(s.view, 5, 5, 'hCur'), s.view.catchUps]).toEqual([[3, 3, 3, 3], 0]) // nothing torn applied
+    // Not newer: a tick whose buffer is mid-write while the other one is older defers too.
+    const t = scene(32, 32, () => 2, () => SUB)
+    t.publish() // 1, parity 1
+    const u2 = t.pub.publish([0], t.cols)! // 2, parity 0
+    Atomics.store(new Int32Array(t.b.stamp), 0, -1) // publish 4 starting over it; parity 1 holds only 1
+    expect([t.view.apply(u2), t.view.catchUps]).toEqual([false, 0])
   })
 
   it('drops a copy torn by a publish starting under it, and reads those tiles from the next tick', () => {
@@ -161,7 +206,8 @@ describe('SurfaceView', () => {
     const k1 = s.pub.publish([1], s.cols)!
     s.cols.depth[5 + 20 * 32] = 3 * SUB
     const k2 = s.pub.publish([2], s.cols)! // reuses k's buffer; lists tiles 1 and 2 only
-    expect(s.view.apply(k)).toBe(false)
+    expect(s.view.apply(k)).toBe(true) // caught up from k2's buffer
+    expect(s.view.catchUps).toBe(1)
     expect(s.view.apply(k1)).toBe(true)
     expect(s.view.apply(k2)).toBe(true)
     expect(at(s.view, 5, 5, 'hPrev')).toEqual([5, 5, 5, 5])
