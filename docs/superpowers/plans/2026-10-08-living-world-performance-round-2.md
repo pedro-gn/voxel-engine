@@ -499,3 +499,48 @@ git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commi
 ```
 
 Send the expert the SHA, the before/after numbers, and whether tick p95 now meets 10 ms.
+
+---
+
+## Results: #5, step 1 (`7f9dfc0`: records without closures, maps or chain arrays)
+
+Quiet window #3, 2026-10-08, 21:34–21:44.
+- Free RAM: 12.7 GB at the start, 12.2 GB at the end.
+- **Heavy apps running at both start and end: `cs2` (CS2) and `steam`.** Per the expert's rule, the browser gate below is
+  PROVISIONAL. The alternating A/B is valid attribution.
+
+**Node A/B** (`research/2026-10-08-living-r2-node-ab-5.json`; living sim bench, order A B B A).
+- A = `6583a16`, the parent, in a detached worktree; B = `ac0f8e6`, which contains `7f9dfc0`.
+- Tick in ms, p50 / p95.
+
+| Run | Build | idle | work | dam | collapse |
+|---|---|---|---|---|---|
+| 1 | A | 7.35 / 9.70 | 7.97 / 12.56 | 14.77 / 20.19 | 15.27 / 24.02 |
+| 2 | B | 5.89 / 8.79 | 6.25 / 10.32 | 10.47 / 14.03 | 12.24 / 18.29 |
+| 3 | B | 5.26 / 6.57 | 6.19 / 9.93 | 10.48 / 14.12 | 12.46 / 17.30 |
+| 4 | A | 6.68 / 9.23 | 8.01 / 13.93 | 14.81 / 20.02 | 16.96 / 24.48 |
+
+- B wins every adjacent pair in every phase.
+- Dam p95: 20.0–20.2 → 14.0–14.1 (−30%).
+- Collapse p95: 24.0–24.5 → 17.3–18.3 (−27%).
+- Outside a window, the dam-window profile shows `records()` going from 3.8 s to 1.1 s per 900 ticks.
+
+**Browser gate** (`research/2026-10-08-living-r2-after-5.json`, worse of two runs, `invalid: []`). **PROVISIONAL**, with
+CS2 running. CPU frame time doubled in every phase, and the water apply rose too, although #5 does not touch it. The
+machine was loaded, so no absolute number from this gate counts against the targets.
+
+| Phase | fps p5: baseline → after | CPU median | tick p95 | apply p95 |
+|---|---|---|---|---|
+| idle-default | 90.3 → 48.8 | 4.4 → 8.5 | 5.0 → 10.1 | 5.65 → 8.7 |
+| idle-far | 89.8 → 43.3 | 5.8 → 10.2 | 5.4 → 9.0 | 6.0 → 8.2 |
+| work-default | 89.9 → 49.9 | 5.2 → 9.2 | 7.2 → 11.4 | 6.4 → 8.3 |
+| work-far | 60.1 → 45.1 | 6.3 → 10.2 | 7.7 → 11.3 | 6.9 → 8.6 |
+| dam | 36.0 → 22.4 | 7.9 → 13.0 | 13.4 → 17.7 | 21.6 → 26.8 |
+| collapse | 30.1 → 21.4 | 7.9 → 13.1 | 15.6 → 18.9 | 22.6 → 27.7 |
+
+**Decision.**
+- Step 1 stands: a measured gain in the A/B (spec §5 rule 2).
+- The tick target still misses. In the Node A/B, B's dam and collapse p95 are 14–18 ms, against ≤ 10.
+- Following §3.1, the expert gets the note with the new profile before the next #5 step: the rest of publish and flush,
+  then the water step.
+- The gate is to be re-run on a quiet machine.
