@@ -298,13 +298,15 @@ export class SurfaceView {
    * under the read, nothing is applied: the tiles wait for the next tick. Returns whether it applied.
    *
    * A catch-up reads the tops ahead of the lower layers, whose records come with the tick messages: until the later ticks
-   * arrive, the lower layers trail. A reader that keeps up never takes this path.
+   * arrive, the lower layers trail. A reader that keeps up never takes this path, and it is taken only with `mayCatchUp`
+   * (the water worker's last tick of a batch, WaterHost): a stale tick with newer ones behind it defers cheaply instead,
+   * and the last one reads them all.
    *
    * `shown`: the alpha the surface is drawn at now (waterAlpha). Given, each refreshed quad and curtain starts its new step
    * from where it is drawn (hPrev ← mix(hPrev, hCur, shown)) rather than from the previous step, so a publish that comes
    * before the step was drawn to its end does not jump; the caller then draws at alpha 0 to show the same heights.
    */
-  apply(t: WaterTick, shown?: number): boolean {
+  apply(t: WaterTick, shown?: number, mayCatchUp = false): boolean {
     // No tile list is ever modified: mergeTiles may hand back one of its inputs, and the publisher keeps its own.
     const recovering = this.pending.length > 0
     const tiles = mergeTiles(mergeTiles(t.tiles, this.pending), this.again)
@@ -312,7 +314,7 @@ export class SurfaceView {
     if (t.layers) this.layers.stage(t.layers)
     // A tick older than the publish a catch-up read is read from the newest buffer too: the tops never step back.
     const caught = !(t.seq >= this.readSeq && this.read(tiles, t.parity, t.seq))
-    if (caught && !this.catchUp(tiles, t.seq)) return this.defer(tiles)
+    if (caught && !(mayCatchUp && this.catchUp(tiles, t.seq))) return this.defer(tiles)
     this.pending = []
     // After a change a tile comes in twice (the writer adds the previous publish's tiles): moving, then settled. Tiles that
     // came in late through this tick may have missed the first, so they are read once more at the next apply.

@@ -115,7 +115,7 @@ describe('SurfaceView', () => {
     s.pub.publish([1], s.cols)
     s.cols.depth[5 + 20 * 32] = 4 * SUB // tile 2 changes; publish 3 reuses publish 1's buffer
     const t3 = s.pub.publish([2], s.cols)!
-    expect([s.view.apply(t1), s.view.catchUps]).toEqual([true, 1]) // tile 0, as of publish 3
+    expect([s.view.apply(t1, undefined, true), s.view.catchUps]).toEqual([true, 1]) // tile 0, as of publish 3
     expect(at(s.view, 5, 5, 'hCur')).toEqual([3, 3, 3, 3])
     expect(s.view.apply(t3)).toBe(true) // tiles 0, 1 and 2, from publish 3's buffer
     expect(at(s.view, 5, 5, 'hCur')).toEqual([3, 3, 3, 3])
@@ -129,7 +129,7 @@ describe('SurfaceView', () => {
     s.publish()
     for (let i = 0; i < 40; i++) {
       s.cols.depth[(i % 64) + ((i * 7) % 64) * 64] = (i % 5) * SUB
-      expect(s.publish([(i * 3) % s.cols.tiles.count])).toBe(true)
+      expect(s.view.apply(s.pub.publish([(i * 3) % s.cols.tiles.count], s.cols)!, undefined, true)).toBe(true)
     }
     expect(s.view.catchUps).toBe(0)
   })
@@ -153,7 +153,7 @@ describe('SurfaceView', () => {
       return v
     }) as unknown as typeof Atomics.load)
     try {
-      expect(s.view.apply(t2)).toBe(false)
+      expect(s.view.apply(t2, undefined, true)).toBe(false)
     } finally { spy.mockRestore() }
     expect([at(s.view, 5, 5, 'hCur'), s.view.catchUps]).toEqual([[3, 3, 3, 3], 0]) // nothing torn applied
     // Not newer: a tick whose buffer is mid-write while the other one is older defers too.
@@ -161,7 +161,7 @@ describe('SurfaceView', () => {
     t.publish() // 1, parity 1
     const u2 = t.pub.publish([0], t.cols)! // 2, parity 0
     Atomics.store(new Int32Array(t.b.stamp), 0, -1) // publish 4 starting over it; parity 1 holds only 1
-    expect([t.view.apply(u2), t.view.catchUps]).toEqual([false, 0])
+    expect([t.view.apply(u2, undefined, true), t.view.catchUps]).toEqual([false, 0])
   })
 
   it('drops a copy torn by a publish starting under it, and reads those tiles from the next tick', () => {
@@ -206,8 +206,7 @@ describe('SurfaceView', () => {
     const k1 = s.pub.publish([1], s.cols)!
     s.cols.depth[5 + 20 * 32] = 3 * SUB
     const k2 = s.pub.publish([2], s.cols)! // reuses k's buffer; lists tiles 1 and 2 only
-    expect(s.view.apply(k)).toBe(true) // caught up from k2's buffer
-    expect(s.view.catchUps).toBe(1)
+    expect(s.view.apply(k)).toBe(false)
     expect(s.view.apply(k1)).toBe(true)
     expect(s.view.apply(k2)).toBe(true)
     expect(at(s.view, 5, 5, 'hPrev')).toEqual([5, 5, 5, 5])

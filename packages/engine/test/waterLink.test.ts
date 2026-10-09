@@ -115,7 +115,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const pub = new WaterPublisher(w.buffers.water)
     const ref = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
     const mirror = new SurfaceMirror(SIZE, w.buffers.water)
-    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
+    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces, true)
     const posted: WaterRequest[] = [], applied: number[] = [], replies: boolean[] = []
     const link = new WaterLink({ post: (r) => posted.push(r), copy: (r) => { replies.push(...r.applied); mirror.copy(r) }, applied: (t) => applied.push(t), settled: () => {}, shown: () => 1 })
     const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
@@ -134,7 +134,8 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     expect([replies[0], host.view.catchUps]).toEqual([true, 1])
     expect(host.view.cur.every((v, c) => v === ref.cur[c])).toBe(true)
     deliver()
-    expect(applied.slice(0, 3)).toEqual([1, 2, 3])
+    // In the batch 2,3: 2 is stale and not last, so it defers cheaply; 3 reads it along (no second catch-up).
+    expect([applied.slice(0, 2), host.view.catchUps]).toEqual([[1, 3], 1])
     // Run on, replying at once, while the water still runs (it drains through the gate for thousands of ticks): once the
     // later ticks have come in, what is drawn (tops and lower layers) is what the prompt reference draws, and the mirror
     // holds what the host's own view holds.
@@ -149,6 +150,21 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
       expect([r, cc, same(m.hPrev, a.hPrev), same(m.hCur, a.hCur), same(m.info, a.info), m.curtains.count === a.curtains.count]).toEqual([r, cc, true, true, true, true])
     }
   }, 120_000)
+
+  it('the in-thread host never catches up: a stale tick defers as before, and the next reads it', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const SIZE: [number, number, number] = [64, 32, 32]
+    const pub = new WaterPublisher(w.buffers.water), mirror = new SurfaceMirror(SIZE, w.buffers.water)
+    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces) // in-thread: no catch-up
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t), layers = { under: w.under, edges: w.edges, height: 32 }
+    const p1 = pub.publish(all, w.cols, layers)!; w.step()
+    pub.publish(all, w.cols, layers); w.step()
+    const p3 = pub.publish(all, w.cols, layers)! // reuses p1's buffer
+    const r1 = host.handle({ type: 'apply', id: 1, shown: 1, entries: [{ tick: 1, water: p1, relight: [] }] })
+    const r3 = host.handle({ type: 'apply', id: 2, shown: 1, entries: [{ tick: 3, water: p3, relight: [] }] })
+    expect([r1.applied, r3.applied, host.view.catchUps]).toEqual([[false], [true], 0])
+  })
 
   it('everything queued behind the request in flight goes out as one batch after its copy, in tick order (spec 4.1, batched)', () => {
     const { link, posted, log, answer } = fake()
@@ -185,7 +201,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const pub = new WaterPublisher(w.buffers.water)
     const ref = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
     const mirror = new SurfaceMirror(SIZE, w.buffers.water)
-    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
+    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces, true)
     const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
     const layers = { under: w.under, edges: w.edges, height: 32 }
     // The first publish lists every tile, applied alone by both.
@@ -215,7 +231,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const SIZE: [number, number, number] = [64, 32, 32]
     const pub = new WaterPublisher(w.buffers.water)
     const mirror = new SurfaceMirror(SIZE, w.buffers.water)
-    let host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
+    let host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces, true)
     const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
     const layers = { under: w.under, edges: w.edges, height: 32 }
     const posted: WaterRequest[] = [], applied: number[] = []
@@ -229,7 +245,7 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
     const lateReply = host.handle(posted[2]!)
     // The worker is lost with the batch 3,4 in flight (engine: reset, the mirror reset, a new host, then waterResync).
     link.reset(); mirror.reset()
-    host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
+    host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces, true)
     link.receive(lateReply)
     expect(applied).toEqual([1, 2])
     // The resync: the next publish lists every tile.

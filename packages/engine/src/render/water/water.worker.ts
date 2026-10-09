@@ -23,7 +23,8 @@ scope.onmessage = (e) => {
     const r = new WorldReader(m.buffers, m.opaque)
     m.pages.forEach((p, i) => r.addPage(i, p))
     reader = r
-    host = new WaterHost(m.buffers.size, m.buffers.water, (x, y, z) => r.getLight(x, y, z), m.stepHz, m.surfaces)
+    // In the worker every publish arrives a main-thread turn late: a stale one catches up (SurfaceView.apply).
+    host = new WaterHost(m.buffers.size, m.buffers.water, (x, y, z) => r.getLight(x, y, z), m.stepHz, m.surfaces, true)
     return
   }
   if (m.type === 'page') { reader?.addPage(m.index, m.page); return }

@@ -57,21 +57,26 @@ export function packDirty(view: SurfaceView): { keys: Int32Array; data: Float32A
 /** The water view's side of #2: applies requests in order and packs what changed. Runs in the water worker, or in-thread. */
 export class WaterHost {
   readonly view: SurfaceView
-  constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz: number, surfaces: DrawnSurfaces) {
+  /** Whether the batch's last tick may catch up from the newest buffer (SurfaceView.apply): in the worker, not in-thread. */
+  private readonly catchUp: boolean
+  constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz: number, surfaces: DrawnSurfaces, catchUp = false) {
     this.view = new SurfaceView(size, b, light, stepHz)
     this.view.surfaces = surfaces
+    this.catchUp = catchUp
   }
 
   /**
    * Applies the entries in order, as one-entry requests a round trip apart would (no frame between them): after an applied
    * publish the next starts from alpha 0. Packs once, so the reply carries every key any entry changed, at its final data.
+   * With `catchUp`, the last publish of the batch may read the newest buffer when its own was reused; earlier stale ones defer.
    */
   handle(req: WaterRequest): WaterReply {
     const t0 = performance.now()
     const applied: boolean[] = []
-    let shown = req.shown
-    for (const e of req.entries) {
-      const a = e.water ? this.view.apply(e.water, shown) : false
+    let shown = req.shown, last = -1
+    req.entries.forEach((e, i) => { if (e.water) last = i })
+    for (const [i, e] of req.entries.entries()) {
+      const a = e.water ? this.view.apply(e.water, shown, this.catchUp && i === last) : false
       if (a) shown = 0
       for (let i = 0; i < e.relight.length; i += 3) this.view.relight(e.relight[i]!, e.relight[i + 1]!, e.relight[i + 2]!)
       applied.push(a)
