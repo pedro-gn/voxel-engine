@@ -30,8 +30,17 @@ export interface WorkOrderView {
   effectivePriority: number
 }
 export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number }
+export interface WorkerBarrier {
+  /** The unit that made the edit, and the edited voxel. */
+  unit: number; pos: Vec3
+  /** Every chunk whose mesh the edit changes (the 3 × 3 × 3 box around `pos`), sorted, with its version after the edit. */
+  chunks: { chunk: number; version: number }[]
+}
 export interface WorkerTick {
-  barriers: { chunk: number; version: number }[]
+  /** The sim tick this publication closes. */
+  tick: number
+  /** One per dig or build committed this tick. */
+  barriers: WorkerBarrier[]
   /** Persistent pile deltas; count 0 removes a stack. */
   drops: { pos: Vec3; block: number; count: number }[]
   /** Fixed-stride poses [id,x256,y256,z256,facing,stateCode,order,progress,duration]. */

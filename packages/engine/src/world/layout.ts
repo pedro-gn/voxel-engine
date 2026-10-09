@@ -44,6 +44,14 @@ export class Layout {
   chunkOf(x: number, y: number, z: number): number {
     return this.chunkIndex(x >> 5, y >> 5, z >> 5)
   }
+  /** The chunks holding a voxel of the 3 × 3 × 3 box around (x, y, z), sorted: the meshes an edit there can change. */
+  chunksAround(x: number, y: number, z: number): number[] {
+    const out: number[] = []
+    for (let cy = Math.max(0, (y - 1) >> 5); cy <= Math.min(this.cy - 1, (y + 1) >> 5); cy++)
+      for (let cz = Math.max(0, (z - 1) >> 5); cz <= Math.min(this.cz - 1, (z + 1) >> 5); cz++)
+        for (let cx = Math.max(0, (x - 1) >> 5); cx <= Math.min(this.cx - 1, (x + 1) >> 5); cx++) out.push(this.chunkIndex(cx, cy, cz))
+    return out
+  }
   voxelIndex(x: number, y: number, z: number): number {
     return x + z * this.size[0] + y * this.size[0] * this.size[2]
   }
