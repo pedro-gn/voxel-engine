@@ -103,3 +103,40 @@ test('first person in a units scene: look and walk, no dig/place, clicks submit 
   expect(r).toEqual({ mode: 'firstPerson', dug: false, placed: false, submits: 0 })
   expect(errors).toEqual([])
 })
+
+test('underwater view: fades in under water in both camera modes and out above it', async ({ page }) => {
+  const errors = watchErrors(page)
+  await boot(page, '/?size=128&still')
+  // A stone basin full of still water: surface at y = 113, floor top at 100, around (24, 24).
+  await page.evaluate(async () => {
+    const e = (window as W).__elovox!.engine
+    const acked = (seq: number) => new Promise<void>((res) => { const off = e.on('ack', (a) => { if (a.seq === seq) { off(); res() } }) })
+    await acked(e.submit({ type: 'fillRegion', min: [8, 99, 8], max: [39, 112, 39], voxel: e.blocks.id('stone') }))
+    await acked(e.submit({ type: 'fillRegion', min: [9, 100, 9], max: [38, 112, 38], voxel: (7 << 12) | e.blocks.id('water') }))
+    for (const s of [e.controls.goal, e.controls.current]) { s.target[0] = 24; s.target[2] = 24 }
+  })
+  const amount = () => page.evaluate(() => (window as W).__elovox!.engine.underwater)
+  expect(await amount()).toBe(0)
+
+  // First person: spawned on the surface, the player sinks until the eye is under.
+  await page.keyboard.press('c')
+  await page.waitForFunction(() => (window as W).__elovox!.engine.underwater === 1, null, { timeout: 15_000 })
+  expect(await page.evaluate(() => (window as W).__elovox!.engine.firstPerson.swimming)).toBe(true)
+
+  // Back to orbit: the camera pulls out of the water and the view fades out.
+  await page.keyboard.press('c')
+  await page.waitForFunction(() => (window as W).__elovox!.engine.underwater === 0, null, { timeout: 15_000 })
+
+  // Orbit under water: a low camera close to the basin floor, then far above again.
+  await page.evaluate(() => {
+    const e = (window as W).__elovox!.engine
+    for (const s of [e.controls.goal, e.controls.current]) { s.target[0] = 24; s.target[2] = 24; s.distance = 8; s.pitch = 0.1 }
+  })
+  await page.waitForFunction(() => (window as W).__elovox!.engine.underwater === 1, null, { timeout: 15_000 })
+  await page.evaluate(() => {
+    const e = (window as W).__elovox!.engine
+    for (const s of [e.controls.goal, e.controls.current]) { s.distance = 120; s.pitch = 0.9 }
+  })
+  await page.waitForFunction(() => (window as W).__elovox!.engine.underwater === 0, null, { timeout: 15_000 })
+  expect(errors).toEqual([])
+})
