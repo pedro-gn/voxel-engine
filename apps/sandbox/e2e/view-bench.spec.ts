@@ -93,6 +93,35 @@ test('view distance: frame cost per camera pose', async ({ page }, info) => {
     mkdirSync('test-results', { recursive: true })
     await page.screenshot({ path: `test-results/view-${name}.png` })
   }
+  if (process.env.VIEW_PROBES) {
+    // Spec 4b §4.2: frames from a local edit to its chunk's new mesh, the largest CPU frame while a 128² edit remeshes,
+    // and the bytes the region batches reserve (EngineStats.batchBytes; -1 before that stat exists).
+    out.probes = await page.evaluate(async () => {
+      const e = (window as W).__elovox!.engine
+      const frame = () => new Promise<void>(r => requestAnimationFrame(() => r()))
+      const [tx, , tz] = e.controls.current.target
+      const editFrames: number[] = []
+      for (let i = 0; i < 10; i++) {
+        const x = Math.floor(tx!) + i * 3, z = Math.floor(tz!)
+        let y = e.layout.size[1] - 1
+        while (y > 0 && e.world.get(x, y, z) === 0) y--
+        const ci = e.layout.chunkIndex(x >> 5, y >> 5, z >> 5)
+        const before = e.meshVersion(ci)
+        e.submit({ type: 'setBlock', pos: [x, y, z], voxel: 0 })
+        let frames = 0
+        while (e.meshVersion(ci) === before && frames < 120) { await frame(); frames++ }
+        editFrames.push(frames)
+        await frame()
+      }
+      let editMaxCpu = 0
+      const x0 = Math.max(0, Math.floor(tx!) - 64), z0 = Math.max(0, Math.floor(tz!) - 64)
+      e.submit({ type: 'fillRegion', min: [x0, 60, z0], max: [x0 + 127, 63, z0 + 127], voxel: 0 })
+      const t0 = performance.now()
+      while (performance.now() - t0 < 3000) { await frame(); editMaxCpu = Math.max(editMaxCpu, e.stats().frameMs) }
+      const s = e.stats() as unknown as { batchBytes?: number }
+      return { editFrames, editMaxCpu: Math.round(editMaxCpu * 100) / 100, batchBytes: s.batchBytes ?? -1 }
+    })
+  }
   const result = { date: new Date().toISOString(), query, userAgent: await page.evaluate(() => navigator.userAgent), poses: out }
   const path = process.env.VIEW_BENCH_OUT ?? 'test-results/view-bench.json'
   writeFileSync(path, JSON.stringify(result, null, 2))
