@@ -27,8 +27,11 @@ import { boxInRange, type Vec3Like } from './viewDistance.ts'
  * the pixel-diff reference.
  */
 
-/** Chunk columns per region side. */
-export const REGION = 4
+/**
+ * Chunk columns per region side. 8, measured against 4 at 1024² (spec 4b §4.2, window-4 re-A/B): terrain CPU per frame
+ * falls by about 2 ms at the far and ground poses, edit latency in wall ms is no worse, and batch memory rises 3.5-8%.
+ */
+export const REGION = 8
 /** Reserved space per chunk geometry, so most remeshes fit in place (setGeometryAt) instead of delete + append. */
 const SLACK = 1.25
 /** A batch that needs room compacts first when its freed (deleted, reserved) space passes this share of capacity. */

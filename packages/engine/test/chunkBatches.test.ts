@@ -18,10 +18,12 @@ function quads(n: number): LayerMesh {
 }
 const layout = new Layout([256, 64, 256])
 const batches = () => new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true)
+/** Region-4 batches (32 slots × 1024 vertices on this layout) grow and compact after a few chunks; the mechanics are the same at any region size. */
+const small = () => new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { region: 4 })
 const bm = (b: ChunkBatches) => b.group.children as THREE.BatchedMesh[]
 
 describe('ChunkBatches', () => {
-  it('puts chunks of one 4 × 4-column region in one batch, translated to the chunk centre, with explicit finite bounds', () => {
+  it('puts chunks of one REGION × REGION-column region in one batch, translated to the chunk centre, with explicit finite bounds', () => {
     const b = batches()
     b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
     b.set(layout.chunkIndex(REGION - 1, 1, REGION - 1), REGION - 1, 1, REGION - 1, quads(1))
@@ -35,7 +37,7 @@ describe('ChunkBatches', () => {
     expect(first.geometry.boundingBox!.max.toArray()).toEqual([REGION * 32, 64, REGION * 32])
   })
   it('keeps the integer packed attribute aliased as position, also after growing', () => {
-    const b = batches()
+    const b = small()
     for (let i = 0; i < 16; i++) b.set(i, i % 8, 0, 0, quads(900)) // forces at least one grow of the first batch
     const g = bm(b)[0]!.geometry
     expect(b.stats.grown).toBeGreaterThan(0)
@@ -43,7 +45,7 @@ describe('ChunkBatches', () => {
     expect((g.getAttribute('packed') as THREE.BufferAttribute).gpuType).toBe(THREE.IntType)
   })
   it('aliases normal (and position) to the packed attribute, also after growing, so three\'s batch normal finds one', () => {
-    const b = batches()
+    const b = small()
     b.set(0, 0, 0, 0, quads(1))
     expect(bm(b)[0]!.geometry.getAttribute('normal')).toBe(bm(b)[0]!.geometry.getAttribute('packed'))
     for (let i = 0; i < 16; i++) b.set(i, i % 8, 0, 0, quads(900))
@@ -52,7 +54,7 @@ describe('ChunkBatches', () => {
     expect(g.getAttribute('normal')).toBe(g.getAttribute('packed'))
   })
   it('hands the buffers a grow replaced to releaseRetired once', () => {
-    const b = batches()
+    const b = small()
     const before = bm(b).length
     b.set(0, 0, 0, 0, quads(1))
     const old = [bm(b)[before]!.geometry.getAttribute('packed'), bm(b)[before]!.geometry.getIndex()]
@@ -76,7 +78,7 @@ describe('ChunkBatches', () => {
     expect(b.instanceCount).toBe(1)
   })
   it('removes a chunk, and compacts a batch whose freed space passes 30% when it needs room', () => {
-    const b = batches()
+    const b = small()
     for (let i = 0; i < 10; i++) b.set(i, 0, i, 0, quads(600)) // 10 × 3000 reserved vertices: fits the initial 32 × 1024
     for (let i = 0; i < 6; i++) b.remove(i)
     expect(b.instanceCount).toBe(4)
@@ -91,7 +93,7 @@ describe('ChunkBatches', () => {
       for (let v = 0; v < n * 4; v++) m.vertices[v * 2 + 1] = tag * 100_000 + v
       return m
     }
-    const b = batches()
+    const b = small()
     const meshes = new Map<string, LayerMesh>()
     const put = (ci: number, cy: number, n: number) => { const m = tagged(n, ci + 1); meshes.set(`0,${cy},0`, m); b.set(ci, 0, cy, 0, m) }
     // 2500, 7500 and 10000 reserved vertices. Removing the first and third frees 12500 (> 30% of 32768); the kept middle
@@ -153,6 +155,19 @@ describe('ChunkBatches', () => {
     b.set(layout.chunkIndex(8, 0, 0), 8, 0, 0, quads(1))
     expect(b.batchCount).toBe(2)
     expect(bm(b)[0]!.geometry.boundingBox!.max.toArray()).toEqual([256, 64, 256])
+  })
+  it('groups 8 × 8 columns per batch by default (spec 4b §4.2: adopted on the window-4 re-A/B)', () => {
+    const b = batches()
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(7, 1, 7), 7, 1, 7, quads(1))
+    expect(REGION).toBe(8)
+    expect(b.batchCount).toBe(1)
+  })
+  it('still groups 4 × 4 columns with region 4', () => {
+    const b = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { region: 4 })
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(4, 0, 0), 4, 0, 0, quads(1))
+    expect(b.batchCount).toBe(2)
   })
   it('logs remesh costs per region size (spec 4b §4.2; numbers are logged, not asserted)', () => {
     for (const region of [4, 8]) {

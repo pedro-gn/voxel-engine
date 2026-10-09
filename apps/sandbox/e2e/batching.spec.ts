@@ -1,20 +1,21 @@
 import { expect, test } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
-import { DEFAULT_POSE, MAX_DIFF_SHARE, pixelDiff, shoot } from './shots.ts'
+import { MAX_DIFF_SHARE, pixelDiff, shoot, type Pose } from './shots.ts'
 
 /**
- * The 256² e2e terrain, frozen (?still): 8 × 8 chunk columns, so 4 regions per batched layer, with trees whose leaves
- * are the cutout layer. Remeshes, appends and compaction are covered by chunkBatches.test.ts.
+ * The 512² e2e terrain, frozen (?still): 16 × 16 chunk columns, so 4 regions of 8 × 8 per batched layer, with trees whose
+ * leaves are the cutout layer. Remeshes, appends and compaction are covered by chunkBatches.test.ts.
  */
-const SCENE = '/?scene=terrain&size=256&still'
+const SCENE = '/?scene=terrain&size=512&still'
+const POSE: Pose = { t: [256, 40, 256], d: 420, p: 0.75, y: 0.7 }
 
 for (const backend of ['webgpu', 'webgl'] as const) {
   test(`${backend}: batched and unbatched chunks draw the same picture`, async ({ page }, info) => {
     test.setTimeout(240_000)
     await page.setViewportSize({ width: 1280, height: 720 })
     const flag = backend === 'webgl' ? '&webgl' : ''
-    const batched = await shoot(page, SCENE + flag)
-    const unbatched = await shoot(page, SCENE + flag + '&nobatch')
+    const batched = await shoot(page, SCENE + flag, POSE)
+    const unbatched = await shoot(page, SCENE + flag + '&nobatch', POSE)
     const diff = await pixelDiff(page, batched.png, unbatched.png)
     writeFileSync(info.outputPath('batched.png'), batched.png)
     writeFileSync(info.outputPath('unbatched.png'), unbatched.png)
@@ -36,7 +37,7 @@ for (const backend of ['webgpu', 'webgl'] as const) {
 
   // Spec 4b §4.1: the engine's batch cull (precomputed spheres, no sort, both passes) against three's own (?cull=three).
   for (const [label, scene, pose] of [
-    ['256² orbit', SCENE, DEFAULT_POSE],
+    ['512² orbit', SCENE, POSE],
     ['1024² far', '/?scene=terrain&size=1024&still', { t: [512, 50, 512], d: 400, p: 0.3, y: 0.7 }],
   ] as const) {
     test(`${backend}: the engine's cull draws the picture three's cull draws (${label})`, async ({ page }, info) => {

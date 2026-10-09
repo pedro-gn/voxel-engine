@@ -56,7 +56,7 @@ export interface EngineOptions {
   /** Generation workers to start. Default: the mesh worker count. */
   genWorkers?: number
   /**
-   * Draw the opaque and cutout chunk layers with one BatchedMesh per 4 × 4-chunk region instead of one mesh per chunk
+   * Draw the opaque and cutout chunk layers with one BatchedMesh per 8 × 8-chunk region instead of one mesh per chunk
    * (far fewer render objects, less CPU per frame). Same picture either way. Default true.
    */
   batchChunks?: boolean
@@ -65,7 +65,7 @@ export interface EngineOptions {
    * pixel-diff e2e uses it as its reference picture. Default false.
    */
   threeCull?: boolean
-  /** @internal Chunk columns per region batch side; default 4. For the region-size A/B only. */
+  /** @internal Chunk columns per region batch side; default 8. For the region-size A/B only. */
   regionChunks?: number
 }
 
