@@ -3,10 +3,15 @@ import type { WorldSize } from '../../world/layout.ts'
 import type { WaterBuffers } from '../../world/waterBuffers.ts'
 import { SurfaceView, type DrawnSurfaces } from './surfaceView.ts'
 
-/** Main thread → water host: one tick's publish (null: none) and the light ranges [cc, y0, y1]* to re-read after it. */
-export interface WaterRequest { type: 'apply'; id: number; tick: number; water: WaterTick | null; shown: number; relight: number[] }
-/** Water host → main thread: whether the publish was applied, the host's cost (ms), and the data of every key that changed (packDirty). */
-export interface WaterReply { type: 'result'; id: number; tick: number; applied: boolean; hostMs: number; keys: Int32Array; data: Float32Array }
+/** One tick for the host: its publish (null: none) and the light ranges [cc, y0, y1]* to re-read after it. */
+export interface WaterEntry { tick: number; water: WaterTick | null; relight: number[] }
+/**
+ * Main thread → water host: every tick queued since the last reply, in order (spec 4.1). `shown` is the alpha on screen
+ * when it was sent: the first publish starts from it, each one after an applied publish from 0.
+ */
+export interface WaterRequest { type: 'apply'; id: number; shown: number; entries: WaterEntry[] }
+/** Water host → main thread: per entry, whether its publish was applied; the host's cost (ms); the data of every key that changed (packDirty). */
+export interface WaterReply { type: 'result'; id: number; applied: boolean[]; hostMs: number; keys: Int32Array; data: Float32Array }
 
 /** Floats per row of a ColumnData array: 32 instances × 4. */
 const ROW = 128
@@ -57,11 +62,21 @@ export class WaterHost {
     this.view.surfaces = surfaces
   }
 
+  /**
+   * Applies the entries in order, as one-entry requests a round trip apart would (no frame between them): after an applied
+   * publish the next starts from alpha 0. Packs once, so the reply carries every key any entry changed, at its final data.
+   */
   handle(req: WaterRequest): WaterReply {
     const t0 = performance.now()
-    const applied = req.water ? this.view.apply(req.water, req.shown) : false
-    for (let i = 0; i < req.relight.length; i += 3) this.view.relight(req.relight[i]!, req.relight[i + 1]!, req.relight[i + 2]!)
+    const applied: boolean[] = []
+    let shown = req.shown
+    for (const e of req.entries) {
+      const a = e.water ? this.view.apply(e.water, shown) : false
+      if (a) shown = 0
+      for (let i = 0; i < e.relight.length; i += 3) this.view.relight(e.relight[i]!, e.relight[i + 1]!, e.relight[i + 2]!)
+      applied.push(a)
+    }
     const { keys, data } = packDirty(this.view)
-    return { type: 'result', id: req.id, tick: req.tick, applied, hostMs: performance.now() - t0, keys, data }
+    return { type: 'result', id: req.id, applied, hostMs: performance.now() - t0, keys, data }
   }
 }

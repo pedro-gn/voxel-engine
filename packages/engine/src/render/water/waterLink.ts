@@ -20,22 +20,23 @@ interface Entry { tick: number; water: WaterTick | null; relight: number[]; sett
 const DEPTH_WINDOW = 200
 
 /**
- * The main thread's side of the water host (spec §4.1): one request in flight, the rest queued in tick order and sent right
- * after the previous reply's copy, with the alpha on screen then (0 after an apply). No coalescing: publishes are deltas.
+ * The main thread's side of the water host (spec §4.1): one request in flight; everything queued behind it goes out as one
+ * request right after its reply's copy, in tick order, with the alpha on screen then. So the host keeps up however few
+ * round trips the main thread makes. No coalescing: publishes are deltas, and the host applies each one.
  * While a publish is in flight the drawn alpha is frozen at the one it was sent with (`frozen`).
  */
 export class WaterLink {
   private readonly hooks: WaterLinkHooks
   private readonly queue: Entry[] = []
-  private inFlight: (Entry & { id: number; shown: number }) | null = null
+  private inFlight: { id: number; shown: number; entries: Entry[]; publishes: boolean } | null = null
   private nextId = 0
   private readonly depths = new Uint16Array(DEPTH_WINDOW)
   private depthAt = 0
 
   constructor(hooks: WaterLinkHooks) { this.hooks = hooks }
 
-  /** Requests in flight or queued. */
-  get depth(): number { return this.queue.length + (this.inFlight ? 1 : 0) }
+  /** Ticks in flight or queued. */
+  get depth(): number { return this.queue.length + (this.inFlight ? this.inFlight.entries.length : 0) }
 
   /** The largest depth over the last DEPTH_WINDOW submits. */
   maxDepth(): number {
@@ -45,7 +46,7 @@ export class WaterLink {
   }
 
   /** The alpha a publish in flight was sent with, to draw until its reply; null when no publish is in flight. */
-  get frozen(): number | null { return this.inFlight !== null && this.inFlight.water !== null ? this.inFlight.shown : null }
+  get frozen(): number | null { return this.inFlight !== null && this.inFlight.publishes ? this.inFlight.shown : null }
 
   /**
    * A tick's publish (null: none) and the light ranges to re-read after it. `settles`: a tick, whose missing publish releases
@@ -58,14 +59,16 @@ export class WaterLink {
     if (this.inFlight === null) this.drain()
   }
 
-  /** The host's reply; one to a request from before reset() is ignored. */
+  /** The host's reply; one to a request from before reset() is ignored. Its entries' hooks run in tick order. */
   receive(reply: WaterReply): void {
-    const e = this.inFlight
-    if (e === null || reply.id !== e.id) return
+    const f = this.inFlight
+    if (f === null || reply.id !== f.id) return
     this.inFlight = null
-    this.hooks.copy(reply, e.water !== null)
-    if (reply.applied) this.hooks.applied(e.tick, e.arrived)
-    else if (e.water === null && e.settles) this.hooks.settled()
+    this.hooks.copy(reply, f.publishes)
+    f.entries.forEach((e, i) => {
+      if (reply.applied[i]) this.hooks.applied(e.tick, e.arrived)
+      else if (e.water === null && e.settles) this.hooks.settled()
+    })
     this.drain()
   }
 
@@ -75,14 +78,18 @@ export class WaterLink {
     this.queue.length = 0
   }
 
-  /** Sends the queue's head; entries with nothing for the host only release the clock, in order. */
+  /**
+   * Sends the whole queue as one request. Entries with nothing for the host at its head only release the clock, at once;
+   * behind the first one with something, they go along, so their settles keep their place in tick order.
+   */
   private drain(): void {
-    while (this.inFlight === null && this.queue.length > 0) {
-      const e = this.queue.shift()!
-      if (e.water === null && e.relight.length === 0) { if (e.settles) this.hooks.settled(); continue }
-      const id = ++this.nextId, shown = this.hooks.shown()
-      this.inFlight = { ...e, id, shown }
-      this.hooks.post({ type: 'apply', id, tick: e.tick, water: e.water, shown, relight: e.relight })
+    if (this.inFlight !== null) return
+    while (this.queue.length > 0 && this.queue[0]!.water === null && this.queue[0]!.relight.length === 0) {
+      if (this.queue.shift()!.settles) this.hooks.settled()
     }
+    if (this.queue.length === 0) return
+    const entries = this.queue.splice(0), id = ++this.nextId, shown = this.hooks.shown()
+    this.inFlight = { id, shown, entries, publishes: entries.some(e => e.water !== null) }
+    this.hooks.post({ type: 'apply', id, shown, entries: entries.map(e => ({ tick: e.tick, water: e.water, relight: e.relight })) })
   }
 }

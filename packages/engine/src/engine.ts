@@ -249,8 +249,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     return out
   }
   const waterApply = new CostMeter(200), waterHostCost = new CostMeter(200), waterLag = new CostMeter(200)
-  /** The arrival time of the publish whose step the next frame draws first (waterLag), or null. */
-  let lagFrom: number | null = null
+  /** The arrival times of the publishes applied since the last frame, which draws them first (waterLag: one sample each, queue wait included). */
+  const lagFrom: number[] = []
   /** The in-thread host (waterWorker false); otherwise the worker (spawned with the pools) and its crash count. */
   const localHost = inWorker ? null : new WaterHost(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs, surfaceMirror.surfaces)
   let waterWorker: Worker | null = null, waterCrashes = 0
@@ -265,7 +265,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       waterHostCost.record(reply.hostMs)
       if (publish) waterApply.record(performance.now() - t0 + (localHost ? reply.hostMs : 0))
     },
-    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(surfaceMirror, tick + 1); lagFrom = arrived },
+    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(surfaceMirror, tick + 1); lagFrom.push(arrived) },
     settled: () => clock.hold(surfaceMirror, null), // every tile settled (prev = cur): nothing to time
     shown: () => waterShown,
   })
@@ -589,7 +589,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     visuals.drawFragments(fragments.frame(performance.now(), ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci)), (x, y, z) => reader.getLight(x, y, z))
     // A publish in the host is drawn at the alpha it was sent with until its copy (spec 4.1: freeze, not carry).
     waterShown = waterLink.frozen ?? (waterTick === null ? 1 : stepAlpha(clock.due, waterTick))
-    if (lagFrom !== null) { waterLag.record(now - lagFrom); lagFrom = null }
+    for (const from of lagFrom) waterLag.record(now - from)
+    lagFrom.length = 0
     visuals.setWaterAlpha(waterShown)
     // Before rendering, so listeners' scene changes show in this frame.
     events.emit('frame', { dt, now })

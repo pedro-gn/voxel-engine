@@ -35,7 +35,7 @@ describe('SurfaceMirror (4a-r2 #2)', () => {
         const relight = tick % 4 === 0 ? [0, 0, 32, 1, 0, 16] : []
         ref.apply(water, shown)
         for (let i = 0; i < relight.length; i += 3) ref.relight(relight[i]!, relight[i + 1]!, relight[i + 2]!)
-        mirror.copy(host.handle({ type: 'apply', id: ++id, tick, water, shown, relight }))
+        mirror.copy(host.handle({ type: 'apply', id: ++id, shown, entries: [{ tick, water, relight }] }))
         for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < ref.ccCount; cc++) {
           const a = ref.column(cc, r), m = mirror.column(cc, r)
           expect([tick, r, cc, !!a]).toEqual([tick, r, cc, !!m])
