@@ -7,7 +7,10 @@ export interface WorkerOptions {
   searchCap?: number
   maxSearchNodes?: number
   maxOrders?: number
+  /** Fixed number of idle units assigned per tick; when unset, max(16, ceil(idle / assignmentShare)). */
   assignmentCap?: number
+  /** Idle units per assignment per tick when assignmentCap is unset (default 8). */
+  assignmentShare?: number
   commitCap?: number
   inventoryCapacity?: number
   materials?: Record<string, WorkMaterial>

@@ -850,6 +850,70 @@ describe('simulated workers', () => {
     expect(released).toBeGreaterThanOrEqual(190); expect(released).toBeLessThanOrEqual(205)
     expect(w.tasks[0]!.failures.get(1)?.reason).toBe('traffic')
   })
+  describe('assignment at scale', () => {
+    /** A 256² floor with one long planks dig next to each of 200 spread units. */
+    function field(options: WorkerOptions = {}, offset = 1) {
+      const spots: [number, number][] = []
+      for (let j = 0; j < 14; j++) for (let i = 0; i < 15 && spots.length < 200; i++) spots.push([8 + i * 17, 8 + j * 17])
+      const sim = new Simulation({ buffers: createWorldBuffers([256, 32, 256]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { maxOrders: 256, materials: { stone: { digTicks: 4 }, planks: { digTicks: 400 } }, ...options } })
+      sim.generate({ generateColumn(ctx, cx, cz) {
+        for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1)
+        for (const [x, z] of spots) if ((x + offset) >> 5 === cx && z >> 5 === cz) ctx.set(x + offset - cx * 32, 4, z - cz * 32, 2)
+      } })
+      for (const [x, z] of spots) sim.submit(0, ++seq, { type: 'unitSpawn', pos: [x, 4, z] })
+      sim.step()
+      for (const [x, z] of spots) sim.submit(0, ++seq, { type: 'workDig', min: [x + offset, 4, z], max: [x + offset, 4, z] })
+      return sim
+    }
+    const working = (sim: Simulation) => [...sim.workers!.units.values()].filter(u => u.state === 'working').length
+    it('puts 200 idle units to work on 200 spread tasks within 60 ticks without exceeding the search cap', () => {
+      const sim = field({}, 3)
+      expect(sim.workers!.units.size).toBe(200)
+      let ticks = 0
+      for (; ticks < 60 && working(sim) < 200; ticks++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(4096)
+      expect(working(sim)).toBe(200)
+    })
+    it('assigns more units per tick when many are idle', () => {
+      // At most one unit in two waits: 100 assignments on the first tick, then half of those left.
+      const sim = field({ assignmentShare: 2 })
+      let ticks = 0
+      for (; ticks < 30 && working(sim) < 200; ticks++) sim.step()
+      expect(ticks).toBeLessThanOrEqual(8)
+    })
+    it('keeps a fixed assignment cap when one is given', () => {
+      const sim = field({ assignmentCap: 16, assignmentShare: 2 })
+      let ticks = 0
+      for (; ticks < 30 && working(sim) < 200; ticks++) sim.step()
+      expect(ticks).toBeGreaterThanOrEqual(13)
+    })
+    it('looks for tasks near the unit first, and further only when few are near', () => {
+      const sim = new Simulation({ buffers: createWorldBuffers([256, 32, 256]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { materials: { stone: { digTicks: 4 } } } })
+      sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
+      const w = sim.workers as unknown as { candidates(u: unknown): { pos: number[] }[]; tasks: unknown[]; taskIndex: Map<number, unknown[]> }
+      // No unit takes these tasks; the probe stands in chunk column (0, 0).
+      const probe = { id: 1, x: 2 * 256 + 128, y: 4 * 256, z: 2 * 256 + 128 }
+      cmd(sim, { type: 'workDig', min: [200, 3, 200], max: [203, 3, 203] })
+      cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [11, 3, 9] })
+      expect(w.candidates(probe)).toHaveLength(24)
+      cmd(sim, { type: 'workDig', min: [8, 3, 12], max: [11, 3, 13] })
+      const near = w.candidates(probe)
+      expect(near).toHaveLength(16); expect(near.every(t => t.pos[0]! < 32 && t.pos[2]! < 32)).toBe(true)
+      expect([...w.taskIndex.values()].reduce((n, l) => n + l.length, 0)).toBe(w.tasks.length)
+    })
+    it('keeps the task index in step with the frontier through parking and completion', () => {
+      const sim = make(); spawn(sim, [3, 4, 26]); spawn(sim, [5, 4, 26])
+      cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [27, 3, 27] })
+      cmd(sim, { type: 'workDig', min: [2, 3, 29], max: [5, 3, 29], priority: 200 })
+      const w = sim.workers as unknown as { tasks: { pos: number[] }[]; taskIndex: Map<number, { pos: number[] }[]> }
+      for (let i = 0; i < 120; i++) {
+        sim.step()
+        const indexed = [...w.taskIndex.values()].flat()
+        expect(indexed.length).toBe(w.tasks.length)
+        for (const t of w.tasks) expect(indexed.includes(t)).toBe(true)
+        for (const [column, list] of w.taskIndex) for (const t of list) expect((t.pos[0]! >> 5) + (t.pos[2]! >> 5) * sim.layout.cx).toBe(column)
+      }
+    })
+  })
   it('hashes the tick of a unit\'s last progress', () => {
     const sim = make(); spawn(sim); const u = sim.workers!.units.get(1)! as unknown as { progressAt: number }, before = sim.hash()
     u.progressAt--; expect(sim.hash()).not.toBe(before)

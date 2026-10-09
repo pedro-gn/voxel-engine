@@ -66,6 +66,8 @@ export const staleBackoff = (n: number): number => Math.min(32, 1 << Math.min(5,
 const ceilSqrt = (n: number): number => { let s = Math.floor(Math.sqrt(n)); while (s * s > n) s--; while (s * s < n) s++; return s }
 /** Cells of a sx×sz layer at ring r or deeper. */
 const inner = (sx: number, sz: number, r: number): number => Math.max(0, sx - 2 * r) * Math.max(0, sz - 2 * r)
+/** Yields first, then the list second() builds, only if the consumer gets that far. */
+function* chain<T>(first: readonly T[], second: () => readonly T[]): Generator<T> { yield* first; yield* second() }
 const integer = (n: unknown, min: number, max = 0x7fffffff): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= min && n <= max
 
 /** Authoritative units, work frontier, inventory and exclusive swept-volume reservations. */
@@ -81,6 +83,8 @@ export class WorkerSystem {
   private reservedMin: [number, number, number] = [0, 0, 0]
   private reservedMax: [number, number, number] = [-1, -1, -1]
   private tasks: Task[] = []
+  /** Frontier tasks by chunk column, so an idle unit looks at nearby tasks first. Derived from tasks, not hashed. */
+  private taskIndex = new Map<number, Task[]>()
   /** Frontier slots per order id, recomputed from hashed state at every expansion. */
   private share = new Map<number, number>()
   private targets = new Set<number>()
@@ -108,16 +112,17 @@ export class WorkerSystem {
   private dynamicWasBusy = false
   readonly maxUnits: number
   private readonly searchCap: number
-  private readonly assignmentCap: number
+  private readonly assignmentCap: number | undefined
+  private readonly assignmentShare: number
   private readonly commitCap: number
   private readonly capacity: number
   private readonly maxOrders: number
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
     this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096
-    this.assignmentCap = options.assignmentCap ?? 16; this.commitCap = options.commitCap ?? 16
+    this.assignmentCap = options.assignmentCap; this.assignmentShare = options.assignmentShare ?? 8; this.commitCap = options.commitCap ?? 16
     this.capacity = options.inventoryCapacity ?? 512; this.maxOrders = options.maxOrders ?? 128
-    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, assignmentCap: this.assignmentCap, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
+    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
       if (!integer(n, 1, 1 << 20)) throw new RangeError(`workers ${name} must be a positive integer <= 1048576`)
     }
     this.nav = new NavigationSystem({ ...port, safe: (x, y, z) => port.safe(x, y, z) && !this.reservedPose(x, y, z) }, options.maxSearchNodes ?? 16384)
@@ -386,7 +391,7 @@ export class WorkerSystem {
     for (const o of this.orders) if (o.ids && !o.cancelled && o.done < o.total && ![...o.ids].some(id => { const u = this.units.get(id); return u !== undefined && u.state !== 'incapacitated' })) this.cancelOrder(o)
   }
   private removeTask(t: Task, done: boolean): void {
-    this.tasks = this.tasks.filter(q => q !== t); this.targets.delete(t.p)
+    this.tasks = this.tasks.filter(q => q !== t); this.unindex(t); this.targets.delete(t.p)
     if (done) {
       t.order.done++; t.order.pending--; t.order.reason = undefined; t.order.idleSince = this.time
       if (t.order.kind === 'build') this.buildCellDone(t.order, t.pos)
@@ -526,7 +531,7 @@ export class WorkerSystem {
     const k = parkChoice(this.tasks.map(t => ({ i: t.i, priority: this.effective(t.order), added: t.added, claimed: t.claim !== 0, parkable: this.parkable(t, live) })))
     if (k < 0) return false
     const t = this.tasks[k]!
-    this.tasks.splice(k, 1); this.targets.delete(t.p); t.order.parked.push(t.i)
+    this.tasks.splice(k, 1); this.unindex(t); this.targets.delete(t.p); t.order.parked.push(t.i)
     if (t.reason === undefined) live.set(t.order, live.get(t.order)! - 1)
     // A task parked only to make room has no history worth keeping.
     this.parkedFailures.delete(t.p)
@@ -568,21 +573,52 @@ export class WorkerSystem {
       if (this.targets.has(p)) { if (fresh) o.cursor--; else o.parked.unshift(i); break }
       const history = fresh ? undefined : this.parkedFailures.get(p)
       if (history) { this.parkedFailures.delete(p); t.reason = history.reason; t.failures = history.failures }
-      this.targets.add(p); this.tasks.push(t); if (t.reason === undefined) live.set(o, (live.get(o) ?? 0) + 1)
+      this.targets.add(p); this.tasks.push(t); this.index(t); if (t.reason === undefined) live.set(o, (live.get(o) ?? 0) + 1)
     }
   }
+  private taskColumn(t: Task): number { return (t.pos[0] >> 5) + (t.pos[2] >> 5) * this.port.layout.cx }
+  private index(t: Task): void { const c = this.taskColumn(t), list = this.taskIndex.get(c); if (list) list.push(t); else this.taskIndex.set(c, [t]) }
+  private unindex(t: Task): void {
+    const c = this.taskColumn(t), list = this.taskIndex.get(c)
+    if (!list) return
+    const k = list.indexOf(t)
+    if (k >= 0) list.splice(k, 1)
+    if (!list.length) this.taskIndex.delete(c)
+  }
+  /**
+   * Tasks unit u may take, from its chunk column and the 8 around it, widened ring by ring until there are 16 or ring 4
+   * is reached; past that, every frontier task.
+   */
+  private candidates(u: Unit): Task[] {
+    const L = this.port.layout, cx = u.x >> 13, cz = u.z >> 13, out: Task[] = [], eligible = (t: Task) => this.eligible(t, u)
+    for (let r = 0; r <= 4; r++) {
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r || cx + dx < 0 || cz + dz < 0 || cx + dx >= L.cx || cz + dz >= L.cz) continue
+        for (const t of this.taskIndex.get(cx + dx + (cz + dz) * L.cx) ?? []) if (eligible(t)) out.push(t)
+      }
+      if (r >= 1 && out.length >= 16) return out
+    }
+    return this.tasks.filter(eligible)
+  }
+  private eligible(t: Task, u: Unit): boolean { return !t.claim && (!t.order.ids || t.order.ids.has(u.id)) && this.workable(t) && this.canRetry(t, u) }
   private assign(): void {
     const units = [...this.units.values()]
-    let cap = this.assignmentCap
+    const assignable = (u: Unit) => u.available && u.goal === null && !u.task && !u.motion && u.state === 'idle'
+    let idle = 0
+    if (this.assignmentCap === undefined) for (const u of units) if (assignable(u)) idle++
+    const perTick = this.assignmentCap ?? Math.max(16, Math.ceil(idle / this.assignmentShare))
+    let cap = perTick
     for (let n = 0; n < units.length && cap > 0; n++) {
       const u = units[(this.assignmentCursor + n) % units.length]!
-      if (!u.available || u.goal !== null || u.task || u.motion || u.state !== 'idle') continue
+      if (!assignable(u)) continue
       cap--
       const [x, y, z] = this.pose(u)
-      const candidates = this.tasks.filter(t => !t.claim && (!t.order.ids || t.order.ids.has(u.id)) && this.workable(t) && this.canRetry(t, u))
-        .sort((a, b) => this.effective(b.order) - this.effective(a.order) || (Math.abs(a.pos[0] - x) + Math.abs(a.pos[1] - y) + Math.abs(a.pos[2] - z)) - (Math.abs(b.pos[0] - x) + Math.abs(b.pos[1] - y) + Math.abs(b.pos[2] - z)) || a.order.id - b.order.id || a.p - b.p)
+      const order = (list: Task[]) => list.sort((a, b) => this.effective(b.order) - this.effective(a.order) || (Math.abs(a.pos[0] - x) + Math.abs(a.pos[1] - y) + Math.abs(a.pos[2] - z)) - (Math.abs(b.pos[0] - x) + Math.abs(b.pos[1] - y) + Math.abs(b.pos[2] - z)) || a.order.id - b.order.id || a.p - b.p)
+      const near = order(this.candidates(u))
+      // Only when every nearby candidate failed without spending the attempts does the unit look at the rest.
+      const rest = () => { const seen = new Set(near); return order(this.tasks.filter(t => !seen.has(t) && this.eligible(t, u))) }
       let attempts = 0
-      for (const t of candidates) {
+      for (const t of chain(near, rest)) {
         if (this.satisfied(t)) { this.removeTask(t, true); continue }
         const id = voxelId(this.port.get(...t.pos)), build = t.order.kind === 'build'
         let reason: WorkBlockReason | undefined
@@ -599,7 +635,7 @@ export class WorkerSystem {
         u.search = this.request(u, goals); u.state = 'planning'; this.dirty.add(u.id); break
       }
     }
-    this.assignmentCursor = units.length ? (this.assignmentCursor + this.assignmentCap) % units.length : 0
+    this.assignmentCursor = units.length ? (this.assignmentCursor + perTick) % units.length : 0
   }
   private releaseWorkPoses(u: Unit): void { for (const p of u.workPoses) if (this.workPositions.get(p) === u.id) this.workPositions.delete(p); u.workPoses = [] }
   private motionPose(to: number, elapsed: number, ticks: number, start: [number, number, number]): [number, number, number] {
