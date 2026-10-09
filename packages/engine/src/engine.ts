@@ -60,6 +60,11 @@ export interface EngineOptions {
    * (far fewer render objects, less CPU per frame). Same picture either way. Default true.
    */
   batchChunks?: boolean
+  /**
+   * @internal Debug only: keep three's own per-chunk BatchedMesh cull and sort instead of the engine's. The batching
+   * pixel-diff e2e uses it as its reference picture. Default false.
+   */
+  threeCull?: boolean
 }
 
 export interface EngineEvents {
@@ -272,6 +277,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     faceLayers,
     water: waterView,
     batchChunks: o.batchChunks ?? true,
+    threeCull: o.threeCull ?? false,
   })
 
   // ---- lifecycle ----

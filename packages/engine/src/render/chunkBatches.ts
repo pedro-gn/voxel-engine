@@ -1,7 +1,9 @@
 import * as THREE from 'three/webgpu'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
+import { buildDrawList, frustumPlanes, type GeometryRecord, type InstanceRecord } from './chunkCull.ts'
 import { geometryOf } from './chunkMeshes.ts'
+import { boxInRange, type Vec3Like } from './viewDistance.ts'
 
 /**
  * One chunk layer drawn by THREE.BatchedMesh: one batch per region of REGION × REGION chunk columns (all heights), so the
@@ -19,6 +21,10 @@ import { geometryOf } from './chunkMeshes.ts'
  * 4. Nested shadow pass: the shadow map renders INSIDE the main pass, and both passes write the batch's single shared
  *    multi-draw list in onBeforeRender. `PassGuard` restores the outer camera's list after a nested pass, and the
  *    duplicate cull of onBeforeShadow is skipped.
+ *
+ * The cull itself is the engine's (chunkCull.ts, spec 4b §4.1): per pass, a world-space frustum test of precomputed chunk
+ * spheres plus the view distance, with no sort. three's own per-instance cull and sort stay available as `threeCull`,
+ * the pixel-diff reference.
  */
 
 /** Chunk columns per region side. */
@@ -32,7 +38,13 @@ const VERTICES_PER_SLOT = 1024, INDICES_PER_SLOT = 1536
 
 /** The BatchedMesh private state this module reads or writes (three r186). */
 interface BatchInternals {
-  _geometryInfo: { reservedVertexCount: number; reservedIndexCount: number }[]
+  _geometryInfo: (GeometryRecord & { reservedVertexCount: number; reservedIndexCount: number })[]
+  _instanceInfo: InstanceRecord[]
+  _multiDrawStarts: Int32Array
+  _multiDrawCounts: Int32Array
+  _multiDrawCount: number
+  _multiDrawBytesPerElement: number
+  _indirectTexture: THREE.DataTexture
   _maxVertexCount: number
   _maxIndexCount: number
   _nextVertexStart: number
@@ -43,7 +55,28 @@ interface BatchInternals {
 const internals = (bm: THREE.BatchedMesh) => bm as unknown as BatchInternals
 
 interface Entry { region: number; geometryId: number; instanceId: number }
-interface Batch { mesh: THREE.BatchedMesh; freedVertices: number; freedIndices: number }
+interface Batch {
+  mesh: THREE.BatchedMesh
+  freedVertices: number
+  freedIndices: number
+  /** Per instance id: the chunk's centre (x, y, z). Chunks never move, so the cull needs no matrix per pass. */
+  centres: Float32Array
+  guard: PassGuard
+  /** Chunk draws of the camera's (outermost) pass this frame. */
+  drawn: number
+  /** The region's box, for the view distance. */
+  box: THREE.Box3
+}
+
+export interface ChunkBatchOptions {
+  /** @internal three's own per-instance cull and sort (the pixel-diff reference) instead of the engine's. Default false. */
+  threeCull?: boolean
+  /** Chunk columns per region side. Default REGION. */
+  region?: number
+  /** Initial vertex and index capacity per chunk slot. Default VERTICES_PER_SLOT / INDICES_PER_SLOT. */
+  verticesPerSlot?: number
+  indicesPerSlot?: number
+}
 
 /** The packed vertex attribute, read as an integer vector in the shader (never converted to float). */
 function packedAttribute(vertices: number): THREE.BufferAttribute {
@@ -111,30 +144,15 @@ export class PassGuard {
     this.stack.pop()
     return this.stack[this.stack.length - 1] ?? null
   }
+
+  /** Passes currently open. */
+  get depth(): number { return this.stack.length }
+
+  /** Drops the stack: called at the start of a frame, so a render that threw cannot leave a stale outer pass. */
+  reset(): void { this.stack.length = 0 }
 }
 
 type BeforeRender = (renderer: unknown, scene: unknown, camera: THREE.Camera, geometry: unknown, material: unknown, group: unknown) => void
-
-function guardNestedPasses(bm: THREE.BatchedMesh): void {
-  const guard = new PassGuard()
-  const before = bm.onBeforeRender.bind(bm) as unknown as BeforeRender
-  let lastGeometry: unknown = null, lastMaterial: unknown = null
-  bm.onBeforeRender = ((renderer: unknown, scene: unknown, camera: THREE.Camera, geometry: unknown, material: unknown, group: unknown) => {
-    guard.enter(camera)
-    lastGeometry = geometry
-    lastMaterial = material
-    before(renderer, scene, camera, geometry, material, group)
-  }) as unknown as typeof bm.onBeforeRender
-  // three's onBeforeShadow re-runs onBeforeRender with the shadow camera, then the shadow pass's renderObject runs it
-  // again with the same camera: a redundant cull + sort per batch per shadow pass, and it would unbalance the guard.
-  bm.onBeforeShadow = () => {}
-  bm.onAfterRender = ((renderer: unknown) => {
-    const outer = guard.exit()
-    if (!outer) return
-    internals(bm)._visibilityChanged = true
-    before(renderer, null, outer, lastGeometry, lastMaterial, null)
-  }) as unknown as typeof bm.onAfterRender
-}
 
 export class ChunkBatches {
   readonly group = new THREE.Group()
@@ -147,12 +165,25 @@ export class ChunkBatches {
   private material: THREE.Material
   private readonly name: string
   private readonly castShadow: boolean
+  private readonly threeCull: boolean
+  private readonly region: number
+  private readonly verticesPerSlot: number
+  private readonly indicesPerSlot: number
+  private readonly frustum = new THREE.Frustum()
+  private readonly projView = new THREE.Matrix4()
+  private readonly planes = new Float64Array(24)
+  private eye: Vec3Like = { x: 0, y: 0, z: 0 }
+  private range = Infinity
 
-  constructor(layout: Layout, material: THREE.Material, name: string, castShadow: boolean) {
+  constructor(layout: Layout, material: THREE.Material, name: string, castShadow: boolean, options: ChunkBatchOptions = {}) {
     this.layout = layout
     this.material = material
     this.name = name
     this.castShadow = castShadow
+    this.threeCull = options.threeCull ?? false
+    this.region = options.region ?? REGION
+    this.verticesPerSlot = options.verticesPerSlot ?? VERTICES_PER_SLOT
+    this.indicesPerSlot = options.indicesPerSlot ?? INDICES_PER_SLOT
     this.group.name = `elovox-chunks-${name}-batched`
   }
 
@@ -182,7 +213,7 @@ export class ChunkBatches {
       this.entries.delete(ci)
       this.stats.appended++
     }
-    const region = Math.floor(cz / REGION) * 4096 + Math.floor(cx / REGION)
+    const region = Math.floor(cz / this.region) * 4096 + Math.floor(cx / this.region)
     const batch = this.batchFor(region, cx, cz)
     const bm = batch.mesh
     const rv = Math.ceil(vertices * SLACK), ri = Math.ceil(indices * SLACK)
@@ -202,6 +233,9 @@ export class ChunkBatches {
     const geometryId = unaliased(bm, () => bm.addGeometry(geometry, rv, ri))
     const instanceId = bm.addInstance(geometryId)
     bm.setMatrixAt(instanceId, this.matrix.makeTranslation(cx * 32 + 16, cy * 32 + 16, cz * 32 + 16))
+    batch.centres[instanceId * 3] = cx * 32 + 16
+    batch.centres[instanceId * 3 + 1] = cy * 32 + 16
+    batch.centres[instanceId * 3 + 2] = cz * 32 + 16
     this.entries.set(ci, { region, geometryId, instanceId })
   }
 
@@ -210,6 +244,25 @@ export class ChunkBatches {
     if (!e) return
     this.free(this.batches.get(e.region)!, e)
     this.entries.delete(ci)
+  }
+
+  /** Once per frame before rendering: the viewer and the view distance; resets the per-frame counts and pass guards. */
+  beginFrame(eye: Vec3Like, range: number): void {
+    this.eye = { x: eye.x, y: eye.y, z: eye.z }
+    this.range = range
+    for (const b of this.batches.values()) {
+      b.guard.reset()
+      b.drawn = 0
+      const { min, max } = b.box
+      b.mesh.visible = boxInRange(this.eye, range, min.x, min.y, min.z, max.x, max.y, max.z)
+    }
+  }
+
+  /** Chunk draws of the camera's pass in the current frame (after the frustum and view-distance cull). */
+  get drawnCount(): number {
+    let n = 0
+    for (const b of this.batches.values()) if (b.mesh.visible) n += b.drawn
+    return n
   }
 
   dispose(): void {
@@ -230,14 +283,18 @@ export class ChunkBatches {
     const existing = this.batches.get(region)
     if (existing) return existing
     const L = this.layout
-    const rw = Math.min(REGION, L.cx), rd = Math.min(REGION, L.cz)
+    const rw = Math.min(this.region, L.cx), rd = Math.min(this.region, L.cz)
     const maxInstances = rw * rd * L.cy
-    const bm = newBatch(this.material, maxInstances, maxInstances * VERTICES_PER_SLOT, maxInstances * INDICES_PER_SLOT)
+    const bm = newBatch(this.material, maxInstances, maxInstances * this.verticesPerSlot, maxInstances * this.indicesPerSlot)
+    if (!this.threeCull) {
+      bm.perObjectFrustumCulled = false
+      bm.sortObjects = false
+    }
     bm.castShadow = this.castShadow
     bm.receiveShadow = true
     bm.name = `chunks-${this.name}-region-${region}`
     // Whole-batch culling uses the region's full box; per-chunk culling happens inside the batch, on the CPU.
-    const x0 = Math.floor(cx / REGION) * REGION * 32, z0 = Math.floor(cz / REGION) * REGION * 32
+    const x0 = Math.floor(cx / this.region) * this.region * 32, z0 = Math.floor(cz / this.region) * this.region * 32
     bm.boundingBox = new THREE.Box3(new THREE.Vector3(x0, 0, z0), new THREE.Vector3(x0 + rw * 32, L.cy * 32, z0 + rd * 32))
     bm.boundingSphere = bm.boundingBox.getBoundingSphere(new THREE.Sphere())
     // Trap 3: the renderer's sort reads geometry.boundingSphere (Renderer._projectObject), not the object's.
@@ -245,10 +302,52 @@ export class ChunkBatches {
     bm.geometry.boundingSphere = bm.boundingSphere.clone()
     bm.matrixAutoUpdate = false
     bm.updateMatrix()
-    guardNestedPasses(bm)
-    const batch: Batch = { mesh: bm, freedVertices: 0, freedIndices: 0 }
+    const batch: Batch = {
+      mesh: bm, freedVertices: 0, freedIndices: 0, centres: new Float32Array(maxInstances * 3), guard: new PassGuard(), drawn: 0,
+      box: bm.boundingBox.clone(),
+    }
+    this.wire(batch)
+    bm.visible = boxInRange(this.eye, this.range, x0, 0, z0, x0 + rw * 32, L.cy * 32, z0 + rd * 32)
     this.batches.set(region, batch)
     this.group.add(bm)
     return batch
+  }
+
+  /** Trap 4: every pass culls into the batch's single list; after a nested pass the outer camera's list is rebuilt. */
+  private wire(batch: Batch): void {
+    const bm = batch.mesh, guard = batch.guard
+    const three = bm.onBeforeRender.bind(bm) as unknown as BeforeRender
+    const before: BeforeRender = this.threeCull ? three : (_renderer, _scene, camera) => this.cull(batch, camera)
+    let lastGeometry: unknown = null, lastMaterial: unknown = null
+    bm.onBeforeRender = ((renderer: unknown, scene: unknown, camera: THREE.Camera, geometry: unknown, material: unknown, group: unknown) => {
+      guard.enter(camera)
+      lastGeometry = geometry
+      lastMaterial = material
+      before(renderer, scene, camera, geometry, material, group)
+    }) as unknown as typeof bm.onBeforeRender
+    // three's onBeforeShadow re-runs onBeforeRender with the shadow camera, then the shadow pass's renderObject runs it
+    // again with the same camera: a redundant cull per batch per shadow pass, and it would unbalance the guard.
+    bm.onBeforeShadow = () => {}
+    bm.onAfterRender = ((renderer: unknown) => {
+      const outer = guard.exit()
+      if (!outer) return
+      internals(bm)._visibilityChanged = true
+      before(renderer, null, outer, lastGeometry, lastMaterial, null)
+    }) as unknown as typeof bm.onAfterRender
+  }
+
+  /** The engine's cull (spec 4b §4.1): world-space frustum of the pass camera, precomputed chunk spheres, view distance, no sort. */
+  private cull(batch: Batch, camera: THREE.Camera): void {
+    const b = internals(batch.mesh)
+    this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    this.frustum.setFromProjectionMatrix(this.projView, camera.coordinateSystem, (camera as { reversedDepth?: boolean }).reversedDepth ?? false)
+    frustumPlanes(this.frustum, this.planes)
+    const n = buildDrawList(b._instanceInfo, b._geometryInfo, batch.centres, this.planes, this.eye, this.range, 4,
+      b._multiDrawStarts, b._multiDrawCounts, b._indirectTexture.image.data as unknown as Uint32Array)
+    b._multiDrawCount = n
+    b._multiDrawBytesPerElement = 4 // the batch index is a Uint32Array (newBatch)
+    b._indirectTexture.needsUpdate = true
+    b._visibilityChanged = false
+    if (batch.guard.depth === 1) batch.drawn = n // the outermost pass is the camera's
   }
 }

@@ -14,27 +14,29 @@ const CHANNEL_TOLERANCE = 8
 const SCENE = '/?scene=terrain&size=256&still'
 
 interface Shot { camera: number[]; png: Buffer; shadowCasters: number; meshes: number; backend: string; batches: Record<string, number>; cutoutMeshes: number; errors: string[] }
+interface Pose { t: readonly [number, number, number]; d: number; p: number; y: number }
+const DEFAULT_POSE: Pose = { t: [128, 40, 128], d: 260, p: 0.75, y: 0.7 }
 
 /** Boots the scene, hides what animates and is not a chunk, frames a fixed camera, and screenshots the canvas alone. */
-async function shoot(page: Page, url: string): Promise<Shot> {
+async function shoot(page: Page, url: string, pose: Pose = DEFAULT_POSE): Promise<Shot> {
   const errors: string[] = []
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
   page.on('pageerror', (e) => errors.push(e.message))
   await page.goto(url)
-  await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 90_000 })
-  await page.evaluate(() => {
+  await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 240_000 })
+  await page.evaluate((pose) => {
     const { engine } = (window as W).__elovox!
     engine.effects = { decorations: false } // animated grass would differ between the two loads
     for (const s of [engine.controls.goal, engine.controls.current]) {
-      s.target[0] = 128; s.target[1] = 40; s.target[2] = 128
-      s.distance = 260; s.pitch = 0.75; s.yaw = 0.7
+      s.target[0] = pose.t[0]; s.target[1] = pose.t[1]; s.target[2] = pose.t[2]
+      s.distance = pose.d; s.pitch = pose.p; s.yaw = pose.y
     }
     engine.controls.apply(engine.camera)
     // The HUD and panels sit over the canvas (the HUD's fps text changes every frame): hide all but the canvas.
     const view = document.querySelector('#view')!
     for (const el of document.querySelectorAll<HTMLElement>('body *')) if (el !== view && !el.contains(view)) el.style.visibility = 'hidden'
-  })
-  await page.waitForFunction(() => { const s = (window as W).__elovox!.engine.stats(); return s.meshQueue + s.meshInFlight === 0 }, null, { timeout: 60_000 })
+  }, pose)
+  await page.waitForFunction(() => { const s = (window as W).__elovox!.engine.stats(); return s.meshQueue + s.meshInFlight === 0 }, null, { timeout: 240_000 })
   // The orbit camera re-targets its goal to the terrain height every frame and damps toward it, so how close it got
   // depends on frame timing: a sub-pixel shift that speckles the whole picture. Snap it onto the goal; it then stays.
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
@@ -63,6 +65,40 @@ async function shoot(page: Page, url: string): Promise<Shot> {
   return { camera: info.camera, png, shadowCasters: s.shadowCasters, meshes: s.meshes, backend: s.backend, batches: info.batches, cutoutMeshes: info.cutoutMeshes, errors }
 }
 
+
+/**
+ * No PNG decoder in the repo: decodes both screenshots in the page and compares their pixels there. Differing pixels come
+ * back as a red-on-black mask.
+ */
+function pixelDiff(page: Page, a: Buffer, b: Buffer): Promise<{ share: number; differing: number; pixels: number; mask: string }> {
+  return page.evaluate(async ({ a, b, tolerance }) => {
+    const decode = async (b64: string) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob())
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(bitmap, 0, 0)
+      return ctx.getImageData(0, 0, bitmap.width, bitmap.height)
+    }
+    const [x, y] = await Promise.all([decode(a), decode(b)])
+    if (x.width !== y.width || x.height !== y.height) return { share: 1, differing: -1, pixels: 0, mask: '' }
+    const mask = new ImageData(x.width, x.height)
+    let differing = 0
+    for (let i = 0; i < x.data.length; i += 4) {
+      mask.data[i + 3] = 255
+      for (let c = 0; c < 4; c++) {
+        if (Math.abs(x.data[i + c]! - y.data[i + c]!) > tolerance) { differing++; mask.data[i] = 255; break }
+      }
+    }
+    const canvas = new OffscreenCanvas(x.width, x.height)
+    canvas.getContext('2d')!.putImageData(mask, 0, 0)
+    const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer())
+    let bin = ''
+    for (const v of bytes) bin += String.fromCharCode(v)
+    const pixels = x.width * x.height
+    return { share: differing / pixels, differing, pixels, mask: btoa(bin) }
+  }, { a: a.toString('base64'), b: b.toString('base64'), tolerance: CHANNEL_TOLERANCE })
+}
+
 for (const backend of ['webgpu', 'webgl'] as const) {
   test(`${backend}: batched and unbatched chunks draw the same picture`, async ({ page }, info) => {
     test.setTimeout(240_000)
@@ -70,34 +106,7 @@ for (const backend of ['webgpu', 'webgl'] as const) {
     const flag = backend === 'webgl' ? '&webgl' : ''
     const batched = await shoot(page, SCENE + flag)
     const unbatched = await shoot(page, SCENE + flag + '&nobatch')
-    // No PNG decoder in the repo: decode both screenshots in the page and compare their pixels there. Differing pixels
-    // come back as a red-on-black mask.
-    const diff = await page.evaluate(async ({ a, b, tolerance }) => {
-      const decode = async (b64: string) => {
-        const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob())
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
-        const ctx = canvas.getContext('2d')!
-        ctx.drawImage(bitmap, 0, 0)
-        return ctx.getImageData(0, 0, bitmap.width, bitmap.height)
-      }
-      const [x, y] = await Promise.all([decode(a), decode(b)])
-      if (x.width !== y.width || x.height !== y.height) return { share: 1, differing: -1, pixels: 0, mask: '' }
-      const mask = new ImageData(x.width, x.height)
-      let differing = 0
-      for (let i = 0; i < x.data.length; i += 4) {
-        mask.data[i + 3] = 255
-        for (let c = 0; c < 4; c++) {
-          if (Math.abs(x.data[i + c]! - y.data[i + c]!) > tolerance) { differing++; mask.data[i] = 255; break }
-        }
-      }
-      const canvas = new OffscreenCanvas(x.width, x.height)
-      canvas.getContext('2d')!.putImageData(mask, 0, 0)
-      const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer())
-      let bin = ''
-      for (const v of bytes) bin += String.fromCharCode(v)
-      const pixels = x.width * x.height
-      return { share: differing / pixels, differing, pixels, mask: btoa(bin) }
-    }, { a: batched.png.toString('base64'), b: unbatched.png.toString('base64'), tolerance: CHANNEL_TOLERANCE })
+    const diff = await pixelDiff(page, batched.png, unbatched.png)
     writeFileSync(info.outputPath('batched.png'), batched.png)
     writeFileSync(info.outputPath('unbatched.png'), unbatched.png)
     writeFileSync(info.outputPath('diff.png'), Buffer.from(diff.mask, 'base64'))
@@ -115,4 +124,28 @@ for (const backend of ['webgpu', 'webgl'] as const) {
     expect(batched.errors).toEqual([]) // NaN bounding-sphere errors would land here
     expect(unbatched.errors).toEqual([])
   })
+
+  // Spec 4b §4.1: the engine's batch cull (precomputed spheres, no sort, both passes) against three's own (?cull=three).
+  for (const [label, scene, pose] of [
+    ['256² orbit', SCENE, DEFAULT_POSE],
+    ['1024² far', '/?scene=terrain&size=1024&still', { t: [512, 50, 512], d: 400, p: 0.3, y: 0.7 }],
+  ] as const) {
+    test(`${backend}: the engine's cull draws the picture three's cull draws (${label})`, async ({ page }, info) => {
+      test.setTimeout(400_000)
+      await page.setViewportSize({ width: 1280, height: 720 })
+      const flag = backend === 'webgl' ? '&webgl' : ''
+      const ours = await shoot(page, scene + flag, pose)
+      const three = await shoot(page, scene + flag + '&cull=three', pose)
+      const diff = await pixelDiff(page, ours.png, three.png)
+      writeFileSync(info.outputPath('ours.png'), ours.png)
+      writeFileSync(info.outputPath('three.png'), three.png)
+      writeFileSync(info.outputPath('diff.png'), Buffer.from(diff.mask, 'base64'))
+      console.log(`cull pixel diff (${ours.backend}, ${label}): ${(diff.share * 100).toFixed(4)}% (${diff.differing} / ${diff.pixels})`)
+      expect(ours.camera).toEqual(three.camera)
+      expect(ours.backend).toBe(backend)
+      expect(diff.share).toBeLessThan(MAX_DIFF_SHARE)
+      expect(ours.errors).toEqual([])
+      expect(three.errors).toEqual([])
+    })
+  }
 }

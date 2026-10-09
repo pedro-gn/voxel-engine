@@ -109,6 +109,87 @@ describe('ChunkBatches', () => {
   })
 })
 
+/** Runs a batch's onBeforeRender then onAfterRender for `camera`, as three's renderer does, and returns its draw count. */
+function render(b: THREE.BatchedMesh, camera: THREE.Camera): number {
+  camera.updateMatrixWorld()
+  ;(b.onBeforeRender as unknown as (...a: unknown[]) => void)(null, null, camera, b.geometry, b.material, null)
+  const n = (b as unknown as { _multiDrawCount: number })._multiDrawCount
+  ;(b.onAfterRender as unknown as (...a: unknown[]) => void)(null, null, camera, b.geometry, b.material, null)
+  return n
+}
+const lookingAt = (x: number, z: number) => {
+  const c = new THREE.PerspectiveCamera(50, 1, 0.1, 3000)
+  c.position.set(x, 40, z - 60); c.lookAt(x, 0, z)
+  return c
+}
+const drawCount = (b: THREE.BatchedMesh) => (b as unknown as { _multiDrawCount: number })._multiDrawCount
+
+describe('ChunkBatches own cull', () => {
+  it('turns three\'s per-instance cull and sort off, and draws what is in view', () => {
+    const b = batches()
+    for (let cx = 0; cx < REGION; cx++) b.set(layout.chunkIndex(cx, 0, 0), cx, 0, 0, quads(1))
+    const mesh = bm(b)[0]!
+    expect(mesh.perObjectFrustumCulled).toBe(false)
+    expect(mesh.sortObjects).toBe(false)
+    b.beginFrame({ x: 16, y: 40, z: -44 }, Infinity)
+    const n = render(mesh, lookingAt(16, 16))
+    expect(n).toBeGreaterThan(0)
+    expect(n).toBeLessThan(REGION + 1)
+    expect(b.drawnCount).toBe(n)
+  })
+  it('skips chunks beyond the view distance and hides regions entirely beyond it', () => {
+    const b = batches()
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(REGION, 0, 0), REGION, 0, 0, quads(1))
+    b.set(layout.chunkIndex(2, 0, 0), 2, 0, 0, quads(1)) // x 64–96: 48 from the eye, beyond 40
+    b.beginFrame({ x: 16, y: 16, z: 16 }, 40)
+    const [near, far] = bm(b)
+    expect(near!.visible).toBe(true)
+    expect(far!.visible).toBe(false) // region 1 starts at x 128: 112 > 40 away
+    const top = new THREE.PerspectiveCamera(90, 1, 0.1, 3000)
+    top.position.set(64, 300, 16); top.lookAt(64, 0, 16)
+    expect(render(near!, top)).toBe(1) // chunk 2 is in the frustum but out of range
+    b.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(far!.visible).toBe(true)
+    expect(render(near!, top)).toBe(2)
+  })
+  it('keeps three\'s cull with threeCull', () => {
+    const b = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { threeCull: true })
+    b.set(0, 0, 0, 0, quads(1))
+    expect(bm(b)[0]!.perObjectFrustumCulled).toBe(true)
+    expect(bm(b)[0]!.sortObjects).toBe(true)
+  })
+  it('restores the outer pass\'s list after a nested pass, and counts only the outer pass', () => {
+    const b = batches()
+    for (let cx = 0; cx < REGION; cx++) b.set(layout.chunkIndex(cx, 0, 0), cx, 0, 0, quads(1))
+    const mesh = bm(b)[0]!
+    b.beginFrame({ x: 16, y: 40, z: -44 }, Infinity)
+    const main = lookingAt(16, 16), shadow = lookingAt(1000, 1000) // sees nothing of this region
+    main.updateMatrixWorld(); shadow.updateMatrixWorld()
+    const call = (f: unknown, c: THREE.Camera) => (f as (...a: unknown[]) => void)(null, null, c, mesh.geometry, mesh.material, null)
+    call(mesh.onBeforeRender, main)
+    const outer = drawCount(mesh)
+    expect(outer).toBeGreaterThan(0)
+    call(mesh.onBeforeRender, shadow)
+    expect(drawCount(mesh)).toBe(0)
+    call(mesh.onAfterRender, shadow) // the nested pass ends: main's list again
+    expect(drawCount(mesh)).toBe(outer)
+    call(mesh.onAfterRender, main)
+    expect(b.drawnCount).toBe(outer)
+  })
+})
+
+describe('PassGuard reset', () => {
+  it('forgets a stack a throwing render left behind', () => {
+    const g = new PassGuard()
+    g.enter(new THREE.PerspectiveCamera()); g.enter(new THREE.PerspectiveCamera())
+    expect(g.depth).toBe(2)
+    g.reset()
+    expect(g.depth).toBe(0)
+    expect(g.exit()).toBeNull()
+  })
+})
+
 describe('PassGuard', () => {
   it('returns the outer camera after a nested pass, and nothing after the outermost', () => {
     const g = new PassGuard(), main = new THREE.PerspectiveCamera(), shadow = new THREE.OrthographicCamera()
@@ -122,6 +203,7 @@ describe('three internals this module relies on (re-check on every three upgrade
   it('BatchedMesh still has the private fields ChunkBatches uses', () => {
     expect(THREE.REVISION).toBe('186')
     const m = new THREE.BatchedMesh(1, 4, 6, new THREE.MeshBasicMaterial()) as unknown as Record<string, unknown>
-    for (const k of ['_indirectTexture', '_matricesTexture', '_geometryInfo', '_maxVertexCount', '_maxIndexCount', '_geometryInitialized', '_nextVertexStart', '_nextIndexStart']) expect(k in m, k).toBe(true)
+    for (const k of ['_indirectTexture', '_matricesTexture', '_geometryInfo', '_maxVertexCount', '_maxIndexCount', '_geometryInitialized', '_nextVertexStart', '_nextIndexStart',
+      '_instanceInfo', '_multiDrawStarts', '_multiDrawCounts', '_multiDrawCount', '_multiDrawBytesPerElement', '_visibilityChanged']) expect(k in m, k).toBe(true)
   })
 })

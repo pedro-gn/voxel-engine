@@ -4,6 +4,7 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import { ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
+import type { Vec3Like } from './viewDistance.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
 const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
@@ -27,6 +28,10 @@ type Layer = (typeof LAYERS)[number]
 export interface ChunkMeshesOptions {
   /** Draw the opaque and cutout layers in region batches (ChunkBatches) instead of one mesh per chunk. */
   batched?: boolean
+  /** @internal three's own batch cull (the pixel-diff reference). */
+  threeCull?: boolean
+  /** Chunk columns per region batch side (ChunkBatches REGION by default). */
+  region?: number
 }
 
 export class ChunkMeshes {
@@ -38,14 +43,14 @@ export class ChunkMeshes {
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
   private readonly batches: Partial<Record<Layer, ChunkBatches>> = {}
 
-  constructor(layout: Layout, materials: ChunkMaterials, { batched = false }: ChunkMeshesOptions = {}) {
+  constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region }: ChunkMeshesOptions = {}) {
     this.layout = layout
     this.owned = materials
     this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
     if (batched) {
       for (const name of ['opaque', 'cutout'] as const) {
-        const b = new ChunkBatches(layout, this.materials[name], name, true)
+        const b = new ChunkBatches(layout, this.materials[name], name, true, { threeCull, ...(region !== undefined && { region }) })
         this.batches[name] = b
         this.group.add(b.group)
       }
@@ -64,6 +69,19 @@ export class ChunkMeshes {
     let n = 0
     for (const m of this.group.children) if ((m as THREE.Mesh).castShadow) n++ // a batched layer's group never casts
     for (const b of Object.values(this.batches)) n += b.batchCount
+    return n
+  }
+
+  /** Once per frame before rendering (Visuals.frame): the viewer and the view distance. */
+  beginFrame(eye: Vec3Like, range: number): void {
+    for (const b of Object.values(this.batches)) b.beginFrame(eye, range)
+  }
+
+  /** Chunk layer draws of the camera's pass this frame: batched chunks after the cull, plus per-chunk meshes in range. */
+  get drawnCount(): number {
+    let n = 0
+    for (const b of Object.values(this.batches)) n += b.drawnCount
+    for (const m of this.group.children) if ((m as THREE.Mesh).isMesh && m.visible) n++
     return n
   }
 
