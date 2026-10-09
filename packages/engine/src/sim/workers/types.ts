@@ -23,6 +23,8 @@ export interface WorkerView {
 export interface WorkOrderView {
   id: number; kind: 'dig' | 'build'; min: Vec3; max: Vec3; voxel: number
   total: number; done: number; pending: number; cancelled: boolean; reason?: WorkBlockReason
+  /** Priority plus aging while the order waits without progress; it orders expansion, parking and assignment. */
+  effectivePriority: number
 }
 export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number }
 export interface WorkerTick {

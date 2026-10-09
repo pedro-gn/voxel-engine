@@ -765,6 +765,26 @@ describe('simulated workers', () => {
     cmd(sim, { type: 'setBlock', pos: [5, 3, 5], voxel: 4 })
     until(sim, () => { const u = sim.workers!.view(1)!; return u.state === 'idle' && (u.x256 >> 8 !== 5 || u.z256 >> 8 !== 5) }, 300)
   })
+  it('lets an old low-priority order overtake a newer higher-priority one while the crew is busy elsewhere', () => {
+    // Planks take 900 ticks here, so the only unit stays busy while order 2 waits and ages.
+    const sim = make(ctx => { ctx.set(6, 4, 5, 2); ctx.set(14, 4, 5, 1); ctx.set(4, 4, 5, 1) }, { materials: { stone: { digTicks: 4, buildTicks: 3 }, planks: { digTicks: 900, buildTicks: 3 } } })
+    spawn(sim)
+    cmd(sim, { type: 'workDig', min: [6, 4, 5], max: [6, 4, 5], priority: 255 })
+    until(sim, () => sim.workers!.view(1)?.state === 'working')
+    cmd(sim, { type: 'workDig', min: [14, 4, 5], max: [14, 4, 5], priority: 64 })
+    until(sim, () => sim.workers!.publication().orders[1]!.effectivePriority === 71, 800)
+    // The newer order is nearer the unit, so only aging can put the old one first.
+    cmd(sim, { type: 'workDig', min: [4, 4, 5], max: [4, 4, 5], priority: 70 })
+    until(sim, () => sim.store.getVoxel(6, 4, 5) === 0, 1000)
+    const [, old, fresh] = sim.workers!.publication().orders
+    expect(fresh!.effectivePriority).toBeLessThan(old!.effectivePriority)
+    expect(sim.workers!.view(1)?.order).toBe(old!.id)
+  })
+  it('hashes the tick an order last progressed', () => {
+    const sim = make(ctx => ctx.set(8, 4, 5, 1)); spawn(sim); cmd(sim, { type: 'workDig', min: [8, 4, 5], max: [8, 4, 5] })
+    const o = (sim.workers as unknown as { orders: { idleSince: number }[] }).orders[0]!, before = sim.hash()
+    o.idleSince--; expect(sim.hash()).not.toBe(before)
+  })
   it('collects nearby persistent overflow and publishes a removal delta', () => {
     const sim = make(ctx => ctx.set(8, 4, 5, 1), { inventoryCapacity: 1 }); spawn(sim, [5, 4, 5], [{ block: 2, count: 1 }])
     cmd(sim, { type: 'workDig', min: [8, 4, 5], max: [8, 4, 5] }); until(sim, () => sim.store.getVoxel(8, 4, 5) === 0)
