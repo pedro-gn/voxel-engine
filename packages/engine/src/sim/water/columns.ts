@@ -77,6 +77,8 @@ function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall
     fall[e] = 0
     return
   }
+  // Dry on both sides and still: the general path's flux is h × gain, zeroed by MIN_FLOW (> 0) on either sign, and no fall.
+  if (da === 0 && db === 0 && flux[e] === 0) { fall[e] = 0; return }
   accelerateUneven(floor, depth, flux, fall, e, a, b, gain, stride, sx, sz)
 }
 
