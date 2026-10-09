@@ -56,4 +56,18 @@ describe('ChunkMeshes', () => {
     cm.remove(2)
     expect(cm.meshCount).toBe(0)
   })
+  it('hides per-chunk meshes beyond the view distance, also ones created later, and shows them again at Infinity', () => {
+    const m = () => new THREE.MeshBasicMaterial()
+    const mats = { opaque: m(), cutout: m(), translucent: m(), liquid: m() } as unknown as ChunkMaterials
+    const cm = new ChunkMeshes(new Layout([512, 64, 64]), mats, {})
+    cm.apply(0, data(quad(), quad()))
+    cm.beginFrame({ x: 16, y: 16, z: 16 }, 100)
+    cm.apply(10, data(quad(), null)) // chunk x 320–352: 304 away
+    expect(cm.group.getObjectByName('chunk-0-liquid')!.visible).toBe(true)
+    expect(cm.group.getObjectByName('chunk-10-liquid')!.visible).toBe(false)
+    expect(cm.drawnCount).toBe(2)
+    cm.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(cm.group.getObjectByName('chunk-10-liquid')!.visible).toBe(true)
+    expect(cm.drawnCount).toBe(3)
+  })
 })

@@ -81,12 +81,18 @@ const engine = await createEngine({
   batchChunks: !params.has('nobatch'),
   // ?nowaterworker: the water host runs on the main thread (the before of 4a-r2 #2's A/B).
   waterWorker: !params.has('nowaterworker'),
+  // ?cull=three: three's own batch cull, the reference picture of the engine's cull (e2e/batching.spec.ts).
+  threeCull: params.get('cull') === 'three',
+  // ?region=8: chunk columns per region batch (the 4b region-size A/B; internal).
+  ...(params.has('region') && { regionChunks: Number(params.get('region')) }),
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
   // render at full resolution (~14 layers ≈ 19 MB with mipmaps).
   tileSize: 512,
 })
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
+// ?view=<blocks>: the view distance (Quality.viewDistance), for the 4b checkpoints.
+if (params.has('view')) engine.quality = { viewDistance: Number(params.get('view')) }
 if (sceneName === 'diorama') {
   engine.quality = { decorationRadius: 256 } // the 128-block diorama is viewed from ~150 blocks; the engine default (96) would fade all grass out
   for (const s of [engine.controls.goal, engine.controls.current]) {

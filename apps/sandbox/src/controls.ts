@@ -31,6 +31,22 @@ export function createControls(engine: Engine, o: { collapsed?: boolean } = {}):
     label.append(box, ` ${fx}`)
     el.append(label)
   }
+  // View distance in blocks (Quality.viewDistance); empty is Infinity.
+  const view = document.createElement('label')
+  const input = document.createElement('input')
+  input.id = 'view-distance'
+  input.type = 'number'; input.min = '64'; input.max = '4096'; input.step = '32'; input.placeholder = '∞'
+  input.style.width = '6em'
+  const shown = () => Number.isFinite(engine.quality.viewDistance) ? String(engine.quality.viewDistance) : ''
+  input.value = shown()
+  // An R set elsewhere (?view=, the engine API) shows here too, except while the field is being edited.
+  engine.on('frame', () => { if (document.activeElement !== input && input.value !== shown()) input.value = shown() })
+  input.addEventListener('change', () => {
+    const v = input.value.trim() === '' ? Infinity : Number(input.value)
+    try { engine.quality = { viewDistance: v } } catch { input.value = shown() }
+  })
+  view.append('view ', input)
+  el.append(view)
   if (o.collapsed) {
     const details = document.createElement('details')
     const summary = document.createElement('summary')

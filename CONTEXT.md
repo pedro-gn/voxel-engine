@@ -39,3 +39,7 @@ _Avoid_: Unconditional waypoint, teleport
 **Underwater view**:
 The screen effect shown while the camera, in either camera mode, is under the voxel water level: short-range fog, a blue-green tint and a slight wobble.
 _Avoid_: Underwater fog (scene fog is untouched), water tint (the water material's colour)
+
+**View distance**:
+The distance from the camera beyond which the world is not drawn; the fog dissolves its last quarter into the sky. Infinity draws the whole world.
+_Avoid_: Render distance, chunk radius, LOD

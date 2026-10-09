@@ -2,8 +2,9 @@ import * as THREE from 'three/webgpu'
 import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
-import { ChunkBatches } from './chunkBatches.ts'
+import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
+import { chunkInRange, type Vec3Like } from './viewDistance.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
 const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
@@ -27,6 +28,10 @@ type Layer = (typeof LAYERS)[number]
 export interface ChunkMeshesOptions {
   /** Draw the opaque and cutout layers in region batches (ChunkBatches) instead of one mesh per chunk. */
   batched?: boolean
+  /** @internal three's own batch cull (the pixel-diff reference). */
+  threeCull?: boolean
+  /** Chunk columns per region batch side (ChunkBatches REGION by default). */
+  region?: number
 }
 
 export class ChunkMeshes {
@@ -37,15 +42,20 @@ export class ChunkMeshes {
   /** Per chunk, one mesh slot per layer; a batched layer's slot stays null. */
   private readonly meshes = new Map<number, (THREE.Mesh | null)[]>()
   private readonly batches: Partial<Record<Layer, ChunkBatches>> = {}
+  private eye: Vec3Like = { x: 0, y: 0, z: 0 }
+  private range = Infinity
 
-  constructor(layout: Layout, materials: ChunkMaterials, { batched = false }: ChunkMeshesOptions = {}) {
+  constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region }: ChunkMeshesOptions = {}) {
     this.layout = layout
     this.owned = materials
     this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
     if (batched) {
       for (const name of ['opaque', 'cutout'] as const) {
-        const b = new ChunkBatches(layout, this.materials[name], name, true)
+        const b = new ChunkBatches(layout, this.materials[name], name, true, {
+          threeCull, ...(region !== undefined && { region }),
+          ...(name === 'cutout' && { verticesPerSlot: CUTOUT_VERTICES_PER_SLOT, indicesPerSlot: CUTOUT_INDICES_PER_SLOT }),
+        })
         this.batches[name] = b
         this.group.add(b.group)
       }
@@ -64,6 +74,44 @@ export class ChunkMeshes {
     let n = 0
     for (const m of this.group.children) if ((m as THREE.Mesh).castShadow) n++ // a batched layer's group never casts
     for (const b of Object.values(this.batches)) n += b.batchCount
+    return n
+  }
+
+  /** Once per frame before rendering (Visuals.frame): the viewer and the view distance. */
+  beginFrame(eye: Vec3Like, range: number): void {
+    for (const b of Object.values(this.batches)) b.beginFrame(eye, range)
+    const was = this.range
+    this.eye = { x: eye.x, y: eye.y, z: eye.z }
+    this.range = range
+    if (range === Infinity && was === Infinity) return // the default: every mesh stays visible, nothing to test
+    for (const [ci, slots] of this.meshes) {
+      const on = this.inRange(ci)
+      for (const m of slots) if (m) m.visible = on
+    }
+  }
+
+  private inRange(ci: number): boolean {
+    const [cx, cy, cz] = this.layout.chunkCoords(ci)
+    return chunkInRange(this.eye, this.range, cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
+  }
+
+  /** Bytes reserved by the region batches (ChunkBatches.capacityBytes). */
+  get batchBytes(): number {
+    let n = 0
+    for (const b of Object.values(this.batches)) n += b.capacityBytes
+    return n
+  }
+
+  /** Frees the GPU buffers batch grows replaced (ChunkBatches.releaseRetired); call after a render. */
+  releaseRetired(free: (attribute: THREE.BufferAttribute) => void): void {
+    for (const b of Object.values(this.batches)) b.releaseRetired(free)
+  }
+
+  /** Chunk layer draws of the camera's pass this frame: batched chunks after the cull, plus per-chunk meshes in range. */
+  get drawnCount(): number {
+    let n = 0
+    for (const b of Object.values(this.batches)) n += b.drawnCount
+    for (const m of this.group.children) if ((m as THREE.Mesh).isMesh && m.visible) n++
     return n
   }
 
@@ -113,6 +161,7 @@ export class ChunkMeshes {
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()
       mesh.name = `chunk-${ci}-${name}`
+      mesh.visible = this.inRange(ci)
       this.group.add(mesh)
       slots![k] = mesh
     })

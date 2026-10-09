@@ -18,7 +18,7 @@ import {
   DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, SUPPORT, mergeEffects, mergeQuality, mergeWater, resolveEffects,
   type Backend, type Effects, type Quality, type WaterInput, type WaterParams,
 } from './settings.ts'
-import { shadowDistance } from './shadowFit.ts'
+import { cameraFar, shadowReach } from './viewDistance.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
@@ -46,6 +46,10 @@ export interface VisualsOptions {
   water: SurfaceSource
   /** Draw the opaque and cutout chunk layers in region batches (EngineOptions.batchChunks). Default true. */
   batchChunks?: boolean
+  /** @internal three's own batch cull, the pixel-diff reference (EngineOptions.threeCull). Default false. */
+  threeCull?: boolean
+  /** @internal Chunk columns per region batch side (EngineOptions.regionChunks). */
+  regionChunks?: number
 }
 
 /** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water materials, the heightfield water surface and the instanced grass and flower decorations. */
@@ -75,7 +79,7 @@ export class Visuals {
     o.renderer.shadowMap.enabled = true
     o.renderer.shadowMap.type = THREE.PCFShadowMap
     this.lights = createLightUniforms()
-    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true })
+    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false, ...(o.regionChunks !== undefined && { region: o.regionChunks }) })
     o.scene.add(this.chunks.group)
     const dm = createDecorationMaterials(o.decorations, this.lights)
     this.decoRadius = dm.radius
@@ -141,27 +145,43 @@ export class Visuals {
   }
 
   frame(dt: number): void {
+    // View distance (spec 4b §5): what lies beyond it is not drawn; at Infinity every step below is a no-op.
+    const range = this.quality.viewDistance, eye = this.o.camera.position
+    this.chunks.beginFrame(eye, range)
+    this.waterSurface.setRange(eye, range)
+    const cf = cameraFar(range)
+    if (this.o.camera.far !== cf) { this.o.camera.far = cf; this.o.camera.updateProjectionMatrix() }
+    this.sky.setViewDistance(range)
+    const fogNode = this.sky.fogFor(this.effects.fog, range)
+    if (this.o.scene.fogNode !== fogNode) this.o.scene.fogNode = fogNode
     ripples.update(dt)
     syncRipples()
     if (this.atmosphere.update(dt)) this.applyAtmosphere(this.atmosphere.current)
-    const far = shadowDistance(this.o.viewDistance())
+    const far = shadowReach(this.o.viewDistance(), range)
     this.lights.shadowFar.value = far
     if (this.effects.shadows) this.sun.fit(this.o.camera, far, 0, this.o.layout.size[1], this.quality.shadowMapSize)
+    const decoRadius = Math.min(this.quality.decorationRadius, range)
     this.deco.group.visible = this.effects.decorations
-    this.decoRadius.value = this.quality.decorationRadius
+    this.decoRadius.value = decoRadius
     this.decoStats = this.effects.decorations
-      ? this.deco.cull(this.o.camera.position, this.quality.decorationRadius, this.quality.decorationMaxInstances)
+      ? this.deco.cull(eye, decoRadius, this.quality.decorationMaxInstances)
       : { instances: 0, draws: 0 }
     this.waterSurface.update()
     if (this.effects.post) this.post.render()
     else this.o.renderer.render(this.o.scene, this.o.camera)
+    // three r186 frees a replaced attribute's GPU buffer only through its private attribute store (else at GC): the batch
+    // buffers a grow replaced are unused now that this render drew from the new ones. Pinned in chunkBatches.test.ts.
+    const attributes = (this.o.renderer as unknown as { _attributes?: { delete?(a: THREE.BufferAttribute): unknown } | null })._attributes
+    // Without the store, just drop the references and leave the buffers to GC (as before).
+    this.chunks.releaseRetired(attributes && typeof attributes.delete === 'function' ? a => attributes.delete!(a) : () => {})
   }
 
-  stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number } {
+  stats(): { shadowCasters: number; decorationInstances: number; decorationDraws: number; chunksDrawn: number } {
     return {
       shadowCasters: this.effects.shadows ? this.chunks.shadowCasterCount : 0,
       decorationInstances: this.decoStats.instances,
       decorationDraws: this.decoStats.draws,
+      chunksDrawn: this.chunks.drawnCount,
     }
   }
 

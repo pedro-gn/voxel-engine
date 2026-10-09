@@ -5,6 +5,7 @@ import {
 } from 'three/tsl'
 import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
+import { edgeBand } from './viewDistance.ts'
 
 const CLOUD_ALTITUDE = 300
 
@@ -29,9 +30,15 @@ export class Sky {
     fogNear: uniform(100),
     fogFar: uniform(800),
     fogHeight: uniform(0.01),
+    /** View-distance edge band (viewDistance.ts edgeBand): out of reach while the view distance is Infinity. */
+    edgeNear: uniform(edgeBand(Infinity)[0]),
+    edgeFar: uniform(edgeBand(Infinity)[1]),
   }
   readonly backgroundNode
+  /** Distance and height fog, plus the view-distance edge. */
   readonly fogNode
+  /** The view-distance edge alone: the scene's fog while the fog effect is off and the view distance is finite. */
+  readonly edgeNode
 
   constructor() {
     const u = this.u
@@ -59,7 +66,24 @@ export class Sky {
     const view = positionWorld.sub(cameraPosition).normalize()
     const base = mix(u.fogColor, u.horizon, u.fogFollow)
     const warm = mix(base, base.mul(u.sunColor).mul(1.4), dot(view, u.sunDir).max(0).pow(6).mul(0.5))
-    this.fogNode = fog(warm, factor)
+    // View distance (spec 4b §5.3): height-independent, so a surface at R is exactly the fog colour however high it stands.
+    const viewEdge = smoothstep(u.edgeNear, u.edgeFar, dist)
+    this.fogNode = fog(warm, factor.max(viewEdge))
+    this.edgeNode = fog(warm, viewEdge)
+  }
+
+  setViewDistance(range: number): void {
+    const [near, far] = edgeBand(range)
+    this.u.edgeNear.value = near
+    this.u.edgeFar.value = far
+  }
+
+  /** The current edge band (for tests). */
+  edgeUniforms(): [number, number] { return [this.u.edgeNear.value, this.u.edgeFar.value] }
+
+  /** The scene fog node for the fog effect and the view distance: edge-only keeps a finite R from showing a hard cut with fog off. */
+  fogFor(fogOn: boolean, range: number): typeof this.fogNode | null {
+    return fogOn ? this.fogNode : range === Infinity ? null : this.edgeNode
   }
 
   apply(a: Atmosphere): void {
@@ -87,7 +111,7 @@ export class Sky {
   attach(scene: THREE.Scene, fogOn: boolean): void {
     scene.background = null
     scene.backgroundNode = this.backgroundNode
-    scene.fogNode = fogOn ? this.fogNode : null
+    scene.fogNode = this.fogFor(fogOn, Infinity) // Visuals.frame refines it for a finite view distance
   }
 
   detach(scene: THREE.Scene): void {

@@ -62,7 +62,7 @@ export interface EngineOptions {
   /** Generation workers to start. Default: the mesh worker count. */
   genWorkers?: number
   /**
-   * Draw the opaque and cutout chunk layers with one BatchedMesh per 4 × 4-chunk region instead of one mesh per chunk
+   * Draw the opaque and cutout chunk layers with one BatchedMesh per 8 × 8-chunk region instead of one mesh per chunk
    * (far fewer render objects, less CPU per frame). Same picture either way. Default true.
    */
   batchChunks?: boolean
@@ -71,6 +71,13 @@ export interface EngineOptions {
    * host runs in-thread, the A of the A/B. Default true.
    */
   waterWorker?: boolean
+  /**
+   * @internal Debug only: keep three's own per-chunk BatchedMesh cull and sort instead of the engine's. The batching
+   * pixel-diff e2e uses it as its reference picture. Default false.
+   */
+  threeCull?: boolean
+  /** @internal Chunk columns per region batch side; default 8. For the region-size A/B only. */
+  regionChunks?: number
 }
 
 export interface EngineEvents {
@@ -93,6 +100,7 @@ export interface EngineStats {
   /** meshInFlight: chunks being meshed or meshed but not yet uploaded; queue + inFlight = 0 means everything is visible. */
   meshQueue: number; meshInFlight: number; failedChunks: number
   slotsUsed: number; meshes: number; drawCalls: number; backend: 'webgpu' | 'webgl'
+  /** Render objects drawn into the sun's shadow map: region batches plus per-chunk meshes (not chunks). */
   shadowCasters: number
   decorationInstances: number; decorationDraws: number
   /** Falling blocks being drawn (in the air or waiting for their chunk mesh). */
@@ -123,6 +131,10 @@ export interface EngineStats {
   waterQueue: number; waterQueueMax: number
   /** Whether the water host runs in a worker (EngineOptions.waterWorker). */
   waterInWorker: boolean
+  /** Chunk layer draws of the camera's pass in the last frame: batched chunks after the frustum and view-distance cull, plus per-chunk meshes within the view distance. */
+  chunksDrawn: number
+  /** Bytes reserved by the chunk region batches (vertex + index buffers, CPU side; the GPU mirrors it). */
+  batchBytes: number
 }
 
 export interface Engine {
@@ -336,6 +348,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     faceLayers,
     water: surfaceMirror,
     batchChunks: o.batchChunks ?? true,
+    threeCull: o.threeCull ?? false,
+    ...(o.regionChunks !== undefined && { regionChunks: o.regionChunks }),
   })
 
   // ---- lifecycle ----
@@ -754,6 +768,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
         waterHostMs: waterHostCost.last, waterHostP95: waterHostCost.p95(), waterLagMs: waterLag.last, waterLagP95: waterLag.p95(),
         waterQueue: waterLink.depth, waterQueueMax: waterLink.maxDepth(), waterInWorker: inWorker,
+        chunksDrawn: vs.chunksDrawn,
+        batchBytes: visuals.chunks.batchBytes,
         ...(latestWorkers && { workers: latestWorkers.stats }),
       }
     },

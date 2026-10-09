@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-09T00:09:09.065Z",
+  "query": "scene=world&size=1024&gpu",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+  "poses": {
+    "orbit-default": {
+      "frames": 1126,
+      "fpsMedian": 179.69,
+      "fpsP5": 89.85,
+      "cpuMedian": 3.48,
+      "cpuP95": 5.49,
+      "gpuMs": 1.455776,
+      "draws": 921,
+      "triangles": 2514481
+    },
+    "orbit-far": {
+      "frames": 961,
+      "fpsMedian": 178.57,
+      "fpsP5": 89.65,
+      "cpuMedian": 5.88,
+      "cpuP95": 8.88,
+      "gpuMs": 1.5285759999999997,
+      "draws": 3285,
+      "triangles": 2924573
+    },
+    "orbit-far-low": {
+      "frames": 714,
+      "fpsMedian": 179.05,
+      "fpsP5": 89.29,
+      "cpuMedian": 5.27,
+      "cpuP95": 7.94,
+      "gpuMs": 1.426752,
+      "draws": 3903,
+      "triangles": 2897525
+    },
+    "ground-horizon": {
+      "frames": 960,
+      "fpsMedian": 177.15,
+      "fpsP5": 89.85,
+      "cpuMedian": 4.69,
+      "cpuP95": 6.37,
+      "gpuMs": 1.628832,
+      "draws": 2866,
+      "triangles": 3537159
+    }
+  }
+}
