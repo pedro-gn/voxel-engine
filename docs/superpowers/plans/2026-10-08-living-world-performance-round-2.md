@@ -1132,7 +1132,10 @@ describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
 Run: `npx vitest run --root packages/engine test/waterLink.test.ts`. Expected: FAIL, because `waterLink.ts` does not exist
 yet.
 
-In the reuse test, if the water does not settle within 400 ticks, raise the bound. Do not drop the comparison.
+**As built**, the reuse test differs from the code above in one way. The gate world drains for thousands of ticks, so the
+test does not wait for the water to settle. It runs 10 more prompt ticks while the water still runs, then compares
+`hPrev`, `hCur`, `info` and the curtain count against the prompt reference. That is a stronger check than comparing after
+the water settles.
 
 - [ ] **Step 2: `waterLink.ts`**
 
