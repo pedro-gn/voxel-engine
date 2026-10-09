@@ -71,6 +71,10 @@ describe('underwater tunables', () => {
     expect(UNDERWATER.fog90).toBe(12)
     expect(1 - Math.exp(-k * 12)).toBeCloseTo(0.9, 9)
   })
+  it('wobbles gently: 0.001 UV at 0.8 rad/s (user look check 2026-10-09: 0.003 at 2.1 was too strong)', () => {
+    expect(UNDERWATER.wobble).toBe(0.001)
+    expect(UNDERWATER.wobbleSpeed).toBe(0.8)
+  })
   it('is frozen', () => {
     expect(Object.isFrozen(UNDERWATER)).toBe(true)
   })

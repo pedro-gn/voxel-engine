@@ -13,8 +13,10 @@ export const UNDERWATER = Object.freeze({
   fog90: 12,
   /** How far the shallow-water colour tints the picture: 0 none, 1 a full multiply. */
   tint: 0.6,
-  /** Peak UV offset of the wobble at full amount. */
-  wobble: 0.003,
+  /** Peak UV offset of the wobble at full amount (user look check: 0.003 was much too strong). */
+  wobble: 0.001,
+  /** Wobble phase speed, rad/s (the second axis runs at 0.8×); low, so moving under water does not feel swimmy. */
+  wobbleSpeed: 0.8,
 })
 
 /** Fog density k such that 1 − e^(−k·d) = 0.9 at d = distance90. */
@@ -78,7 +80,8 @@ export function setUnderwater(u: UnderwaterUniforms, amount: number, water: { sh
 export function underwaterColor(scenePass: ReturnType<typeof pass>, u: UnderwaterUniforms) {
   const base = uv()
   const w = u.amount.mul(u.wobble)
-  const offset = vec2(sin(base.y.mul(40).add(time.mul(2.1))), cos(base.x.mul(32).add(time.mul(1.7)))).mul(w)
+  const t = time.mul(UNDERWATER.wobbleSpeed)
+  const offset = vec2(sin(base.y.mul(40).add(t)), cos(base.x.mul(32).add(t.mul(0.8)))).mul(w)
   const scene = scenePass.getTextureNode().sample(base.add(offset)).rgb
   const distance = scenePass.getViewZNode().negate().max(0)
   const fogged = mix(scene, u.fog, exp(distance.mul(u.density).negate()).oneMinus())
