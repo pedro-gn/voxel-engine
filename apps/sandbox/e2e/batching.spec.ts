@@ -3,10 +3,11 @@ import { writeFileSync } from 'node:fs'
 import { MAX_DIFF_SHARE, pixelDiff, shoot, type Pose } from './shots.ts'
 
 /**
- * The 512² e2e terrain, frozen (?still): 16 × 16 chunk columns, so 4 regions of 8 × 8 per batched layer, with trees whose
- * leaves are the cutout layer. Remeshes, appends and compaction are covered by chunkBatches.test.ts.
+ * The 1024² showcase, frozen (?still): 32 × 32 chunk columns, so 16 regions of 8 × 8 per batched layer, with trees whose
+ * leaves are the cutout layer. (The small e2e terrain, 256², fits in one region.) Remeshes, appends and compaction are
+ * covered by chunkBatches.test.ts.
  */
-const SCENE = '/?scene=terrain&size=512&still'
+const SCENE = '/?scene=terrain&size=1024&still'
 const POSE: Pose = { t: [256, 40, 256], d: 420, p: 0.75, y: 0.7 }
 
 for (const backend of ['webgpu', 'webgl'] as const) {
@@ -37,7 +38,7 @@ for (const backend of ['webgpu', 'webgl'] as const) {
 
   // Spec 4b §4.1: the engine's batch cull (precomputed spheres, no sort, both passes) against three's own (?cull=three).
   for (const [label, scene, pose] of [
-    ['512² orbit', SCENE, POSE],
+    ['1024² orbit', SCENE, POSE],
     ['1024² far', '/?scene=terrain&size=1024&still', { t: [512, 50, 512], d: 400, p: 0.3, y: 0.7 }],
   ] as const) {
     test(`${backend}: the engine's cull draws the picture three's cull draws (${label})`, async ({ page }, info) => {
