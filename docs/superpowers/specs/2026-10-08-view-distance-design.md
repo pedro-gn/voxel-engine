@@ -227,6 +227,9 @@ factor = max(fog, edge). The colour is the fog colour (already a blend towards t
 2. **Default R:** stay at `Infinity` (no visible change), or adopt a finite default, if the user prefers it after 1. That
    would change the look and is decided only there.
 
+**Outcome (2026-10-09):** the user accepted the edge as shown in the checkpoint shots
+(`research/2026-10-08-view-checkpoint/`), and the default stays `Infinity`.
+
 ## 8. Batching follow-ups folded in (from the 4a review)
 
 - Cutout batches start smaller (§4.2).

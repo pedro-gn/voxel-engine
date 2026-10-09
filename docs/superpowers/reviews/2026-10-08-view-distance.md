@@ -164,8 +164,10 @@ distance of 256 or 384 is shorter than the camera distance, so even the orbit ta
 camera.
 
 At the ground pose the camera sits in the snowy mountain's cross-section, with floating slabs and see-through walls. That
-picture is identical on `main` (0 px diff), so it comes from the pose, not from 4b. The shots went to the user through the
-expert, with the recommendation to keep the default at `Infinity`.
+picture is identical on `main` (0 px diff), so it comes from the pose, not from 4b.
+
+**User decisions (2026-10-09, through the expert):** the fog edge at a finite R is acceptable as is (checkpoint 1), and the
+default view distance stays `Infinity` (checkpoint 2).
 
 The sandbox view field now follows an R set through the API (5f15674). In the shots it still reads ∞.
 
@@ -183,8 +185,8 @@ At 5f15674:
 
 ## Open items
 
-1. **Checkpoint 2, the default R.** The default stays `Infinity`, pending the user's answer to checkpoint 1. The expert
-   recommends `Infinity`: part 1 meets the gate without a finite R, and a finite R costs 0.2–0.6 ms at the default orbit.
+1. **Default view distance: closed.** The user kept it at `Infinity` and accepted the fog edge (see Screenshots). A
+   finite default would be a new user decision.
 2. **three r186 privates.** The cull and the grow release depend on three's private fields: `_geometryInfo`,
    `_instanceInfo`, the multi-draw arrays, `_indirectTexture` and the renderer's `_attributes`. Their internals tests in
    `chunkBatches.test.ts` must be re-checked on every three upgrade.
