@@ -121,7 +121,7 @@ export class FirstPersonController {
 
   get grounded(): boolean { return this._grounded }
   get swimming(): boolean { return this._swimming }
-  /** Camera height smoothing (blocks): negative right after a step up, positive after a snap down; decays to 0. */
+  /** Camera height smoothing (blocks): negative right after a step up or an unstick lift; decays to 0. Never positive (no descent smoothing). */
   get eyeLag(): number { return this.eyeOffset }
   /** False while the orbit camera owns the input: attach()'s handlers ignore events; input clears. */
   get enabled(): boolean { return this._enabled }
@@ -222,7 +222,10 @@ export class FirstPersonController {
         d[0] = 0; d[1] = -drop; d[2] = 0
         const s = c.move(this.box(), d)
         this.position[1] += s.dy
-        this.eyeOffset -= s.dy
+        // Descent smoothing is OFF (feel checkpoint 2026-10-09: going down needs none): the eye drops with the body.
+        // Only this snap-down eye lag is disabled; the snap itself (sticking to stairs) and the step-up smoothing stay.
+        // To re-enable, restore the line below.
+        // this.eyeOffset -= s.dy
         this._grounded = s.grounded
         v[1] = 0
       }

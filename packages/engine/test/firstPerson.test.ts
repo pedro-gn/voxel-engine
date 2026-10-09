@@ -256,10 +256,11 @@ describe('FirstPersonController over 4c collision', () => {
     const p = w.fp(); p.spawn(16.5, 14.5); settle(p)
     expect(p.position[1]).toBe(5)
     p.input.forward = 1
-    let airborne = 0
-    for (let i = 0; i < 90; i++) { p.update(1 / 60); if (!p.grounded) airborne++ }
+    let airborne = 0, maxLag = 0
+    for (let i = 0; i < 90; i++) { p.update(1 / 60); if (!p.grounded) airborne++; maxLag = Math.max(maxLag, Math.abs(p.eyeLag)) }
     expect(p.position[1]).toBe(4)
     expect(airborne).toBe(0)
+    expect(maxLag).toBe(0)                                        // the eye drops with the body (feel checkpoint: no descent smoothing)
 
     const c = world()
     c.fill(0, 4, 12, 31, 7, 31, ID.stone)                         // 4-high cliff
