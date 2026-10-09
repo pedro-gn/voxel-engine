@@ -5,13 +5,18 @@ import { voxelId } from '../../world/voxel.ts'
 export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean }
 export type PathStatus = 'pending' | 'found' | 'unreachable' | 'limited' | 'stale' | 'cancelled'
 export interface PathResult { status: PathStatus; path: number[]; cost: number }
-/** `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit goals). */
-export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean }
+/**
+ * `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit
+ * goals); `region` confines expansions to one tile, and a search that had to skip a pose outside it ends `limited`.
+ */
+export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean; region?: number }
 const DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1]
 const UNSET = -2
 /** First slice of a new search estimated short: such routes finish in it instead of queueing behind long searches. */
 const FRESH_SLICE = 512, SHORT_ESTIMATE = 32 * 4
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
+/** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
+export const edgeCost = (L: Layout, from: number, to: number): number => { const sy = L.voxelCoords(from)[1], ty = L.voxelCoords(to)[1]; return 4 + (ty > sy ? 2 : sy - ty) }
 
 /** Lazy support graph. Geometry only: live occupancy, water and structural safety are checked by the executor. */
 export class NavigationSystem {
@@ -41,6 +46,7 @@ export class NavigationSystem {
     return n
   }
   tileOf(x: number, y: number, z: number): number { return (x >> 4) + (z >> 4) * this.tx + (y >> 4) * this.tx * this.tz }
+  tileOfPose(p: number): number { const [x, y, z] = this.port.layout.voxelCoords(p); return this.tileOf(x, y, z) }
   invalidate(x: number, y: number, z: number): void { this.invalidateBox(x, y, z, x, y, z) }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
   invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void {
@@ -162,8 +168,11 @@ export class PathSearch {
   private readonly goalSet: Set<number>
   private readonly allow?: (p: number) => boolean
   private readonly accept?: (p: number) => boolean
+  private readonly region?: number
+  /** Whether confinement skipped a pose: an exhausted search then proves nothing. */
+  private cut = false
   constructor(nav: NavigationSystem, start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions) {
-    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept
+    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept; this.region = options?.region
     this.goalSet = new Set(goals)
     this.estimate = this.h(start)
     if (!goals.length && !this.accept || !nav.stand(...nav.port.layout.voxelCoords(start))) { this.status = 'unreachable'; return }
@@ -230,7 +239,7 @@ export class PathSearch {
         const next = this.validation.next()
         if (!next.done) { this.validationProgress++; if (this.nav.revisions[next.value[0]] !== next.value[1]) this.status = 'stale' }
         else if (this.validateRevision !== this.nav.revision) { this.validateRevision = this.nav.revision; this.validation = null; this.validationProgress = 0 }
-        else this.status = this.path.length ? 'found' : 'unreachable'
+        else this.status = this.path.length ? 'found' : this.cut ? 'limited' : 'unreachable'
       } else if (this.phase === 'path') {
         if (this.reconstruct < 0) this.phase = 'reverse'
         else { this.path.push(this.positions[this.reconstruct]!); this.reconstruct = this.parents[this.reconstruct]! }
@@ -245,10 +254,8 @@ export class PathSearch {
         if (this.goalSet.has(this.positions[this.expanding]!) || this.accept?.(this.positions[this.expanding]!)) { this.cost = this.gs[this.expanding]!; this.reconstruct = this.expanding; this.phase = 'path' }
       } else {
         const L = this.nav.port.layout, p = this.positions[this.expanding]!, to = this.nav.neighbor(p, this.direction, this.seen)
-        if (to >= 0 && !this.blocked?.has(to) && this.permits(to)) {
-          const sy = L.voxelCoords(p)[1], ty = L.voxelCoords(to)[1]
-          this.add(to, this.gs[this.expanding]! + 4 + (ty > sy ? 2 : sy - ty), this.expanding)
-        }
+        if (to >= 0 && this.region !== undefined && this.nav.tileOfPose(to) !== this.region) this.cut = true
+        else if (to >= 0 && !this.blocked?.has(to) && this.permits(to)) this.add(to, this.gs[this.expanding]! + edgeCost(L, p, to), this.expanding)
         if (++this.direction === 4) this.expanding = -1
       }
     }
@@ -257,7 +264,7 @@ export class PathSearch {
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }
-    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0)
+    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0); mix(this.region ?? -1); mix(this.cut ? 1 : 0)
     mix(['search', 'path', 'reverse', 'validate'].indexOf(this.phase)); mix(this.validateRevision); mix(this.reverseCursor)
     numbers(this.goals); numbers([...(this.blocked ?? [])].sort((a, b) => a - b))
     mix(this.count); mix(this.size); mix(this.expanding); mix(this.direction); mix(this.reconstruct)
