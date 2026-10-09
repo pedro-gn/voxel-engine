@@ -11,8 +11,10 @@ export interface Quality {
   decorationMaxInstances: number
   /** Post-pipeline MSAA samples: 0 (off) or 4. */
   msaa: number
+  /** Blocks from the camera beyond which the world is not drawn, faded into the fog over its last quarter: Infinity (default, draws everything) or [64, 4096]. */
+  viewDistance: number
 }
-export const DEFAULT_QUALITY: Quality = Object.freeze({ shadowMapSize: 2048, decorationRadius: 96, decorationMaxInstances: 400_000, msaa: 4 })
+export const DEFAULT_QUALITY: Quality = Object.freeze({ shadowMapSize: 2048, decorationRadius: 96, decorationMaxInstances: 400_000, msaa: 4, viewDistance: Infinity })
 
 export interface Effects { shadows: boolean; decorations: boolean; water: boolean; post: boolean; fog: boolean }
 export const DEFAULT_EFFECTS: Effects = Object.freeze({ shadows: true, decorations: true, water: true, post: true, fog: true })
@@ -48,6 +50,9 @@ export function mergeQuality(cur: Quality, input: Partial<Quality>): Quality {
     throw new RangeError(`quality.decorationMaxInstances must be a non-negative integer, got ${q.decorationMaxInstances}`)
   }
   if (q.msaa !== 0 && q.msaa !== 4) throw new RangeError(`quality.msaa must be 0 or 4, got ${q.msaa}`)
+  if (q.viewDistance !== Infinity && !(Number.isFinite(q.viewDistance) && q.viewDistance >= 64 && q.viewDistance <= 4096)) {
+    throw new RangeError(`quality.viewDistance must be Infinity or in [64, 4096], got ${q.viewDistance}`)
+  }
   return Object.freeze(q)
 }
 

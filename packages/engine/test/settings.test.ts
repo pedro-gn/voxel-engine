@@ -4,7 +4,14 @@ import { DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, mergeEffects, mergeQua
 
 describe('quality', () => {
   it('has the spec defaults', () => {
-    expect(DEFAULT_QUALITY).toEqual({ shadowMapSize: 2048, decorationRadius: 96, decorationMaxInstances: 400_000, msaa: 4 })
+    expect(DEFAULT_QUALITY).toEqual({ shadowMapSize: 2048, decorationRadius: 96, decorationMaxInstances: 400_000, msaa: 4, viewDistance: Infinity })
+  })
+  it('accepts Infinity or [64, 4096] for viewDistance, and back to Infinity', () => {
+    expect(mergeQuality(DEFAULT_QUALITY, { viewDistance: 256 }).viewDistance).toBe(256)
+    expect(mergeQuality(mergeQuality(DEFAULT_QUALITY, { viewDistance: 256 }), { viewDistance: Infinity }).viewDistance).toBe(Infinity)
+    expect(mergeQuality(DEFAULT_QUALITY, { viewDistance: 64 }).viewDistance).toBe(64)
+    expect(mergeQuality(DEFAULT_QUALITY, { viewDistance: 4096 }).viewDistance).toBe(4096)
+    for (const bad of [63, 4097, Number.NaN, -Infinity, 0]) expect(() => mergeQuality(DEFAULT_QUALITY, { viewDistance: bad })).toThrow(/quality\.viewDistance/)
   })
   it('merges a partial update', () => {
     expect(mergeQuality(DEFAULT_QUALITY, { shadowMapSize: 4096 })).toEqual({ ...DEFAULT_QUALITY, shadowMapSize: 4096 })
