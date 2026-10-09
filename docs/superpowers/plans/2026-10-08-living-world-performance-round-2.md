@@ -544,3 +544,1122 @@ machine was loaded, so no absolute number from this gate counts against the targ
 - Following §3.1, the expert gets the note with the new profile before the next #5 step: the rest of publish and flush,
   then the water step.
 - The gate is to be re-run on a quiet machine.
+
+---
+
+# Part 2: #2, water apply in a dedicated worker
+
+> Spec §4, approved, including the §4.1 back-to-back rule. Where each of the expert's conditions is covered:
+> - Main-thread queries stay synchronous through the shared drawn-surface buffer (Task 4).
+> - Lag is measured with `waterLagMs` and a clip (Tasks 7–8).
+> - The worker's ColumnData is bit-identical to an in-thread view's (Task 4, differential).
+> - `surfaceNear` answers the same as the in-thread view (Task 4, differential).
+> - A crash gets one respawn plus `waterResync`; a second one is fatal (Tasks 6–7).
+> - The worker is added on top of the mesh pool, and the mesh backlog is checked (Task 8).
+> - A parity-buffer reuse is forced in Node with a queue deep enough to cause it (Task 5).
+
+**Architecture**
+- **`WaterHost`** (pure) wraps `SurfaceView`. It answers a `WaterRequest` (one tick's publish plus its relights) with a
+  `WaterReply` that packs every dirty key's changed rows and curtains.
+- **`render/water/water.worker.ts`** runs the host. With `EngineOptions.waterWorker: false` (`?nowaterworker`) the host
+  runs in-thread and replies at once: that is the A of the A/B, in the same build.
+- **`WaterMirror`** (main thread) holds the ColumnData that three uploads. It answers `surfaceNear`/`surfaceAt` from a
+  shared Int32 buffer that the host writes.
+- **`WaterLink`** (pure, main thread) keeps one request in flight and queues the rest in order. It freezes the drawn alpha
+  while a publish is in flight and calls the engine's clock hooks in tick order.
+
+**File map (part 2)**
+
+| File | Responsibility |
+|---|---|
+| `packages/engine/src/render/water/surfaceView.ts` (modify) | `DrawnSurfaces`, `NO_SLOT`, `drawnSurfaces(n)`, `SurfaceView.surfaces` written after each apply |
+| `packages/engine/src/render/water/waterHost.ts` (create) | `WaterRequest`, `WaterReply`, `packDirty(view)`, `WaterHost` |
+| `packages/engine/src/render/water/waterMirror.ts` (create) | `SurfaceSource` interface, `WaterMirror` (copy, takeDirty, surfaceNear/At, reset) |
+| `packages/engine/src/render/water/waterLink.ts` (create) | `WaterLink` scheduler and its hooks |
+| `packages/engine/src/render/water/water.worker.ts` (create) | Worker shell around `WaterHost` |
+| `packages/engine/src/render/water/waterSurface.ts`, `ripples.ts`, `render/visuals.ts` (modify) | Typed against `SurfaceSource` instead of `SurfaceView`; nothing else changes |
+| `packages/engine/src/sim/water/waterSystem.ts`, `sim/simHost.ts`, `protocol.ts` (modify) | `waterResync` → `WaterSystem.republishAll()` |
+| `packages/engine/src/engine.ts` (modify, water path only) | Host, worker and link wiring; freeze, lag, crash handling, stats; `EngineOptions.waterWorker` |
+| `apps/sandbox/src/main.ts` (modify, one line) | `waterWorker: !params.has('nowaterworker')` |
+| `packages/engine/test/layerHelpers.ts` (modify) | export `gateWorld()` |
+| `packages/engine/test/waterMirror.test.ts`, `waterLink.test.ts`, `waterResync.test.ts` (create) | Tests for Tasks 4–6 |
+| `apps/sandbox/e2e/water-worker.spec.ts`, `water-ab.spec.ts`, `living-anatomy.spec.ts`, `bench/anatomy.node.mjs` (create) | Task 7 e2e, Task 8 measurement |
+
+**One known difference: when light is read.** The worker reads voxel light a few ms after the tick's message. If light
+changes in the very next sim tick, the new value can therefore land one relight earlier. The next relight writes the same
+value, so nothing visible changes. Node tests run single-threaded and cannot see this.
+
+## Review Focus (part 2)
+
+1. **The worker crashes mid-dam.**
+   - Expected: one respawn, a full republish, and the water redrawn within a few ticks; the engine keeps running.
+   - Test: the Task 7 e2e crashes the worker through a debug hook and checks the water comes back; a second crash is fatal.
+2. **Physics paused while a request is in flight.**
+   - Expected: the reply still lands; after that the queue empties and the alpha unfreezes. Ticks without a publish release
+     the hold, as today.
+   - Test: Task 5, ticks without a publish queued behind one in flight.
+3. **A relight with no publish (a regeneration).**
+   - Expected: it never releases the clock hold, and it is applied in order.
+   - Test: Task 5.
+4. **`dispose()` with a request in flight.**
+   - Expected: the worker is terminated and no disposed mesh is touched afterwards.
+   - Test: the Task 7 e2e disposes during the dam and checks for no console errors.
+5. **A bunch of ticks longer than the parity window** (N + 2 overwrites N's buffer).
+   - Expected: today's defer and re-read recovery, with no wrong data.
+   - Test: Task 5 forces the reuse with a real publisher and host, and compares the result against a reference that read
+     every publish at once.
+
+---
+
+### Task 4: `WaterHost`, `WaterMirror` and the drawn-surface buffer, bit-identical to an in-thread view
+
+**Files:**
+- Modify: `packages/engine/src/render/water/surfaceView.ts`
+- Create: `packages/engine/src/render/water/waterHost.ts`, `packages/engine/src/render/water/waterMirror.ts`
+- Modify: `packages/engine/test/layerHelpers.ts`: add `gateWorld()`, a copy of `surfaceLayers.test.ts`'s local one.
+- Test: `packages/engine/test/waterMirror.test.ts`
+
+**Interfaces:**
+- Produces:
+  - `DrawnSurfaces { value: Int32Array; floor: Int16Array }`, `NO_SLOT = -0x80000000`, and `drawnSurfaces(n): DrawnSurfaces`.
+    The buffers are SharedArrayBuffer-backed. They start with rank 0 at −1 and ranks 1–3 at NO_SLOT.
+  - `SurfaceView.surfaces: DrawnSurfaces | null`
+  - `WaterRequest { type: 'apply'; id; tick; water: WaterTick | null; shown: number; relight: number[] }`. `relight` is a
+    flat list of `[cc, y0, y1]` triples.
+  - `WaterReply { type: 'result'; id; tick; applied: boolean; hostMs: number; keys: Int32Array; data: Float32Array }`
+  - `packDirty(view): { keys; data }`
+  - `class WaterHost { constructor(size, b, light, stepHz, surfaces); readonly view; handle(req): WaterReply }`
+  - `interface SurfaceSource { ccCount; cx; column(cc, r?); takeDirty(); surfaceNear(x, z, y) }`
+  - `class WaterMirror implements SurfaceSource { constructor(size, b); readonly surfaces; copy(reply); reset(); surfaceAt(x, z) }`
+
+- [ ] **Step 1: Add `gateWorld()` to `test/layerHelpers.ts`**
+
+```ts
+/** A lake behind a gate with a hole under a deck: water runs through the hole into a lower channel, under the deck (lower slots). 64 × 32 × 32. */
+export function gateWorld() {
+  return layered((x, y, z) => {
+    if (y < 2 || z === 0 || z >= 5 || x === 0 || x === 63) return STONE
+    if (x === 31 && !(y >= 3 && y <= 4 && z === 2)) return STONE // the gate, a 1 × 2 hole at z 2
+    if (x >= 26 && x <= 40 && y === 7) return STONE // the deck over the gate
+    if (x < 31) return y <= 10 ? wv(7) : AIR // the lake
+    return AIR
+  }, [64, 32, 32])
+}
+```
+
+- [ ] **Step 2: Write the failing differential test**
+
+`packages/engine/test/waterMirror.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { SurfaceView } from '../src/render/water/surfaceView.ts'
+import { WaterHost } from '../src/render/water/waterHost.ts'
+import { WaterMirror } from '../src/render/water/waterMirror.ts'
+import { RANKS } from '../src/sim/water/constants.ts'
+import { WaterPublisher } from '../src/sim/water/publish.ts'
+import { gateWorld } from './layerHelpers.ts'
+
+/** The first index where two arrays differ (Object.is), −1 when equal. */
+const diff = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
+  if (x.length !== y.length) return -2
+  for (let i = 0; i < x.length; i++) if (!Object.is(x[i], y[i])) return i
+  return -1
+}
+const SIZE: [number, number, number] = [64, 32, 32]
+
+describe('WaterMirror (4a-r2 #2)', () => {
+  it('holds exactly what an in-thread view holds after every request, with alpha, relights and queued publishes (differential)', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    let shift = 0
+    const light = (x: number, y: number, z: number) => (x * 7 + y * 3 + z + shift) & 0xff
+    const pub = new WaterPublisher(w.buffers.water)
+    const ref = new SurfaceView(SIZE, w.buffers.water, light, 20)
+    const mirror = new WaterMirror(SIZE, w.buffers.water)
+    const host = new WaterHost(SIZE, w.buffers.water, light, 20, mirror.surfaces)
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    let id = 0, compared = 0
+    for (let tick = 0; tick < 48; tick++) {
+      // Every 5th tick two publishes come before a reply: WaterLink forwards the second after the first's copy, at alpha 0.
+      for (let q = 0; q < (tick % 5 === 0 ? 2 : 1); q++) {
+        const water = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+        const shown = q === 0 ? (tick % 3) / 3 : 0
+        if (tick % 4 === 0) shift++
+        const relight = tick % 4 === 0 ? [0, 0, 32, 1, 0, 16] : []
+        ref.apply(water, shown)
+        for (let i = 0; i < relight.length; i += 3) ref.relight(relight[i]!, relight[i + 1]!, relight[i + 2]!)
+        mirror.copy(host.handle({ type: 'apply', id: ++id, tick, water, shown, relight }))
+        for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < ref.ccCount; cc++) {
+          const a = ref.column(cc, r), m = mirror.column(cc, r)
+          expect([tick, r, cc, !!a]).toEqual([tick, r, cc, !!m])
+          if (!a || !m) continue
+          const n = a.curtains.count * 4
+          expect([tick, r, cc, diff(m.hPrev, a.hPrev), diff(m.hCur, a.hCur), diff(m.info, a.info), m.curtains.count - a.curtains.count,
+            diff(m.curtains.prev.subarray(0, n), a.curtains.prev.subarray(0, n)), diff(m.curtains.cur.subarray(0, n), a.curtains.cur.subarray(0, n)),
+            diff(m.curtains.reach.subarray(0, n), a.curtains.reach.subarray(0, n)), diff(m.curtains.thick.subarray(0, n), a.curtains.thick.subarray(0, n)),
+            diff(m.curtains.flare.subarray(0, n), a.curtains.flare.subarray(0, n)), diff(m.curtains.info.subarray(0, n), a.curtains.info.subarray(0, n)),
+          ]).toEqual([tick, r, cc, -1, -1, -1, 0, -1, -1, -1, -1, -1, -1])
+          compared++
+        }
+        for (let z = 0; z < SIZE[2]; z++) for (let x = 0; x < SIZE[0]; x++) {
+          expect([x, z, mirror.surfaceAt(x, z)]).toEqual([x, z, ref.surfaceAt(x, z)])
+          for (const y of [2, 4, 7, 10]) expect([x, z, y, mirror.surfaceNear(x, z, y)]).toEqual([x, z, y, ref.surfaceNear(x, z, y)])
+        }
+        w.step()
+      }
+    }
+    expect(compared).toBeGreaterThan(100)
+    // The world must reach the layered path: some layer-1 column data exists.
+    expect(Array.from({ length: ref.ccCount }, (_, cc) => ref.column(cc, 1)).some(Boolean)).toBe(true)
+  }, 120_000)
+})
+```
+
+Run: `npx vitest run --root packages/engine test/waterMirror.test.ts`. Expected: FAIL, because `waterHost.ts` and
+`waterMirror.ts` do not exist yet.
+
+- [ ] **Step 3: The drawn-surface buffer in `surfaceView.ts`**
+
+At module level, after the imports:
+
+```ts
+/**
+ * Drawn surfaces for main-thread queries (4a-r2 #2), written by the view that applies and read by WaterMirror.
+ * `value[c × RANKS + r]`: rank 0 the published value of column c; rank r ≥ 1 the slot's published value, NO_SLOT when c has
+ * no slot r. `floor[c × (RANKS − 1) + r − 1]`: the floor (blocks) of slot r ≥ 1. Plain stores into shared memory: a query
+ * racing an apply may see some columns at the new step and some at the old, never a torn value.
+ */
+export interface DrawnSurfaces { value: Int32Array; floor: Int16Array }
+/** No slot at this rank (never a published value: those are ≥ 0, or ~level ≥ −(128 × SUB + 1)). */
+export const NO_SLOT = -0x80000000
+
+/** DrawnSurfaces for n columns over SharedArrayBuffers, as before any apply: rank 0 −1 (SurfaceView.cur's start), no slots. */
+export function drawnSurfaces(n: number): DrawnSurfaces {
+  const value = new Int32Array(new SharedArrayBuffer(n * RANKS * 4)).fill(NO_SLOT)
+  for (let c = 0; c < n; c++) value[c * RANKS] = -1
+  return { value, floor: new Int16Array(new SharedArrayBuffer(n * (RANKS - 1) * 2)) }
+}
+```
+
+In `SurfaceView`, after `forceSlots`:
+
+```ts
+  /** When set, every column of the tiles an apply reads is written here after the apply (see DrawnSurfaces). */
+  surfaces: DrawnSurfaces | null = null
+```
+
+In `apply()`, right after the commit loop (the `for (const tile of tiles) { … this.tileSettled[tile] = moving ? 0 : 1 }` loop):
+
+```ts
+    if (this.surfaces) for (const tile of tiles) this.writeSurfaces(tile)
+```
+
+Then add, next to `defer`:
+
+```ts
+  /** Writes the drawn surfaces of tile's columns (see DrawnSurfaces): after the commit, so cur and the layers are this step's. */
+  private writeSurfaces(tile: number): void {
+    const { value, floor } = this.surfaces!
+    const x0 = (tile % this.tx) * TILE, z0 = Math.floor(tile / this.tx) * TILE
+    for (let z = z0; z < z0 + TILE; z++) for (let x = x0; x < x0 + TILE; x++) {
+      const c = x + z * this.sx
+      value[c * RANKS] = this.cur[c]!
+      for (let r = 1; r < RANKS; r++) {
+        const has = this.layers.has(c, r)
+        value[c * RANKS + r] = has ? this.layers.cur(c, r) : NO_SLOT
+        floor[c * (RANKS - 1) + r - 1] = has ? this.layers.floor(c, r) : 0
+      }
+    }
+  }
+```
+
+The layer store and `cur` change only in that commit loop, and only for the listed tiles, so the buffer stays equal to the
+view.
+
+- [ ] **Step 4: `waterHost.ts`**
+
+```ts
+import type { WaterTick } from '../../sim/water/publish.ts'
+import type { WorldSize } from '../../world/layout.ts'
+import type { WaterBuffers } from '../../world/waterBuffers.ts'
+import { SurfaceView, type DrawnSurfaces } from './surfaceView.ts'
+
+/** Main thread → water host: one tick's publish (null: none) and the light ranges [cc, y0, y1]* to re-read after it. */
+export interface WaterRequest { type: 'apply'; id: number; tick: number; water: WaterTick | null; shown: number; relight: number[] }
+/** Water host → main thread: whether the publish was applied, the host's cost (ms), and the data of every key that changed (packDirty). */
+export interface WaterReply { type: 'result'; id: number; tick: number; applied: boolean; hostMs: number; keys: Int32Array; data: Float32Array }
+
+/** Floats per row of a ColumnData array: 32 instances × 4. */
+const ROW = 128
+/** Ints per key in WaterReply.keys. */
+export const KEY_INTS = 4
+
+/**
+ * Takes the view's dirty keys and packs what the renderer reads: per key [key, rowLo, rowHi, curtain count] (count −1: the
+ * key has no data), then in `data`, key by key, rows rowLo..rowHi of hPrev, hCur and info (none when rowLo > rowHi), then
+ * the first count × 4 floats of the six curtain arrays (prev, cur, reach, thick, flare, info). Resets each key's row range,
+ * as WaterSurface.sync does when it uploads.
+ */
+export function packDirty(view: SurfaceView): { keys: Int32Array; data: Float32Array } {
+  const dirty = view.takeDirty(), n = view.ccCount
+  let floats = 0
+  for (const key of dirty) {
+    const cc = key % n, d = view.column(cc, (key - cc) / n)
+    if (!d) continue
+    if (d.rowLo <= d.rowHi) floats += (d.rowHi - d.rowLo + 1) * ROW * 3
+    floats += d.curtains.count * 4 * 6
+  }
+  const keys = new Int32Array(dirty.length * KEY_INTS), data = new Float32Array(floats)
+  let o = 0
+  for (let k = 0; k < dirty.length; k++) {
+    const key = dirty[k]!, cc = key % n, d = view.column(cc, (key - cc) / n)
+    keys[k * KEY_INTS] = key
+    if (!d) { keys[k * KEY_INTS + 1] = 32; keys[k * KEY_INTS + 2] = -1; keys[k * KEY_INTS + 3] = -1; continue }
+    keys[k * KEY_INTS + 1] = d.rowLo; keys[k * KEY_INTS + 2] = d.rowHi
+    if (d.rowLo <= d.rowHi) {
+      const a = d.rowLo * ROW, b = (d.rowHi + 1) * ROW
+      data.set(d.hPrev.subarray(a, b), o); o += b - a
+      data.set(d.hCur.subarray(a, b), o); o += b - a
+      data.set(d.info.subarray(a, b), o); o += b - a
+      d.rowLo = 32; d.rowHi = -1
+    }
+    const cs = d.curtains, m = cs.count * 4
+    keys[k * KEY_INTS + 3] = cs.count
+    for (const arr of [cs.prev, cs.cur, cs.reach, cs.thick, cs.flare, cs.info]) { data.set(arr.subarray(0, m), o); o += m }
+  }
+  return { keys, data }
+}
+
+/** The water view's side of #2: applies requests in order and packs what changed. Runs in the water worker, or in-thread. */
+export class WaterHost {
+  readonly view: SurfaceView
+  constructor(size: WorldSize, b: WaterBuffers, light: (x: number, y: number, z: number) => number, stepHz: number, surfaces: DrawnSurfaces) {
+    this.view = new SurfaceView(size, b, light, stepHz)
+    this.view.surfaces = surfaces
+  }
+
+  handle(req: WaterRequest): WaterReply {
+    const t0 = performance.now()
+    const applied = req.water ? this.view.apply(req.water, req.shown) : false
+    for (let i = 0; i < req.relight.length; i += 3) this.view.relight(req.relight[i]!, req.relight[i + 1]!, req.relight[i + 2]!)
+    const { keys, data } = packDirty(this.view)
+    return { type: 'result', id: req.id, tick: req.tick, applied, hostMs: performance.now() - t0, keys, data }
+  }
+}
+```
+
+- [ ] **Step 5: `waterMirror.ts`**
+
+```ts
+import { RANKS } from '../../sim/water/constants.ts'
+import type { WorldSize } from '../../world/layout.ts'
+import { SUB, type WaterBuffers } from '../../world/waterBuffers.ts'
+import { shows } from './surfaceMesh.ts'
+import { ColumnData, NO_SLOT, drawnSurfaces, type DrawnSurfaces } from './surfaceView.ts'
+import { KEY_INTS, type WaterReply } from './waterHost.ts'
+
+/** What the renderer and the edit ripples read of the water: SurfaceView in-thread, WaterMirror beside a water host. */
+export interface SurfaceSource {
+  readonly ccCount: number
+  readonly cx: number
+  column(cc: number, r?: number): ColumnData | undefined
+  takeDirty(): number[]
+  surfaceNear(x: number, z: number, y: number): number | null
+}
+
+const ROW = 128
+const PER_SUB = 1 / SUB
+function byIndex(a: number, b: number): number { return a - b }
+
+/**
+ * The main thread's copy of the water view's draw data (4a-r2 #2): ColumnData filled from WaterReply copies, the dirty keys
+ * for WaterSurface, and synchronous surface queries over the shared DrawnSurfaces the host writes.
+ */
+export class WaterMirror implements SurfaceSource {
+  readonly sx: number
+  readonly sz: number
+  readonly cx: number
+  readonly ccCount: number
+  readonly surfaces: DrawnSurfaces
+  private readonly floor: Int16Array
+  private readonly data: (ColumnData | undefined)[][]
+  private readonly dirtyFlag: Uint8Array
+  private dirty: number[] = []
+  private spare: number[] = []
+
+  constructor(size: WorldSize, b: WaterBuffers) {
+    this.sx = size[0]
+    this.sz = size[2]
+    this.cx = this.sx >> 5
+    this.ccCount = this.cx * (this.sz >> 5)
+    this.surfaces = drawnSurfaces(this.sx * this.sz)
+    this.floor = new Int16Array(b.floor)
+    this.data = Array.from({ length: RANKS }, () => new Array<ColumnData | undefined>(this.ccCount))
+    this.dirtyFlag = new Uint8Array(this.ccCount * RANKS)
+  }
+
+  column(cc: number, r = 0): ColumnData | undefined { return this.data[r]![cc] }
+
+  /** As SurfaceView.takeDirty: keys changed since the last call, in index order; the array is reused. */
+  takeDirty(): number[] {
+    const out = this.dirty
+    if (out.length === 0) return out
+    out.sort(byIndex)
+    for (const k of out) this.dirtyFlag[k] = 0
+    this.dirty = this.spare
+    this.dirty.length = 0
+    this.spare = out
+    return out
+  }
+
+  /** Copies a reply's packed keys (packDirty) into the ColumnData the renderer uploads, marking their rows and keys. */
+  copy(reply: WaterReply): void {
+    const keys = reply.keys, src = reply.data
+    let o = 0
+    for (let k = 0; k < keys.length; k += KEY_INTS) {
+      const key = keys[k]!, lo = keys[k + 1]!, hi = keys[k + 2]!, count = keys[k + 3]!
+      if (count < 0) continue
+      const cc = key % this.ccCount, r = (key - cc) / this.ccCount
+      let d = this.data[r]![cc]
+      if (!d) { d = new ColumnData(); this.data[r]![cc] = d }
+      if (lo <= hi) {
+        const a = lo * ROW, len = (hi - lo + 1) * ROW
+        d.hPrev.set(src.subarray(o, o + len), a); o += len
+        d.hCur.set(src.subarray(o, o + len), a); o += len
+        d.info.set(src.subarray(o, o + len), a); o += len
+        d.mark(lo); d.mark(hi)
+      }
+      const cs = d.curtains, m = count * 4
+      cs.reserve(count)
+      cs.count = count
+      for (const arr of [cs.prev, cs.cur, cs.reach, cs.thick, cs.flare, cs.info]) { arr.set(src.subarray(o, o + m)); o += m }
+      if (this.dirtyFlag[key] === 0) { this.dirtyFlag[key] = 1; this.dirty.push(key) }
+    }
+  }
+
+  /** Forgets everything drawn (a lost worker): every quad hidden and every curtain gone until the next copies, surfaces back to their start. */
+  reset(): void {
+    for (let r = 0; r < RANKS; r++) for (let cc = 0; cc < this.ccCount; cc++) {
+      const d = this.data[r]![cc]
+      if (!d) continue
+      d.info.fill(-1)
+      d.curtains.count = 0
+      d.mark(0); d.mark(31)
+      const key = r * this.ccCount + cc
+      if (this.dirtyFlag[key] === 0) { this.dirtyFlag[key] = 1; this.dirty.push(key) }
+    }
+    const v = this.surfaces.value
+    v.fill(NO_SLOT)
+    for (let c = 0; c < this.sx * this.sz; c++) v[c * RANKS] = -1
+  }
+
+  /** As SurfaceView.surfaceAt, from the drawn surfaces. */
+  surfaceAt(x: number, z: number): number | null {
+    if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
+    const c = x + z * this.sx, v = this.surfaces.value[c * RANKS]!
+    return shows(v, this.floor[c]!) ? v * PER_SUB : null
+  }
+
+  /** As SurfaceView.surfaceNear, from the drawn surfaces. */
+  surfaceNear(x: number, z: number, y: number): number | null {
+    if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
+    const c = x + z * this.sx, value = this.surfaces.value, floor = this.surfaces.floor
+    let best: number | null = null
+    for (let r = 0; r < RANKS; r++) {
+      const v = value[c * RANKS + r]!
+      if (r > 0 && v === NO_SLOT) continue
+      const f = r === 0 ? this.floor[c]! : floor[c * (RANKS - 1) + r - 1]!
+      if (!shows(v, f)) continue
+      const s = v * PER_SUB
+      if (Math.abs(s - y) <= 2 && (best === null || Math.abs(s - y) < Math.abs(best - y))) best = s
+    }
+    return best
+  }
+}
+```
+
+- [ ] **Step 6: Run the tests**
+
+Run: `npx vitest run --root packages/engine test/waterMirror.test.ts test/surfaceView.test.ts test/surfaceLayers.test.ts test/waterSurface.test.ts test/ripples.test.ts`
+Expected: PASS.
+
+If the differential test fails, find the first `(tick, r, cc, index)`. The likely causes:
+- a SurfaceView write that does not `mark()` its row;
+- a key changed without `markDirty`.
+
+Fix the packing or the mirror. If the cause is a missing `mark()` in SurfaceView, add the mark there: today that would
+also be a latent upload bug.
+
+- [ ] **Step 7: Commit**
+
+```powershell
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/render/water/surfaceView.ts packages/engine/src/render/water/waterHost.ts packages/engine/src/render/water/waterMirror.ts packages/engine/test/layerHelpers.ts packages/engine/test/waterMirror.test.ts
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "feat(water): WaterHost packs the view's changed rows; WaterMirror copies them and answers surface queries (bit-identical)"
+```
+
+### Task 5: `WaterLink`: one request in flight, the rest in order
+
+**Files:**
+- Create: `packages/engine/src/render/water/waterLink.ts`
+- Test: `packages/engine/test/waterLink.test.ts`
+
+**Interfaces:**
+- Consumes: `WaterRequest`, `WaterReply`, `WaterHost` and `WaterMirror` from Task 4.
+- Produces:
+  - `interface WaterLinkHooks { post(req); copy(reply, publish: boolean); applied(tick, arrived); settled(); shown(): number }`
+  - `class WaterLink { constructor(hooks); submit(tick, water, relight, settles, arrived); receive(reply); reset(); readonly depth; maxDepth(); readonly frozen: number | null }`
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { SurfaceView } from '../src/render/water/surfaceView.ts'
+import { WaterHost, type WaterReply, type WaterRequest } from '../src/render/water/waterHost.ts'
+import { WaterLink } from '../src/render/water/waterLink.ts'
+import { WaterMirror } from '../src/render/water/waterMirror.ts'
+import { WaterPublisher, type WaterTick } from '../src/sim/water/publish.ts'
+import { gateWorld } from './layerHelpers.ts'
+
+const tickOf = (seq: number): WaterTick => ({ seq, parity: seq & 1, tiles: [], layers: null })
+const reply = (req: WaterRequest, applied: boolean): WaterReply => ({ type: 'result', id: req.id, tick: req.tick, applied, hostMs: 0, keys: new Int32Array(), data: new Float32Array() })
+
+/** A link over a fake host: requests wait until `answer` replies to them; `log` records the hooks in order. */
+function fake(onScreen = { v: 0.6 }) {
+  const posted: WaterRequest[] = [], log: string[] = []
+  const link = new WaterLink({
+    post: (req) => { posted.push(req); log.push(`post ${req.tick} @${req.shown}`) },
+    copy: (r, publish) => log.push(`copy ${r.tick}${publish ? '' : ' (no publish)'}`),
+    applied: (tick, arrived) => { onScreen.v = 0; log.push(`applied ${tick} from ${arrived}`) },
+    settled: () => log.push('settled'),
+    shown: () => onScreen.v,
+  })
+  return { link, posted, log, answer: (i: number, applied = true) => link.receive(reply(posted[i]!, applied)) }
+}
+
+describe('WaterLink (4a-r2 #2, spec 4.1)', () => {
+  it('two publishes before the first reply: one in flight, the second sent after the first copy, at alpha 0, in order', () => {
+    const { link, posted, log, answer } = fake()
+    link.submit(1, tickOf(1), [], true, 100)
+    link.submit(2, tickOf(2), [], true, 120)
+    expect(posted.map(p => p.tick)).toEqual([1])
+    expect([link.depth, link.frozen]).toEqual([2, 0.6])
+    answer(0)
+    expect(posted.map(p => p.tick)).toEqual([1, 2])
+    expect([link.depth, link.frozen]).toEqual([1, 0])
+    answer(1)
+    expect([link.depth, link.frozen, link.maxDepth()]).toEqual([0, null, 2])
+    expect(log).toEqual(['post 1 @0.6', 'copy 1', 'applied 1 from 100', 'post 2 @0', 'copy 2', 'applied 2 from 120'])
+  })
+
+  it('ticks without a publish release the clock in order, behind the request in flight', () => {
+    const { link, log, answer } = fake()
+    link.submit(1, tickOf(1), [], true, 0)
+    link.submit(2, null, [], true, 0)
+    link.submit(3, null, [], true, 0)
+    expect(log).toEqual(['post 1 @0.6'])
+    answer(0)
+    expect(log).toEqual(['post 1 @0.6', 'copy 1', 'applied 1 from 0', 'settled', 'settled'])
+    link.submit(4, null, [], true, 0)
+    expect(log.at(-1)).toBe('settled') // nothing in flight: at once
+  })
+
+  it('a relight goes to the host in order; with no publish it releases the clock only for a tick, not for a regeneration', () => {
+    const { link, log, answer } = fake()
+    link.submit(1, null, [0, 0, 32], true, 0)
+    answer(0, false)
+    link.submit(-1, null, [0, 0, 32], false, 0)
+    answer(1, false)
+    expect(log).toEqual(['post 1 @0.6', 'copy 1 (no publish)', 'settled', 'post -1 @0.6', 'copy -1 (no publish)'])
+  })
+
+  it('a deferred publish keeps the hold (no applied) and the queue moves on', () => {
+    const { link, log, answer } = fake()
+    link.submit(1, tickOf(1), [], true, 0)
+    link.submit(2, tickOf(2), [], true, 0)
+    answer(0, false)
+    answer(1)
+    expect(log).toEqual(['post 1 @0.6', 'copy 1', 'post 2 @0.6', 'copy 2', 'applied 2 from 0'])
+  })
+
+  it('after reset, a late reply is ignored and the next tick goes out at once', () => {
+    const { link, posted, log } = fake()
+    link.submit(1, tickOf(1), [], true, 0)
+    link.reset()
+    link.receive(reply(posted[0]!, true))
+    expect(log).toEqual(['post 1 @0.6'])
+    link.submit(2, tickOf(2), [], true, 0)
+    expect(posted.map(p => p.tick)).toEqual([1, 2])
+  })
+
+  it('a queue deep enough that the sim reuses a parity buffer recovers like today: the stale publish defers, the next reads it (forced, real publisher)', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const SIZE: [number, number, number] = [64, 32, 32]
+    const pub = new WaterPublisher(w.buffers.water)
+    const ref = new SurfaceView(SIZE, w.buffers.water, () => 15, 20)
+    const mirror = new WaterMirror(SIZE, w.buffers.water)
+    const host = new WaterHost(SIZE, w.buffers.water, () => 15, 20, mirror.surfaces)
+    const posted: WaterRequest[] = [], applied: number[] = [], replies: boolean[] = []
+    const link = new WaterLink({ post: (r) => posted.push(r), copy: (r) => { replies.push(r.applied); mirror.copy(r) }, applied: (t) => applied.push(t), settled: () => {}, shown: () => 1 })
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    const step = (tick: number) => {
+      const water = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+      ref.apply(water, 1) // the reference reads every publish at once, before its buffer is reused
+      link.submit(tick, water, [], true, 0)
+      w.step()
+    }
+    // Three publishes before any reply: the third writes the first's parity buffer.
+    step(1); step(2); step(3)
+    let delivered = 0
+    const deliver = () => { while (delivered < posted.length) link.receive(host.handle(posted[delivered++]!)) }
+    deliver()
+    expect(replies.slice(0, 3)).toEqual([false, true, true]) // the reuse really happened
+    expect(applied.slice(0, 2)).toEqual([2, 3])
+    // Run on until the water settles, replying at once, then compare what is drawn.
+    for (let tick = 4; tick < 400 && w.cols.tiles.awakeCount() > 0; tick++) { step(tick); deliver() }
+    for (let tick = 400; tick < 404; tick++) { step(tick); deliver() }
+    expect(w.cols.tiles.awakeCount()).toBe(0)
+    for (let r = 0; r < 4; r++) for (let cc = 0; cc < ref.ccCount; cc++) {
+      const a = ref.column(cc, r), m = mirror.column(cc, r)
+      if (!a) continue
+      expect([r, cc, [...m!.hCur].every((v, i) => Object.is(v, a.hCur[i])), [...m!.info].every((v, i) => Object.is(v, a.info[i]))]).toEqual([r, cc, true, true])
+    }
+  }, 120_000)
+})
+```
+
+Run: `npx vitest run --root packages/engine test/waterLink.test.ts`. Expected: FAIL, because `waterLink.ts` does not exist
+yet.
+
+In the reuse test, if the water does not settle within 400 ticks, raise the bound. Do not drop the comparison.
+
+- [ ] **Step 2: `waterLink.ts`**
+
+```ts
+import type { WaterTick } from '../../sim/water/publish.ts'
+import type { WaterReply, WaterRequest } from './waterHost.ts'
+
+export interface WaterLinkHooks {
+  /** Sends a request to the host: the worker, or an in-thread host that answers through receive() at once. */
+  post(req: WaterRequest): void
+  /** Copies a reply into the main thread's mirror; `publish`: the request carried a publish (the apply cost is recorded). */
+  copy(reply: WaterReply, publish: boolean): void
+  /** A publish was applied: its step starts on screen (engine: waterTick, waterShown 0, clock hold tick + 1, lag from `arrived`). */
+  applied(tick: number, arrived: number): void
+  /** A tick without a publish came through, in order: every tile settled (engine: clock.hold(null)). */
+  settled(): void
+  /** The water alpha on screen now (engine: waterShown). */
+  shown(): number
+}
+
+interface Entry { tick: number; water: WaterTick | null; relight: number[]; settles: boolean; arrived: number }
+
+/** Depths kept for maxDepth: one per submit. */
+const DEPTH_WINDOW = 200
+
+/**
+ * The main thread's side of the water host (spec §4.1): one request in flight, the rest queued in tick order and sent right
+ * after the previous reply's copy, with the alpha on screen then (0 after an apply). No coalescing: publishes are deltas.
+ * While a publish is in flight the drawn alpha is frozen at the one it was sent with (`frozen`).
+ */
+export class WaterLink {
+  private readonly hooks: WaterLinkHooks
+  private readonly queue: Entry[] = []
+  private inFlight: (Entry & { id: number; shown: number }) | null = null
+  private nextId = 0
+  private readonly depths = new Uint16Array(DEPTH_WINDOW)
+  private depthAt = 0
+
+  constructor(hooks: WaterLinkHooks) { this.hooks = hooks }
+
+  /** Requests in flight or queued. */
+  get depth(): number { return this.queue.length + (this.inFlight ? 1 : 0) }
+
+  /** The largest depth over the last DEPTH_WINDOW submits. */
+  maxDepth(): number {
+    let m = 0
+    for (const d of this.depths) if (d > m) m = d
+    return m
+  }
+
+  /** The alpha a publish in flight was sent with, to draw until its reply; null when no publish is in flight. */
+  get frozen(): number | null { return this.inFlight !== null && this.inFlight.water !== null ? this.inFlight.shown : null }
+
+  /**
+   * A tick's publish (null: none) and the light ranges to re-read after it. `settles`: a tick, whose missing publish releases
+   * the clock; false for a regeneration's relight. `arrived`: when its message came (performance.now()).
+   */
+  submit(tick: number, water: WaterTick | null, relight: number[], settles: boolean, arrived: number): void {
+    this.queue.push({ tick, water, relight, settles, arrived })
+    this.depths[this.depthAt] = Math.min(0xffff, this.depth)
+    this.depthAt = (this.depthAt + 1) % DEPTH_WINDOW
+    if (this.inFlight === null) this.drain()
+  }
+
+  /** The host's reply; one to a request from before reset() is ignored. */
+  receive(reply: WaterReply): void {
+    const e = this.inFlight
+    if (e === null || reply.id !== e.id) return
+    this.inFlight = null
+    this.hooks.copy(reply, e.water !== null)
+    if (reply.applied) this.hooks.applied(e.tick, e.arrived)
+    else if (e.water === null && e.settles) this.hooks.settled()
+    this.drain()
+  }
+
+  /** Forgets the request in flight and the queue (the worker was lost). */
+  reset(): void {
+    this.inFlight = null
+    this.queue.length = 0
+  }
+
+  /** Sends the queue's head; entries with nothing for the host only release the clock, in order. */
+  private drain(): void {
+    while (this.inFlight === null && this.queue.length > 0) {
+      const e = this.queue.shift()!
+      if (e.water === null && e.relight.length === 0) { if (e.settles) this.hooks.settled(); continue }
+      const id = ++this.nextId, shown = this.hooks.shown()
+      this.inFlight = { ...e, id, shown }
+      this.hooks.post({ type: 'apply', id, tick: e.tick, water: e.water, shown, relight: e.relight })
+    }
+  }
+}
+```
+
+With an in-thread host, `post` calls `receive` immediately. The nested `drain` then sends the next entry before the outer
+loop resumes, and the outer loop picks up the queue as the inner one left it. The order is kept.
+
+- [ ] **Step 3: Run the tests**
+
+Run: `npx vitest run --root packages/engine test/waterLink.test.ts test/waterMirror.test.ts`. Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```powershell
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/render/water/waterLink.ts packages/engine/test/waterLink.test.ts
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "feat(water): WaterLink keeps one water request in flight and queues the rest in tick order (spec 4.1)"
+```
+
+### Task 6: `waterResync`: the next publish lists every tile
+
+**Files:**
+- Modify: `packages/engine/src/sim/water/waterSystem.ts`: add `republishAll()`.
+- Modify: `packages/engine/src/protocol.ts`: append `| { type: 'waterResync' }` to `ToSim`, with a doc comment.
+- Modify: `packages/engine/src/sim/simHost.ts`: add a `case 'waterResync'`.
+- Test: `packages/engine/test/waterResync.test.ts`
+
+**Interfaces:**
+- Produces: `WaterSystem.republishAll(): void`; `ToSim` `{ type: 'waterResync' }`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { AIR } from '../src/world/voxel.ts'
+import { B, run, w, waterSim, type Fill } from './waterHelpers.ts'
+
+/** A walled lake (x, z < 20) draining through a gap in its x = 19 wall onto open ground; 64 × 32 × 64 (16 tiles). */
+const world: Fill = (x, y, z) => {
+  if (y === 0) return B.stone
+  if (x < 20 && z < 20) {
+    if (y > 8) return AIR
+    const wall = x === 0 || z === 0 || x === 19 || z === 19
+    if (wall) return x === 19 && z === 10 && y >= 4 ? AIR : B.stone
+    return w(7)
+  }
+  return y <= 2 ? B.stone : AIR
+}
+
+describe('waterResync (4a-r2 #2, spec 4.5)', () => {
+  it('the next publish lists every tile, and the world hash stays what it would be without it', () => {
+    const a = waterSim(world, { size: [64, 32, 64] }), b = waterSim(world, { size: [64, 32, 64] })
+    run(a, 10); run(b, 10)
+    b.water.republishAll()
+    const ta = a.step().water, tb = b.step().water
+    expect(tb!.tiles.length).toBe(16)
+    expect(ta === null || ta.tiles.length < 16).toBe(true)
+    expect(b.hash()).toBe(a.hash())
+    for (let i = 0; i < 30; i++) { a.step(); b.step(); expect(b.hash()).toBe(a.hash()) }
+  })
+})
+```
+
+Run: `npx vitest run --root packages/engine test/waterResync.test.ts`. Expected: FAIL, because `republishAll` is not a
+function.
+
+- [ ] **Step 2: Implement**
+
+In `WaterSystem`, after `flush()`:
+
+```ts
+  /**
+   * The next flush publishes every tile, with its layer records, as the first publish after generation does: for a water
+   * view that starts over (a respawned water worker, 4a-r2 #2). `dirty` is publish bookkeeping, not world state (tiles.ts).
+   */
+  republishAll(): void { this.cols.tiles.dirty.fill(1) }
+```
+
+In `protocol.ts`, append to `ToSim`:
+
+```ts
+  /** Main thread: the water view starts over (its worker was respawned); the next publish lists every tile. */
+  | { type: 'waterResync' }
+```
+
+In `SimHost.handle`, after `case 'setPaused'`:
+
+```ts
+      case 'waterResync':
+        this.sim?.water.republishAll()
+        return
+```
+
+- [ ] **Step 3: Run the test, the engine suite and the typecheck**
+
+Run each with its output redirected to a file:
+- `npx vitest run --root packages/engine test/waterResync.test.ts`
+- `npm run test -w @elovox/engine`
+- `npm run typecheck`
+
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```powershell
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/sim/water/waterSystem.ts packages/engine/src/protocol.ts packages/engine/src/sim/simHost.ts packages/engine/test/waterResync.test.ts
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "feat(sim): waterResync makes the next water publish list every tile"
+```
+
+### Task 7: The water worker in the engine
+
+**Files:**
+- Create: `packages/engine/src/render/water/water.worker.ts`
+- Modify: `packages/engine/src/render/water/waterSurface.ts`, `ripples.ts`, `render/visuals.ts`. Type-only: `SurfaceView` becomes `SurfaceSource`.
+- Modify: `packages/engine/src/engine.ts` (the water path, the options and the stats) and `apps/sandbox/src/main.ts` (one line).
+- Test: the existing suites, plus `apps/sandbox/e2e/water-worker.spec.ts` (create).
+
+**Interfaces:**
+- Consumes: Tasks 4–6.
+- Produces:
+  - `EngineOptions.waterWorker?: boolean` (default true);
+  - `EngineStats` fields `waterHostMs`, `waterHostP95`, `waterLagMs`, `waterLagP95`, `waterQueue`, `waterQueueMax`, `waterInWorker`;
+  - a debug-only test hook `__elovoxWaterCrash` (Step 3).
+
+- [ ] **Step 1: The worker shell**
+
+```ts
+import type { WorldBuffers } from '../../world/buffers.ts'
+import { WorldReader } from '../../world/reader.ts'
+import type { DrawnSurfaces } from './surfaceView.ts'
+import { WaterHost, type WaterRequest } from './waterHost.ts'
+
+/** Main thread → water worker. `opaque`: the registry's opaque table, for the light reader. */
+export type ToWater =
+  | { type: 'init'; buffers: WorldBuffers; opaque: Uint8Array; pages: SharedArrayBuffer[]; stepHz: number; surfaces: DrawnSurfaces }
+  | { type: 'page'; index: number; page: SharedArrayBuffer }
+  | WaterRequest
+
+interface WorkerScope {
+  postMessage(message: unknown, transfer?: Transferable[]): void
+  onmessage: ((e: MessageEvent<ToWater>) => void) | null
+}
+const scope = globalThis as unknown as WorkerScope
+let reader: WorldReader | null = null
+let host: WaterHost | null = null
+
+scope.onmessage = (e) => {
+  const m = e.data
+  if (m.type === 'init') {
+    const r = new WorldReader(m.buffers, m.opaque)
+    m.pages.forEach((p, i) => r.addPage(i, p))
+    reader = r
+    host = new WaterHost(m.buffers.size, m.buffers.water, (x, y, z) => r.getLight(x, y, z), m.stepHz, m.surfaces)
+    return
+  }
+  if (m.type === 'page') { reader?.addPage(m.index, m.page); return }
+  // An exception here reaches the main thread as the worker's error event: the engine respawns once (spec 4.5).
+  const reply = host!.handle(m)
+  scope.postMessage(reply, [reply.keys.buffer, reply.data.buffer])
+}
+```
+
+- [ ] **Step 2: Retype the consumers**
+
+- `waterSurface.ts`: use `import type { ColumnData } from './surfaceView.ts'` and `import type { SurfaceSource } from './waterMirror.ts'`,
+  and type `view` as `SurfaceSource` in the field and the constructor. Nothing else changes there; lod's visibility hunk
+  lands beside it at merge.
+- `ripples.ts`: `waterLineSurface(view: Pick<SurfaceSource, 'surfaceNear'>, …)`, and the same in `atWaterLine` and
+  `editRipples`. Replace the import.
+- `visuals.ts`: `water: SurfaceSource` in `VisualsOptions`, imported from `./water/waterMirror.ts`.
+
+- [ ] **Step 3: Engine wiring (water path only)**
+
+**`EngineOptions`.** Append:
+
+```ts
+  /**
+   * Apply the water publishes in a dedicated worker (4a-r2 #2): the main thread only copies changed rows. False: the same
+   * host runs in-thread, the A of the A/B. Default true.
+   */
+  waterWorker?: boolean
+```
+
+**`EngineStats`.** Change the doc comment on `waterApplyMs; waterApplyP95` to: "Main-thread cost (ms) of a water publish:
+the copy of the host's reply, plus the host's own cost when it runs in-thread. The last one and the p95 of the last 200."
+Then append:
+
+```ts
+  /** The water host's cost (ms) per request (apply + relights + packing), in the worker or in-thread: last and p95. */
+  waterHostMs: number; waterHostP95: number
+  /** From a tick message's arrival to the first frame that draws its water step (ms), queue wait included: last and p95. */
+  waterLagMs: number; waterLagP95: number
+  /** Water requests in flight or queued, now and the most over the last 200 ticks. */
+  waterQueue: number; waterQueueMax: number
+  /** Whether the water host runs in a worker (EngineOptions.waterWorker). */
+  waterInWorker: boolean
+```
+
+**The mirror and the relight ranges.** Replace `const waterView = new SurfaceView(…)` and `relightWater` with:
+
+```ts
+  // The water's draw data: copied from a WaterHost, in a worker or in-thread (4a-r2 #2).
+  const waterMirror = new WaterMirror(size, buffers.water)
+  const inWorker = o.waterWorker ?? true
+  /** Per chunk column, the layers [lo, hi) of the dirty chunks in it (relightRanges' scratch). */
+  const relightRange = new Map<number, [number, number]>()
+  /** The light ranges [cc, y0, y1]* where the sim changed voxel light (dirty chunks): still water is not republished. */
+  const relightRanges = (chunks: readonly number[]): number[] => {
+    if (chunks.length === 0) return []
+    for (const ci of chunks) {
+      const [cx, cy, cz] = layout.chunkCoords(ci)
+      const cc = cx + cz * waterMirror.cx, r = relightRange.get(cc)
+      if (r) { r[0] = Math.min(r[0], cy * 32); r[1] = Math.max(r[1], cy * 32 + 32) } else relightRange.set(cc, [cy * 32, cy * 32 + 32])
+    }
+    const out: number[] = []
+    for (const [cc, [lo, hi]] of relightRange) out.push(cc, lo, hi)
+    relightRange.clear()
+    return out
+  }
+```
+
+**The host, the link and the meters.** Keep `waterTick` and `waterShown`, and add the following after them. The line
+`const waterApply = new CostMeter(200)` moves up here from the sim section.
+
+```ts
+  const waterApply = new CostMeter(200), waterHostCost = new CostMeter(200), waterLag = new CostMeter(200)
+  /** The arrival time of the publish whose step the next frame draws first (waterLag), or null. */
+  let lagFrom: number | null = null
+  /** The in-thread host (waterWorker false); otherwise the worker and its crash count. */
+  const localHost = inWorker ? null : new WaterHost(size, buffers.water, (x, y, z) => reader.getLight(x, y, z), 1000 / tickMs, waterMirror.surfaces)
+  let waterWorker: Worker | null = null, waterCrashes = 0
+  const waterLink: WaterLink = new WaterLink({
+    post: (req) => {
+      if (localHost) waterLink.receive(localHost.handle(req))
+      else waterWorker?.postMessage(req)
+    },
+    copy: (reply, publish) => {
+      const t0 = performance.now()
+      waterMirror.copy(reply)
+      waterHostCost.record(reply.hostMs)
+      if (publish) waterApply.record(performance.now() - t0 + (localHost ? reply.hostMs : 0))
+    },
+    applied: (tick, arrived) => { waterTick = tick; waterShown = 0; clock.hold(waterMirror, tick + 1); lagFrom = arrived },
+    settled: () => clock.hold(waterMirror, null), // every tile settled (prev = cur): nothing to time
+    shown: () => waterShown,
+  })
+```
+
+**Visuals.** Replace `water: waterView` with `water: waterMirror`.
+
+**The worker.** After `for (let i = 0; i < poolSize; i++) spawn(i, 0)`, add:
+
+```ts
+  // ---- water worker (4a-r2 #2) ----
+  const spawnWater = (): Worker => {
+    const worker = new Worker(new URL('./render/water/water.worker.ts', import.meta.url), { type: 'module' })
+    const lost = (reason: string) => {
+      worker.terminate()
+      if (halted || waterWorker !== worker) return
+      // One respawn: the new view starts empty and the sim republishes every tile (spec 4.5). A second loss is fatal.
+      if (++waterCrashes >= 2) { fail(`water worker crashed twice: ${reason}`); return }
+      console.error(`[elovox] water worker lost (${reason}); restarting it`)
+      waterLink.reset()
+      waterMirror.reset()
+      waterWorker = spawnWater()
+      sim.postMessage({ type: 'waterResync' } satisfies ToSim)
+    }
+    worker.onmessage = (e: MessageEvent<WaterReply>) => { if (waterWorker === worker) waterLink.receive(e.data) }
+    worker.onerror = (e) => { e.preventDefault(); lost(e.message || 'the worker failed to load or crashed') }
+    worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
+    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, pages: [...pages], stepHz: 1000 / tickMs, surfaces: waterMirror.surfaces } satisfies ToWater)
+    return worker
+  }
+  if (inWorker) waterWorker = spawnWater()
+```
+
+**`halt()`.** After `sim.terminate()`, add `waterWorker?.terminate()`.
+
+**Sim `onmessage`.**
+- `case 'page'`: after the mesh workers' loop, add
+  `waterWorker?.postMessage({ type: 'page', index: m.index, page: m.page } satisfies ToWater)`.
+- `case 'tick'`: replace the block `if (m.water) { … } else clock.hold(waterView, null)` and the `relightWater(m.dirtyChunks)`
+  line that follows it with
+  `waterLink.submit(m.tick, m.water, relightRanges(m.dirtyChunks), true, performance.now())`.
+- `case 'regenerated'`: replace `relightWater(m.dirtyChunks)` with:
+
+```ts
+        { const ranges = relightRanges(m.dirtyChunks); if (ranges.length > 0) waterLink.submit(-1, null, ranges, false, performance.now()) }
+```
+
+**Frame loop.** Replace `waterShown = waterTick === null ? 1 : stepAlpha(clock.due, waterTick)` with:
+
+```ts
+    // A publish in the host is drawn at the alpha it was sent with until its copy (spec 4.1: freeze, not carry).
+    waterShown = waterLink.frozen ?? (waterTick === null ? 1 : stepAlpha(clock.due, waterTick))
+    if (lagFrom !== null) { waterLag.record(now - lagFrom); lagFrom = null }
+```
+
+**`stats()`.** After `waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),` add:
+
+```ts
+        waterHostMs: waterHostCost.last, waterHostP95: waterHostCost.p95(), waterLagMs: waterLag.last, waterLagP95: waterLag.p95(),
+        waterQueue: waterLink.depth, waterQueueMax: waterLink.maxDepth(), waterInWorker: inWorker,
+```
+
+**Imports.** Add:
+- `WaterMirror` from `./render/water/waterMirror.ts`;
+- `WaterHost` and `type WaterReply` from `./render/water/waterHost.ts`;
+- `WaterLink` from `./render/water/waterLink.ts`;
+- `type ToWater` from `./render/water/water.worker.ts`.
+
+Drop the `SurfaceView` import if it is no longer used.
+
+**Debug crash hook.** When the page URL has `?debug`, expose
+`(globalThis as { __elovoxWaterCrash?: () => void }).__elovoxWaterCrash = () => waterWorker?.dispatchEvent(new ErrorEvent('error', { message: 'test crash' }))`.
+This runs the same `lost` path as a real crash. If the engine or `main.ts` already has a debug-flag convention, follow it
+instead of adding a new one.
+
+**Sandbox.** In `apps/sandbox/src/main.ts`, add next to `batchChunks: !params.has('nobatch'),`:
+
+```ts
+    // ?nowaterworker: the water host runs on the main thread (the before of 4a-r2 #2's A/B).
+    waterWorker: !params.has('nowaterworker'),
+```
+
+- [ ] **Step 4: e2e for the worker path**
+
+`apps/sandbox/e2e/water-worker.spec.ts` (always runs, no timing):
+1. Load `/?scene=flood&debug` and wait for ready. Break the dam as `flood.spec.ts` does. Check:
+   - `stats().waterInWorker === true`
+   - `waterQueue <= 3`, `waterLagP95 > 0`, `waterHostP95 > 0`
+2. Call `__elovoxWaterCrash()` and wait 2 s. Check:
+   - `waterColumns > 0`, and `waterApplyP95` keeps updating, so the respawned worker works;
+   - exactly one `[elovox] water worker lost` console error, and no other errors.
+3. Call `__elovoxWaterCrash()` again and wait for the `fatal` event: the second crash is fatal.
+4. In a fresh page, load `/?scene=flood&nowaterworker` and break the dam. Check `waterInWorker === false` and that
+   `waterColumns` grows (the water flows).
+5. Call `engine.dispose()` while the dam runs, and check there are no console errors.
+
+- [ ] **Step 5: Full verification**
+
+Run each with its output redirected to a file, then read the file:
+- `npm run test -w @elovox/engine`
+- `npm run test -w @elovox/sandbox`
+- `npm run typecheck`
+- from `apps/sandbox`:
+  `E2E_PORT=5184 E2E_CHANNEL=msedge npx playwright test e2e/water-worker.spec.ts e2e/water-render.spec.ts e2e/flood.spec.ts e2e/caves.spec.ts e2e/living.spec.ts e2e/smoke.spec.ts e2e/batching.spec.ts --workers=1`
+
+Expected: all pass. `water-render.spec.ts`'s `waterApplyP95 > 0` still holds, because the copy has a cost.
+
+- [ ] **Step 6: Commit**
+
+```powershell
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add packages/engine/src/render/water/water.worker.ts packages/engine/src/render/water/waterSurface.ts packages/engine/src/render/water/ripples.ts packages/engine/src/render/visuals.ts packages/engine/src/engine.ts apps/sandbox/src/main.ts apps/sandbox/e2e/water-worker.spec.ts
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "perf(water): water publishes applied in a dedicated worker; the main thread copies changed rows (?nowaterworker: in-thread)"
+```
+
+### Task 8: Measure in a quiet window: A/B (lag, backlog, clip), anatomy, gate (also re-runs #5's gate)
+
+**Files:**
+- Create: `apps/sandbox/e2e/water-ab.spec.ts`; `apps/sandbox/e2e/living-anatomy.spec.ts`, promoted from
+  `anatomy.scratch.spec.ts` (delete the scratch file); `apps/sandbox/bench/anatomy.node.mjs`, from the scratchpad's
+  `anatomy.mjs`.
+- Create (in the window): `docs/superpowers/research/2026-10-08-living-r2-water-ab.json`,
+  `docs/superpowers/research/2026-10-08-living-r2-anatomy-after-2.json`, `docs/superpowers/research/2026-10-08-living-r2-after-2.json`.
+- Modify: this plan (results).
+
+- [ ] **Step 1: `water-ab.spec.ts`** (skipped unless `BENCH_WATER_AB=1`)
+
+- **Builds compared.** A = `?scene=living&gpu&nowaterworker`, B = `?scene=living&gpu`.
+- **Order.** ABBA, then BABA. Each page runs in a fresh browser context. Runs 1 and 2 also record video
+  (`recordVideo: { dir: 'test-results/water-ab-video' }`).
+- **Per page:** wait for ready, wait 10 s, `settle`. Then three windows:
+  - `work-far`, 15 s: startWork 1 s in, far camera;
+  - `dam`, 20 s: breach 1 s in, dam camera;
+  - `collapse`, 15 s: collapse 1 s in, tower camera.
+- **Per window it records:**
+  - fps p5 from rAF intervals, and CPU frame median;
+  - main apply p95: `waterApplyMs` sampled on each `tick` event;
+  - host p95: `waterHostMs`, sampled the same way;
+  - lag p50/p95: `waterLagMs` sampled per tick, in ms, in frames at 180 Hz (`/ (1000/180)`) and at 60 Hz (`/ (1000/60)`);
+  - `waterQueueMax` at the end;
+  - mesh backlog: mean and p95 of `meshQueue + meshInFlight` per frame.
+- **Output:** `process.env.WATER_AB_OUT`, as `{ date, order, runs: { run, build, windows: {...} }[] }`.
+
+- [ ] **Step 2: Promote the anatomy tool**
+
+- Move the scratch spec to `e2e/living-anatomy.spec.ts` unchanged, except for its header comment: "Per-frame anatomy of the
+  living scene (4a-r2): which frames are long and what the main thread did in them. `ANATOMY=1`; `ANATOMY_QUERY` appends to
+  the URL; `ANATOMY_OUT` sets the file."
+- Copy the summary script to `bench/anatomy.node.mjs`.
+
+Commit them together with `water-ab.spec.ts`:
+
+```powershell
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf add apps/sandbox/e2e/water-ab.spec.ts apps/sandbox/e2e/living-anatomy.spec.ts apps/sandbox/bench/anatomy.node.mjs
+git -C C:\Users\pedro\Desktop\Projetos\voxel-engine\.claude\worktrees\perf commit -m "test(sandbox): water worker A/B (lag, host cost, mesh backlog, clips) and the living frame anatomy"
+```
+
+- [ ] **Step 3: Request the window**
+
+Run `npm run build` in `apps/sandbox` first. Then send:
+`WINDOW REQUEST: #2 water A/B (ABBA+BABA, ~12 min) + anatomy after #2 (~3 min) + living gate (2 runs, ~6 min), ~25 min`.
+
+In the window:
+1. Record free RAM and `Get-Process cs2,HogwartsLegacy,steam`.
+2. Run the A/B with `BENCH_WATER_AB=1 WATER_AB_OUT=../../docs/superpowers/research/2026-10-08-living-r2-water-ab.json`.
+3. Run the anatomy with `ANATOMY=1 ANATOMY_OUT=../../docs/superpowers/research/2026-10-08-living-r2-anatomy-after-2.json`.
+4. Run the gate with `LIVING_BENCH_OUT=../../docs/superpowers/research/2026-10-08-living-r2-after-2.json`. This also
+   re-runs the gate for #5, since the earlier one was provisional.
+5. Copy the two videos out of `test-results` before anything else runs.
+6. Record free RAM and the heavy apps again, then send DONE.
+
+- [ ] **Step 4: Decide**
+
+- **Revert or keep Task 7.** Revert it if B's main apply p95 and fps p5 do not beat A's in every adjacent pair of dam and
+  collapse.
+- **Mesh backlog.** If B's mean backlog in dam or collapse is more than 20% above A's, set the pool to
+  `min(6, hardwareConcurrency − 3)` when the water worker is on, then repeat the A/B and tell the expert.
+- **Lag.** Send the expert the lag p50/p95, in frames at 180 Hz and 60 Hz, plus the two clips, for the checkpoint
+  decision.
+
+- [ ] **Step 5: Results and commit**
+
+Append a "Results: #2" section to this plan with:
+- the A/B table: per run and window, CPU median, fps p5, main apply p95, host p95, lag p50/p95, queue max, backlog;
+- the anatomy summary: long frames with and without an apply;
+- the gate against the baseline: per phase, fps p5, CPU median, tick p95, apply p95;
+- the heavy apps running at start and end.
+
+Commit the three JSONs and the plan, naming Task 7's SHA and its numbers.
+
+---
+
+# Part 3 (after #2): back to the tick
+
+Per the expert's decision, in order:
+1. **#5 step 2:** publish's dense loop and flush's mirror loop.
+2. **#5 step 3:** the water step's hot loops, behind a second golden hash on column state.
+
+Each step is planned here, as Tasks 9+, once #2's results are in.
