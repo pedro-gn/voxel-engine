@@ -123,14 +123,17 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
     const mine = wt.orders.filter(o => orderIds.has(o.id))
     if (ordersDoneAt === null && mine.length && mine.every(o => o.cancelled || o.done === o.total)) ordersDoneAt = t
   }
-  const latency = [...first].filter(([id]) => ordered.has(id)).map(([, t]) => t)
+  // Over every ordered unit: a unit that never walked counts as Infinity, so a percentile landing on it reports null.
+  const latency = moved.map(id => first.get(id) ?? Infinity), started = latency.filter(Number.isFinite).length
+  const arrival = moved.map(id => arrived.get(id) ?? Infinity)
+  const finite = (n: number | null) => n === null || !Number.isFinite(n) ? null : n
   const work = last.workers!.orders.filter(o => orderIds.has(o.id))
   return {
     tickMs: { p50: r3(q(ms, .5)), p95: r3(q(ms, .95)), p99: r3(q(ms, .99)), max: r3(Math.max(...ms)) },
     workersMs: { p50: r3(q(share, .5)), p95: r3(q(share, .95)), p99: r3(q(share, .99)), max: r3(Math.max(...share)) },
     ...(moved.length > 0 && {
-      firstActionTicks: { p50: q(latency, .5), p95: q(latency, .95), started: latency.length, ordered: moved.length },
-      arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null },
+      firstActionTicks: { p50: finite(q(latency, .5)), p95: finite(q(latency, .95)), started, ordered: moved.length },
+      arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null },
     }),
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
