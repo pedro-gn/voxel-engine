@@ -1,0 +1,72 @@
+{
+  "a": "main 90e5c97 bundle",
+  "b": "branch c41f0ec bundle",
+  "maxShare": 0.005,
+  "rows": [
+    {
+      "shot": "terrain-ground-horizon",
+      "share": 0,
+      "differing": 0,
+      "sameCamera": true,
+      "errorsA": 129,
+      "errorsB": []
+    },
+    {
+      "shot": "terrain-orbit-default",
+      "share": 0.000006510416666666667,
+      "differing": 6,
+      "sameCamera": true,
+      "errorsA": 73,
+      "errorsB": []
+    },
+    {
+      "shot": "terrain-orbit-far-low",
+      "share": 0.0000054253472222222224,
+      "differing": 5,
+      "sameCamera": true,
+      "errorsA": 188,
+      "errorsB": []
+    },
+    {
+      "shot": "terrain-orbit-far",
+      "share": 0.000002170138888888889,
+      "differing": 2,
+      "sameCamera": true,
+      "errorsA": 191,
+      "errorsB": []
+    },
+    {
+      "shot": "world-ground-horizon",
+      "share": 0,
+      "differing": 0,
+      "sameCamera": true,
+      "errorsA": 67,
+      "errorsB": []
+    },
+    {
+      "shot": "world-orbit-default",
+      "share": 0.00003146701388888889,
+      "differing": 29,
+      "sameCamera": true,
+      "errorsA": 38,
+      "errorsB": []
+    },
+    {
+      "shot": "world-orbit-far-low",
+      "share": 0.000004340277777777778,
+      "differing": 4,
+      "sameCamera": true,
+      "errorsA": 103,
+      "errorsB": []
+    },
+    {
+      "shot": "world-orbit-far",
+      "share": 0.0000032552083333333335,
+      "differing": 3,
+      "sameCamera": true,
+      "errorsA": 105,
+      "errorsB": []
+    }
+  ],
+  "method": "e2e/compare-shots.spec.ts: view-bench poses, 1024² world and terrain, ?still, decorations off, clouds frozen, water hidden, HUD hidden, 1280x720, WebGPU (Edge), channel tolerance 8"
+}
