@@ -370,19 +370,26 @@ export class WaterSystem {
     if (!this.needsRebuild) this.spreadDisplaced()
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
-    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under
+    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, mq = mirror.q, mlo = mirror.lo
+    // The mirror writes are quiet (setQuiet): nothing below grows the lower segments, so their arrays hold for the whole loop.
+    const U = this.under, first = U.first, next = U.next, uFloor = U.floor, uCeil = U.ceil, uDepth = U.depth, uLo = U.mirrorLo, uQ = U.mirrorQ
+    const water = this.water, kind = this.kind, height = this.height, get = this.get, set = this.set
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
       T.dirty[t] = 0
       out.push(t)
       const x0 = (t % T.tx) * TILE, z0 = Math.floor(t / T.tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
-        const f = floor[c]!, d = depth[c]!, q = mirror.q[c]!
-        // Most moving surfaces still occupy the same eighth of a voxel. Avoid the full mirror call for those columns.
-        if (q < 0 || mirror.lo[c] !== f || q !== (d > 0 ? quantize(f * SUB + d) : f * 8)) {
-          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set)
+        const f = floor[c]!, d = depth[c]!, q = mq[c]!
+        // Most moving surfaces still occupy the same eighth of a voxel. Avoid the full mirror call for those columns, and
+        // for lower segments by the same test (mirrorRun's own early return).
+        if (q < 0 || mlo[c] !== f || q !== (d > 0 ? quantize(f * SUB + d) : f * 8)) {
+          mirror.flush(c, x, z, f, d, water, kind, height, get, set)
         }
-        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set)
+        for (let i = first[c]!; i >= 0; i = next[i]!) {
+          const uf = uFloor[i]!, ud = uDepth[i]!, uq = uQ[i]!
+          if (uq < 0 || uLo[i] !== uf || uq !== (ud > 0 ? quantize(uf * SUB + ud) : uf * 8)) mirrorRun(uLo, uQ, i, x, z, uf, uCeil[i]!, ud, water, kind, get, set)
+        }
       }
     }
     this.published = this.publisher.publish(out, cols, { under: this.under, edges: this.edges, height: this.height })
