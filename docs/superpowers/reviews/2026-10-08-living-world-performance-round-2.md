@@ -25,8 +25,13 @@ worker's 50 ms budget, and since #2 the tick no longer runs on the main thread. 
   spawns a water worker that runs `SurfaceView` on the sim's publishes:
   - **The main thread.** It only copies the rows that changed into a `SurfaceMirror`, which answers surface queries
     synchronously, bit-identical to an in-thread view.
-  - **Publishes in flight.** `WaterLink` keeps one publish in flight and queues the rest in tick order, with no
-    coalescing (spec §4.1).
+  - **Publishes in flight.** `WaterLink` keeps one request in flight. Behind it, every queued tick goes out as one
+    batch after its copy, in tick order, with no coalescing (spec §4.1, amended in `29fafa0`).
+  - **Stale reads.** The worker's last publish of a batch catches up from the newest complete buffer when its own was
+    reused (`abfede1` and `504cc10`): the read is seqlock-validated and the tops never step back.
+  - **How these fixes were found.** The final headless e2e (SwiftShader, ~1.5 fps) caught two defects of the
+    one-tick-per-round-trip design: an unbounded queue, and a worker that only ever read stale buffers and never drew
+    a sleeping lake. The sanity A/B (`research/…-water-fix-ab.json`) shows no change on a healthy main thread.
   - **Crashes.** A crash respawns the worker once, and the sim republishes every tile (`waterResync`). A second crash is
     fatal.
   - **The before side.** `?nowaterworker` keeps the in-thread host in the same build.
@@ -105,6 +110,16 @@ tick p95 ≤ 15 (re-scoped) and apply p95 ≤ 4.
   - With video recording loading the CPU: the queue reaches 3 and lag p95 72 ms (dam) / 120 ms (collapse), 4–7 frames
     at 60 Hz. The in-thread host never queues.
   - Clips: the water-ab runs 1 (A) and 2 (B), recorded 2026-10-09 (worker scratchpad, path given to the expert).
+- **The water worker on a very slow main thread** (degraded mode; spec §4.1).
+  - **When it applies.** When the main thread makes fewer turns per second than the sim ticks (headless SwiftShader,
+    very weak machines), the worker reads every publish stale and catches up.
+  - **What it looks like.** In a catch-up the tops are read as of the newest publish, while the lower layers' records
+    still arrive with the tick messages. So the lower layers trail the tops until the later ticks come in. The lag then
+    scales with the frame time: 9.5 s at 0.1 fps headless.
+  - **The clean fix, not started.** Route publishes from the sim straight to the water worker over a MessageChannel, so
+    the data path leaves the main thread; the main thread would send only its alpha.
+- **`collapse.spec.ts` fails at main `90e5c97` too.** Both tests time out with "collapse checks 0", headless. It is
+  pre-existing, for main.
 - **Edge frame pacing on 2026-10-09.** In both builds alike, frames alternated one and two vsyncs about 50/50, even when
   idle. That is ~120 fps, against ~170 at the 2026-10-08 baseline.
   - fps p5 against 60 keeps its meaning: no frame longer than three vsyncs.

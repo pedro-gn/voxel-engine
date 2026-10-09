@@ -1986,3 +1986,59 @@ five items) on one port via `E2E_PREVIEW_DIR`, ABBA, using the living-anatomy sp
   Neither (i) nor (ii) is started.
 - **The user's answer, 2026-10-09: (iii).** The tick target is now p95 ≤ 15 ms, with 10 ms as a stretch goal. The gate
   above passes every phase under it.
+
+## Results: #2 fix: the batched link and the worker's catch-up read
+
+**Found by the final e2e (2026-10-09).** Headless Chromium draws on SwiftShader at ~1.5 fps, and three water e2e failed
+there with the worker: water-render's flood, caves' canal and water-worker's respawn. In-thread passed. Two defects lay
+behind it:
+1. **One tick per round trip.** `WaterLink` sent one tick per round trip, so below ~20 main-thread turns per second the
+   queue grew without bound: +18/s, 3845 after 3.5 min.
+2. **Stale reads.** Every publish reached the worker one main-thread turn after the sim had reused its parity. All of
+   them deferred, so the sleeping lake listed only in the first publish was never drawn. Worker logs: request 1 (seq 1)
+   met stamps already at 7/8.
+
+**Fixes** (expert rulings A, A):
+- `29fafa0`: the queue goes to the host as one batch.
+- `abfede1`, narrowed in `504cc10`: the worker's last publish of a batch catches up from the newest complete parity.
+  The read is seqlock-validated, and a later tick never reads an older buffer than the last one read.
+  - Earlier stale entries, and the in-thread host, defer as before.
+  - The first version let every stale tick catch up, and the in-thread path spiralled at low fps: one full apply per
+    stale tick.
+- Spec §4.1 amended in `894055f` and `ba0e678`.
+- Tests:
+  - batch order and settles;
+  - the union of rows against the in-thread view;
+  - a lost worker with a batch in flight;
+  - catch-up equal to the prompt view: tops at S, then every rank;
+  - torn and not-newer reads defer;
+  - the healthy path and the in-thread host never catch up.
+
+  Mutations of each check fail them.
+- The water-worker e2e's `waterQueue <= 1` wait is dropped. Under SwiftShader the ticks per round trip scale with
+  1–10 s frames; `waterLink.test.ts` pins the bound instead.
+
+**Sanity A/B** (`research/2026-10-08-living-r2-water-fix-ab.json`): headed Edge, prod builds, worker path in both, ABBA.
+A = `41d0a16`, before the fixes; B = `ba0e678`. 2026-10-09, 17:17–17:22, 18.4–18.7 GB free, steam only.
+
+| Run | Build | dam apply p95 | dam lag p50 / p95 | collapse apply p95 | collapse lag p50 / p95 | queue max | fps p5 |
+|---|---|---|---|---|---|---|---|
+| 1 | A | 0.57 | 18.4 / 26.4 | 0.70 | 23.5 / 31.7 | 1 | 89.9 |
+| 2 | B | 0.56 | 19.1 / 27.6 | 0.67 | 23.6 / 33.8 | 1 | 89.8 |
+| 3 | B | 0.55 | 18.7 / 27.6 | 0.70 | 23.0 / 30.6 | 2 | 89.9 |
+| 4 | A | 0.55 | 19.0 / 26.6 | 0.65 | 23.6 / 30.6 | 1 | 89.9 |
+
+- **Verdict: no regression beyond noise.**
+  - Apply p95 is equal.
+  - Lag p95 in dam is +1 ms (26.4–26.6 → 27.6), under one frame at 179 Hz; collapse overlaps (30.6–31.7 against
+    30.6–33.8).
+  - The queue stays at 1–2, and no page logged an error.
+- On a healthy main thread the batch is the old single request, and the catch-up never runs.
+
+**e2e at `504cc10`** (headless, port 5184): 20 passed, plus 1 existing skip:
+- water-worker 3/3, water-render 2/2, caves 2/2;
+- flood 3, plus its existing skip;
+- living, smoke 7/7.
+
+`collapse.spec.ts` fails both tests at main `90e5c97` too ("collapse checks 0"). It is pre-existing, an open item for
+main.
