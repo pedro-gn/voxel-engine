@@ -1,0 +1,764 @@
+{
+  "date": "2026-10-09T11:11:46.857Z",
+  "order": "toot",
+  "variants": {
+    "three": {
+      "dist": "C:/Users/pedro/AppData/Local/Temp/claude/C--Users-pedro-Desktop-Projetos-voxel-engine/1797a91b-bf9b-4f33-91bd-6ff03649229d/scratchpad/ab/head",
+      "query": "cull=three",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2"
+    },
+    "ours": {
+      "dist": "C:/Users/pedro/AppData/Local/Temp/claude/C--Users-pedro-Desktop-Projetos-voxel-engine/1797a91b-bf9b-4f33-91bd-6ff03649229d/scratchpad/ab/head",
+      "query": "",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2"
+    }
+  },
+  "runs": [
+    {
+      "variant": "three",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "world",
+      "date": "2026-10-09T11:05:45.073Z",
+      "query": "scene=world&size=1024&gpu&cull=three",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 229,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 0
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "deco": {
+              "all": 136,
+              "visible": 136
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 959,
+          "fpsMedian": 170.5,
+          "fpsP5": 89.65,
+          "cpuMedian": 2.06,
+          "cpuP95": 4.15,
+          "gpuMs": 1.474304,
+          "draws": 798,
+          "triangles": 2268379
+        },
+        "orbit-far": {
+          "frames": 959,
+          "fpsMedian": 175.9,
+          "fpsP5": 89.69,
+          "cpuMedian": 3.38,
+          "cpuP95": 5.85,
+          "gpuMs": 1.6173119999999999,
+          "draws": 3804,
+          "triangles": 3163707
+        },
+        "orbit-far-low": {
+          "frames": 959,
+          "fpsMedian": 162.07,
+          "fpsP5": 89.65,
+          "cpuMedian": 3.23,
+          "cpuP95": 5.47,
+          "gpuMs": 1.4517120000000001,
+          "draws": 3895,
+          "triangles": 2897499
+        },
+        "ground-horizon": {
+          "frames": 959,
+          "fpsMedian": 170.07,
+          "fpsP5": 89.81,
+          "cpuMedian": 3.19,
+          "cpuP95": 5.21,
+          "gpuMs": 1.391008,
+          "draws": 2343,
+          "triangles": 2778499
+        }
+      }
+    },
+    {
+      "variant": "three",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "terrain",
+      "date": "2026-10-09T11:06:39.448Z",
+      "query": "scene=terrain&size=1024&gpu&cull=three",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 477,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 0
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "batch:chunks-cutout-region": {
+              "all": 52,
+              "visible": 52
+            },
+            "deco": {
+              "all": 50,
+              "visible": 50
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "water": {
+              "all": 282,
+              "visible": 142
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 959,
+          "fpsMedian": 175.75,
+          "fpsP5": 89.73,
+          "cpuMedian": 3.7,
+          "cpuP95": 5.8,
+          "gpuMs": 1.337984,
+          "draws": 881,
+          "triangles": 1943245
+        },
+        "orbit-far": {
+          "frames": 931,
+          "fpsMedian": 177.62,
+          "fpsP5": 89.45,
+          "cpuMedian": 6.93,
+          "cpuP95": 10.77,
+          "gpuMs": 1.618208,
+          "draws": 4334,
+          "triangles": 2799621
+        },
+        "orbit-far-low": {
+          "frames": 915,
+          "fpsMedian": 90.7,
+          "fpsP5": 88.85,
+          "cpuMedian": 7.15,
+          "cpuP95": 11.35,
+          "gpuMs": 1.662144,
+          "draws": 4589,
+          "triangles": 2753403
+        },
+        "ground-horizon": {
+          "frames": 955,
+          "fpsMedian": 176.52,
+          "fpsP5": 89.25,
+          "cpuMedian": 6.07,
+          "cpuP95": 8.4,
+          "gpuMs": 1.266976,
+          "draws": 2795,
+          "triangles": 2442667
+        }
+      }
+    },
+    {
+      "variant": "ours",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "world",
+      "date": "2026-10-09T11:07:27.727Z",
+      "query": "scene=world&size=1024&gpu",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 230,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 1
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "deco": {
+              "all": 137,
+              "visible": 137
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 982,
+          "fpsMedian": 179.37,
+          "fpsP5": 89.65,
+          "cpuMedian": 1.57,
+          "cpuP95": 3.02,
+          "gpuMs": 1.3970879999999999,
+          "draws": 799,
+          "triangles": 2268379
+        },
+        "orbit-far": {
+          "frames": 960,
+          "fpsMedian": 154.8,
+          "fpsP5": 89.73,
+          "cpuMedian": 2.4,
+          "cpuP95": 4.14,
+          "gpuMs": 1.8697599999999999,
+          "draws": 3805,
+          "triangles": 3163707
+        },
+        "orbit-far-low": {
+          "frames": 959,
+          "fpsMedian": 175.59,
+          "fpsP5": 89.69,
+          "cpuMedian": 2.25,
+          "cpuP95": 4.3,
+          "gpuMs": 1.453024,
+          "draws": 3896,
+          "triangles": 2897499
+        },
+        "ground-horizon": {
+          "frames": 959,
+          "fpsMedian": 101.73,
+          "fpsP5": 89.57,
+          "cpuMedian": 2.2,
+          "cpuP95": 3.82,
+          "gpuMs": 1.3445440000000002,
+          "draws": 2344,
+          "triangles": 2778499
+        }
+      }
+    },
+    {
+      "variant": "ours",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "terrain",
+      "date": "2026-10-09T11:08:21.532Z",
+      "query": "scene=terrain&size=1024&gpu",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 477,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 0
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "batch:chunks-cutout-region": {
+              "all": 52,
+              "visible": 52
+            },
+            "deco": {
+              "all": 50,
+              "visible": 50
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "water": {
+              "all": 282,
+              "visible": 142
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 959,
+          "fpsMedian": 178.25,
+          "fpsP5": 89.77,
+          "cpuMedian": 3.43,
+          "cpuP95": 5.78,
+          "gpuMs": 1.2869760000000001,
+          "draws": 881,
+          "triangles": 1943245
+        },
+        "orbit-far": {
+          "frames": 922,
+          "fpsMedian": 90.42,
+          "fpsP5": 89.29,
+          "cpuMedian": 6.75,
+          "cpuP95": 10.7,
+          "gpuMs": 1.6323200000000002,
+          "draws": 4334,
+          "triangles": 2799621
+        },
+        "orbit-far-low": {
+          "frames": 924,
+          "fpsMedian": 90.62,
+          "fpsP5": 88.85,
+          "cpuMedian": 6.9,
+          "cpuP95": 10.01,
+          "gpuMs": 1.464832,
+          "draws": 4589,
+          "triangles": 2753403
+        },
+        "ground-horizon": {
+          "frames": 957,
+          "fpsMedian": 178.57,
+          "fpsP5": 89.65,
+          "cpuMedian": 6.13,
+          "cpuP95": 8.76,
+          "gpuMs": 1.28208,
+          "draws": 2795,
+          "triangles": 2442651
+        }
+      }
+    },
+    {
+      "variant": "ours",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "world",
+      "date": "2026-10-09T11:09:09.634Z",
+      "query": "scene=world&size=1024&gpu",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 230,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 1
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "deco": {
+              "all": 137,
+              "visible": 137
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 960,
+          "fpsMedian": 177.15,
+          "fpsP5": 89.05,
+          "cpuMedian": 1.57,
+          "cpuP95": 3.23,
+          "gpuMs": 1.38864,
+          "draws": 799,
+          "triangles": 2268379
+        },
+        "orbit-far": {
+          "frames": 959,
+          "fpsMedian": 157.36,
+          "fpsP5": 89.81,
+          "cpuMedian": 2.52,
+          "cpuP95": 5,
+          "gpuMs": 1.616224,
+          "draws": 3818,
+          "triangles": 3242447
+        },
+        "orbit-far-low": {
+          "frames": 960,
+          "fpsMedian": 175.44,
+          "fpsP5": 89.81,
+          "cpuMedian": 2.28,
+          "cpuP95": 4.06,
+          "gpuMs": 1.447168,
+          "draws": 3895,
+          "triangles": 2897499
+        },
+        "ground-horizon": {
+          "frames": 960,
+          "fpsMedian": 101.68,
+          "fpsP5": 89.61,
+          "cpuMedian": 2.12,
+          "cpuP95": 3.17,
+          "gpuMs": 1.33728,
+          "draws": 2344,
+          "triangles": 2778499
+        }
+      }
+    },
+    {
+      "variant": "ours",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "terrain",
+      "date": "2026-10-09T11:10:03.524Z",
+      "query": "scene=terrain&size=1024&gpu",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 477,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 1
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "batch:chunks-cutout-region": {
+              "all": 52,
+              "visible": 52
+            },
+            "deco": {
+              "all": 50,
+              "visible": 50
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "water": {
+              "all": 282,
+              "visible": 142
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 959,
+          "fpsMedian": 175.9,
+          "fpsP5": 89.81,
+          "cpuMedian": 3.13,
+          "cpuP95": 5.4,
+          "gpuMs": 1.27824,
+          "draws": 881,
+          "triangles": 1943245
+        },
+        "orbit-far": {
+          "frames": 940,
+          "fpsMedian": 175.9,
+          "fpsP5": 89.09,
+          "cpuMedian": 5.8,
+          "cpuP95": 8.59,
+          "gpuMs": 1.633024,
+          "draws": 4335,
+          "triangles": 2799621
+        },
+        "orbit-far-low": {
+          "frames": 910,
+          "fpsMedian": 90.38,
+          "fpsP5": 60.79,
+          "cpuMedian": 5.99,
+          "cpuP95": 11.17,
+          "gpuMs": 1.4699840000000002,
+          "draws": 4590,
+          "triangles": 2753403
+        },
+        "ground-horizon": {
+          "frames": 955,
+          "fpsMedian": 178.41,
+          "fpsP5": 89.89,
+          "cpuMedian": 5.32,
+          "cpuP95": 8.73,
+          "gpuMs": 1.2759040000000001,
+          "draws": 2796,
+          "triangles": 2442651
+        }
+      }
+    },
+    {
+      "variant": "three",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "world",
+      "date": "2026-10-09T11:10:51.460Z",
+      "query": "scene=world&size=1024&gpu&cull=three",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 232,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 0
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "deco": {
+              "all": 139,
+              "visible": 139
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 959,
+          "fpsMedian": 173.91,
+          "fpsP5": 89.37,
+          "cpuMedian": 2.11,
+          "cpuP95": 3.41,
+          "gpuMs": 1.51792,
+          "draws": 800,
+          "triangles": 2342155
+        },
+        "orbit-far": {
+          "frames": 959,
+          "fpsMedian": 176.83,
+          "fpsP5": 89.81,
+          "cpuMedian": 3.5,
+          "cpuP95": 5.11,
+          "gpuMs": 1.6208,
+          "draws": 3804,
+          "triangles": 3163707
+        },
+        "orbit-far-low": {
+          "frames": 960,
+          "fpsMedian": 176.06,
+          "fpsP5": 89.81,
+          "cpuMedian": 3.2,
+          "cpuP95": 5.36,
+          "gpuMs": 1.449568,
+          "draws": 3895,
+          "triangles": 2897499
+        },
+        "ground-horizon": {
+          "frames": 960,
+          "fpsMedian": 95.15,
+          "fpsP5": 89.33,
+          "cpuMedian": 3.27,
+          "cpuP95": 5.13,
+          "gpuMs": 1.399552,
+          "draws": 2343,
+          "triangles": 2778499
+        }
+      }
+    },
+    {
+      "variant": "three",
+      "sha": "e442e87475d63f91da82b7ac8672eca7f13c58c2",
+      "scene": "terrain",
+      "date": "2026-10-09T11:11:46.542Z",
+      "query": "scene=terrain&size=1024&gpu&cull=three",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "poses": {
+        "composition": {
+          "objects": 477,
+          "kinds": {
+            "LineSegments": {
+              "all": 1,
+              "visible": 0
+            },
+            "batch:chunks-opaque-region": {
+              "all": 64,
+              "visible": 64
+            },
+            "batch:chunks-cutout-region": {
+              "all": 52,
+              "visible": 52
+            },
+            "deco": {
+              "all": 50,
+              "visible": 50
+            },
+            "elovox-falling": {
+              "all": 1,
+              "visible": 0
+            },
+            "water": {
+              "all": 282,
+              "visible": 142
+            },
+            "bean_face": {
+              "all": 1,
+              "visible": 1
+            },
+            "bean_skin": {
+              "all": 1,
+              "visible": 1
+            }
+          }
+        },
+        "orbit-default": {
+          "frames": 1388,
+          "fpsMedian": 179.86,
+          "fpsP5": 177.3,
+          "cpuMedian": 3.43,
+          "cpuP95": 6.34,
+          "gpuMs": 1.343968,
+          "draws": 881,
+          "triangles": 1943255
+        },
+        "orbit-far": {
+          "frames": 967,
+          "fpsMedian": 179.37,
+          "fpsP5": 60.04,
+          "cpuMedian": 6.75,
+          "cpuP95": 12.21,
+          "gpuMs": 1.620032,
+          "draws": 4334,
+          "triangles": 2799621
+        },
+        "orbit-far-low": {
+          "frames": 887,
+          "fpsMedian": 90.25,
+          "fpsP5": 60.01,
+          "cpuMedian": 7.56,
+          "cpuP95": 11.75,
+          "gpuMs": 1.460992,
+          "draws": 4589,
+          "triangles": 2753411
+        },
+        "ground-horizon": {
+          "frames": 1011,
+          "fpsMedian": 179.37,
+          "fpsP5": 60.06,
+          "cpuMedian": 6.35,
+          "cpuP95": 11.17,
+          "gpuMs": 1.293504,
+          "draws": 2795,
+          "triangles": 2442669
+        }
+      }
+    }
+  ],
+  "summary": {
+    "three world orbit-default": {
+      "fpsP5": 89.37,
+      "gpuMs": 1.51792,
+      "cpuMedian": 2.11
+    },
+    "three world orbit-far": {
+      "fpsP5": 89.69,
+      "gpuMs": 1.6208,
+      "cpuMedian": 3.5
+    },
+    "three world orbit-far-low": {
+      "fpsP5": 89.65,
+      "gpuMs": 1.4517120000000001,
+      "cpuMedian": 3.23
+    },
+    "three world ground-horizon": {
+      "fpsP5": 89.33,
+      "gpuMs": 1.399552,
+      "cpuMedian": 3.27
+    },
+    "three terrain orbit-default": {
+      "fpsP5": 89.73,
+      "gpuMs": 1.343968,
+      "cpuMedian": 3.7
+    },
+    "three terrain orbit-far": {
+      "fpsP5": 60.04,
+      "gpuMs": 1.620032,
+      "cpuMedian": 6.93
+    },
+    "three terrain orbit-far-low": {
+      "fpsP5": 60.01,
+      "gpuMs": 1.662144,
+      "cpuMedian": 7.56
+    },
+    "three terrain ground-horizon": {
+      "fpsP5": 60.06,
+      "gpuMs": 1.293504,
+      "cpuMedian": 6.35
+    },
+    "ours world orbit-default": {
+      "fpsP5": 89.05,
+      "gpuMs": 1.3970879999999999,
+      "cpuMedian": 1.57
+    },
+    "ours world orbit-far": {
+      "fpsP5": 89.73,
+      "gpuMs": 1.8697599999999999,
+      "cpuMedian": 2.52
+    },
+    "ours world orbit-far-low": {
+      "fpsP5": 89.69,
+      "gpuMs": 1.453024,
+      "cpuMedian": 2.28
+    },
+    "ours world ground-horizon": {
+      "fpsP5": 89.57,
+      "gpuMs": 1.3445440000000002,
+      "cpuMedian": 2.2
+    },
+    "ours terrain orbit-default": {
+      "fpsP5": 89.77,
+      "gpuMs": 1.2869760000000001,
+      "cpuMedian": 3.43
+    },
+    "ours terrain orbit-far": {
+      "fpsP5": 89.09,
+      "gpuMs": 1.633024,
+      "cpuMedian": 6.75
+    },
+    "ours terrain orbit-far-low": {
+      "fpsP5": 60.79,
+      "gpuMs": 1.4699840000000002,
+      "cpuMedian": 6.9
+    },
+    "ours terrain ground-horizon": {
+      "fpsP5": 89.65,
+      "gpuMs": 1.28208,
+      "cpuMedian": 6.13
+    }
+  }
+}
