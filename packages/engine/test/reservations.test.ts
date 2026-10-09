@@ -58,6 +58,11 @@ it('a slot reused by a later tick reads as empty and the window slides', () => {
   t.reserve(1, 6, [6]); expect(t.owner(6, 6)).toBe(1); expect(t.horizon(1)).toBe(6)
   t.advance(50); expect(t.size).toBe(0); expect(t.horizon(1)).toBe(49)
 })
+it('lists the other owners with timed entries on given cells from a tick on', () => {
+  const t = new ReservationTable(4)
+  t.reserve(3, 1, [5]); t.reserve(2, 4, [5, 6]); t.reserve(1, 4, [7])
+  expect(t.timedOwners([5, 7], 0, 1)).toEqual([2, 3]); expect(t.timedOwners([5, 7], 2, 0)).toEqual([1, 2])
+})
 it('state signature changes with the entries and returns after a release', () => {
   const t = new ReservationTable(4), empty = sig(t)
   t.reserve(3, 2, [4]); const one = sig(t); expect(one).not.toEqual(empty)

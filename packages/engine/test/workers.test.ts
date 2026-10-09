@@ -774,3 +774,70 @@ describe('simulated workers', () => {
     expect(sim.workers!.view(1)?.stock).toContainEqual({ block: 1, count: 1 })
   })
 })
+
+describe('cooperative reservations', () => {
+  function noOverlap(sim: Simulation, tick: number) {
+    const seen = new Map<number, number>()
+    for (const u of sim.workers!.units.values()) for (const p of u.cells) { expect(seen.get(p), `cell ${p} tick ${tick}`).toBeUndefined(); seen.set(p, u.id) }
+  }
+  it('a walking unit reserves its next 32 ticks along its path and holds its body when it stops', () => {
+    const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [25, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking')
+    const w = sim.workers!, t = w.table, now = t.now
+    expect(t.horizon(1)).toBeGreaterThanOrEqual(now + 31)
+    until(sim, () => w.view(1)?.state === 'idle')
+    const cell = sim.store.layout.voxelIndex(25, 4, 5)
+    expect(t.owner(cell, t.now + 1000)).toBe(1)
+    expect(t.horizon(1)).toBeLessThanOrEqual(t.now)
+  })
+  it('no two units ever own or occupy the same cell in the same tick', () => {
+    const sim = make(); spawn(sim, [3, 4, 5]); spawn(sim, [28, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 6] }); cmd(sim, { type: 'unitMove', ids: [2], pos: [3, 4, 6] })
+    const t = sim.workers!.table
+    for (let i = 0; i < 600; i++) {
+      sim.step(); noOverlap(sim, i)
+      for (const u of sim.workers!.units.values()) for (const p of u.cells) { const o = t.owner(p, t.now); expect(o === 0 || o === u.id, `cell ${p} tick ${i} owned by ${o}`).toBe(true) }
+    }
+    expect([1, 2].map(id => sim.workers!.view(id)?.state)).toEqual(['idle', 'idle'])
+  })
+  it('pause keeps no stale window: after resuming, reservations start at the current tick', () => {
+    const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [25, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking')
+    sim.setPaused(true); for (let i = 0; i < 100; i++) sim.step(); sim.setPaused(false); sim.step()
+    const t = sim.workers!.table
+    expect(t.horizon(1)).toBeGreaterThanOrEqual(t.now)
+    expect(t.horizon(1)).toBeLessThan(t.now + 2 * t.window)
+  })
+  it('a unit that stops on another unit’s projected route makes it see the conflict at once', () => {
+    const sim = make(); spawn(sim, [3, 4, 5]); spawn(sim, [9, 4, 7])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking'); sim.step()
+    const one = sim.workers!.units.get(1)!, t = sim.workers!.table, cell = sim.layout.voxelIndex(9, 4, 5)
+    expect(Array.from({ length: 32 }, (_, k) => t.owner(cell, t.now + k))).toContain(1)
+    cmd(sim, { type: 'unitMove', ids: [2], pos: [9, 4, 5] })
+    until(sim, () => sim.workers!.view(2)?.state === 'idle')
+    // Still short of the held cell and moving: its projection now stops at unit 2's body.
+    expect(one.x).toBeLessThan(8 * 256); expect(one.wait).toBe(0); expect(one.conflict?.owner).toBe(2)
+    for (let k = 0; k < 64; k++) expect(t.owner(cell, t.now + k)).toBe(2)
+    for (let i = 0; i < 600 && sim.workers!.view(1)?.state !== 'idle'; i++) { sim.step(); noOverlap(sim, i) }
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128 })
+  })
+  it('hashes the reservation table, projections and conflicts', () => {
+    const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [25, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking')
+    const u = sim.workers!.units.get(1)!, before = sim.hash()
+    u.projection!.t++; expect(sim.hash()).not.toBe(before); u.projection!.t--
+    u.conflict = { t: 1, owner: 2 }; expect(sim.hash()).not.toBe(before); u.conflict = null
+    sim.workers!.table.reserve(9, sim.workers!.table.now + 1, [1]); expect(sim.hash()).not.toBe(before)
+  })
+  it('despawning and incapacitation free the owner at once', () => {
+    const sim = make(); spawn(sim); spawn(sim, [5, 4, 9]); cmd(sim, { type: 'unitMove', ids: [1], pos: [25, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking')
+    const t = sim.workers!.table
+    cmd(sim, { type: 'unitDespawn', ids: [1] })
+    expect(t.horizon(1)).toBe(t.now - 1); expect(t.heldBy(1)).toEqual([])
+    cmd(sim, { type: 'setBlock', pos: [5, 12, 9], voxel: 4 })
+    until(sim, () => sim.workers!.view(2)?.state === 'incapacitated')
+    expect(t.heldBy(2)).toEqual([]); expect(t.size).toBe(0)
+  })
+})

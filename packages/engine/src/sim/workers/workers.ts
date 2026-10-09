@@ -6,6 +6,7 @@ import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { walkSweep } from './walkSweep.ts'
+import { ReservationTable } from './reservations.ts'
 import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
 
 export interface WorkerPort {
@@ -18,6 +19,13 @@ export interface WorkerPort {
   dynamicBusy(): boolean
   emit(type: string, payload: unknown): void
 }
+type Motion = { from: number; to: number; cursor: number; start: [number, number, number]; flat: boolean; elapsed: number; ticks: number; cells: number[]; area: Set<number> | null }
+/**
+ * What a moving unit has reserved: through tick t, ending on Q8 pose `pose`, with path nodes from `cursor` still to
+ * project. `end` and `first` are the tick the in-flight motion ends and the node the projection steps to next; a
+ * motion that begins there toward that single node keeps the projection. `path` and `motion` mark what it was made for.
+ */
+interface Projection { cursor: number; pose: [number, number, number]; t: number; end: number; first: number; path: readonly number[]; motion: Motion }
 interface Unit {
   available: boolean
   validatedWorld: number; validatedPose: [number, number, number]
@@ -27,7 +35,10 @@ interface Unit {
   goal: number | null; search: PathSearch | null; path: number[]; cursor: number; task: Task | null; progress: number; duration: number
   cells: number[]
   /** area: the validated sweep of a flat step; each tick's conservative sweep is clipped to it, so grazing corners never abort a step. */
-  motion: { from: number; to: number; cursor: number; start: [number, number, number]; flat: boolean; elapsed: number; ticks: number; cells: number[]; area: Set<number> | null } | null
+  motion: Motion | null
+  projection: Projection | null
+  /** The first tick and owner the projection could not reserve. */
+  conflict: { t: number; owner: number } | null
   vy: number; wait: number; retry: number; revision: number; reason?: WorkBlockReason
   /** Build designations the unit started its current route inside; only these may be crossed on the way out. */
   escape: Order[]
@@ -66,6 +77,8 @@ export class WorkerSystem {
   readonly port: WorkerPort
   readonly nav: NavigationSystem
   readonly units = new Map<number, Unit>()
+  /** Space-time plan of every unit: moving units project their route, still ones hold their body. */
+  readonly table = new ReservationTable(32)
   private orders: Order[] = []
   /** Failure history of parked tasks by voxel, so a task returning to the frontier is not retried from scratch. */
   private parkedFailures = new Map<number, { reason: WorkBlockReason; failures: Map<number, TaskFailure> }>()
@@ -279,7 +292,7 @@ export class WorkerSystem {
         }
       }
       const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
-        goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
+        goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, projection: null, conflict: null, vy: 0, wait: 0, retry: 0, revision: -1,
         allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0 }
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
@@ -362,7 +375,7 @@ export class WorkerSystem {
       if (destinations.length < units.length) throw new Error('not enough safe formation destinations')
       units.forEach((u, i) => { this.clearOrder(u); if (u.state !== 'incapacitated') { u.available = true; u.goal = destinations[i]!; u.allowDig = c.allowDig === true; u.buildBlock = c.buildBlock ?? 0; u.state = u.motion ? 'walking' : 'planning'; u.retry = 0; u.revision = -1 } })
     } else if (c.type === 'unitCancel') for (const u of units) { this.clearOrder(u); u.available = false }
-    else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.units.delete(u.id); this.dirty.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
+    else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
     this.revision++
   }
   private cancelOrder(o: Order): void {
@@ -609,25 +622,36 @@ export class WorkerSystem {
     if (!visibleCells && from !== to && !DIRS.some((_, d) => this.nav.neighbor(from, d) === to)) { this.block(u, 'target-changed'); return false }
     const start: [number, number, number] = [u.x, u.y, u.z]
     const flat = ty * 256 === u.y
-    const ticks = flat ? Math.max(1, Math.ceil(ceilSqrt((tx * 256 + 128 - u.x) ** 2 + (tz * 256 + 128 - u.z) ** 2) / WALK_SPEED)) : 4 + (ty > y ? 2 : y - ty)
+    const ticks = this.stepTicks(start, to)
     let cells: number[], area: Set<number> | null = null
     if (flat) {
       const sweep = visibleCells ?? walkSweep(this.port.layout, start, [tx * 256 + 128, u.y, tz * 256 + 128])
       if (!visibleCells && !this.walkable(u, sweep, y)) { this.block(u, 'unsafe'); return false }
       const valid = new Set(sweep); area = valid
       cells = walkSweep(this.port.layout, start, this.motionPose(to, 1, ticks, start)).filter(p => valid.has(p))
-    } else {
-      const set = new Set<number>()
-      for (let q = 0; q <= ticks * 4; q++) for (const p of this.body(...this.motionPose(to, q / 4, ticks, start))) set.add(p)
-      cells = [...set]
-    }
+    } else cells = this.verticalCells(to, ticks, start)
     if (!this.volumeFree(cells)) { this.block(u, 'unsafe'); return false }
-    if (!this.reserve(u, cells)) {
+    // A vertical action holds all its cells for its whole duration; a flat step checks each tick as it goes.
+    if (!this.tableFree(u, cells, this.time + 1, flat ? 1 : ticks) || !this.reserve(u, cells)) {
       u.wait++; u.reason = 'traffic'; this.dirty.add(u.id)
       if (u.wait >= 12) this.yield(u)
       return false
     }
     u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
+  }
+  private stepTicks(start: readonly [number, number, number], to: number): number {
+    const [tx, ty, tz] = this.port.layout.voxelCoords(to), y = start[1] >> 8
+    return ty * 256 === start[1] ? Math.max(1, Math.ceil(ceilSqrt((tx * 256 + 128 - start[0]) ** 2 + (tz * 256 + 128 - start[2]) ** 2) / WALK_SPEED)) : 4 + (ty > y ? 2 : y - ty)
+  }
+  private verticalCells(to: number, ticks: number, start: [number, number, number]): number[] {
+    const set = new Set<number>()
+    for (let q = 0; q <= ticks * 4; q++) for (const p of this.body(...this.motionPose(to, q / 4, ticks, start))) set.add(p)
+    return [...set]
+  }
+  /** Whether the reservation table leaves the cells to the unit for n ticks from tick `from`. */
+  private tableFree(u: Unit, cells: readonly number[], from: number, n: number): boolean {
+    for (let t = from; t < from + n; t++) if (!this.table.free(u.id, t, cells)) return false
+    return true
   }
   private yield(u: Unit): void {
     const from = this.position(u), intended = u.path[u.cursor], owner = intended === undefined ? undefined : this.occupied.get(intended)
@@ -676,7 +700,7 @@ export class WorkerSystem {
   }
   private incapacitate(u: Unit): void {
     this.clearOrder(u); u.motion = null; u.state = 'incapacitated'; u.vy = 0
-    this.release(u); this.dirty.add(u.id); this.port.emit('unitIncapacitated', { id: u.id }); this.cancelOrphanOrders()
+    this.release(u); this.table.releaseOwner(u.id); u.projection = null; u.conflict = null; this.dirty.add(u.id); this.port.emit('unitIncapacitated', { id: u.id }); this.cancelOrphanOrders()
   }
   private fall(u: Unit): void {
     this.resetRoute(u)
@@ -702,7 +726,7 @@ export class WorkerSystem {
     // Settling physics may end transient hazards (deep water, structural checks): every failure becomes retryable.
     if (dynamic !== this.dynamicWasBusy) { this.revision++; if (!dynamic) this.policy++; this.dynamicWasBusy = dynamic }
     for (const o of [...this.reservations]) if (!o.stalled && this.time - o.progress >= STALL_TICKS && !this.tasks.some(t => t.order === o && (t.claim || t.reason === 'missing-material' || t.reason === 'missing-tool'))) { o.stalled = true; this.buildReservationsChanged(o) }
-    this.time++; this.expand()
+    this.time++; this.table.advance(this.time); this.expand()
     for (const u of this.units.values()) {
       if (u.state === 'incapacitated') continue
       const stationaryValid = !u.motion && !dynamic && !wasDynamic && u.validatedWorld === this.worldRevision && u.validatedPose[0] === u.x && u.validatedPose[1] === u.y && u.validatedPose[2] === u.z
@@ -725,9 +749,9 @@ export class WorkerSystem {
         const next = this.motionPose(m.to, m.elapsed + 1, m.ticks, m.start)
         const cells = m.flat ? walkSweep(this.port.layout, [u.x, u.y, u.z], next).filter(p => m.area!.has(p)) : m.cells
         if (!(m.flat ? this.walkable(u, cells, u.y >> 8) : this.volumeFree(cells)) || !this.poseOk(u, this.port.layout.voxelCoords(m.to))) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)); this.block(u, 'unsafe'); continue }
-        if (m.flat && !this.reserve(u, cells)) {
+        if (m.flat && (!this.table.free(u.id, this.time, cells) || !this.reserve(u, cells))) {
           this.reserve(u, this.body(u.x, u.y, u.z)); u.wait++; u.reason = 'traffic'; this.dirty.add(u.id)
-          const owner = cells.map(p => this.occupied.get(p)).find(id => id !== undefined && id !== u.id)
+          const owner = cells.map(p => this.occupied.get(p) ?? (this.table.owner(p, this.time) || undefined)).find(id => id !== undefined && id !== u.id)
           const other = owner === undefined ? undefined : this.units.get(owner)
           // Break head-on symmetry: the older moving unit waits while the newer one detours.
           // A newer unit about to move keeps the right of way, but never for longer than the traffic block limit.
@@ -812,8 +836,75 @@ export class WorkerSystem {
       // Nothing left to do (a failed or discarded escape, a sidestep without a goal): become assignable again.
       if (u.goal === null && !u.task && !u.search && !u.motion && !u.engineering && !u.actions[u.actionCursor] && u.path[u.cursor] === undefined && u.state !== 'idle') { u.state = 'idle'; this.dirty.add(u.id) }
     }
+    for (const u of this.units.values()) if (u.state !== 'incapacitated') { if (this.moving(u)) this.project(u); else this.holdHere(u) }
     this.engineeringVisited = engineeringWork
     this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork))
+  }
+  /** A motion that advanced or began this tick; a paused one waits in place like a unit without a motion. */
+  private moving(u: Unit): boolean { return u.motion !== null && u.wait === 0 }
+  /** Reserves cells at tick t, or records the first foreign owner there as the unit's conflict. */
+  private claim(u: Unit, t: number, cells: readonly number[]): boolean {
+    if (this.table.free(u.id, t, cells)) { this.table.reserve(u.id, t, cells); return true }
+    let owner = 0
+    for (const p of cells) { const o = this.table.owner(p, t); if (o && o !== u.id) { owner = o; break } }
+    u.conflict = { t, owner }; return false
+  }
+  /**
+   * Extends a moving unit's reservations to `time + window` with the executor's own motion model: the in-flight motion
+   * tick by tick, then the remaining path nodes one step at a time, then its body standing at the end of the path. It
+   * stops at the first tick another owner has (the conflict) and resumes from there next tick.
+   */
+  private project(u: Unit): void {
+    const m = u.motion!, T = this.time, L = this.port.layout, limit = T + this.table.window
+    this.table.releaseHold(u.id)
+    let pr = u.projection
+    // A motion that begins exactly where and when the projection stepped to its next node keeps what it reserved.
+    if (pr && pr.motion !== m && pr.path === u.path && T === pr.end && m.cursor === pr.first + 1 && m.to === u.path[pr.first] && m.elapsed === 0) {
+      pr.motion = m; pr.end = T + m.ticks; pr.first = m.cursor; if (pr.cursor < m.cursor) pr.cursor = m.cursor
+    }
+    if (pr && (pr.motion !== m || pr.path !== u.path || pr.t < T)) pr = null
+    if (!pr) {
+      this.table.releaseFrom(u.id, T + 1)
+      pr = u.projection = { cursor: m.cursor, pose: [u.x, u.y, u.z], t: T, end: T + m.ticks - m.elapsed, first: m.cursor, path: u.path, motion: m }
+    }
+    u.conflict = null
+    while (pr.t < pr.end && pr.t < limit) {
+      const e = m.elapsed + pr.t - T, a = this.motionPose(m.to, e, m.ticks, m.start), b = this.motionPose(m.to, e + 1, m.ticks, m.start)
+      if (!this.claim(u, pr.t + 1, m.flat ? walkSweep(L, a, b).filter(p => m.area!.has(p)) : m.cells)) return
+      pr.t++; pr.pose = b
+    }
+    while (pr.t < limit) {
+      const to = u.path[pr.cursor], start = pr.pose
+      if (to === undefined) { if (!this.claim(u, pr.t + 1, this.body(...start))) return; pr.t++; continue }
+      const ticks = this.stepTicks(start, to), [tx, , tz] = L.voxelCoords(to), from = pr.t
+      if (L.voxelCoords(to)[1] * 256 === start[1]) {
+        const area = new Set(walkSweep(L, start, [tx * 256 + 128, start[1], tz * 256 + 128]))
+        for (let e = 0; e < ticks; e++) {
+          const a = this.motionPose(to, e, ticks, start), b = this.motionPose(to, e + 1, ticks, start)
+          if (!this.claim(u, from + e + 1, walkSweep(L, a, b).filter(p => area.has(p)))) { this.table.releaseFrom(u.id, from + 1); return }
+        }
+      } else {
+        const cells = this.verticalCells(to, ticks, start)
+        for (let e = 1; e <= ticks; e++) if (!this.claim(u, from + e, cells)) { this.table.releaseFrom(u.id, from + 1); return }
+      }
+      pr.t = from + ticks; pr.pose = this.motionPose(to, ticks, ticks, start); pr.cursor++
+    }
+  }
+  /**
+   * A unit that is not moving holds its body with no end and drops its timed entries. Units whose projections cross
+   * the newly held cells re-project at once, so they see the conflict now rather than when they reach it.
+   */
+  private holdHere(u: Unit): void {
+    if (u.projection || this.table.horizon(u.id) > this.time) { this.table.releaseFrom(u.id, this.time + 1); u.projection = null }
+    u.conflict = null
+    const held = this.table.heldBy(u.id)
+    if (held.length === u.cells.length && held.every((p, i) => p === u.cells[i])) return
+    this.table.hold(u.id, u.cells)
+    for (const id of this.table.timedOwners(u.cells, this.time + 1, u.id)) {
+      const o = this.units.get(id)
+      if (!o) continue
+      if (this.moving(o)) { o.projection = null; this.project(o) } else { this.table.releaseFrom(id, this.time + 1); o.projection = null }
+    }
   }
   private engineer(u: Unit, searchLimited = false): void {
     u.searchLimited = searchLimited
@@ -867,6 +958,9 @@ export class WorkerSystem {
       mix(u.task ? 1 : 0); if (u.task) task(u.task)
       mix(u.motion ? 1 : 0)
       if (u.motion) { mix(u.motion.from); mix(u.motion.to); mix(u.motion.cursor); mix(u.motion.flat ? 1 : 0); mix(u.motion.elapsed); mix(u.motion.ticks); numbers(u.motion.start); numbers(u.motion.cells); numbers([...(u.motion.area ?? [])]) }
+      const pr = u.projection
+      mix(pr ? 1 : 0); if (pr) { mix(pr.cursor); numbers(pr.pose); mix(pr.t); mix(pr.end); mix(pr.first) }
+      mix(u.conflict ? 1 : 0); if (u.conflict) { mix(u.conflict.t); mix(u.conflict.owner) }
       mix(u.search ? 1 : 0)
       u.search?.mixState(mix)
       mix(u.engineering ? 1 : 0); u.engineering?.mixState(mix); mix(u.searchLimited ? 1 : 0); mix(u.allowDig ? 1 : 0); mix(u.buildBlock); mix(u.actionCursor); mix(u.alternativeCost); mix(u.actions.length)
@@ -878,6 +972,7 @@ export class WorkerSystem {
     numbers([...this.targets]); mix(this.workPositions.size); for (const [p, id] of this.workPositions) { mix(p); mix(id) }
     mix(this.occupied.size); for (const [p, id] of this.occupied) { mix(p); mix(id) }
     mix(this.loose.size); for (const [p, pile] of this.loose) { mix(p); mix(pile.size); for (const [b, n] of pile) { mix(b); mix(n) } }
+    this.table.mixState(mix)
     this.nav.mixState(mix)
   }
 }

@@ -74,11 +74,22 @@ export class ReservationTable {
     for (const c of cells) if (!this.holds.has(c)) { this.holds.set(c, owner); mine.push(c) }
     if (mine.length) this.held.set(owner, mine)
   }
+  /** The cells the owner holds, in the order it asked for them. */
+  heldBy(owner: number): readonly number[] { return this.held.get(owner) ?? [] }
   releaseHold(owner: number): void {
     for (const c of this.held.get(owner) ?? []) if (this.holds.get(c) === owner) this.holds.delete(c)
     this.held.delete(owner)
   }
   releaseOwner(owner: number): void { this.releaseFrom(owner, -Infinity); this.releaseHold(owner) }
+  /** Owners other than `except` with timed entries on any of the cells at ticks >= from, ascending. */
+  timedOwners(cells: readonly number[], from: number, except: number): number[] {
+    const found = new Set<number>()
+    for (let t = Math.max(from, this.at); t < this.at + 2 * this.window; t++) {
+      const s = this.slot(t)
+      if (s) for (const c of cells) { const o = s.cells.get(c); if (o !== undefined && o !== except) found.add(o) }
+    }
+    return [...found].sort((a, b) => a - b)
+  }
   /** Last tick the owner has timed entries for, or now - 1. */
   horizon(owner: number): number { return this.spans.get(owner)?.at(-1)?.t ?? this.at - 1 }
   /** Moves the window to start at `now`, dropping every timed entry before it. */
