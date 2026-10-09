@@ -1,19 +1,22 @@
 import { AnimationMixer, BoxGeometry, Color, Group, InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion, Raycaster, Vector2, Vector3 } from 'three/webgpu'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone } from 'three/addons/utils/SkeletonUtils.js'
-import { WORKER_STATES, type Engine, type Vec3, type WorkerView } from '@elovox/engine'
+import { WORKER_STATES, type Engine, type Vec3, type WorkerBarrier, type WorkerView } from '@elovox/engine'
+import { PoseTimeline } from './poseTimeline.ts'
 
 const STATES: Record<string, string> = { idle: 'Livre', planning: 'Buscando rota', walking: 'Em movimento', working: 'Trabalhando', blocked: 'Aguardando', falling: 'Caindo', incapacitated: 'Incapacitada' }
-/** A barrier whose mesh never arrives (e.g. a chunk that failed to mesh) stops holding units after this long. */
-const BARRIER_TIMEOUT_MS = 1000
+/** A barrier whose mesh never arrives stops holding units after this long. */
+const BARRIER_TIMEOUT_MS = 250
+/** Besides the unit that made an edit, units whose drawn centre is this close to the edited voxel's centre wait for its mesh. */
+const HOLD_RADIUS = 1.5
 const REASONS: Record<string, string> = { 'no-access': 'Sem acesso', 'missing-material': 'Falta material', 'missing-tool': 'Falta ferramenta', unsafe: 'Passagem perigosa', traffic: 'Passagem ocupada', 'search-limited': 'Limite da busca', 'target-changed': 'Alvo alterado' }
 
 export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElement, { demo = true }: { demo?: boolean } = {}) {
   const scene = new Group(); engine.scene.add(scene)
-  const selected = new Set<number>(), views = new Map<number, WorkerView>(), previous = new Map<number, Vector3>()
+  const selected = new Set<number>(), views = new Map<number, WorkerView>(), timeline = new PoseTimeline(), sampled = new Map<number, { x: number; y: number; z: number; facing: number }>()
   const skins = new Map<number, { root: Object3D; mixer: AnimationMixer; clip: string; heading: number }>()
-  const barriers = new Map<number, { version: number; since: number }>(), shown = new Map<number, Vector3>()
-  const currentPosition = new Vector3(), drawnPosition = new Vector3()
+  const barriers: (WorkerBarrier & { since: number })[] = [], shown = new Map<number, Vector3>()
+  const drawnPosition = new Vector3()
   const gltf = await new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}models/bean.glb`)
   const proxyGeo = new BoxGeometry(.65, 1.65, .65), proxyMat = new MeshStandardMaterial({ color: '#dbbb58', roughness: .9 })
   const proxies = new InstancedMesh(proxyGeo, proxyMat, 1000); proxies.castShadow = true; proxies.count = 0; proxies.frustumCulled = false; scene.add(proxies)
@@ -21,7 +24,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   const outlineGeo = new BoxGeometry(.96, .035, .96), outlineMat = new MeshStandardMaterial({ color: '#edc65c', emissive: '#463a13' })
   const rings = new InstancedMesh(outlineGeo, outlineMat, 1000); rings.count = 0; rings.frustumCulled = false; scene.add(rings)
   const preview = new Mesh(new BoxGeometry(1.02, 1.02, 1.02), new MeshStandardMaterial({ color: '#e5ad48', transparent: true, opacity: .35, depthWrite: false })); preview.visible = false; scene.add(preview)
-  let at = performance.now(), mode: 'select' | 'dig' | 'build' = 'select', anchor: Vec3 | null = null
+  let mode: 'select' | 'dig' | 'build' = 'select', anchor: Vec3 | null = null
   const callbacks: (() => void)[] = []
   const style = document.createElement('style')
   style.textContent = `
@@ -62,9 +65,9 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   button('Cancelar obras', () => { for (const o of engine.workers?.orders ?? []) if (!o.cancelled && o.done < o.total) engine.submit({ type: 'workCancel', order: o.id }) })
   callbacks.push(engine.on('ack', ack => { if (!ack.ok) status.textContent = ack.error ?? 'Ordem recusada.' }))
   callbacks.push(engine.on('workers', tick => {
-    at = performance.now()
-    for (const b of tick.barriers.flatMap(e => e.chunks)) { const old = barriers.get(b.chunk); barriers.set(b.chunk, { version: Math.max(old?.version ?? 0, b.version), since: old?.since ?? at }) }
-    for (const u of views.values()) { let p = previous.get(u.id); if (!p) { p = new Vector3(); previous.set(u.id, p) }; p.set(u.x256 / 256, u.y256 / 256, u.z256 / 256) }
+    const at = performance.now()
+    timeline.push(tick.tick, tick.poses, at)
+    for (const b of tick.barriers) barriers.push({ ...b, since: at })
     for (const u of tick.details) views.set(u.id, u)
     const alive = new Set<number>()
     for (let i = 0; i < tick.poses.length; i += 9) {
@@ -77,22 +80,21 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
         scene.add(root); skins.set(id, { root, mixer, clip: '', heading: root.rotation.y })
       }
     }
-    for (const id of views.keys()) if (!alive.has(id)) { views.delete(id); selected.delete(id); previous.delete(id); shown.delete(id); const s = skins.get(id); if (s) { s.mixer.stopAllAction(); scene.remove(s.root); skins.delete(id) } }
+    for (const id of views.keys()) if (!alive.has(id)) { views.delete(id); selected.delete(id); shown.delete(id); const s = skins.get(id); if (s) { s.mixer.stopAllAction(); scene.remove(s.root); skins.delete(id) } }
   }))
-  callbacks.push(engine.on('frame', ({ dt, now }) => {
-    for (const [ci, b] of barriers) if (engine.meshVersion(ci) >= b.version || now - b.since > BARRIER_TIMEOUT_MS) barriers.delete(ci)
-    // Only units next to an edited chunk wait for its mesh; the rest keep moving.
-    const held = (p: Vector3) => {
-      for (const ci of barriers.keys()) {
-        const [cx, cy, cz] = engine.layout.chunkCoords(ci)
-        if (p.x >= cx * 32 - 2 && p.x < cx * 32 + 34 && p.y >= cy * 32 - 2 && p.y < cy * 32 + 34 && p.z >= cz * 32 - 2 && p.z < cz * 32 + 34) return true
-      }
-      return false
+  // Before the camera update, so a camera that follows a unit sees it where this frame draws it.
+  callbacks.push(engine.on('preFrame', ({ dt, now }) => {
+    for (let i = barriers.length - 1; i >= 0; i--) {
+      const b = barriers[i]!
+      if (now - b.since > BARRIER_TIMEOUT_MS || b.chunks.every(c => engine.meshVersion(c.chunk) >= c.version || engine.meshFailed(c.chunk))) barriers.splice(i, 1)
     }
-    const alpha = Math.min(1, (now - at) / (1000 / 20)); let pi = 0, ri = 0
+    // Only the unit that made an edit and units beside it wait for its mesh; the rest keep moving.
+    const held = (id: number, p: Vector3) => barriers.some(b => b.unit === id || (p.x - b.pos[0] - .5) ** 2 + (p.y - b.pos[1]) ** 2 + (p.z - b.pos[2] - .5) ** 2 <= HOLD_RADIUS ** 2)
+    timeline.sample(now, sampled); let pi = 0, ri = 0
     for (const u of views.values()) {
-      const current = currentPosition.set(u.x256 / 256, u.y256 / 256, u.z256 / 256), position = barriers.size && shown.has(u.id) && held(shown.get(u.id)!) ? drawnPosition.copy(shown.get(u.id)!) : drawnPosition.copy(previous.get(u.id) ?? current).lerp(current, alpha)
-      let displayed = shown.get(u.id)
+      const last = shown.get(u.id), s = sampled.get(u.id)
+      const position = last && barriers.length && held(u.id, last) ? drawnPosition.copy(last) : s ? drawnPosition.set(s.x, s.y, s.z) : drawnPosition.set(u.x256 / 256, u.y256 / 256, u.z256 / 256)
+      let displayed = last
       const dx = displayed ? position.x - displayed.x : 0, dz = displayed ? position.z - displayed.z : 0
       const moving = dx * dx + dz * dz > 1e-10
       if (!displayed) { displayed = new Vector3(); shown.set(u.id, displayed) }; displayed.copy(position)
