@@ -481,14 +481,22 @@ export class WaterColumns {
   /** Every column of the stepped tiles, then every ring column: each one's outflows together move at most its depth. */
   private limitAll(): void {
     const depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
+    // extraOut and limitTop, inline: a column sent over under edges this step (layered and marked) adds its under outflow
+    // to limit's, and is then marked limited, with its scale when it scaled.
+    const layered = this.under !== null, no = this.stepNo, mark = this.topMark, topOut = this.topOut
+    const limited = this.topLimited, scaleD = this.topScaleD, scaleOut = this.topScaleOut, scaleMark = this.topScaleMark
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
+        const sent = layered && mark[c] === no, extra = sent ? topOut[c]! : 0
         const out = x > 0 && z > 0 && x + 1 < sx && z + 1 < sz
-          ? limitInterior(depth, flux, c, sx, this.extraOut(c))
-          : limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c))
-        this.limitTop(c, out)
+          ? limitInterior(depth, flux, c, sx, extra)
+          : limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, extra)
+        if (sent) {
+          limited[c] = no
+          if (out > 0) { scaleD[c] = depth[c]!; scaleOut[c] = out; scaleMark[c] = no }
+        }
       }
     }
     for (let k = 0; k < this.ring.length; k++) {
