@@ -205,6 +205,12 @@ export class ChunkBatches {
   get batchCount(): number { return this.batches.size }
   /** Chunks drawn (one instance each). */
   get instanceCount(): number { return this.entries.size }
+  /** Bytes the batches reserve: packed vertices (8 each) plus indices (4 each), CPU side; the GPU buffers mirror them. */
+  get capacityBytes(): number {
+    let n = 0
+    for (const b of this.batches.values()) { const i = internals(b.mesh); n += i._maxVertexCount * 8 + i._maxIndexCount * 4 }
+    return n
+  }
 
   /**
    * Hands every vertex and index attribute a grow replaced to `free` (the renderer's attribute delete), once. Call after a

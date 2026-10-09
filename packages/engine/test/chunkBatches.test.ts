@@ -124,6 +124,20 @@ describe('ChunkBatches', () => {
     })
     expect(checked).toBe(3)
   })
+  it('reports the bytes its batches reserve', () => {
+    const b = batches()
+    expect(b.capacityBytes).toBe(0)
+    b.set(0, 0, 0, 0, quads(1))
+    expect(b.capacityBytes).toBe(REGION * REGION * 2 * (1024 * 8 + 1536 * 4)) // layout 64 tall: 2 chunk layers per column
+  })
+  it('groups 8 × 8 columns per batch with region 8', () => {
+    const b = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { region: 8 })
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(7, 0, 7), 7, 0, 7, quads(1))
+    b.set(layout.chunkIndex(8, 0, 0), 8, 0, 0, quads(1))
+    expect(b.batchCount).toBe(2)
+    expect(bm(b)[0]!.geometry.boundingBox!.max.toArray()).toEqual([256, 64, 256])
+  })
   it('never raycasts', () => {
     const b = batches()
     b.set(0, 0, 0, 0, quads(1))

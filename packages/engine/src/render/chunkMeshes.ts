@@ -92,6 +92,13 @@ export class ChunkMeshes {
     return chunkInRange(this.eye, this.range, cx * 32 + 16, cy * 32 + 16, cz * 32 + 16)
   }
 
+  /** Bytes reserved by the region batches (ChunkBatches.capacityBytes). */
+  get batchBytes(): number {
+    let n = 0
+    for (const b of Object.values(this.batches)) n += b.capacityBytes
+    return n
+  }
+
   /** Frees the GPU buffers batch grows replaced (ChunkBatches.releaseRetired); call after a render. */
   releaseRetired(free: (attribute: THREE.BufferAttribute) => void): void {
     for (const b of Object.values(this.batches)) b.releaseRetired(free)

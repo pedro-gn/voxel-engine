@@ -48,6 +48,8 @@ export interface VisualsOptions {
   batchChunks?: boolean
   /** @internal three's own batch cull, the pixel-diff reference (EngineOptions.threeCull). Default false. */
   threeCull?: boolean
+  /** @internal Chunk columns per region batch side (EngineOptions.regionChunks). */
+  regionChunks?: number
 }
 
 /** Everything about how the world looks. Owns the lights and shadows, chunk materials, sky and fog, and the post pipeline (grading, tone mapping, MSAA). Also owns the stylized water materials, the heightfield water surface and the instanced grass and flower decorations. */
@@ -77,7 +79,7 @@ export class Visuals {
     o.renderer.shadowMap.enabled = true
     o.renderer.shadowMap.type = THREE.PCFShadowMap
     this.lights = createLightUniforms()
-    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false })
+    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false, ...(o.regionChunks !== undefined && { region: o.regionChunks }) })
     o.scene.add(this.chunks.group)
     const dm = createDecorationMaterials(o.decorations, this.lights)
     this.decoRadius = dm.radius

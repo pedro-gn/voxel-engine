@@ -65,6 +65,8 @@ export interface EngineOptions {
    * pixel-diff e2e uses it as its reference picture. Default false.
    */
   threeCull?: boolean
+  /** @internal Chunk columns per region batch side; default 4. For the region-size A/B only. */
+  regionChunks?: number
 }
 
 export interface EngineEvents {
@@ -109,6 +111,8 @@ export interface EngineStats {
   gpuMs: number | null
   /** Chunk layer draws of the camera's pass in the last frame: batched chunks after the frustum and view-distance cull, plus per-chunk meshes within the view distance. */
   chunksDrawn: number
+  /** Bytes reserved by the chunk region batches (vertex + index buffers, CPU side; the GPU mirrors it). */
+  batchBytes: number
 }
 
 export interface Engine {
@@ -281,6 +285,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     water: waterView,
     batchChunks: o.batchChunks ?? true,
     threeCull: o.threeCull ?? false,
+    ...(o.regionChunks !== undefined && { regionChunks: o.regionChunks }),
   })
 
   // ---- lifecycle ----
@@ -654,6 +659,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         waterBodies: physicsStats.waterBodies, waterLayersHidden: physicsStats.waterLayersHidden,
         waterApplyMs: waterApply.last, waterApplyP95: waterApply.p95(),
         chunksDrawn: vs.chunksDrawn,
+        batchBytes: visuals.chunks.batchBytes,
         ...(latestWorkers && { workers: latestWorkers.stats }),
       }
     },
