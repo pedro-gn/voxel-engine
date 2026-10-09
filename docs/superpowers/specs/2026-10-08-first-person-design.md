@@ -2,6 +2,8 @@
 
 Status: approved by the expert (standing in for the user) on 2026-10-08: sections 1–3 approved in
 brainstorming, Q1 water = Minecraft-style swimming, Q2 auto-step 1 block.
+Amended 2026-10-09 after the user feel checkpoint: no eye smoothing on the way down (§4 item 6),
+and the underwater view (§3 "Underwater view", approved by the expert: post-pipeline stage, option A).
 Builds on 1 (voxel core: orbit camera, raycast, setBlock) and runs alongside 4c (AABB collision,
 `feat/collision`), which it consumes.
 
@@ -24,7 +26,8 @@ the first-person camera and the character controller that uses them, plus the sa
 | Collision | Only through `engine.collision` (4c). The controller holds no voxel collision code of its own |
 | Body | 0.6 × 1.8 × 0.6 blocks, eye at 1.62 (fits the units' 2-high tunnels) |
 | Water | Minecraft-style swimming from the liquid query (submerged fraction, eye under the surface) |
-| Ledges | Auto-step 1 block when grounded and not swimming; the eye is smoothed over ~0.15 s |
+| Ledges | Auto-step 1 block when grounded and not swimming; the eye is smoothed over ~0.15 s on the way up only |
+| Underwater view | When the camera (either mode) is in liquid, the post pipeline fogs and tints the picture blue-green, with a slight wobble |
 | Approach | One extra controller plus a mode switch in `engine.ts`. Rejected: a generic `CameraRig` interface with `engine.setController` (one extra camera does not need it, YAGNI); a sandbox-only controller (the roadmap puts the character controller in the engine) |
 
 ## 2. Scope and success criteria
@@ -39,7 +42,8 @@ the first-person camera and the character controller that uses them, plus the sa
 
 - Avatar / third-person view, multiplayer, inventory, fall damage, fly/noclip.
 - Collision with units, falling blocks and structural fragments (4c rules them out).
-- The underwater view tint/fog (lod owns fog), and the far plane (lod owns `camera.far`). Both are open items.
+- The far plane (lod owns `camera.far`). Scene fog and sky (lod's `sky.ts`/`atmosphere.ts`) are not touched:
+  the underwater view is a post-pipeline stage, not a fog change.
 - LOD and view distance (4b).
 
 ### Success criteria
@@ -103,6 +107,31 @@ held keys and edge state are cleared. Everything else is unchanged, so orbit beh
   switching to first person over a lake stands the player on the water surface, not on the lake bed.
   From there the swim rules take over.
 
+### Underwater view (added 2026-10-09)
+
+- **Term:** the *underwater view* is the screen effect shown while the camera is in liquid.
+- **Detection** (engine camera block, every frame after the active camera is applied):
+  `cameraInLiquid(...)` in `render/underwater.ts` is `collision.liquidAt(camera.position)`. It is skipped
+  (false) when the registry has no liquid block, or the camera is outside the world box or non-finite.
+  It is the same voxel query as the swim rules and works in both camera modes.
+- **Fade:** `UnderwaterFade.update(dt, under)` ramps `amount` linearly to 1 (entering) or 0 (leaving)
+  over `fade` = 0.1 s. It reaches exactly 0 and 1. A non-finite dt counts as 0, and dt is clamped to 0.1.
+  `engine.underwater` (getter) exposes `amount` for tests.
+- **Render:** one branch-free stage at the start of the post pipeline (`render/post.ts`), built by
+  `underwaterColor()` in `render/underwater.ts`, driven by one `amount` uniform (no recompile on enter or exit):
+  - wobble: the scene colour and depth are sampled at `screenUV + amount · wobble · sin(...)`, so at
+    amount 0 the UV is exact;
+  - fog: `f = 1 − exp(−density · distance)`, with `distance` = −viewZ from the scene pass depth and
+    density = ln 10 / 12 (90 % at 12 blocks), towards the water colour (WaterParams.deep, so `setWater` restyles it);
+  - tint: the result is multiplied by WaterParams.shallow mixed towards white by `tintStrength`;
+  - `colour = mix(scene, fogged·tint, amount)`: at amount 0 the picture is today's, bit for bit
+    (checked by a picture diff).
+  - Colour, density, tint strength and wobble are tunables for the user's visual checkpoint.
+  - `Visuals.setUnderwater(amount)` passes the amount to the post pipeline (one additive hunk).
+- **Limitations:** the whole screen has one state, so with the near plane straddling the surface it
+  is all-under or all-over; the switch follows the voxel water level, not the animated surface (off by
+  up to about one wave height); with `effects.post` off there is no underwater view.
+
 ### Hand-off
 
 - **orbit → first person:** spawn at the orbit `current.target` (x, z) with `yaw = orbit yaw` and
@@ -147,8 +176,9 @@ never into new solid. Then n = ceil(dt · 120) equal substeps h run; the 0.1 s c
    as e^(−t/0.05) (≈ 0.15 s to settle). The camera rises smoothly instead of popping.
 6. **Ground snap down stairs:** the conditions are grounded before, not jumping, not swimming,
    vy ≤ 0, and airborne after the move. When they hold, d = `groundDistance(box, 1)`. If d ≠ null,
-   the controller moves down by d through `move`, sets grounded, sets vy = 0 and adds d to the eye
-   offset (smoothed the same way). Walking off a 1-block stair follows it down instead of hopping.
+   the controller moves down by d through `move`, sets grounded and sets vy = 0. Walking off a
+   1-block stair follows it down instead of hopping. The eye drops with the body: descent smoothing
+   (adding d to the eye offset) was removed at the feel checkpoint and is kept commented out in the code.
 
 ### Look
 
@@ -222,7 +252,7 @@ A new file, `apps/sandbox/src/firstPerson.ts`, is wired in by small additive hun
     dropped, |d| > 200 px dropped); pitch clamp.
   - Walking: the reach-speed and stop curves; sprint.
   - Jumping, stepping, landing: jump apex ≈ 1.25 and landing sets grounded; the 1-block step with eye
-    smoothing, and no step onto 2 blocks; the ground snap down stairs.
+    smoothing, and no step onto 2 blocks; the ground snap down stairs with no eye lag.
   - Water: swim up and sink, the shallow-water factor, and the water-exit hop.
   - Substeps and safety: substep count (dt 0.1 → 12) with no tunnelling at terminal speed; unstick on
     overlap, and position unchanged when unstick returns null.
@@ -231,6 +261,10 @@ A new file, `apps/sandbox/src/firstPerson.ts`, is wired in by small additive hun
     unchanged while enabled.
   - These tests run against a stub of the frozen 68eff31 signatures until 4c lands, then against a
     fake world through 4c's real `bindCollision`.
+- **Underwater unit tests** (`packages/engine/test/underwater.test.ts`, Node): `cameraInLiquid` (in a
+  pool, above it, in a partial-level cell above and below its top, no liquid in the registry, outside the
+  world, NaN); `UnderwaterFade` (ramps in and out in 0.1 s, exact 0 and 1, dt clamp, NaN dt); the fog
+  density gives 90 % at 12 blocks.
 - **Sandbox unit tests** (vitest, Node): `isModeKey`, `placementTarget`.
 - **e2e** `apps/sandbox/e2e/first-person.spec.ts` on a small world scene:
   - Camera mode: C gives `cameraMode === 'firstPerson'`.
@@ -239,6 +273,10 @@ A new file, `apps/sandbox/src/firstPerson.ts`, is wired in by small additive hun
   - Dig/place: `fp.dig` removes the centre block; `fp.place` into the player's own cell is refused.
   - Back to orbit: C gives an orbit target ≈ the player's feet.
   - Units scene: a first-person click submits nothing.
+  - Underwater: with the camera in a pool (first person and orbit) `engine.underwater` reaches 1, and
+    returns to 0 above the surface.
+  - Picture: above water, the frame is identical (0 px) to the branch before the stage.
   - The existing unit and e2e suites stay green.
 - **Feel/visual checkpoint** with the user, arranged by the expert: walk, sprint, jump, swim,
-  step-up, the first-person shadow reach 48, FOV 70.
+  step-up, the first-person shadow reach 48, FOV 70; then the underwater view (above/below shots at
+  the showcase pool in both modes).
