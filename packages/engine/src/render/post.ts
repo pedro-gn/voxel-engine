@@ -2,11 +2,13 @@ import * as THREE from 'three/webgpu'
 import { dot, mix, pass, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Atmosphere } from './atmosphere.ts'
 import { setLinear } from './lighting.ts'
+import type { WaterParams } from './settings.ts'
+import { createUnderwaterUniforms, setUnderwater, underwaterColor } from './underwater.ts'
 
 /** Tone mapping operator: Neutral was chosen at Checkpoint 1 because AgX muted the greens. */
 export const TONE_MAPPING = THREE.NeutralToneMapping
 
-/** Scene pass (with MSAA) → colour grading; the pipeline output then applies the renderer's tone mapping. */
+/** Scene pass (with MSAA) → underwater view → colour grading; the pipeline output then applies the renderer's tone mapping. */
 export class PostPipeline {
   private readonly renderer: THREE.WebGPURenderer
   private readonly scene: THREE.Scene
@@ -22,6 +24,7 @@ export class PostPipeline {
     highlights: uniform(new THREE.Color(1, 1, 1)),
     shadows: uniform(new THREE.Color(1, 1, 1)),
   }
+  private readonly underwater = createUnderwaterUniforms()
 
   constructor(renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera, samples: number) {
     this.renderer = renderer
@@ -39,6 +42,9 @@ export class PostPipeline {
     setLinear(this.u.highlights.value, a.grade.highlights)
     setLinear(this.u.shadows.value, a.grade.shadows)
   }
+
+  /** The underwater view's amount (0–1) and its colours; a uniform change, never a rebuild. */
+  setUnderwater(amount: number, water: WaterParams): void { setUnderwater(this.underwater, amount, water) }
 
   setSamples(n: number): void {
     if (n === this.samples) return
@@ -59,7 +65,7 @@ export class PostPipeline {
   private build(): THREE.RenderPipeline {
     const p = new THREE.RenderPipeline(this.renderer)
     const u = this.u
-    const c = this.scenePass.rgb.mul(u.exposure)
+    const c = underwaterColor(this.scenePass, this.underwater).mul(u.exposure)
     const luma = dot(c, vec3(0.2126, 0.7152, 0.0722))
     const sat = mix(vec3(luma), c, u.saturation)
     const con = sat.sub(0.18).mul(u.contrast).add(0.18).max(0)
