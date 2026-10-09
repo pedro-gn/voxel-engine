@@ -6,11 +6,13 @@ const port = Number(process.env.E2E_PORT ?? 5173)
 const channel = process.env.E2E_CHANNEL
 // Bench the production bundle after `npm run build`, retaining the isolation headers from vite.config.ts.
 const preview = process.env.E2E_PREVIEW === '1'
+// With E2E_PREVIEW, E2E_PREVIEW_DIR serves another build's dist (e.g. an A/B's A side from a detached worktree) on the same port.
+const previewDir = preview && process.env.E2E_PREVIEW_DIR ? ` --outDir "${process.env.E2E_PREVIEW_DIR}"` : ''
 
 export default defineConfig({
   testDir: 'e2e',
   timeout: 120_000,
   use: { baseURL: `http://localhost:${port}`, headless: true },
-  webServer: { command: `npm run ${preview ? 'preview' : 'dev'} -- --port ${port} --strictPort`, url: `http://localhost:${port}`, reuseExistingServer: true, timeout: 60_000 },
+  webServer: { command: `npm run ${preview ? 'preview' : 'dev'} -- --port ${port} --strictPort${previewDir}`, url: `http://localhost:${port}`, reuseExistingServer: true, timeout: 60_000 },
   projects: [{ name: 'chromium', use: { browserName: 'chromium', ...(channel ? { channel } : {}), launchOptions: { args: ['--enable-unsafe-webgpu'] } } }],
 })
