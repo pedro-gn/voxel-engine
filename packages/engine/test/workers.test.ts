@@ -780,6 +780,53 @@ describe('simulated workers', () => {
     expect(fresh!.effectivePriority).toBeLessThan(old!.effectivePriority)
     expect(sim.workers!.view(1)?.order).toBe(old!.id)
   })
+  it('lets a later small order progress next to a dig larger than the frontier, before aging could help it', () => {
+    const sim = make()
+    cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [27, 3, 27] })
+    cmd(sim, { type: 'workDig', min: [2, 3, 29], max: [5, 3, 29] })
+    // The units arrive next to the small order, so they take its cells as soon as the frontier holds them.
+    spawn(sim, [3, 4, 27]); spawn(sim, [5, 4, 27])
+    for (let i = 0; i < 90; i++) sim.step()
+    const [big, small] = sim.workers!.publication().orders
+    expect(big!.total).toBe(400)
+    expect(big!.done).toBeGreaterThan(0); expect(small!.done).toBeGreaterThan(0)
+  })
+  it('gives a high-priority order submitted while the frontier is full tasks on the next tick', () => {
+    const sim = make(); cmd(sim, { type: 'workDig', min: [0, 0, 0], max: [29, 0, 29] })
+    const w = sim.workers as unknown as { tasks: { order: { id: number } }[] }
+    expect(w.tasks).toHaveLength(256)
+    cmd(sim, { type: 'workDig', min: [0, 2, 0], max: [3, 2, 3], priority: 200 })
+    expect(w.tasks.filter(t => t.order.id === 2).length).toBeGreaterThan(0)
+    expect(w.tasks.length).toBeLessThanOrEqual(256)
+  })
+  it('parks a low-priority task before a high-priority one when a new order needs room', () => {
+    const sim = make()
+    cmd(sim, { type: 'workDig', min: [0, 0, 0], max: [29, 0, 9], priority: 64 })
+    cmd(sim, { type: 'workDig', min: [0, 1, 0], max: [29, 1, 9], priority: 200 })
+    const w = sim.workers as unknown as { tasks: { order: { id: number } }[]; share: Map<number, number> }, count = (id: number) => w.tasks.filter(t => t.order.id === id).length
+    // The first order filled the frontier alone; wait until parking has brought it down to its share.
+    until(sim, () => w.tasks.length === 256 && count(1) === w.share.get(1))
+    const low = count(1), high = count(2)
+    cmd(sim, { type: 'workDig', min: [0, 2, 0], max: [29, 2, 9], priority: 128 })
+    expect(count(3)).toBeGreaterThan(0)
+    expect(count(1)).toBeLessThan(low); expect(count(2)).toBe(high)
+  })
+  it('parks the tasks of an order within its share only after 100 ticks without crew', () => {
+    const sim = make(); spawn(sim)
+    cmd(sim, { type: 'workDig', min: [0, 0, 0], max: [29, 0, 29], ids: [1] })
+    cmd(sim, { type: 'unitCancel', ids: [1] })
+    const w = sim.workers as unknown as { park(): boolean }
+    for (let i = 0; i < 90; i++) sim.step()
+    expect(w.park()).toBe(false)
+    for (let i = 0; i < 20; i++) sim.step()
+    expect(w.park()).toBe(true)
+  })
+  it('hashes when an order last had an eligible worker', () => {
+    const sim = make(); spawn(sim); cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [8, 3, 8], ids: [1] })
+    const o = (sim.workers as unknown as { orders: { noCrewSince: number }[] }).orders[0]!, before = sim.hash()
+    expect(o.noCrewSince).toBe(-1)
+    o.noCrewSince = 3; expect(sim.hash()).not.toBe(before)
+  })
   it('hashes the tick an order last progressed', () => {
     const sim = make(ctx => ctx.set(8, 4, 5, 1)); spawn(sim); cmd(sim, { type: 'workDig', min: [8, 4, 5], max: [8, 4, 5] })
     const o = (sim.workers as unknown as { orders: { idleSince: number }[] }).orders[0]!, before = sim.hash()

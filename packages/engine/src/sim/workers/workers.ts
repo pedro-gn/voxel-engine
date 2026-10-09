@@ -6,7 +6,7 @@ import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { walkSweep } from './walkSweep.ts'
-import { effectivePriority } from './frontier.ts'
+import { NO_CREW_TICKS, effectivePriority, parkChoice, shares } from './frontier.ts'
 import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
 
 export interface WorkerPort {
@@ -43,6 +43,8 @@ interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
   cursor: number; ids: Set<number> | null; priority: number; parked: number[]; parkedRevision: number
   /** The tick of the order's last progress (creation or a task done); its effective priority ages from here. */
   idleSince: number
+  /** The tick since which no eligible unit could take the order's tasks; -1 while one can. */
+  noCrewSince: number
   /**
    * Build only. Each layer is placed inside-out, ring by ring (ring 0 is the border), so an inner cell is reached from
    * unbuilt outer cells of the same layer. ringPending counts cells left per layer×ring; floor/ring are the current ones;
@@ -71,12 +73,14 @@ export class WorkerSystem {
   readonly units = new Map<number, Unit>()
   private orders: Order[] = []
   /** Failure history of parked tasks by voxel, so a task returning to the frontier is not retried from scratch. */
-  private parkedFailures = new Map<number, { reason: WorkBlockReason; failures: Map<number, TaskFailure> }>()
+  private parkedFailures = new Map<number, { reason: WorkBlockReason | undefined; failures: Map<number, TaskFailure> }>()
   /** Active build designations and their union box, refreshed whenever one starts or ends. */
   private reservations: Order[] = []
   private reservedMin: [number, number, number] = [0, 0, 0]
   private reservedMax: [number, number, number] = [-1, -1, -1]
   private tasks: Task[] = []
+  /** Frontier slots per order id, recomputed from hashed state at every expansion. */
+  private share = new Map<number, number>()
   private targets = new Set<number>()
   private workPositions = new Map<number, number>()
   private occupied = new Map<number, number>()
@@ -312,7 +316,7 @@ export class WorkerSystem {
         for (let i = 0; i < ringPending.length; i++) { const r = i % rings; ringPending[i] = inner(sx, sz, r) - inner(sx, sz, r + 1) }
       }
       const o: Order = { id: this.nextOrder++, kind: c.type === 'workDig' ? 'dig' : 'build', min: [...c.min] as Vec3, max: [...c.max] as Vec3, voxel, total, done: 0, pending: total, cancelled: false, cursor: 0, ids: c.ids === undefined ? null : new Set(ids.map(u => u.id)), priority: c.priority ?? 128, parked: [], parkedRevision: -1,
-        ringPending, rings, floor: 0, ring: rings - 1, progress: this.time, stalled: false, idleSince: this.time }
+        ringPending, rings, floor: 0, ring: rings - 1, progress: this.time, stalled: false, idleSince: this.time, noCrewSince: -1 }
       for (const u of c.ids === undefined ? this.units.values() : ids) { u.available = true; this.dirty.add(u.id) }
       this.revision++; this.orders.push(o); if (o.kind === 'build') this.buildReservationsChanged(o); this.port.emit('workOrdered', { id: o.id }); return
     }
@@ -508,29 +512,50 @@ export class WorkerSystem {
     if (j < 2 * w + d - 2) return [x1 - (j - w - d + 2), y, z1]
     return [x0, y, z1 - (j - 2 * w - d + 3)]
   }
-  /** Moves the oldest unclaimed task that no unit could take back to its order so the bounded frontier can hold other cells. */
-  private park(): boolean {
-    const t = this.tasks.find(t => !t.claim && t.added < this.time && (t.reason !== undefined || !this.hasWorker(t.order)))
-    if (!t) return false
-    this.tasks = this.tasks.filter(q => q !== t); this.targets.delete(t.p); t.order.parked.push(t.i)
+  /** Frontier tasks per order, all of them or only the live ones (not blocked); blocked tasks never count against a share. */
+  private held(live: boolean): Map<Order, number> { const held = new Map<Order, number>(); for (const t of this.tasks) if (!live || t.reason === undefined) held.set(t.order, (held.get(t.order) ?? 0) + 1); return held }
+  /** Blocked, beyond its order's share, or its order without crew for a while; never a task added this tick. */
+  private parkable(t: Task, live: ReadonlyMap<Order, number>): boolean {
+    const o = t.order
+    return t.added < this.time && (t.reason !== undefined || (live.get(o) ?? 0) > (this.share.get(o.id) ?? Infinity) || o.noCrewSince >= 0 && this.time - o.noCrewSince >= NO_CREW_TICKS)
+  }
+  /** Moves an unclaimed parkable task back to its order, lowest effective priority first, so the bounded frontier can hold other cells. */
+  private park(live = this.held(true)): boolean {
+    const k = parkChoice(this.tasks.map(t => ({ i: t.i, priority: this.effective(t.order), added: t.added, claimed: t.claim !== 0, parkable: this.parkable(t, live) })))
+    if (k < 0) return false
+    const t = this.tasks[k]!
+    this.tasks.splice(k, 1); this.targets.delete(t.p); t.order.parked.push(t.i)
+    if (t.reason === undefined) live.set(t.order, live.get(t.order)! - 1)
+    // A task parked only to make room has no history worth keeping.
+    this.parkedFailures.delete(t.p)
+    if (t.reason === undefined && !t.failures.size) return true
     if (this.parkedFailures.size >= MAX_PARKED_FAILURES) this.parkedFailures.delete(this.parkedFailures.keys().next().value!)
-    this.parkedFailures.delete(t.p); this.parkedFailures.set(t.p, { reason: t.reason!, failures: t.failures })
+    this.parkedFailures.set(t.p, { reason: t.reason, failures: t.failures })
     return true
   }
   private effective(o: Order): number { return effectivePriority(o.priority, o.idleSince, this.time) }
   private hasWorker(o: Order): boolean {
     return !o.ids || [...o.ids].some(id => { const u = this.units.get(id); return u !== undefined && u.available && u.state !== 'incapacitated' })
   }
+  /** Cells the order could still add to the frontier: fresh ones up to the build ring gate, and parked ones. */
+  private exposable(o: Order): number {
+    let end = o.total
+    if (o.ringPending && !o.stalled) { const sx = o.max[0] - o.min[0] + 1, sz = o.max[2] - o.min[2] + 1; end = Math.min(o.total, o.floor * sx * sz + inner(sx, sz, o.ring)) }
+    return Math.max(0, end - o.cursor) + o.parked.length
+  }
   private expand(): void {
     let cap = 256, parks = MAX_PARKS
     const active = this.orders.filter(o => !o.cancelled && o.done < o.total).sort((a, b) => this.effective(b) - this.effective(a) || a.id - b.id)
-    for (const o of active) while (cap > 0 && (o.cursor < o.total || o.parked.length)) {
+    const held = this.held(false), live = this.held(true)
+    for (const o of active) o.noCrewSince = this.hasWorker(o) ? -1 : o.noCrewSince < 0 ? this.time : o.noCrewSince
+    this.share = shares(active.map(o => ({ id: o.id, weight: this.effective(o), open: (held.get(o) ?? 0) + this.exposable(o) })), MAX_TASKS)
+    for (const o of active) while (cap > 0 && (live.get(o) ?? 0) < this.share.get(o.id)! && (o.cursor < o.total || o.parked.length)) {
       const fresh = o.cursor < o.total
       // A build only exposes cells it may work on now, so later rings never crowd the current one out of the frontier.
       if (fresh && o.ringPending && !o.stalled) { const next = this.cell(o, o.cursor); if (next[1] - o.min[1] > o.floor || next[1] - o.min[1] === o.floor && this.ringOf(o, next[0], next[2]) < o.ring) break }
       if (this.tasks.length >= MAX_TASKS) {
         // Parked cells come back through a full frontier only after something that could unblock them changed.
-        if (!fresh && o.parkedRevision === this.revision || parks <= 0 || !this.park()) break
+        if (!fresh && o.parkedRevision === this.revision || parks <= 0 || !this.park(live)) break
         parks--
       }
       if (!fresh) o.parkedRevision = this.revision
@@ -541,7 +566,7 @@ export class WorkerSystem {
       if (this.targets.has(p)) { if (fresh) o.cursor--; else o.parked.unshift(i); break }
       const history = fresh ? undefined : this.parkedFailures.get(p)
       if (history) { this.parkedFailures.delete(p); t.reason = history.reason; t.failures = history.failures }
-      this.targets.add(p); this.tasks.push(t)
+      this.targets.add(p); this.tasks.push(t); if (t.reason === undefined) live.set(o, (live.get(o) ?? 0) + 1)
     }
   }
   private assign(): void {
@@ -777,7 +802,7 @@ export class WorkerSystem {
         if (a.kind === 'walk') { const p = this.port.layout.voxelIndex(...a.pos); if (this.beginMotion(u, p)) u.actionCursor++; continue }
         const p = this.port.layout.voxelIndex(...a.pos)
         if (this.targets.has(p)) { this.block(u, 'traffic'); continue }
-        const order: Order = { id: -u.id, kind: a.kind, min: a.pos, max: a.pos, voxel: a.voxel, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false, idleSince: this.time }
+        const order: Order = { id: -u.id, kind: a.kind, min: a.pos, max: a.pos, voxel: a.voxel, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false, idleSince: this.time, noCrewSince: -1 }
         const t: Task = { order, i: 0, p, pos: a.pos, expected: this.port.get(...a.pos), claim: u.id, added: this.time, failures: new Map() }
         if (this.satisfied(t)) { u.actionCursor++; continue }
         if (!this.canWork(this.pose(u), t)) { this.block(u, 'unsafe'); continue }
@@ -849,7 +874,7 @@ export class WorkerSystem {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }
     const order = (o: Order) => {
       mix(o.id); mix(o.kind === 'dig' ? 1 : 2); mix(o.cursor); mix(o.total); mix(o.done); mix(o.pending); mix(o.cancelled ? 1 : 0); mix(o.voxel); mix(o.priority); reason(o.reason)
-      numbers(o.min); numbers(o.max); mix(o.ids?.size ?? -1); for (const id of o.ids ?? []) mix(id); numbers(o.parked); mix(o.parkedRevision); mix(o.rings); mix(o.floor); mix(o.ring); mix(o.progress); mix(o.stalled ? 1 : 0); numbers([...(o.ringPending ?? [])]); mix(o.idleSince)
+      numbers(o.min); numbers(o.max); mix(o.ids?.size ?? -1); for (const id of o.ids ?? []) mix(id); numbers(o.parked); mix(o.parkedRevision); mix(o.rings); mix(o.floor); mix(o.ring); mix(o.progress); mix(o.stalled ? 1 : 0); numbers([...(o.ringPending ?? [])]); mix(o.idleSince); mix(o.noCrewSince)
     }
     const failures = (map: Map<number, TaskFailure>) => {
       mix(map.size)
