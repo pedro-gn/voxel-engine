@@ -15,7 +15,7 @@ function finish(nav: NavigationSystem, start: number, goal: number, budget = 7) 
   return s.result()
 }
 
-it('reconstructs every local step of long portal shortcuts with exact cost', () => {
+it('reconstructs every local step of a long flat route with exact cost', () => {
   const { nav, layout } = fixture(128)
   const r = finish(nav, layout.voxelIndex(2, 4, 2), layout.voxelIndex(125, 4, 125))
   expect(r.status).toBe('found'); expect(r.cost).toBe(246 * 4); expect(r.path).toHaveLength(247)

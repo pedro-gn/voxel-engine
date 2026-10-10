@@ -36,6 +36,14 @@ _Avoid_: Target block, nearest empty voxel
 A walk, dig or placement step with explicit prerequisites. Local engineering plans simulate edits without writing the world; execution validates them again.
 _Avoid_: Unconditional waypoint, teleport
 
+**Portal**:
+A run of crossings from one 16³ navigation region into a neighbouring one, stood for by its middle crossing; one-way when it drops.
+_Avoid_: Door, waypoint
+
+**Reservation window**:
+The 32 ticks of (cell, tick) pairs a walking unit reserves ahead of itself; a unit standing still holds its cells with no end.
+_Avoid_: Lock, path claim
+
 **Underwater view**:
 The screen effect shown while the camera, in either camera mode, is under the voxel water level: short-range fog, a blue-green tint and a slight wobble.
 _Avoid_: Underwater fog (scene fog is untouched), water tint (the water material's colour)
