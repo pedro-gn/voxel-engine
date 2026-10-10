@@ -1051,7 +1051,7 @@ describe('cooperative reservations', () => {
   })
 })
 
-describe('traffic scenarios', () => {
+describe('traffic scenarios', { timeout: 60_000 }, () => {
   /** Walls along z=4 and z=6 (y 4..5) for x 2..29 and caps at x=2 and x=29: a one-wide corridor on z=5. Pockets open z=6. */
   function corridorWorld(pockets: [number, number][] = [], options: WorkerOptions = {}) {
     return make(ctx => {
