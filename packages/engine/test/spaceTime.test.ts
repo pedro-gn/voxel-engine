@@ -95,3 +95,10 @@ it('with a refuge it ends only off the route, holding there to the window’s en
   const none = run(new SpaceTimeSearch(corridor(['........']).port, table, 1, idx(2, 0), 0, [], 8, 4096, p => !route.has(p)))
   expect(none.status).toBe('failed')
 })
+it('does not end on a pocket someone else needs after the window', () => {
+  const { port, idx } = corridor(['........', 'P#######']), table = new ReservationTable(32)
+  for (let t = 1; t <= 32; t++) table.reserve(2, t, [1, 2, 3, 4, 5, 6, 7].map(x => idx(x, 0)))
+  for (let t = 33; t < 64; t++) table.reserve(2, t, [idx(0, 0)])
+  const s = run(new SpaceTimeSearch(port, table, 1, idx(0, 0), 0, [idx(7, 0)]))
+  expect(s.status).toBe('found'); expect(s.plan!.steps.at(-1)!.pose).toBe(idx(0, 1)); expect(s.plan!.rejoin).toBe(-1)
+})

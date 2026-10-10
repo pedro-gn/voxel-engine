@@ -21,7 +21,8 @@ const STATUSES: readonly SpaceTimeStatus[] = ['pending', 'found', 'failed']
 /**
  * A* over (pose, tick) inside a box around the start, against another owners' reservations. Every state's cost is
  * the ticks elapsed; the heuristic adds the estimated walk to the end of `targets`. The search ends on the last
- * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket). With a
+ * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket, valid only
+ * if no one else has its cells for the rest of the table's horizon). With a
  * `refuge` predicate it ends only at the window's end on a refuge pose: a way out of someone else's route.
  */
 export class SpaceTimeSearch {
@@ -93,6 +94,12 @@ export class SpaceTimeSearch {
     }
     return top
   }
+  /** A pocket is stood on after the window: nobody else may have its cells for the rest of the table's horizon. */
+  private holdable(p: number): boolean {
+    const cells = this.port.cellsOf(p)
+    for (let t = this.end + 1; t < this.table.now + 2 * this.table.window; t++) if (!this.table.free(this.owner, t, cells)) return false
+    return true
+  }
   private inBox(q: number): boolean {
     const [x, y, z] = this.port.coords(q), [ox, oy, oz] = this.origin
     return Math.abs(x - ox) <= this.radius && Math.abs(z - oz) <= this.radius && Math.abs(y - oy) <= 4
@@ -122,7 +129,7 @@ export class SpaceTimeSearch {
       if (this.expanding < 0) {
         if (!this.heap.length) { this.status = 'failed'; break }
         const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!
-        if (this.refuge ? t >= this.end && this.refuge(p) : t >= this.end || this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
+        if (t >= this.end ? (this.refuge ? this.refuge(p) : true) && (this.targets.includes(p) || this.holdable(p)) : this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
         if (t >= this.end) continue
         this.expanding = id; this.action = 0
         continue
