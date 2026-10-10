@@ -203,12 +203,17 @@ scenarios, for the user's visual checkpoint.
 |---|---|
 | Workers' share of the tick, 1,000 units walking | p95 ≤ 4 ms, max ≤ 12 ms; whole tick p95 ≤ 15 ms |
 | Time to first action | p95 ≤ 1 s with 1,000 simultaneous orders; ≤ 250 ms with 100 |
-| Arrival | ≥ 99% of reachable destinations within 60 s of sim time; zero false `unreachable` |
+| Arrival | ≥ 99% of reachable destinations within each unit's ideal walk time + 60 s of sim time; zero false `unreachable` (corrected 2026-10-09, see below) |
 | Route quality | mean ≤ 1.10×, p95 ≤ 1.25× of the exact cost |
 | Bottlenecks | every unit arrives; zero overlaps |
 | Regressions | all unit and e2e suites green, replay hashes stable, the living benchmark no worse |
 
 Plus: nothing visible changes without a checkpoint with the user (playback smoothness and the crowd scene).
+
+Correction, 2026-10-09, approved by the user: the arrival target first read "within 60 s of sim time". That was a
+spec error: units walk 5 blocks/s, so the 200–800-block moves of the benchmark take 40–160 s of walking alone. A unit's
+ideal walk time is the cost in ticks of an exact flat A* under the live policy from its pose to its destination; the
+benchmark phases run long enough to cover the longest moves.
 
 ## 8. Process and deliverables
 
