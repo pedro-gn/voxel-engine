@@ -1200,6 +1200,23 @@ describe('traffic scenarios', () => {
     expect(routed).toBe(true)
     allReach(sim, targets, 2000)
   })
+  it('twenty a side cross a 96-long two-wide corridor on hierarchical routes', () => {
+    // Both groups start head-on in the z=5 lane, 50 blocks apart, and end in the z=6 lane 70 blocks along.
+    const sim = new Simulation({ buffers: createWorldBuffers([96, 32, 32]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx, cx) {
+      for (let z = 0; z < 32; z++) for (let lx = 0; lx < 32; lx++) {
+        const x = cx * 32 + lx
+        for (let y = 0; y < 4; y++) ctx.set(lx, y, z, 1)
+        if ((z === 4 || z === 7) && x >= 2 && x <= 93 || (z === 5 || z === 6) && (x === 2 || x === 93)) for (let y = 4; y < 6; y++) ctx.set(lx, y, z, 1)
+      }
+    } })
+    const orders = new Map<number, number>()
+    for (let x = 3; x < 23; x++) orders.set(spawn(sim, [x, 4, 5]), x + 70)
+    for (let x = 73; x < 93; x++) orders.set(spawn(sim, [x, 4, 5]), x - 70)
+    for (const [id, x] of orders) sim.submit(0, ++seq, { type: 'unitMove', ids: [id], pos: [x, 4, 6] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    allReach(sim, goals(sim), 5000)
+  }, 60_000)
   it('churn: walls dropped on the route ahead never trap a body, and every unit arrives or finds its goal sealed', () => {
     const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 128]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
     sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
