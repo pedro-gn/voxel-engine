@@ -1015,6 +1015,22 @@ describe('cooperative reservations', () => {
     for (let i = 0; i < 600 && sim.workers!.view(1)?.state !== 'idle'; i++) { sim.step(); noOverlap(sim, i) }
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128 })
   })
+  it('nodes appended to the path extend the projection from where it stood at the old end', () => {
+    const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [10, 4, 5] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking')
+    const u = sim.workers!.units.get(1)!, t = sim.workers!.table, L = sim.layout
+    until(sim, () => u.projection !== null && u.projection.endAt >= 0)
+    const pr = u.projection!, endAt = pr.endAt
+    expect(t.owner(L.voxelIndex(10, 4, 5), t.now + 31)).toBe(1)
+    // A route refined one more segment: same array, longer.
+    u.path.push(...[11, 12, 13, 14].map(x => L.voxelIndex(x, 4, 5))); u.goal = L.voxelIndex(14, 4, 5)
+    sim.step()
+    expect(u.projection).toBe(pr)
+    expect(Array.from({ length: 32 }, (_, k) => t.owner(L.voxelIndex(12, 4, 5), t.now + k))).toContain(1)
+    expect(t.owner(L.voxelIndex(10, 4, 5), endAt + 20)).toBe(0)
+    until(sim, () => sim.workers!.view(1)?.state === 'idle')
+    expect(sim.workers!.view(1)?.x256).toBe(14 * 256 + 128)
+  })
   it('hashes the reservation table, projections and conflicts', () => {
     const sim = make(); spawn(sim); cmd(sim, { type: 'unitMove', ids: [1], pos: [25, 4, 5] })
     until(sim, () => sim.workers!.view(1)?.state === 'walking')

@@ -27,7 +27,11 @@ type Motion = { from: number; to: number; cursor: number; start: [number, number
  * project. `end` and `first` are the tick the in-flight motion ends and the node the projection steps to next; a
  * motion that begins there toward that single node keeps the projection. `path` and `motion` mark what it was made for.
  */
-interface Projection { cursor: number; pose: [number, number, number]; t: number; end: number; first: number; path: readonly number[]; motion: Motion | null; stood: boolean }
+interface Projection {
+  cursor: number; pose: [number, number, number]; t: number; end: number; first: number; path: readonly number[]; motion: Motion | null; stood: boolean
+  /** Path length it was made for, and the tick it started standing at the path's end (-1 before): nodes appended later resume from there. */
+  len: number; endAt: number
+}
 interface Unit {
   available: boolean
   validatedWorld: number; validatedPose: [number, number, number]
@@ -1019,11 +1023,16 @@ export class WorkerSystem {
     if (m && pr && pr.motion !== m && pr.path === u.path && T === pr.end && m.cursor === pr.first + 1 && m.to === u.path[pr.first] && m.elapsed === 0) {
       pr.motion = m; pr.end = T + m.ticks; pr.first = m.cursor; if (pr.cursor < m.cursor) pr.cursor = m.cursor
     }
+    // Nodes appended to the same path (a route refined segment by segment) resume from where it stood at the old end.
+    if (pr && pr.path === u.path && u.path.length !== pr.len) {
+      if (u.path.length < pr.len) pr = null
+      else { if (pr.endAt >= 0) { this.table.releaseFrom(u.id, pr.endAt + 1); pr.t = pr.endAt; pr.endAt = -1; pr.stood = false } pr.len = u.path.length }
+    }
     if (pr && (pr.motion !== m || pr.path !== u.path || pr.t < T)) pr = null
     if (!pr) {
       this.table.releaseFrom(u.id, T + 1)
       const cursor = m ? m.cursor : u.cursor
-      pr = u.projection = { cursor, pose: [u.x, u.y, u.z], t: T, end: m ? T + m.ticks - m.elapsed : T, first: cursor, path: u.path, motion: m, stood: false }
+      pr = u.projection = { cursor, pose: [u.x, u.y, u.z], t: T, end: m ? T + m.ticks - m.elapsed : T, first: cursor, path: u.path, motion: m, stood: false, len: u.path.length, endAt: -1 }
     }
     u.conflict = null
     if (pr.stood) { this.table.releaseFrom(u.id, pr.t + 1); pr.stood = false }
@@ -1034,6 +1043,7 @@ export class WorkerSystem {
     }
     while (pr.t < limit) {
       const to = u.path[pr.cursor], start = pr.pose
+      if (to === undefined && pr.endAt < 0) pr.endAt = pr.t
       if (to === undefined || pr.t < (this.untilAt(u, pr.cursor - 1) ?? -1)) { if (!this.claim(u, pr.t + 1, this.body(...start))) return this.stand(u, pr); pr.t++; continue }
       const ticks = this.stepTicks(start, to), [tx, , tz] = L.voxelCoords(to), from = pr.t
       if (L.voxelCoords(to)[1] * 256 === start[1]) {
@@ -1313,7 +1323,7 @@ export class WorkerSystem {
       mix(u.motion ? 1 : 0)
       if (u.motion) { mix(u.motion.from); mix(u.motion.to); mix(u.motion.cursor); mix(u.motion.flat ? 1 : 0); mix(u.motion.elapsed); mix(u.motion.ticks); numbers(u.motion.start); numbers(u.motion.cells); numbers([...(u.motion.area ?? [])]) }
       const pr = u.projection
-      mix(pr ? 1 : 0); if (pr) { mix(pr.cursor); numbers(pr.pose); mix(pr.t); mix(pr.end); mix(pr.first); mix(pr.stood ? 1 : 0) }
+      mix(pr ? 1 : 0); if (pr) { mix(pr.cursor); numbers(pr.pose); mix(pr.t); mix(pr.end); mix(pr.first); mix(pr.stood ? 1 : 0); mix(pr.len); mix(pr.endAt) }
       mix(u.conflict ? 1 : 0); if (u.conflict) { mix(u.conflict.t); mix(u.conflict.owner) }
       mix(u.stuck); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : [])
       mix(u.repair ? 1 : 0); u.repair?.mixState(mix)
