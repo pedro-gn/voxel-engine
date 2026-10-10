@@ -148,3 +148,30 @@ it('concurrent cold routes over the same tiles share the region builds', () => {
   expect(shared).toBeLessThan(single * 1.3)
   expect(many.nav.building.size).toBe(0)
 })
+it('cancel keeps a settled status and cancels only a pending search', () => {
+  const { nav, layout, solid } = fixture(128)
+  for (let x = 98; x <= 102; x++) for (let z = 98; z <= 102; z++) if (x === 98 || x === 102 || z === 98 || z === 102) for (let y = 4; y < 8; y++) solid.add(layout.voxelIndex(x, y, z))
+  const store = new RegionStore(nav), start = layout.voxelIndex(5, 4, 5)
+  const found = route(nav, store, start, [layout.voxelIndex(60, 4, 60)])
+  const unreachable = route(nav, store, start, [layout.voxelIndex(100, 4, 100)])
+  const limited = route(nav, store, start, [layout.voxelIndex(120, 4, 120)], 512, { maxNodes: 2 })
+  const stale = new RouteSearch(nav, store, start, [layout.voxelIndex(60, 4, 60)])
+  stale.step(10); nav.invalidate(5, 4, 5); while (stale.status === 'pending') stale.step(4096)
+  for (const [s, status] of [[found, 'found'], [unreachable, 'unreachable'], [limited, 'limited'], [stale, 'stale']] as const) { s.cancel(); expect(s.status).toBe(status) }
+  const pending = new RouteSearch(nav, store, layout.voxelIndex(5, 4, 120), [layout.voxelIndex(120, 4, 5)])
+  pending.step(5); pending.cancel()
+  expect(pending.status).toBe('cancelled')
+})
+it('a cancelled search frees a shared build only when it was its last reader', () => {
+  const { nav, layout } = fixture(64), store = nav.regions
+  const a = new RouteSearch(nav, store, layout.voxelIndex(5, 4, 5), [layout.voxelIndex(60, 4, 60)])
+  const b = new RouteSearch(nav, store, layout.voxelIndex(6, 4, 5), [layout.voxelIndex(60, 4, 60)])
+  a.step(50); b.step(50)
+  expect(nav.building.size).toBe(1)
+  const job = [...nav.building.values()][0]!
+  a.cancel(); expect(nav.building.get(job.index)).toBe(job)
+  b.cancel(); expect(nav.building.size).toBe(0)
+  // A new search starts the tile over and finishes it.
+  const c = route(nav, store, layout.voxelIndex(5, 4, 5), [layout.voxelIndex(60, 4, 60)])
+  expect(c.status).toBe('found'); expect(nav.building.size).toBe(0)
+})
