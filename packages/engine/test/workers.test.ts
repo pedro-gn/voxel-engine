@@ -655,6 +655,10 @@ describe('simulated workers', () => {
     nav.request = (start, goals, blocked, options) => { largest = Math.max(largest, blocked?.size ?? 0); return request(start, goals, blocked, options) }
     cmd(sim, { type: 'unitMove', ids: [1], pos: [12, 4, 5] }); cmd(sim, { type: 'unitMove', ids: [2], pos: [5, 4, 5] })
     until(sim, () => [1, 2].every(id => sim.workers!.view(id)?.state === 'idle'), 600)
+    // Space-time repairs now settle this head-on without a detour, so the detour is forced to check its blocked set.
+    cmd(sim, { type: 'unitMove', ids: [2], pos: [20, 4, 5] })
+    const u = sim.workers!.units.get(2)!; u.wait = 80
+    ;(sim.workers as unknown as { yield(u: unknown): void }).yield(u)
     expect(largest).toBeGreaterThan(0); expect(largest).toBeLessThanOrEqual(8 * 4)
   })
   it('builds a two-layer slab inside-out from scaffold cells of its own layer', () => {
@@ -796,7 +800,8 @@ describe('cooperative reservations', () => {
     const t = sim.workers!.table
     for (let i = 0; i < 600; i++) {
       sim.step(); noOverlap(sim, i)
-      for (const u of sim.workers!.units.values()) for (const p of u.cells) { const o = t.owner(p, t.now); expect(o === 0 || o === u.id, `cell ${p} tick ${i} owned by ${o}`).toBe(true) }
+      // A motion that began this tick holds the cells of its first move, which happens next tick.
+      for (const u of sim.workers!.units.values()) for (const p of u.cells) { const o = t.owner(p, t.now + (u.motion?.elapsed === 0 ? 1 : 0)); expect(o === 0 || o === u.id, `cell ${p} tick ${i} owned by ${o}`).toBe(true) }
     }
     expect([1, 2].map(id => sim.workers!.view(id)?.state)).toEqual(['idle', 'idle'])
   })
@@ -839,5 +844,121 @@ describe('cooperative reservations', () => {
     cmd(sim, { type: 'setBlock', pos: [5, 12, 9], voxel: 4 })
     until(sim, () => sim.workers!.view(2)?.state === 'incapacitated')
     expect(t.heldBy(2)).toEqual([]); expect(t.size).toBe(0)
+  })
+})
+
+describe('traffic scenarios', () => {
+  /** Walls along z=4 and z=6 (y 4..5) for x 2..29 and caps at x=2 and x=29: a one-wide corridor on z=5. Pockets open z=6. */
+  function corridorWorld(pockets: [number, number][] = [], options: WorkerOptions = {}) {
+    return make(ctx => {
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); if (!pockets.some(([px, pz]) => px === x && pz === 6)) ctx.set(x, y, 6, 1) }
+      for (let y = 4; y < 6; y++) { ctx.set(2, y, 5, 1); ctx.set(29, y, 5, 1); for (const [px] of pockets) ctx.set(px, y, 7, 1) }
+    }, options)
+  }
+  function noOverlap(sim: Simulation, tick: number) {
+    const seen = new Map<number, number>()
+    for (const u of sim.workers!.units.values()) for (const p of u.cells) { expect(seen.get(p), `cell ${p} tick ${tick}`).toBeUndefined(); seen.set(p, u.id) }
+  }
+  const busy = (sim: Simulation) => [...sim.workers!.units.values()].some(u => u.goal !== null)
+  /** Each unit's destination as the move order assigned it (a destination another unit stands on moves to the nearest free pose). */
+  const goals = (sim: Simulation) => new Map([...sim.workers!.units.values()].flatMap(u => u.goal === null ? [] : [[u.id, sim.layout.voxelCoords(u.goal)] as const]))
+  function arrived(sim: Simulation, targets: Map<number, readonly number[]>) {
+    for (const [id, [x, y, z]] of targets) expect(sim.workers!.view(id), `unit ${id}`).toMatchObject({ state: 'idle', x256: x! * 256 + 128, y256: y! * 256, z256: z! * 256 + 128 })
+  }
+  function headOn(pocket: boolean) {
+    const sim = corridorWorld(pocket ? [[15, 6]] : []); spawn(sim, [3, 4, 5]); spawn(sim, [28, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] }); cmd(sim, { type: 'unitMove', ids: [2], pos: [3, 4, 5] })
+    return sim
+  }
+  it('two units meet head-on in a one-wide corridor with a pocket and both arrive', () => {
+    const sim = headOn(true), targets = goals(sim)
+    expect(targets.get(1)![0]).toBeGreaterThanOrEqual(27); expect(targets.get(2)![0]).toBeLessThanOrEqual(4)
+    for (let i = 0; i < 1500 && busy(sim); i++) { sim.step(); noOverlap(sim, i) }
+    arrived(sim, targets)
+  })
+  it('despawning a unit mid-corridor frees its reservations at once', () => {
+    const sim = corridorWorld(); spawn(sim, [3, 4, 5]); cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    until(sim, () => (sim.workers!.view(1)?.x256 ?? 0) > 10 * 256)
+    cmd(sim, { type: 'unitDespawn', ids: [1] })
+    const t = sim.workers!.table
+    expect(t.horizon(1)).toBe(t.now - 1)
+    for (let x = 3; x <= 28; x++) expect(t.owner(sim.store.layout.voxelIndex(x, 4, 5), t.now + 1)).toBe(0)
+  })
+  /** Every unit stands idle at its assigned destination at some tick within the bound (arrived units may later make way). */
+  function allReach(sim: Simulation, targets: Map<number, readonly number[]>, bound: number) {
+    const reached = new Set<number>()
+    for (let i = 0; i < bound && reached.size < targets.size; i++) {
+      sim.step(); noOverlap(sim, i)
+      for (const [id, [x, y, z]] of targets) { const v = sim.workers!.view(id)!; if (v.state === 'idle' && v.x256 >> 8 === x && v.y256 >> 8 === y && v.z256 >> 8 === z) reached.add(id) }
+    }
+    expect([...targets.keys()].filter(id => !reached.has(id)), 'units that never reached their destination').toEqual([])
+  }
+  it('two groups of seven cross in a two-wide corridor', () => {
+    // Both groups start head-on in the z=5 lane and end in the z=6 lane, so every destination is free when ordered.
+    // Ten a side gridlocks: both fronts fill both lanes and no unit has a refuge (a known limit, see the report).
+    const sim = make(ctx => {
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
+      for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    })
+    const orders = new Map<number, number>()
+    for (let x = 3; x <= 9; x++) orders.set(spawn(sim, [x, 4, 5]), x + 16)
+    for (let x = 22; x <= 28; x++) orders.set(spawn(sim, [x, 4, 5]), x - 16)
+    // All orders in one tick, so no unit has moved onto another's destination yet.
+    for (const [id, x] of orders) sim.submit(0, ++seq, { type: 'unitMove', ids: [id], pos: [x, 4, 6] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    const targets = goals(sim)
+    expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, x]) => [id, x, 6]))
+    allReach(sim, targets, 2000)
+  })
+  it('four units cross an X of one-wide corridors', () => {
+    const sim = make(ctx => {
+      for (let x = 2; x <= 29; x++) for (let z = 2; z <= 29; z++) if (!(x === 16 && z >= 3 && z <= 28 || z === 16 && x >= 3 && x <= 28)) for (let y = 4; y < 6; y++) ctx.set(x, y, z, 1)
+    })
+    const ends: [number, number][] = [[16, 3], [16, 28], [3, 16], [28, 16]]
+    for (const [x, z] of ends) spawn(sim, [x, 4, z])
+    ends.forEach(([x, z], i) => cmd(sim, { type: 'unitMove', ids: [i + 1], pos: [x === 16 ? 16 : 31 - x, 4, z === 16 ? 16 : 31 - z] }))
+    allReach(sim, goals(sim), 1500)
+  })
+  it('an idle unit standing in the corridor steps aside and the walker arrives', () => {
+    const sim = corridorWorld([[14, 6]]); spawn(sim, [3, 4, 5]); spawn(sim, [15, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    const two = sim.workers!.units.get(2)!
+    for (let i = 0; i < 1500 && busy(sim); i++) { sim.step(); noOverlap(sim, i) }
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128 })
+    for (let i = 0; i < 100 && sim.workers!.busy; i++) sim.step()
+    expect(two.state).toBe('idle')
+  })
+  it('a unit working in a passage is never displaced, and the walker passes after it', () => {
+    const sim = corridorWorld([[16, 6]], { materials: { stone: { digTicks: 120 } } }); spawn(sim, [3, 4, 5]); spawn(sim, [15, 4, 5])
+    cmd(sim, { type: 'workDig', min: [15, 4, 4], max: [15, 4, 4], ids: [2] })
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    const two = sim.workers!.units.get(2)!
+    let last = -1, done = false
+    for (let i = 0; i < 1500 && (busy(sim) || !done); i++) {
+      sim.step(); noOverlap(sim, i)
+      if (!done) {
+        done = sim.store.getVoxel(15, 4, 4) === 0
+        if (!done && two.state === 'working') { expect(two.progress, `tick ${i}`).toBeGreaterThan(last); last = two.progress }
+        if (!done) expect(sim.workers!.view(1)!.x256 >> 8, `tick ${i}`).toBeLessThan(15)
+        if (!done) expect([two.x, two.z]).toEqual([15 * 256 + 128, 5 * 256 + 128])
+      }
+    }
+    expect(done).toBe(true)
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128 })
+  })
+  it('without a pocket, the head-on ends in a traffic block or a pass, never endless alternation', () => {
+    const sim = headOn(false), targets = goals(sim), changes = [0, 0], last = ['', '']
+    for (let i = 0; i < 1500; i++) {
+      sim.step(); noOverlap(sim, i)
+      for (const k of [0, 1]) { const s = sim.workers!.view(k + 1)!.state; if (s !== last[k]) { changes[k]!++; last[k] = s } }
+    }
+    const views = [1, 2].map(id => sim.workers!.view(id)!)
+    const passed = views.some((v, k) => v.state === 'idle' && v.x256 >> 8 === targets.get(k + 1)![0])
+    expect(passed || views.some(v => v.state === 'blocked' && v.reason === 'traffic'), JSON.stringify(views)).toBe(true)
+    expect(Math.max(...changes)).toBeLessThanOrEqual(40)
+  })
+  it('replays the head-on with the same hashes', () => {
+    const a = headOn(true), b = headOn(true)
+    for (let i = 0; i < 600; i++) { a.step(); b.step(); if (i % 50 === 0) expect(a.hash(), `tick ${i}`).toBe(b.hash()) }
   })
 })

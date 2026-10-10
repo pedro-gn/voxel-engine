@@ -29,6 +29,8 @@ export class ReservationTable {
   }
   /** Owner of `cell` at absolute tick `t`: a hold wins over timed entries; 0 when free. */
   owner(cell: number, t: number): number { return this.holds.get(cell) ?? this.slot(t)?.cells.get(cell) ?? 0 }
+  /** The owner holding `cell` with no end, or 0. */
+  holder(cell: number): number { return this.holds.get(cell) ?? 0 }
   /** Whether no other owner holds any of the cells or has them at tick t. */
   free(owner: number, t: number, cells: readonly number[]): boolean {
     const s = this.slot(t)

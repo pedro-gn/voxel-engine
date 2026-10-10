@@ -21,7 +21,8 @@ const STATUSES: readonly SpaceTimeStatus[] = ['pending', 'found', 'failed']
 /**
  * A* over (pose, tick) inside a box around the start, against another owners' reservations. Every state's cost is
  * the ticks elapsed; the heuristic adds the estimated walk to the end of `targets`. The search ends on the last
- * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket).
+ * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket). With a
+ * `refuge` predicate it ends only at the window's end on a refuge pose: a way out of someone else's route.
  */
 export class SpaceTimeSearch {
   status: SpaceTimeStatus = 'pending'
@@ -36,6 +37,7 @@ export class SpaceTimeSearch {
   private readonly targets: readonly number[]
   private readonly radius: number
   private readonly maxOps: number
+  private readonly refuge?: (p: number) => boolean
   private readonly end: number
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
@@ -48,9 +50,9 @@ export class SpaceTimeSearch {
   private expanding = -1
   /** 0 is the wait, 1..4 the planar steps. */
   private action = 0
-  constructor(port: SpaceTimePort, table: ReservationTable, owner: number, start: number, startTick: number, targets: readonly number[], radius = 8, maxOps = 4096) {
+  constructor(port: SpaceTimePort, table: ReservationTable, owner: number, start: number, startTick: number, targets: readonly number[], radius = 8, maxOps = 4096, refuge?: (p: number) => boolean) {
     this.port = port; this.table = table; this.owner = owner; this.start = start; this.startTick = startTick; this.targets = targets
-    this.radius = radius; this.maxOps = maxOps; this.end = startTick + table.window
+    this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.end = startTick + table.window
     this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p))
     this.add(start, startTick, -1)
   }
@@ -109,6 +111,8 @@ export class SpaceTimeSearch {
     this.plan = { steps, rejoin: this.targets.lastIndexOf(p) }
     this.status = 'found'
   }
+  /** Operations left before the search gives up. */
+  get remaining(): number { return Math.max(0, this.maxOps - this.ops) }
   /** Spends at most `cap` operations; returns how many it used. */
   step(cap: number): number {
     let used = 0
@@ -118,7 +122,8 @@ export class SpaceTimeSearch {
       if (this.expanding < 0) {
         if (!this.heap.length) { this.status = 'failed'; break }
         const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!
-        if (t >= this.end || this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
+        if (this.refuge ? t >= this.end && this.refuge(p) : t >= this.end || this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
+        if (t >= this.end) continue
         this.expanding = id; this.action = 0
         continue
       }
@@ -142,7 +147,7 @@ export class SpaceTimeSearch {
     return used
   }
   mixState(mix: (n: number) => void): void {
-    mix(STATUSES.indexOf(this.status)); mix(this.ops); mix(this.owner); mix(this.start); mix(this.startTick); mix(this.radius); mix(this.maxOps)
+    mix(STATUSES.indexOf(this.status)); mix(this.ops); mix(this.owner); mix(this.start); mix(this.startTick); mix(this.radius); mix(this.maxOps); mix(this.refuge ? 1 : 0)
     mix(this.targets.length); for (const p of this.targets) mix(p)
     mix(this.expanding); mix(this.action)
     mix(this.poses.length)
