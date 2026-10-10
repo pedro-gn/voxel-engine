@@ -589,7 +589,8 @@ export class WorkerSystem {
   }
   /**
    * Tasks unit u may take, from its chunk column and the 8 around it, widened ring by ring until there are 16 or ring 4
-   * is reached; past that, every frontier task.
+   * is reached; past that, every frontier task. Priority stays global: the 16 nearest tasks of orders ranked strictly
+   * above the best nearby one join the set.
    */
   private candidates(u: Unit): Task[] {
     const L = this.port.layout, cx = u.x >> 13, cz = u.z >> 13, out: Task[] = [], eligible = (t: Task) => this.eligible(t, u)
@@ -598,7 +599,14 @@ export class WorkerSystem {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r || cx + dx < 0 || cz + dz < 0 || cx + dx >= L.cx || cz + dz >= L.cz) continue
         for (const t of this.taskIndex.get(cx + dx + (cz + dz) * L.cx) ?? []) if (eligible(t)) out.push(t)
       }
-      if (r >= 1 && out.length >= 16) return out
+      if (r >= 1 && out.length >= 16) {
+        let best = -Infinity
+        for (const t of out) best = Math.max(best, this.effective(t.order))
+        const above = this.tasks.filter(t => this.effective(t.order) > best && eligible(t))
+        if (!above.length) return out
+        const far = (t: Task) => Math.abs(t.pos[0] - (u.x >> 8)) + Math.abs(t.pos[1] - (u.y >> 8)) + Math.abs(t.pos[2] - (u.z >> 8))
+        return [...out, ...above.sort((a, b) => far(a) - far(b) || a.p - b.p).slice(0, 16)]
+      }
     }
     return this.tasks.filter(eligible)
   }

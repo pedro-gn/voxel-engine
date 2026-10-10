@@ -915,6 +915,15 @@ describe('simulated workers', () => {
       expect(near).toHaveLength(16); expect(near.every(t => t.pos[0]! < 32 && t.pos[2]! < 32)).toBe(true)
       expect([...w.taskIndex.values()].reduce((n, l) => n + l.length, 0)).toBe(w.tasks.length)
     })
+    it('sends a unit to a far higher-priority order even with plenty of low-priority work nearby', () => {
+      const sim = new Simulation({ buffers: createWorldBuffers([256, 32, 256]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { materials: { stone: { digTicks: 4 } } } })
+      sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
+      cmd(sim, { type: 'unitCancel', ids: [spawn(sim, [2, 4, 2])] })
+      sim.submit(0, ++seq, { type: 'workDig', min: [8, 3, 8], max: [12, 3, 11], priority: 64 })
+      sim.submit(0, ++seq, { type: 'workDig', min: [200, 3, 200], max: [200, 3, 200], priority: 200 })
+      sim.step()
+      expect(sim.workers!.view(1)?.order).toBe(2)
+    })
     it('keeps the task index in step with the frontier through parking and completion', () => {
       const sim = make(); spawn(sim, [3, 4, 26]); spawn(sim, [5, 4, 26])
       cmd(sim, { type: 'workDig', min: [8, 3, 8], max: [27, 3, 27] })
