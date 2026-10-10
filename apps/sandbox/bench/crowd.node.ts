@@ -1,14 +1,17 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
-// --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs).
+// --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
+// --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
 import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
 import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
+import { BUILD_WEIGHT, RegionBuild } from '@elovox/engine/src/sim/navigation/regions.ts'
 import { Simulation, type TickResult } from '@elovox/engine/src/sim/simulation.ts'
 import { WORKER_STATES } from '@elovox/engine/src/sim/workers/types.ts'
+import { HIER_MIN } from '@elovox/engine/src/sim/workers/workers.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
 import { terrainGenerator } from '@elovox/terrain'
 import { readFileSync } from 'node:fs'
@@ -61,6 +64,31 @@ if (flag('opcost') !== undefined) {
   process.exit(0)
 }
 
+if (flag('buildcost') !== undefined) {
+  // ns per region-build step, by phase, to calibrate BUILD_WEIGHT against --opcost: builds every tile of a square of
+  // tiles around the west pad (the pad's tile layer and the ones above and below), twice (the first warms the JIT).
+  // A slice of 64 charged operations is timed under the phase it starts in, so phase splits are approximate.
+  const L = sim.layout, radius = Number(flag('radius') ?? 8), cx = (PADS.west.min[0] + 32) >> 4, cz = (PADS.west.min[2] + 32) >> 4, cy = PADS.west.y >> 4
+  const tx = L.size[0] >> 4, tz = L.size[2] >> 4, ty = L.size[1] >> 4, runs = []
+  for (let run = 0; run < 2; run++) {
+    const nav = new NavigationSystem({ layout: L, registry: w.nav.port.registry, get: w.nav.port.get })
+    const steps: Record<string, number> = {}, ms: Record<string, number> = {}
+    let charged = 0, regions = 0, empty = 0, exits = 0
+    for (let y = Math.max(0, cy - 1); y <= Math.min(ty - 1, cy + 1); y++) for (let z = cz - radius; z <= cz + radius; z++) for (let x = cx - radius; x <= cx + radius; x++) {
+      if (x < 0 || z < 0 || x >= tx || z >= tz) continue
+      const b = new RegionBuild(nav, x + z * tx + y * tx * tz)
+      while (!b.done) { const phase = b.stage, a = performance.now(); charged += b.step(64); ms[phase] = (ms[phase] ?? 0) + performance.now() - a }
+      for (const [phase, n] of Object.entries(b.counts)) steps[phase] = (steps[phase] ?? 0) + n
+      const r = b.result(); regions++; if (!r.poses.length) empty++; exits += r.exits.length
+    }
+    const totalMs = Object.values(ms).reduce((s, n) => s + n, 0), totalSteps = Object.values(steps).reduce((s, n) => s + n, 0)
+    runs.push({ regions, empty, meanExits: +(exits / regions).toFixed(1), buildWeight: BUILD_WEIGHT, charged, steps, ms: Object.fromEntries(Object.entries(ms).map(([k, v]) => [k, +v.toFixed(1)])),
+      nsPerStep: Object.fromEntries(Object.keys(steps).map(k => [k, +((ms[k] ?? 0) * 1e6 / steps[k]!).toFixed(1)])), nsPerStepAll: +(totalMs * 1e6 / totalSteps).toFixed(1), nsPerChargedOp: +(totalMs * 1e6 / charged).toFixed(1) })
+  }
+  console.log(JSON.stringify({ node: process.version, buildcost: runs }, null, 2))
+  process.exit(0)
+}
+
 const q = (a: number[], p: number) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))]! }
 const r3 = (n: number | null) => n === null ? null : +n.toFixed(3)
 
@@ -70,7 +98,7 @@ if (flag('quality') !== undefined) {
   const L = sim.layout, port = { layout: L, registry: w.nav.port.registry, get: w.nav.port.get }, nav = new NavigationSystem(port, 1 << 22)
   const rng = new Pcg32(Number(flag('seed') ?? 5)), pairs = Number(flag('pairs') ?? 500)
   const surface = () => { for (;;) { const x = rng.nextInt(CROWD_SIZE[0]), z = rng.nextInt(CROWD_SIZE[2]); for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.stand(x, y, z)) return L.voxelIndex(x, y, z) } }
-  const ratios: number[] = [], flatOps: number[] = [], routeOps: number[] = [], flatMs: number[] = [], routeMs: number[] = [], disagree: unknown[] = []
+  const ratios: number[] = [], shortRatios: number[] = [], flatOps: number[] = [], routeOps: number[] = [], flatMs: number[] = [], routeMs: number[] = [], disagree: unknown[] = []
   let agree = 0, unreachable = 0
   for (let i = 0; i < pairs; i++) {
     const start = surface(), goal = surface()
@@ -85,11 +113,13 @@ if (flag('quality') !== undefined) {
     if (route.status === flat.status) agree++
     else if (disagree.length < 10) disagree.push({ i, start: L.voxelCoords(start), goal: L.voxelCoords(goal), flat: flat.status, route: route.status })
     if (flat.status === 'unreachable') unreachable++
-    if (flat.status === 'found' && route.status === 'found' && flat.cost) ratios.push(route.cost / flat.cost)
+    // The gate is over pairs units would route (estimate past HIER_MIN); shorter walks stay flat in the workers.
+    const [x, y, z] = L.voxelCoords(start), [gx, gy, gz] = L.voxelCoords(goal), routed = (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2 > HIER_MIN
+    if (flat.status === 'found' && route.status === 'found' && flat.cost) (routed ? ratios : shortRatios).push(route.cost / flat.cost)
     if (i % 50 === 49) console.error(`quality ${i + 1}/${pairs}`)
   }
   const stats = (a: number[]) => ({ mean: r3(a.reduce((s, n) => s + n, 0) / a.length), p50: r3(q(a, .5)), p95: r3(q(a, .95)), max: r3(Math.max(...a)) })
-  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, found: ratios.length, disagree, costRatio: stats(ratios), flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes }, null, 2))
+  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, disagree, routedFound: ratios.length, costRatio: stats(ratios), gate: { meanMax: 1.10, p95Max: 1.25, pass: (stats(ratios).mean ?? 9) <= 1.10 && (stats(ratios).p95 ?? 9) <= 1.25 && agree === pairs }, shortFound: shortRatios.length, shortCostRatio: shortRatios.length ? stats(shortRatios) : null, flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes }, null, 2))
   process.exit(0)
 }
 const WALKING = WORKER_STATES.indexOf('walking')
