@@ -155,6 +155,8 @@ export class Simulation {
         edit(pos, expected, value, commit) {
           if (sim.store.getVoxel(...pos) !== expected || sim.collapse.overlaps(...pos) || sim.registry.solid[voxelId(value)] && (sim.workers!.overlaps(...pos) || sim.gravity.occupies(...pos))) return false
           sim.store.prepareChunks([sim.layout.chunkOf(...pos)])
+          // Neighbours whose mesh the edit changes move their version too, so the view's barrier waits for their new mesh.
+          sim.store.touchChunks(sim.layout.chunksAround(...pos))
           sim.applySet(...pos, value, true, commit); return true
         },
         safe(x, y, z) {
@@ -362,7 +364,7 @@ export class Simulation {
     const events = this.events
     this.events = []
     const collapse = this.collapse.publication(this.store.versions)
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions) }) }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions, t) }) }
   }
 
   hash(): number {
