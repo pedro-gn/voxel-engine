@@ -45,11 +45,11 @@ export function crowdCamera(engine: Engine): void {
 
 /** Buttons for the crowd events; Spawn and Bottleneck run once. */
 export function createCrowdBar(crowd: Crowd): void {
-  const bar = document.createElement('div'); bar.setAttribute('aria-label', 'Crowd')
+  const bar = document.createElement('div'); bar.setAttribute('aria-label', 'Multidão')
   Object.assign(bar.style, { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', zIndex: '10' })
   const actions: [string, () => unknown, boolean][] = [
-    [`Spawn ${crowd.units.toLocaleString('en')}`, () => crowd.spawn(), true], ['All → east', () => crowd.allEast(), false],
-    ['Scatter', () => crowd.scatter(), false], ['Bottleneck', () => crowd.bottleneck(), true], ['Work orders', () => crowd.work(), false],
+    [`Gerar ${crowd.units.toLocaleString('pt-BR')}`, () => crowd.spawn(), true], ['Todos → leste', () => crowd.allEast(), false],
+    ['Espalhar', () => crowd.scatter(), false], ['Gargalo', () => crowd.bottleneck(), true], ['Ordens de obra', () => crowd.work(), false],
   ]
   for (const [label, action, once] of actions) {
     const button = document.createElement('button'); button.textContent = label
