@@ -1,9 +1,12 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
-// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation).
+// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
+// --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
+import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
+import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
 import { Simulation, type TickResult } from '@elovox/engine/src/sim/simulation.ts'
 import { WORKER_STATES } from '@elovox/engine/src/sim/workers/types.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
@@ -60,6 +63,35 @@ if (flag('opcost') !== undefined) {
 
 const q = (a: number[], p: number) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))]! }
 const r3 = (n: number | null) => n === null ? null : +n.toFixed(3)
+
+if (flag('quality') !== undefined) {
+  // Path quality (Task H7): 500 seeded pairs of surface poses, an exact flat A* (node limit 2^22) against a route search,
+  // both on geometry alone (no water or hazard policy, which routes leave to refinement). Regions stay cached across pairs.
+  const L = sim.layout, port = { layout: L, registry: w.nav.port.registry, get: w.nav.port.get }, nav = new NavigationSystem(port, 1 << 22)
+  const rng = new Pcg32(Number(flag('seed') ?? 5)), pairs = Number(flag('pairs') ?? 500)
+  const surface = () => { for (;;) { const x = rng.nextInt(CROWD_SIZE[0]), z = rng.nextInt(CROWD_SIZE[2]); for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.stand(x, y, z)) return L.voxelIndex(x, y, z) } }
+  const ratios: number[] = [], flatOps: number[] = [], routeOps: number[] = [], flatMs: number[] = [], routeMs: number[] = [], disagree: unknown[] = []
+  let agree = 0, unreachable = 0
+  for (let i = 0; i < pairs; i++) {
+    const start = surface(), goal = surface()
+    const flat = nav.request(start, [goal])
+    let ops = 0, a = performance.now()
+    while (flat.status === 'pending') { nav.step(1 << 16); ops += nav.visited }
+    flatMs.push(performance.now() - a); flatOps.push(ops)
+    const route = new RouteSearch(nav, nav.regions, start, [goal])
+    a = performance.now()
+    while (route.status === 'pending') route.step(32768)
+    routeMs.push(performance.now() - a); routeOps.push(route.spent)
+    if (route.status === flat.status) agree++
+    else if (disagree.length < 10) disagree.push({ i, start: L.voxelCoords(start), goal: L.voxelCoords(goal), flat: flat.status, route: route.status })
+    if (flat.status === 'unreachable') unreachable++
+    if (flat.status === 'found' && route.status === 'found' && flat.cost) ratios.push(route.cost / flat.cost)
+    if (i % 50 === 49) console.error(`quality ${i + 1}/${pairs}`)
+  }
+  const stats = (a: number[]) => ({ mean: r3(a.reduce((s, n) => s + n, 0) / a.length), p50: r3(q(a, .5)), p95: r3(q(a, .95)), max: r3(Math.max(...a)) })
+  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, found: ratios.length, disagree, costRatio: stats(ratios), flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes }, null, 2))
+  process.exit(0)
+}
 const WALKING = WORKER_STATES.indexOf('walking')
 /** The hierarchy's region store, read defensively: absent before it exists (the baseline), so cold or warm shows. */
 const regions = () => { const s = (w.nav as unknown as { regions?: { size?: number; bytes?: number } }).regions; return { count: s?.size ?? 0, bytes: s?.bytes ?? 0 } }
