@@ -46,6 +46,20 @@ it('keeps scratch proportional to discovered positions, not world volume', () =>
   expect(r.status).toBe('found'); expect(nav.bytes).toBeLessThan(1048576)
 })
 
+it('asks a rejecting policy at most once per pose within a pass', () => {
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }]), calls = new Map<number, number>()
+  // A fence at x = 20 the policy rejects, open only at z = 40: the search must walk around it.
+  const port = { layout, registry, get: (_x: number, y: number) => y < 4 ? 1 : 0, safe: (x: number, y: number, z: number) => { const p = layout.voxelIndex(x, y, z); calls.set(p, (calls.get(p) ?? 0) + 1); return x !== 20 || z === 40 } }
+  const start = layout.voxelIndex(10, 4, 10), goal = layout.voxelIndex(30, 4, 10)
+  const nav = new NavigationSystem(port), s = nav.request(start, [goal])
+  nav.step(1 << 20)
+  expect(s.result()).toMatchObject({ status: 'found', cost: (20 + 30 + 30) * 4 })
+  expect(calls.get(layout.voxelIndex(20, 4, 10))).toBe(1)
+  expect(Math.max(...calls.values())).toBe(1)
+  // Sliced over many passes, the search finds the same path.
+  const sliced = new NavigationSystem({ ...port, safe: (x: number, _y: number, z: number) => x !== 20 || z === 40 })
+  expect(finish(sliced, start, goal)).toEqual(s.result())
+})
 it('invalidates pending allowed-pose queries while retaining cached geometry edges', () => {
   const { nav, layout } = fixture()
   const start = layout.voxelIndex(5, 4, 5), goal = layout.voxelIndex(8, 4, 5)
