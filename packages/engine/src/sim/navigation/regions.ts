@@ -16,8 +16,12 @@ export interface Exit { from: number; to: number; cost: number; target: number }
 /** Geometry-only abstract record of one 16³ navigation tile. */
 export interface Region {
   index: number; epoch: number
-  /** local cell (x + z*16 + y*256) → pose slot, -1 when not a pose */
-  slots: Int16Array
+  /**
+   * Column index: the slots of column c (x + z*16, local) are colSlots[cols[c] .. cols[c + 1]). A column holds a few
+   * poses at most, so a lookup scans them; this replaces a 4,096-cell table (8 KB) with about 0.5 KB + 2 bytes a pose.
+   */
+  cols: Int16Array
+  colSlots: Int16Array
   poses: Int32Array        // slot → world voxel index
   /** forward edges: 4 per slot, slot of the target inside the region or -1 (edges leaving the region are exits) */
   next: Int16Array
@@ -30,14 +34,18 @@ export interface Region {
   sources: number
   bytes: number
 }
+/** Fixed per-record overhead counted in `bytes`; tiles with no pose share every array and cost only this. */
+const RECORD_BYTES = 64
+const NO_POSES = new Int32Array(0), NO_SLOTS = new Int16Array(0), NO_FIELDS = new Uint16Array(0), NO_COLS = new Int16Array(257), NO_EXITS: Exit[] = Object.freeze([]) as unknown as Exit[]
 /** Exit keys used by route and group searches: 1 + region * 4096 + exit index. */
 export const exitKey = (region: number, e: number): number => 1 + region * 4096 + e
 export const splitKey = (key: number): [region: number, e: number] => [Math.floor((key - 1) / 4096), (key - 1) % 4096]
 export const localOf = (L: Layout, p: number): number => { const [x, y, z] = L.voxelCoords(p); return (x & 15) + ((z & 15) << 4) + ((y & 15) << 8) }
 /** Region slot of a world pose, or -1 when it is not a pose of the region. */
 export const slotOf = (region: Region, p: number, L: Layout): number => {
-  const slot = region.slots[localOf(L, p)]!
-  return slot >= 0 && region.poses[slot] === p ? slot : -1
+  const [x, , z] = L.voxelCoords(p), c = (x & 15) + ((z & 15) << 4)
+  for (let i = region.cols[c]!, end = region.cols[c + 1]!; i < end; i++) { const s = region.colSlots[i]!; if (region.poses[s] === p) return s }
+  return -1
 }
 /** Tiles whose poses can step into a tile: the tile below or above, or a face neighbour one tile down, level or up. */
 export const SOURCES: readonly (readonly [number, number, number])[] = [[0, -1, 0], [0, 1, 0], ...[-1, 0, 1].flatMap(dy => [[1, dy, 0], [-1, dy, 0], [0, dy, 1], [0, dy, -1]] as [number, number, number][])]
@@ -85,6 +93,8 @@ export class RegionBuild {
   private exits: Exit[] = []
   private runs: Crossing[][] = []
   private fields = new Uint16Array(0)
+  private cols = NO_COLS
+  private colSlots = NO_SLOTS
   private overflow = false
   private sources = 0
   private readonly heap = new IdHeap()
@@ -148,7 +158,7 @@ export class RegionBuild {
       } else if (this.phase === 'reverse') {
         if (this.cursor === this.count) {
           this.fields = new Uint16Array(this.exits.length * this.count).fill(UNREACHED)
-          this.phase = 'fields'; this.charge(Math.ceil(this.fields.length / 64)); this.field = 0; this.seed(); continue
+          this.phase = 'fields'; this.charge(Math.ceil(this.fields.length / 64)); this.indexColumns(); this.field = 0; this.seed(); continue
         }
         const s = this.cursor++
         for (let d = 0; d < 4; d++) { const t = this.next[s * 4 + d]!; if (t >= 0) this.rev[this.fill[t]!++] = s }
@@ -202,12 +212,26 @@ export class RegionBuild {
     const s = this.slots[localOf(this.nav.port.layout, this.exits[this.field]!.from)]!
     this.fields[this.field * this.count + s] = 0; this.heap.clear(); this.heap.push(s, 0, 0); this.expanding = -1
   }
+  /** Groups the slots by column for `slotOf`, in slot order inside each column. */
+  private indexColumns(): void {
+    const P = this.count
+    if (!P) return
+    this.charge(P + 257)
+    const cols = new Int16Array(257), colSlots = new Int16Array(P)
+    for (let s = 0; s < P; s++) cols[(this.locals[s]! & 255) + 1]!++
+    for (let c = 0; c < 256; c++) cols[c + 1]! += cols[c]!
+    const at = cols.slice(0, 256)
+    for (let s = 0; s < P; s++) colSlots[at[this.locals[s]! & 255]!++] = s
+    this.cols = cols; this.colSlots = colSlots
+  }
   /** The built region; the same record for every query that shared this build. */
   result(): Region {
     if (!this.done) throw new Error('region build is not done')
     if (this.built) return this.built
-    const r: Region = { index: this.index, epoch: this.epoch, slots: this.slots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
-    r.bytes = r.slots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32
+    const r: Region = this.count
+      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
+      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, bytes: 0 }
+    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32 : 0)
     return this.built = r
   }
   mixState(mix: (n: number) => void): void {

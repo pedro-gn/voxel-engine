@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
-import { BUILD_WEIGHT, RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField } from '../src/sim/navigation/regions.ts'
+import { BUILD_WEIGHT, RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField, slotOf, localOf } from '../src/sim/navigation/regions.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
 
@@ -73,14 +73,14 @@ it('a build restarts when its tile changes mid-build and yields the new geometry
   solid.add(layout.voxelIndex(20, 4, 20)); nav.invalidate(20, 4, 20)
   while (!b.done) b.step(512)
   const r = b.result()
-  expect(r.epoch).toBe(nav.revisions[r.index]); expect(r.slots[4 + (4 << 4) + (4 << 8)]).toBe(-1); expect(r.slots[4 + (4 << 4) + (5 << 8)]).toBeGreaterThanOrEqual(0)
+  expect(r.epoch).toBe(nav.revisions[r.index]); expect(slotOf(r, layout.voxelIndex(20, 4, 20), layout)).toBe(-1); expect(slotOf(r, layout.voxelIndex(20, 5, 20), layout)).toBeGreaterThanOrEqual(0)
 })
 it('a reverse field from a goal pose agrees with flat costs and marks other regions unreached', () => {
   const { nav, layout } = fixture()
   const r = build(nav, nav.tileOf(16, 4, 16)), goal = layout.voxelIndex(20, 4, 24)
   const f = reverseField(r, [goal, layout.voxelIndex(40, 4, 40)], layout)
-  expect(f[r.slots[4 + (8 << 4) + (4 << 8)]!]).toBe(0)
-  expect(f[r.slots[4 << 8]!]).toBe((4 + 8) * 4)
+  expect(f[slotOf(r, goal, layout)]).toBe(0)
+  expect(f[slotOf(r, layout.voxelIndex(16, 4, 16), layout)]).toBe((4 + 8) * 4)
 })
 it('a walled-off pocket inside a region cannot reach the exits', () => {
   const { nav, layout, solid } = fixture()
@@ -108,4 +108,24 @@ it('build steps are charged at BUILD_WEIGHT per operation and counted by phase',
   const steps = Object.values(b.counts).reduce((a, n) => a + n, 0)
   expect(b.counts.poses).toBeGreaterThanOrEqual(4096); expect(b.counts.fields).toBeGreaterThan(0)
   expect(charged).toBeGreaterThanOrEqual(Math.ceil(steps / BUILD_WEIGHT)); expect(charged).toBeLessThanOrEqual(Math.ceil(steps / BUILD_WEIGHT) + 1 + steps / BUILD_WEIGHT / 10)
+})
+it('the column index finds the same slot as a dense cell table, and empty tiles share one frozen record', () => {
+  // Hills with a cave layer: columns with several poses, steps between heights, and a fully empty upper tile.
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }])
+  const height = (x: number, z: number) => 4 + Math.max(0, 6 - Math.floor(Math.hypot(x - 24, z - 24) / 2))
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => y < height(x, z) && !(y >= 1 && y <= 2 && (x + z) % 3 !== 0) ? 1 : 0 })
+  let multi = 0
+  for (const index of [nav.tileOf(16, 4, 16), nav.tileOf(0, 4, 0), nav.tileOf(32, 4, 16)]) {
+    const r = build(nav, index), dense = new Int16Array(4096).fill(-1)
+    r.poses.forEach((p, s) => { dense[localOf(layout, p)] = s })
+    const [ox, oy, oz] = [(index % 4) * 16, 0, (Math.floor(index / 4) % 4) * 16]
+    for (let c = 0; c < 4096; c++) expect(slotOf(r, layout.voxelIndex(ox + (c & 15), oy + (c >> 8), oz + ((c >> 4) & 15)), layout)).toBe(dense[c])
+    for (let c = 0; c < 256; c++) if (r.cols[c + 1]! - r.cols[c]! > 1) multi++
+    const old = 8192 + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32
+    expect(r.bytes).toBe(old - 8192 + 64 + 514 + 2 * r.poses.length)
+  }
+  expect(multi).toBeGreaterThan(0)
+  const a = build(nav, nav.tileOf(16, 20, 16)), b = build(nav, nav.tileOf(32, 20, 32))
+  expect(a.poses.length).toBe(0); expect(a.bytes).toBe(64)
+  expect(a.cols).toBe(b.cols); expect(a.fields).toBe(b.fields); expect(a.exits).toBe(b.exits); expect(Object.isFrozen(a.exits)).toBe(true)
 })

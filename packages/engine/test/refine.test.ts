@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { NavigationSystem, edgeCost } from '../src/sim/navigation/navigation.ts'
-import { RegionBuild, UNREACHED, exitCosts, reverseField } from '../src/sim/navigation/regions.ts'
+import { RegionBuild, UNREACHED, exitCosts, reverseField, slotOf } from '../src/sim/navigation/regions.ts'
 import { descend } from '../src/sim/navigation/refine.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
@@ -40,6 +40,6 @@ it('descends a goal field to the goal and fails from a pose that cannot reach it
   const d = descend(r, field, layout.voxelIndex(30, 4, 20), () => true, layout)
   expect(d.ok).toBe(true); expect(d.path.at(-1)).toBe(goal); expect(d.path).toHaveLength(15)
   const far = layout.voxelIndex(20, 4, 28)
-  expect(field[r.slots[(20 & 15) + ((28 & 15) << 4) + (4 << 8)]!]).toBe(UNREACHED)
+  expect(field[slotOf(r, far, layout)]).toBe(UNREACHED)
   expect(descend(r, field, far, () => true, layout).ok).toBe(false)
 })
