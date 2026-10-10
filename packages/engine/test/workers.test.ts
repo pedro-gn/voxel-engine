@@ -910,13 +910,18 @@ describe('traffic scenarios', () => {
     expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, x]) => [id, x, 6]))
     allReach(sim, targets, 2000)
   })
-  it('four units cross an X of one-wide corridors', () => {
+  /** Two one-wide corridors crossing at (16,16), a unit at each end ordered to the opposite end. */
+  function crossing() {
     const sim = make(ctx => {
       for (let x = 2; x <= 29; x++) for (let z = 2; z <= 29; z++) if (!(x === 16 && z >= 3 && z <= 28 || z === 16 && x >= 3 && x <= 28)) for (let y = 4; y < 6; y++) ctx.set(x, y, z, 1)
     })
     const ends: [number, number][] = [[16, 3], [16, 28], [3, 16], [28, 16]]
     for (const [x, z] of ends) spawn(sim, [x, 4, z])
     ends.forEach(([x, z], i) => cmd(sim, { type: 'unitMove', ids: [i + 1], pos: [x === 16 ? 16 : 31 - x, 4, z === 16 ? 16 : 31 - z] }))
+    return sim
+  }
+  it('four units cross an X of one-wide corridors', () => {
+    const sim = crossing()
     allReach(sim, goals(sim), 1500)
   })
   it('an idle unit standing in the corridor steps aside and the walker arrives', () => {
@@ -986,8 +991,10 @@ describe('traffic scenarios', () => {
       expect(s.status, `unit ${i + 1} gave up on a reachable destination`).not.toBe('found')
     }
   })
-  it('replays the head-on with the same hashes', () => {
-    const a = headOn(true), b = headOn(true)
-    for (let i = 0; i < 600; i++) { a.step(); b.step(); if (i % 50 === 0) expect(a.hash(), `tick ${i}`).toBe(b.hash()) }
+  it('replays the head-on and the X crossing with the same hashes', () => {
+    for (const make of [() => headOn(true), crossing]) {
+      const a = make(), b = make()
+      for (let i = 0; i < 800; i++) { a.step(); b.step(); if (i % 50 === 0) expect(a.hash(), `tick ${i}`).toBe(b.hash()) }
+    }
   })
 })
