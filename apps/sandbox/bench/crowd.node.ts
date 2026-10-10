@@ -3,7 +3,7 @@
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
-// --grace=N (arrival allowance past each unit's straight-line walk, ticks, default 1200).
+// --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
@@ -190,24 +190,68 @@ const PHASES: Record<string, Phase> = {
 }
 if (ONLY !== undefined && !PHASES[ONLY]) throw new Error(`unknown phase ${ONLY}; one of ${Object.keys(PHASES).join(', ')}`)
 
-/** Runs `n` timed ticks and returns the phase metrics; `moved` are the ids given move orders at `from`. */
-function measure(n: number, moved: number[], each?: (i: number) => void) {
+/**
+ * The ideal walk of sampled units, in ticks: an exact flat A* (node limit 2^22) under the live policy, from the unit's
+ * pose before the order tick to its formation goal after it. Edge costs are the executor's tick counts (4 per flat step,
+ * 4 + 2 per climb, 4 + drop per drop); string-pulled diagonals can only be faster. Run between two ticks, so untimed.
+ */
+function exactWalks(starts: Map<number, number>, ids: number[]): Map<number, number | null> {
+  const nav = new NavigationSystem(w.nav.port, 1 << 22), out = new Map<number, number | null>()
+  for (const id of ids) {
+    const u = w.units.get(id), start = starts.get(id)
+    if (!u || u.goal === null || start === undefined) continue
+    const s = nav.request(start, [u.goal])
+    while (s.status === 'pending') nav.step(1 << 16)
+    out.set(id, s.status === 'found' ? s.cost : null)
+  }
+  return out
+}
+/** Straight-line walk from a voxel to a unit's goal, in ticks: a lower bound on any route. */
+const straight = (start: number, goal: number) => {
+  const [x, , z] = sim.layout.voxelCoords(start), [gx, , gz] = sim.layout.voxelCoords(goal)
+  return Math.ceil(Math.hypot(x - gx, z - gz) * TICKS_PER_BLOCK)
+}
+/**
+ * Runs `n` timed ticks and returns the phase metrics; `groups` are the ids of each move order submitted at `from`.
+ * Arrival is judged against each unit's ideal walk: its straight line plus its order's detour, the largest exact-minus-
+ * straight among the order's samples (one per order of 25, 20 seeded per larger order).
+ */
+function measure(n: number, groups: number[][], each?: (i: number) => void) {
+  const moved = groups.flat()
   const from = sim.tick, ms: number[] = [], share: number[] = [], ordered = new Set(moved)
   const first = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
-  const orderIds = new Set<number>(), ideal = new Map<number, number>()
+  const orderIds = new Set<number>(), starts = new Map<number, number>(), ideal = new Map<number, number>(), lines = new Map<number, number>()
+  const sampled: number[] = [], allDetours: number[] = [], unreachable: number[] = []
+  let exactMs = 0
   let visitedMax = 0, navBytesMax = 0, failedCommands = 0, ordersDoneAt: number | null = null
   for (let i = 0; i < n; i++) {
     each?.(i)
+    if (i === 0) for (const id of moved) { const u = w.units.get(id); if (u) starts.set(id, sim.layout.voxelIndex(Math.floor(u.x / 256), u.y >> 8, Math.floor(u.z / 256))) }
     workersMs = 0
     const a = performance.now(); last = sim.step(); ms.push(performance.now() - a); share.push(workersMs)
     const t = last.tick - from
-    // Ideal walk: the straight line from the unit's pose to its formation goal, a lower bound on any route (the goal
-    // exists once the order tick ran). Units without a goal (refused or none) get none.
-    if (i === 0) for (const id of moved) {
-      const u = w.units.get(id)
-      if (!u || u.goal === null) continue
-      const [gx, , gz] = sim.layout.voxelCoords(u.goal)
-      ideal.set(id, Math.ceil(Math.hypot(u.x / 256 - gx - .5, u.z / 256 - gz - .5) * TICKS_PER_BLOCK))
+    // The goals exist once the order tick ran; the exact searches run here, between ticks.
+    if (i === 0 && groups.length) {
+      const a = performance.now(), rng = new Pcg32(99)
+      for (const g of groups) {
+        const picks = new Set<number>()
+        while (picks.size < Math.min(g.length, g.length > 25 ? 20 : 1)) picks.add(g[rng.nextInt(g.length)]!)
+        const exact = exactWalks(starts, [...picks]), detours: number[] = []
+        for (const [id, cost] of exact) {
+          const u = w.units.get(id)!
+          if (cost === null) { unreachable.push(id); continue }
+          sampled.push(cost); detours.push(cost - straight(starts.get(id)!, u.goal!))
+        }
+        const detour = detours.length ? Math.max(...detours) : null
+        if (detour !== null) allDetours.push(detour)
+        for (const id of g) {
+          const u = w.units.get(id), start = starts.get(id)
+          if (!u || u.goal === null || start === undefined) continue
+          lines.set(id, straight(start, u.goal))
+          if (detour !== null) ideal.set(id, straight(start, u.goal) + detour)
+        }
+      }
+      exactMs = performance.now() - a
     }
     failedCommands += last.acks.filter(x => !x.ok).length
     for (const e of last.events) {
@@ -228,8 +272,10 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
   }
   // Over every ordered unit: a unit that never walked counts as Infinity, so a percentile landing on it reports null.
   const latency = moved.map(id => first.get(id) ?? Infinity), started = latency.filter(Number.isFinite).length
-  const arrival = moved.map(id => arrived.get(id) ?? Infinity), ideals = [...ideal.values()]
-  const late = moved.map(id => (arrived.get(id) ?? Infinity) - (ideal.get(id) ?? 0)), onTime = late.filter(n => n <= GRACE).length
+  const arrival = moved.map(id => arrived.get(id) ?? Infinity), ideals = [...ideal.values()], straights = [...lines.values()]
+  // A unit with no ideal (its order's samples were all unreachable) is judged against nothing: it counts as late.
+  const late = moved.map(id => (arrived.get(id) ?? Infinity) - (ideal.get(id) ?? -Infinity)), onTime = late.filter(n => n <= GRACE).length
+  const lateStraight = moved.map(id => (arrived.get(id) ?? Infinity) - (lines.get(id) ?? -Infinity)), onTimeStraight = lateStraight.filter(n => n <= GRACE).length
   const finite = (n: number | null) => n === null || !Number.isFinite(n) ? null : n
   const work = last.workers!.orders.filter(o => orderIds.has(o.id))
   return {
@@ -239,7 +285,9 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
       firstActionTicks: { p50: finite(q(latency, .5)), p95: finite(q(latency, .95)), started, ordered: moved.length },
       arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null,
         idealTicks: { p50: q(ideals, .5), p95: q(ideals, .95), max: ideals.length ? Math.max(...ideals) : null, units: ideals.length },
-        lateTicks: { p50: finite(q(late, .5)), p95: finite(q(late, .95)) }, withinIdealPlusGrace: { graceTicks: GRACE, pct: +(100 * onTime / moved.length).toFixed(1) } },
+        lateTicks: { p50: finite(q(late, .5)), p95: finite(q(late, .95)) }, withinIdealPlusGrace: { graceTicks: GRACE, pct: +(100 * onTime / moved.length).toFixed(1) },
+        exactSamples: { found: sampled.length, unreachable: unreachable.length, unreachableIds: unreachable.slice(0, 20), costTicks: { p50: q(sampled, .5), p95: q(sampled, .95), max: sampled.length ? Math.max(...sampled) : null }, detourTicks: { p50: q(allDetours, .5), max: allDetours.length ? Math.max(...allDetours) : null }, ms: Math.round(exactMs) },
+        straightLine: { idealTicks: { p50: q(straights, .5), p95: q(straights, .95), max: straights.length ? Math.max(...straights) : null }, lateTicks: { p50: finite(q(lateStraight, .5)), p95: finite(q(lateStraight, .95)) }, withinPlusGracePct: +(100 * onTimeStraight / moved.length).toFixed(1) } },
     }),
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
@@ -253,9 +301,9 @@ for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
   const atOrder = regions(), orders = phase.orders(ids); submit(orders)
-  const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as unknown as { ids: number[] }).ids : [])
+  const groups = orders.flatMap(c => c.type === 'unitMove' ? [(c as unknown as { ids: number[] }).ids] : [])
   churnEdits = 0
-  const m = measure(TICKS, moved, phase.each)
+  const m = measure(TICKS, groups, phase.each)
   const atEnd = regions()
   results[name] = { units: ids.length, spawnFailed, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
   console.error(`${name} done`)
