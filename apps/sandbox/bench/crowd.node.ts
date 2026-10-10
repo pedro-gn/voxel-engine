@@ -50,17 +50,45 @@ for (const k of ['beforePhysics', 'afterPhysics'] as const) {
 }
 
 if (flag('opcost') !== undefined) {
-  // One long flat search, west pad to east pad, sliced like the workers slice it; three runs (the first warms the JIT).
-  // Then the same search at the workers' node limit (16,384), which ends limited: the cost of the searches units run today.
-  const L = sim.layout, from = L.voxelIndex(PADS.west.min[0] + 32, PADS.west.y, PADS.west.min[2] + 32), to = L.voxelIndex(PADS.east.min[0] + 32, PADS.east.y, PADS.east.min[2] + 32)
-  const runs = []
-  for (let run = 0; run < 6; run++) {
-    const nav = new NavigationSystem(w.nav.port, run < 3 ? 1 << 20 : 16384), s = nav.request(from, [to])
-    let visited = 0, ms = 0, slices = 0
-    while (s.status === 'pending') { const a = performance.now(); nav.step(4096); ms += performance.now() - a; visited += nav.visited; slices++ }
-    runs.push({ maxNodes: nav.maxNodes, status: s.status, visited, slices, ms: +ms.toFixed(1), nsPerOp: +(ms * 1e6 / visited).toFixed(1), pathNodes: s.path.length, cost: s.cost })
+  // Where a navigation operation's time goes. Every search is sliced like the workers slice it (nav.step(4096)).
+  //  long: west pad centre to east pad centre on a fresh system, then again on the same system (warm edge cache),
+  //        with the default 512-tile cache and with a 65,536-tile one; then at the workers' node limit (16,384).
+  //  short: 200 searches of 10–30 blocks inside the west pad, timed on a second pass over a warm system.
+  // Each row also gives operations per discovered node and per expanded node (4 neighbour probes per expansion),
+  // counted on an untimed replay: the searches are deterministic, so the replay does the same work.
+  const L = sim.layout, at = (p: typeof PADS.west, dx = 0, dz = 0) => L.voxelIndex(p.min[0] + 32 + dx, p.y, p.min[2] + 32 + dz)
+  const from = at(PADS.west), to = at(PADS.east)
+  const run = (nav: NavigationSystem, pairs: [number, number][]) => {
+    let visited = 0, ms = 0, nodes = 0, found = 0
+    for (const [a, b] of pairs) {
+      const s = nav.request(a, [b])
+      while (s.status === 'pending') { const t = performance.now(); nav.step(4096); ms += performance.now() - t; visited += nav.visited }
+      nodes += (s as unknown as { count: number }).count; if (s.status === 'found') found++
+    }
+    return { visited, ms, nodes, found }
   }
-  console.log(JSON.stringify({ node: process.version, opcost: runs }, null, 2))
+  const probes = (nav: NavigationSystem) => { let n = 0; const f = nav.neighbor.bind(nav); nav.neighbor = (p, d, seen) => { n++; return f(p, d, seen) }; return () => n }
+  const row = (label: string, r: ReturnType<typeof run>, expansions: number, extra: object = {}) => ({
+    label, ...extra, searches: undefined as number | undefined, found: r.found, visited: r.visited, ms: +r.ms.toFixed(1), nsPerOp: +(r.ms * 1e6 / r.visited).toFixed(1),
+    nodes: r.nodes, opsPerNode: +(r.visited / r.nodes).toFixed(2), expansions, opsPerExpansion: +(r.visited / expansions).toFixed(2),
+  })
+  const rows = []
+  const replay = (maxNodes: number, cache: number, pairs: [number, number][]) => { const nav = new NavigationSystem(w.nav.port, maxNodes, cache), n = probes(nav); run(nav, pairs); return n() / 4 }
+  run(new NavigationSystem(w.nav.port, 1 << 20), [[from, to]]) // JIT warm-up
+  for (const cache of [512, 1 << 16]) {
+    const nav = new NavigationSystem(w.nav.port, 1 << 20, cache), e = replay(1 << 20, cache, [[from, to]])
+    rows.push(row('long, cold edge cache', run(nav, [[from, to]]), e, { cacheTiles: cache }))
+    rows.push(row('long, same system again', run(nav, [[from, to]]), e, { cacheTiles: cache, tilesHeld: nav.cacheTiles }))
+  }
+  rows.push(row('long, workers node limit', run(new NavigationSystem(w.nav.port, 16384), [[from, to]]), replay(16384, 512, [[from, to]])))
+  const rng = new Pcg32(5), pairs: [number, number][] = []
+  while (pairs.length < 200) {
+    const sx = rng.nextInt(64) - 32, sz = rng.nextInt(64) - 32, gx = rng.nextInt(64) - 32, gz = rng.nextInt(64) - 32, d = Math.hypot(gx - sx, gz - sz)
+    if (d >= 10 && d <= 30) pairs.push([at(PADS.west, sx, sz), at(PADS.west, gx, gz)])
+  }
+  const short = new NavigationSystem(w.nav.port); run(short, pairs)
+  rows.push({ ...row('short 10-30 blocks, warm', run(short, pairs), replay(16384, 512, pairs)), searches: pairs.length })
+  console.log(JSON.stringify({ node: process.version, opcost: rows }, null, 2))
   process.exit(0)
 }
 
@@ -209,7 +237,7 @@ for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
   const atOrder = regions(), orders = phase.orders(ids); submit(orders)
-  const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as { ids: number[] }).ids : [])
+  const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as unknown as { ids: number[] }).ids : [])
   churnEdits = 0
   const m = measure(TICKS, moved, phase.each)
   const atEnd = regions()
