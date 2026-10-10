@@ -1000,7 +1000,7 @@ export class WorkerSystem {
       this.dropRoute(u); u.path = []; u.cursor = 0
       if (s.status === 'stale') { u.retry = this.time + staleBackoff(++u.stale); return false }
       // A group field that cannot serve falls back to the unit's own route.
-      if (s instanceof GroupField || s.status === 'cancelled') { this.plan(u, r.goals, r.exclude); return true }
+      if (s instanceof GroupField || s.status === 'cancelled') { if (u.task) return this.replanTask(u); this.plan(u, r.goals, r.exclude); return true }
       this.block(u, s.status === 'limited' ? 'search-limited' : 'no-access', s.seen); return true
     }
     const here = this.position(u)

@@ -150,7 +150,24 @@ export class RouteSearch {
       this.closed.add(key); this.expanding = key; this.relax = 0
     }
     this.spent += used
+    if (this.status !== 'pending' && this.status !== 'cancelled') this.settle()
     return used
+  }
+  /**
+   * Frees the search scratch once settled: a walking unit keeps its route for minutes. A found route keeps the regions
+   * its segments cross and the goal field of the last one; anything else keeps no region.
+   */
+  private settle(): void {
+    if (!this.heap.size && !this.g.size && !this.closed.size && this.reader.regions.size <= this.keys.length + 1) return
+    const keep = new Set<number>()
+    if (this.status === 'found') {
+      keep.add(this.nav.tileOfPose(this.start))
+      for (const k of this.keys) { keep.add(splitKey(k)[0]); keep.add(this.exitOf(k).target) }
+    }
+    const last = this.keys.length ? this.exitOf(this.keys.at(-1)!).target : this.nav.tileOfPose(this.start)
+    for (const index of [...this.reader.regions.keys()]) if (!keep.has(index)) this.reader.regions.delete(index)
+    for (const index of [...this.goalFields.keys()]) if (index !== last || this.status !== 'found') this.goalFields.delete(index)
+    this.heap.clear(); this.g.clear(); this.parent.clear(); this.closed.clear(); this.reader.job = null
   }
   private exitOf(key: number) { const [r, e] = splitKey(key); return this.reader.regions.get(r)!.exits[e]! }
   private begin(): number {

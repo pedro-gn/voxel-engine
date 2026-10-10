@@ -175,6 +175,8 @@ export class GroupField {
       this.closed.add(key); this.expanding = key; this.source = 0
     }
     this.spent += used
+    // Settled: next() reads only the distances and the regions, so the frontier goes.
+    if (this.status !== 'pending' && (this.heap.size || this.closed.size)) { this.heap.clear(); this.closed.clear(); this.reader.job = null }
     return used
   }
   /** Goal regions: their goal fields seed the exits entering them, and the starts standing in them. */
