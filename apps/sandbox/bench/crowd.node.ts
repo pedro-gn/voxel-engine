@@ -1,6 +1,7 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
-// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation).
+// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
+// --assert (exit 1 when a phase misses a spec §7 criterion).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
@@ -155,3 +156,20 @@ for (const [name, phase] of Object.entries(PHASES)) {
   console.error(`${name} done`)
 }
 console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
+if (flag('assert') !== undefined) {
+  // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action and arrival.
+  type M = { tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }; arrived?: { pct: number } }
+  const firstLimit = UNITS <= 100 ? 5 : 20, failures: string[] = []
+  const over = (name: string, what: string, value: number | null | undefined, limit: number) => { if (value === null || value === undefined || value > limit) failures.push(`${name}: ${what} ${value ?? 'none'} > ${limit}`) }
+  for (const [name, r] of Object.entries(results)) {
+    if (name === 'setup') continue
+    const m = r as M
+    over(name, 'workers p95 ms', m.workersMs.p95, 4); over(name, 'workers max ms', m.workersMs.max, 12); over(name, 'tick p95 ms', m.tickMs.p95, 15)
+    if (m.firstActionTicks) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
+    // Arrival is judged over 60 s of sim time, so only when the phase ran that long.
+    if (m.arrived && TICKS >= 1200) { const need = name === 'bottleneck' ? 100 : 99; if (m.arrived.pct < need) failures.push(`${name}: arrived ${m.arrived.pct}% < ${need}%`) }
+  }
+  for (const f of failures) console.error(`FAIL ${f}`)
+  if (failures.length) process.exit(1)
+  console.error('all criteria met')
+}
