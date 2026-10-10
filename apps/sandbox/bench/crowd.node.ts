@@ -1,8 +1,9 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
+// --assert (exit 1 when a phase misses a spec §7 criterion; arrival within each unit's ideal walk + grace),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
-// --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
+// --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT),
 // --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
 // --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
@@ -321,3 +322,30 @@ for (const [name, phase] of Object.entries(PHASES)) {
   console.error(`${name} done`)
 }
 console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
+if (flag('assert') !== undefined) {
+  // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action and arrival.
+  type M = {
+    tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }
+    arrived?: { withinIdealPlusGrace?: { pct: number } }; falseUnreachable?: { count: number; checked: number; suspects: number }
+  }
+  const firstLimit = UNITS <= 100 ? 5 : 20, failures: string[] = []
+  const over = (name: string, what: string, value: number | null | undefined, limit: number) => { if (value === null || value === undefined || value > limit) failures.push(`${name}: ${what} ${value ?? 'none'} > ${limit}`) }
+  for (const [name, r] of Object.entries(results)) {
+    if (name === 'setup') continue
+    const m = r as M
+    over(name, 'workers p95 ms', m.workersMs.p95, 4); over(name, 'workers max ms', m.workersMs.max, 12); over(name, 'tick p95 ms', m.tickMs.p95, 15)
+    if (m.firstActionTicks) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
+    // Arrival: within each unit's ideal walk plus the grace (60 s), as the bench measures it; all of them at the bottleneck.
+    if (m.arrived) {
+      const need = name === 'bottleneck' ? 100 : 99, pct = m.arrived.withinIdealPlusGrace?.pct
+      if (pct === undefined || pct < need) failures.push(`${name}: arrived within ideal + grace ${pct ?? 'not measured'}% < ${need}%`)
+    }
+    // Zero false unreachable, and every no-access verdict re-checked (run with --unreachable-cap=0 if the cap cuts it).
+    const fu = m.falseUnreachable
+    if (fu && fu.count > 0) failures.push(`${name}: ${fu.count} false unreachable`)
+    if (fu && fu.checked !== fu.suspects) failures.push(`${name}: only ${fu.checked} of ${fu.suspects} no-access verdicts re-checked`)
+  }
+  for (const f of failures) console.error(`FAIL ${f}`)
+  if (failures.length) process.exit(1)
+  console.error('all criteria met')
+}
