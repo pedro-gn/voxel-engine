@@ -6,6 +6,7 @@ import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { walkSweep } from './walkSweep.ts'
+import { NO_CREW_TICKS, effectivePriority, parkChoice, shares } from './frontier.ts'
 import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
 
 export interface WorkerPort {
@@ -37,9 +38,15 @@ interface Unit {
   unsafeHere: boolean
   /** Consecutive stale searches; each one doubles the wait before the next attempt. */
   stale: number
+  /** The tick of the last move or work progress; a task claim lapses LEASE_TICKS after it. */
+  progressAt: number
 }
-interface Order extends WorkOrderView {
+interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
   cursor: number; ids: Set<number> | null; priority: number; parked: number[]; parkedRevision: number
+  /** The tick of the order's last progress (creation or a task done); its effective priority ages from here. */
+  idleSince: number
+  /** The tick since which no eligible unit could take the order's tasks; -1 while one can. */
+  noCrewSince: number
   /**
    * Build only. Each layer is placed inside-out, ring by ring (ring 0 is the border), so an inner cell is reached from
    * unbuilt outer cells of the same layer. ringPending counts cells left per layer×ring; floor/ring are the current ones;
@@ -50,7 +57,7 @@ interface Order extends WorkOrderView {
 /** A failure holds until the unit moves, the reservation policy changes, or a nav tile it depended on changes. */
 interface TaskFailure { origin: number; policy: number; nav: number; tiles: ReadonlyMap<number, number>; retry: number; reason: WorkBlockReason }
 interface Task { order: Order; i: number; pos: Vec3; p: number; expected: number; claim: number; added: number; reason?: WorkBlockReason; failures: Map<number, TaskFailure> }
-const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200
+const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200, LEASE_TICKS = 200
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
@@ -59,6 +66,8 @@ export const staleBackoff = (n: number): number => Math.min(32, 1 << Math.min(5,
 const ceilSqrt = (n: number): number => { let s = Math.floor(Math.sqrt(n)); while (s * s > n) s--; while (s * s < n) s++; return s }
 /** Cells of a sx×sz layer at ring r or deeper. */
 const inner = (sx: number, sz: number, r: number): number => Math.max(0, sx - 2 * r) * Math.max(0, sz - 2 * r)
+/** Yields first, then the list second() builds, only if the consumer gets that far. */
+function* chain<T>(first: readonly T[], second: () => readonly T[]): Generator<T> { yield* first; yield* second() }
 const integer = (n: unknown, min: number, max = 0x7fffffff): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= min && n <= max
 
 /** Authoritative units, work frontier, inventory and exclusive swept-volume reservations. */
@@ -68,12 +77,16 @@ export class WorkerSystem {
   readonly units = new Map<number, Unit>()
   private orders: Order[] = []
   /** Failure history of parked tasks by voxel, so a task returning to the frontier is not retried from scratch. */
-  private parkedFailures = new Map<number, { reason: WorkBlockReason; failures: Map<number, TaskFailure> }>()
+  private parkedFailures = new Map<number, { reason: WorkBlockReason | undefined; failures: Map<number, TaskFailure> }>()
   /** Active build designations and their union box, refreshed whenever one starts or ends. */
   private reservations: Order[] = []
   private reservedMin: [number, number, number] = [0, 0, 0]
   private reservedMax: [number, number, number] = [-1, -1, -1]
   private tasks: Task[] = []
+  /** Frontier tasks by chunk column, so an idle unit looks at nearby tasks first. Derived from tasks, not hashed. */
+  private taskIndex = new Map<number, Task[]>()
+  /** Frontier slots per order id, recomputed from hashed state at every expansion. */
+  private share = new Map<number, number>()
   private targets = new Set<number>()
   private workPositions = new Map<number, number>()
   private occupied = new Map<number, number>()
@@ -99,16 +112,17 @@ export class WorkerSystem {
   private dynamicWasBusy = false
   readonly maxUnits: number
   private readonly searchCap: number
-  private readonly assignmentCap: number
+  private readonly assignmentCap: number | undefined
+  private readonly assignmentShare: number
   private readonly commitCap: number
   private readonly capacity: number
   private readonly maxOrders: number
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
     this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096
-    this.assignmentCap = options.assignmentCap ?? 16; this.commitCap = options.commitCap ?? 16
+    this.assignmentCap = options.assignmentCap; this.assignmentShare = options.assignmentShare ?? 8; this.commitCap = options.commitCap ?? 16
     this.capacity = options.inventoryCapacity ?? 512; this.maxOrders = options.maxOrders ?? 128
-    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, assignmentCap: this.assignmentCap, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
+    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
       if (!integer(n, 1, 1 << 20)) throw new RangeError(`workers ${name} must be a positive integer <= 1048576`)
     }
     this.nav = new NavigationSystem({ ...port, safe: (x, y, z) => port.safe(x, y, z) && !this.reservedPose(x, y, z) }, options.maxSearchNodes ?? 16384)
@@ -280,7 +294,7 @@ export class WorkerSystem {
       }
       const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
         goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
-        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0 }
+        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time }
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
       this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return
@@ -309,7 +323,7 @@ export class WorkerSystem {
         for (let i = 0; i < ringPending.length; i++) { const r = i % rings; ringPending[i] = inner(sx, sz, r) - inner(sx, sz, r + 1) }
       }
       const o: Order = { id: this.nextOrder++, kind: c.type === 'workDig' ? 'dig' : 'build', min: [...c.min] as Vec3, max: [...c.max] as Vec3, voxel, total, done: 0, pending: total, cancelled: false, cursor: 0, ids: c.ids === undefined ? null : new Set(ids.map(u => u.id)), priority: c.priority ?? 128, parked: [], parkedRevision: -1,
-        ringPending, rings, floor: 0, ring: rings - 1, progress: this.time, stalled: false }
+        ringPending, rings, floor: 0, ring: rings - 1, progress: this.time, stalled: false, idleSince: this.time, noCrewSince: -1 }
       for (const u of c.ids === undefined ? this.units.values() : ids) { u.available = true; this.dirty.add(u.id) }
       this.revision++; this.orders.push(o); if (o.kind === 'build') this.buildReservationsChanged(o); this.port.emit('workOrdered', { id: o.id }); return
     }
@@ -377,9 +391,9 @@ export class WorkerSystem {
     for (const o of this.orders) if (o.ids && !o.cancelled && o.done < o.total && ![...o.ids].some(id => { const u = this.units.get(id); return u !== undefined && u.state !== 'incapacitated' })) this.cancelOrder(o)
   }
   private removeTask(t: Task, done: boolean): void {
-    this.tasks = this.tasks.filter(q => q !== t); this.targets.delete(t.p)
+    this.tasks = this.tasks.filter(q => q !== t); this.unindex(t); this.targets.delete(t.p)
     if (done) {
-      t.order.done++; t.order.pending--; t.order.reason = undefined
+      t.order.done++; t.order.pending--; t.order.reason = undefined; t.order.idleSince = this.time
       if (t.order.kind === 'build') this.buildCellDone(t.order, t.pos)
       if (t.order.kind === 'build' && t.order.id > 0 && !t.order.cancelled && t.order.done === t.order.total) this.buildReservationsChanged(t.order)
       if (t.order.done === t.order.total && t.order.id > 0) this.port.emit('workCompleted', { id: t.order.id })
@@ -401,10 +415,12 @@ export class WorkerSystem {
       const pos: Vec3 = [x + dx, yy, z + dz]
       if (!this.canWork(pos, t)) continue
       const p = this.port.layout.voxelIndex(...pos)
-      if (ignoreOccupancy || (!this.occupied.has(p) || this.occupied.get(p) === u.id) && (!this.workPositions.has(p) || this.workPositions.get(p) === u.id)) out.push(p)
+      if (ignoreOccupancy || (!this.occupied.has(p) || this.occupied.get(p) === u.id) && (!this.workPositions.has(p) || this.workPositions.get(p) === u.id) && !this.poseHeld(p, u)) out.push(p)
     }
     return out
   }
+  /** Hook for the reservation table: whether another unit holds pose p (untimed hold). No table yet, so never. */
+  private poseHeld(_p: number, _u: Unit): boolean { return false }
   /** Nav tiles whose edges decide whether the task's work poses are reachable from nearby. */
   private tilesAround(pos: Vec3): Map<number, number> {
     const [sx, sy, sz] = this.port.layout.size, tiles = new Map<number, number>()
@@ -505,53 +521,114 @@ export class WorkerSystem {
     if (j < 2 * w + d - 2) return [x1 - (j - w - d + 2), y, z1]
     return [x0, y, z1 - (j - 2 * w - d + 3)]
   }
-  /** Moves the oldest unclaimed task that no unit could take back to its order so the bounded frontier can hold other cells. */
-  private park(): boolean {
-    const t = this.tasks.find(t => !t.claim && t.added < this.time && (t.reason !== undefined || !this.hasWorker(t.order)))
-    if (!t) return false
-    this.tasks = this.tasks.filter(q => q !== t); this.targets.delete(t.p); t.order.parked.push(t.i)
+  /** Frontier tasks per order, all of them or only the live ones (not blocked); blocked tasks never count against a share. */
+  private held(live: boolean): Map<Order, number> { const held = new Map<Order, number>(); for (const t of this.tasks) if (!live || t.reason === undefined) held.set(t.order, (held.get(t.order) ?? 0) + 1); return held }
+  /** Blocked, beyond its order's share, or its order without crew for a while; never a task added this tick. */
+  private parkable(t: Task, live: ReadonlyMap<Order, number>): boolean {
+    const o = t.order
+    return t.added < this.time && (t.reason !== undefined || (live.get(o) ?? 0) > (this.share.get(o.id) ?? Infinity) || o.noCrewSince >= 0 && this.time - o.noCrewSince >= NO_CREW_TICKS)
+  }
+  /** Moves an unclaimed parkable task back to its order, lowest effective priority first, so the bounded frontier can hold other cells. */
+  private park(live = this.held(true)): boolean {
+    const k = parkChoice(this.tasks.map(t => ({ i: t.i, priority: this.effective(t.order), added: t.added, claimed: t.claim !== 0, parkable: this.parkable(t, live) })))
+    if (k < 0) return false
+    const t = this.tasks[k]!
+    this.tasks.splice(k, 1); this.unindex(t); this.targets.delete(t.p); t.order.parked.push(t.i)
+    if (t.reason === undefined) live.set(t.order, live.get(t.order)! - 1)
+    // A task parked only to make room has no history worth keeping.
+    this.parkedFailures.delete(t.p)
+    if (t.reason === undefined && !t.failures.size) return true
     if (this.parkedFailures.size >= MAX_PARKED_FAILURES) this.parkedFailures.delete(this.parkedFailures.keys().next().value!)
-    this.parkedFailures.delete(t.p); this.parkedFailures.set(t.p, { reason: t.reason!, failures: t.failures })
+    this.parkedFailures.set(t.p, { reason: t.reason, failures: t.failures })
     return true
   }
+  private effective(o: Order): number { return effectivePriority(o.priority, o.idleSince, this.time) }
   private hasWorker(o: Order): boolean {
     return !o.ids || [...o.ids].some(id => { const u = this.units.get(id); return u !== undefined && u.available && u.state !== 'incapacitated' })
   }
+  /** Cells the order could still add to the frontier: fresh ones up to the build ring gate, and parked ones. */
+  private exposable(o: Order): number {
+    let end = o.total
+    if (o.ringPending && !o.stalled) { const sx = o.max[0] - o.min[0] + 1, sz = o.max[2] - o.min[2] + 1; end = Math.min(o.total, o.floor * sx * sz + inner(sx, sz, o.ring)) }
+    return Math.max(0, end - o.cursor) + o.parked.length
+  }
   private expand(): void {
     let cap = 256, parks = MAX_PARKS
-    const active = this.orders.filter(o => !o.cancelled && o.done < o.total).sort((a, b) => b.priority - a.priority || a.id - b.id)
-    for (const o of active) while (cap > 0 && (o.cursor < o.total || o.parked.length)) {
+    const active = this.orders.filter(o => !o.cancelled && o.done < o.total).sort((a, b) => this.effective(b) - this.effective(a) || a.id - b.id)
+    const held = this.held(false), live = this.held(true)
+    for (const o of active) o.noCrewSince = this.hasWorker(o) ? -1 : o.noCrewSince < 0 ? this.time : o.noCrewSince
+    this.share = shares(active.map(o => ({ id: o.id, weight: this.effective(o), open: (held.get(o) ?? 0) + this.exposable(o) })), MAX_TASKS)
+    for (const o of active) while (cap > 0 && (live.get(o) ?? 0) < this.share.get(o.id)! && (o.cursor < o.total || o.parked.length)) {
       const fresh = o.cursor < o.total
       // A build only exposes cells it may work on now, so later rings never crowd the current one out of the frontier.
       if (fresh && o.ringPending && !o.stalled) { const next = this.cell(o, o.cursor); if (next[1] - o.min[1] > o.floor || next[1] - o.min[1] === o.floor && this.ringOf(o, next[0], next[2]) < o.ring) break }
       if (this.tasks.length >= MAX_TASKS) {
         // Parked cells come back through a full frontier only after something that could unblock them changed.
-        if (!fresh && o.parkedRevision === this.revision || parks <= 0 || !this.park()) break
+        if (!fresh && o.parkedRevision === this.revision || parks <= 0 || !this.park(live)) break
         parks--
       }
       if (!fresh) o.parkedRevision = this.revision
       const i = fresh ? o.cursor++ : o.parked.shift()!, pos = this.cell(o, i), p = this.port.layout.voxelIndex(...pos)
       cap--
       const t: Task = { order: o, i, pos, p, expected: this.port.get(...pos), claim: 0, added: this.time, failures: new Map() }
-      if (this.satisfied(t)) { o.done++; o.pending--; if (o.kind === 'build') this.buildCellDone(o, pos); if (o.done === o.total) { if (o.kind === 'build') this.buildReservationsChanged(o); this.port.emit('workCompleted', { id: o.id }) }; continue }
+      if (this.satisfied(t)) { o.done++; o.pending--; o.idleSince = this.time; if (o.kind === 'build') this.buildCellDone(o, pos); if (o.done === o.total) { if (o.kind === 'build') this.buildReservationsChanged(o); this.port.emit('workCompleted', { id: o.id }) }; continue }
       if (this.targets.has(p)) { if (fresh) o.cursor--; else o.parked.unshift(i); break }
       const history = fresh ? undefined : this.parkedFailures.get(p)
       if (history) { this.parkedFailures.delete(p); t.reason = history.reason; t.failures = history.failures }
-      this.targets.add(p); this.tasks.push(t)
+      this.targets.add(p); this.tasks.push(t); this.index(t); if (t.reason === undefined) live.set(o, (live.get(o) ?? 0) + 1)
     }
   }
+  private taskColumn(t: Task): number { return (t.pos[0] >> 5) + (t.pos[2] >> 5) * this.port.layout.cx }
+  private index(t: Task): void { const c = this.taskColumn(t), list = this.taskIndex.get(c); if (list) list.push(t); else this.taskIndex.set(c, [t]) }
+  private unindex(t: Task): void {
+    const c = this.taskColumn(t), list = this.taskIndex.get(c)
+    if (!list) return
+    const k = list.indexOf(t)
+    if (k >= 0) list.splice(k, 1)
+    if (!list.length) this.taskIndex.delete(c)
+  }
+  /**
+   * Tasks unit u may take, from its chunk column and the 8 around it, widened ring by ring until there are 16 or ring 4
+   * is reached; past that, every frontier task. Priority stays global: the 16 nearest tasks of orders ranked strictly
+   * above the best nearby one join the set.
+   */
+  private candidates(u: Unit): Task[] {
+    const L = this.port.layout, cx = u.x >> 13, cz = u.z >> 13, out: Task[] = [], eligible = (t: Task) => this.eligible(t, u)
+    for (let r = 0; r <= 4; r++) {
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r || cx + dx < 0 || cz + dz < 0 || cx + dx >= L.cx || cz + dz >= L.cz) continue
+        for (const t of this.taskIndex.get(cx + dx + (cz + dz) * L.cx) ?? []) if (eligible(t)) out.push(t)
+      }
+      if (r >= 1 && out.length >= 16) {
+        let best = -Infinity
+        for (const t of out) best = Math.max(best, this.effective(t.order))
+        const above = this.tasks.filter(t => this.effective(t.order) > best && eligible(t))
+        if (!above.length) return out
+        const far = (t: Task) => Math.abs(t.pos[0] - (u.x >> 8)) + Math.abs(t.pos[1] - (u.y >> 8)) + Math.abs(t.pos[2] - (u.z >> 8))
+        return [...out, ...above.sort((a, b) => far(a) - far(b) || a.p - b.p).slice(0, 16)]
+      }
+    }
+    return this.tasks.filter(eligible)
+  }
+  private eligible(t: Task, u: Unit): boolean { return !t.claim && (!t.order.ids || t.order.ids.has(u.id)) && this.workable(t) && this.canRetry(t, u) }
   private assign(): void {
     const units = [...this.units.values()]
-    let cap = this.assignmentCap
+    const assignable = (u: Unit) => u.available && u.goal === null && !u.task && !u.motion && u.state === 'idle'
+    let idle = 0
+    if (this.assignmentCap === undefined) for (const u of units) if (assignable(u)) idle++
+    const perTick = this.assignmentCap ?? Math.max(16, Math.ceil(idle / this.assignmentShare))
+    let cap = perTick
     for (let n = 0; n < units.length && cap > 0; n++) {
       const u = units[(this.assignmentCursor + n) % units.length]!
-      if (!u.available || u.goal !== null || u.task || u.motion || u.state !== 'idle') continue
+      if (!assignable(u)) continue
       cap--
       const [x, y, z] = this.pose(u)
-      const candidates = this.tasks.filter(t => !t.claim && (!t.order.ids || t.order.ids.has(u.id)) && this.workable(t) && this.canRetry(t, u))
-        .sort((a, b) => b.order.priority - a.order.priority || (Math.abs(a.pos[0] - x) + Math.abs(a.pos[1] - y) + Math.abs(a.pos[2] - z)) - (Math.abs(b.pos[0] - x) + Math.abs(b.pos[1] - y) + Math.abs(b.pos[2] - z)) || a.order.id - b.order.id || a.p - b.p)
+      const order = (list: Task[]) => list.sort((a, b) => this.effective(b.order) - this.effective(a.order) || (Math.abs(a.pos[0] - x) + Math.abs(a.pos[1] - y) + Math.abs(a.pos[2] - z)) - (Math.abs(b.pos[0] - x) + Math.abs(b.pos[1] - y) + Math.abs(b.pos[2] - z)) || a.order.id - b.order.id || a.p - b.p)
+      const near = order(this.candidates(u))
+      // Only when every nearby candidate failed without spending the attempts does the unit look at the rest.
+      const rest = () => { const seen = new Set(near); return order(this.tasks.filter(t => !seen.has(t) && this.eligible(t, u))) }
       let attempts = 0
-      for (const t of candidates) {
+      for (const t of chain(near, rest)) {
         if (this.satisfied(t)) { this.removeTask(t, true); continue }
         const id = voxelId(this.port.get(...t.pos)), build = t.order.kind === 'build'
         let reason: WorkBlockReason | undefined
@@ -563,11 +640,12 @@ export class WorkerSystem {
         const goals = reason ? [] : this.workGoals(u, t)
         if (reason || !goals.length) { this.taskFailure(t, u, reason ?? (this.workGoals(u, t, true).length ? 'traffic' : 'no-access')); continue }
         t.claim = u.id; t.expected = this.port.get(...t.pos); t.reason = undefined; u.task = t; u.reason = undefined; u.stale = 0
-        u.workPoses = goals; for (const p of goals) this.workPositions.set(p, u.id)
+        // The goals are only the search's targets; the unit claims the one its route ends on when the route is found.
+        u.workPoses = goals; u.progressAt = this.time
         u.search = this.request(u, goals); u.state = 'planning'; this.dirty.add(u.id); break
       }
     }
-    this.assignmentCursor = units.length ? (this.assignmentCursor + this.assignmentCap) % units.length : 0
+    this.assignmentCursor = units.length ? (this.assignmentCursor + perTick) % units.length : 0
   }
   private releaseWorkPoses(u: Unit): void { for (const p of u.workPoses) if (this.workPositions.get(p) === u.id) this.workPositions.delete(p); u.workPoses = [] }
   private motionPose(to: number, elapsed: number, ticks: number, start: [number, number, number]): [number, number, number] {
@@ -682,7 +760,7 @@ export class WorkerSystem {
     this.resetRoute(u)
     u.state = 'falling'; u.motion = null
     if (u.task) { if (u.task.order.id < 0) this.targets.delete(u.task.p); u.task.claim = 0; u.task = null }
-    u.vy = Math.min(512, u.vy + 24)
+    u.vy = Math.min(512, u.vy + 24); u.progressAt = this.time
     const target = Math.max(0, u.y - u.vy)
     for (let yy = Math.ceil(u.y / 256) - 1; yy >= Math.floor(target / 256); yy--) {
       let floor = yy < 0
@@ -717,6 +795,11 @@ export class WorkerSystem {
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
         if (!u.motion) u.unsafeHere = !this.safePose(this.pose(u))
       }
+      // A claim lapses when its unit neither moves nor works for LEASE_TICKS; a waiting flat step stops where it stands.
+      if (u.task && u.state !== 'falling' && (!u.motion || u.motion.flat) && this.time - u.progressAt >= LEASE_TICKS) {
+        if (u.motion) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)) }
+        this.block(u, 'traffic'); continue
+      }
       if (u.motion) {
         const m = u.motion
         // Ascent lifts above the source before translating; validate its original floor, not the interpolated height.
@@ -737,7 +820,7 @@ export class WorkerSystem {
         }
         if (u.wait || u.reason) { u.wait = 0; u.reason = undefined; this.dirty.add(u.id) }
         m.cells = cells
-        m.elapsed++; [u.x, u.y, u.z] = this.motionPose(m.to, m.elapsed, m.ticks, m.start)
+        m.elapsed++; [u.x, u.y, u.z] = this.motionPose(m.to, m.elapsed, m.ticks, m.start); u.progressAt = this.time
         if (m.elapsed === m.ticks) { u.motion = null; u.cursor = m.cursor; this.reserve(u, this.body(u.x, u.y, u.z)); u.state = u.goal === null && !u.task ? 'idle' : 'planning'; this.dirty.add(u.id) }
         if (u.motion) continue
       }
@@ -754,7 +837,7 @@ export class WorkerSystem {
         u.search = this.request(u, [], undefined, p => this.safePose(this.port.layout.voxelCoords(p))); u.state = 'planning'; u.retry = this.time + 40; this.dirty.add(u.id); continue
       }
       if (u.state === 'working' && u.task) {
-        if (this.canWork(this.pose(u), u.task)) u.progress = Math.min(u.duration, u.progress + 1)
+        if (this.canWork(this.pose(u), u.task)) { u.progress = Math.min(u.duration, u.progress + 1); u.progressAt = this.time }
         else this.block(u, 'unsafe')
         continue
       }
@@ -773,7 +856,7 @@ export class WorkerSystem {
         if (a.kind === 'walk') { const p = this.port.layout.voxelIndex(...a.pos); if (this.beginMotion(u, p)) u.actionCursor++; continue }
         const p = this.port.layout.voxelIndex(...a.pos)
         if (this.targets.has(p)) { this.block(u, 'traffic'); continue }
-        const order: Order = { id: -u.id, kind: a.kind, min: a.pos, max: a.pos, voxel: a.voxel, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false }
+        const order: Order = { id: -u.id, kind: a.kind, min: a.pos, max: a.pos, voxel: a.voxel, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false, idleSince: this.time, noCrewSince: -1 }
         const t: Task = { order, i: 0, p, pos: a.pos, expected: this.port.get(...a.pos), claim: u.id, added: this.time, failures: new Map() }
         if (this.satisfied(t)) { u.actionCursor++; continue }
         if (!this.canWork(this.pose(u), t)) { this.block(u, 'unsafe'); continue }
@@ -786,8 +869,17 @@ export class WorkerSystem {
         if (s.status === 'found') {
           u.stale = 0
           if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
+          if (u.task) {
+            const p = s.path.at(-1)!, owner = this.workPositions.get(p)
+            // Another unit took this pose while the search ran: search again for the poses still free.
+            if (owner !== undefined && owner !== u.id) {
+              const goals = this.workGoals(u, u.task)
+              if (!goals.length) { this.block(u, 'traffic'); continue }
+              u.workPoses = goals; u.search = this.request(u, goals); continue
+            }
+            this.releaseWorkPoses(u); u.workPoses = [p]; this.workPositions.set(p, u.id)
+          }
           u.path = s.path; u.cursor = 1
-          if (u.task) { this.releaseWorkPoses(u); const p = s.path.at(-1)!; u.workPoses = [p]; this.workPositions.set(p, u.id) }
         }
         else if (s.status === 'stale' || s.status === 'cancelled') { u.path = []; if (s.status === 'stale') u.retry = this.time + staleBackoff(++u.stale) }
         else {
@@ -837,7 +929,7 @@ export class WorkerSystem {
     const details = [...this.dirty].flatMap(id => { const view = this.view(id); return view ? [view] : [] }); this.dirty.clear()
     const barriers = this.barriers.map(({ unit, pos }) => ({ unit, pos, chunks: this.port.layout.chunksAround(...pos).map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })) })); this.barriers = []
     const drops = [...this.dirtyDrops.values()]; this.dirtyDrops.clear()
-    return { tick, poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }) })),
+    return { tick, poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }), effectivePriority: this.effective(o) })),
       stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles } }
   }
   mixState(mix: (n: number) => void): void {
@@ -845,7 +937,7 @@ export class WorkerSystem {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }
     const order = (o: Order) => {
       mix(o.id); mix(o.kind === 'dig' ? 1 : 2); mix(o.cursor); mix(o.total); mix(o.done); mix(o.pending); mix(o.cancelled ? 1 : 0); mix(o.voxel); mix(o.priority); reason(o.reason)
-      numbers(o.min); numbers(o.max); mix(o.ids?.size ?? -1); for (const id of o.ids ?? []) mix(id); numbers(o.parked); mix(o.parkedRevision); mix(o.rings); mix(o.floor); mix(o.ring); mix(o.progress); mix(o.stalled ? 1 : 0); numbers([...(o.ringPending ?? [])])
+      numbers(o.min); numbers(o.max); mix(o.ids?.size ?? -1); for (const id of o.ids ?? []) mix(id); numbers(o.parked); mix(o.parkedRevision); mix(o.rings); mix(o.floor); mix(o.ring); mix(o.progress); mix(o.stalled ? 1 : 0); numbers([...(o.ringPending ?? [])]); mix(o.idleSince); mix(o.noCrewSince)
     }
     const failures = (map: Map<number, TaskFailure>) => {
       mix(map.size)
@@ -859,7 +951,7 @@ export class WorkerSystem {
     mix(this.units.size)
     for (const u of this.units.values()) {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
-      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.stale); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
+      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)
       for (const [b, n] of u.stock) { mix(b); mix(n) }

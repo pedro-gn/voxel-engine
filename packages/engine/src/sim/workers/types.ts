@@ -7,7 +7,10 @@ export interface WorkerOptions {
   searchCap?: number
   maxSearchNodes?: number
   maxOrders?: number
+  /** Fixed number of idle units assigned per tick; when unset, max(16, ceil(idle / assignmentShare)). */
   assignmentCap?: number
+  /** Idle units per assignment per tick when assignmentCap is unset (default 8). */
+  assignmentShare?: number
   commitCap?: number
   inventoryCapacity?: number
   materials?: Record<string, WorkMaterial>
@@ -23,6 +26,8 @@ export interface WorkerView {
 export interface WorkOrderView {
   id: number; kind: 'dig' | 'build'; min: Vec3; max: Vec3; voxel: number
   total: number; done: number; pending: number; cancelled: boolean; reason?: WorkBlockReason
+  /** Priority plus aging while the order waits without progress; it orders expansion, parking and assignment. */
+  effectivePriority: number
 }
 export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number }
 export interface WorkerBarrier {
