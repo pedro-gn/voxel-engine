@@ -3,7 +3,8 @@
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
-// --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure).
+// --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
+// --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
@@ -28,8 +29,8 @@ const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 120
 const GRACE = Number(flag('grace') ?? 1200)
 /** Ticks per block at the workers' walking speed (WALK_SPEED 64 / 256 of a block per tick, 5 blocks/s). */
 const TICKS_PER_BLOCK = 4
-/** At most this many no-access verdicts are re-checked per phase with an exact search. */
-const FALSE_UNREACHABLE_CAP = 200
+/** At most this many no-access verdicts are re-checked per phase with an exact search (--unreachable-cap=0: all). */
+const FALSE_UNREACHABLE_CAP = Number(flag('unreachable-cap') ?? 200) || Infinity
 const doc = JSON.parse(readFileSync(new URL('../src/terrain/crowd.terrain.json', import.meta.url), 'utf8'))
 const sim = new Simulation({ buffers: createWorldBuffers([...CROWD_SIZE]), blocks: BLOCKS, rules, seed: 1234, randomTicksPerChunk: randomTickRate(CROWD_SIZE[0], CROWD_SIZE[2]), workers: CROWD_WORKER_OPTIONS, log: () => {} })
 const t0 = performance.now()
