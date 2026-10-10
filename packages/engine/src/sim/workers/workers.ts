@@ -71,7 +71,8 @@ interface Task { order: Order; i: number; pos: Vec3; p: number; expected: number
 const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
 /** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
-const HIER_MIN = 48 * 4, SEGMENT_STEPS = 256
+export const HIER_MIN = 48 * 4
+const SEGMENT_STEPS = 256
 const STATUSES = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'] as const
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
