@@ -28,6 +28,8 @@ const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 120
 const GRACE = Number(flag('grace') ?? 1200)
 /** Ticks per block at the workers' walking speed (WALK_SPEED 64 / 256 of a block per tick, 5 blocks/s). */
 const TICKS_PER_BLOCK = 4
+/** At most this many no-access verdicts are re-checked per phase with an exact search. */
+const FALSE_UNREACHABLE_CAP = 200
 const doc = JSON.parse(readFileSync(new URL('../src/terrain/crowd.terrain.json', import.meta.url), 'utf8'))
 const sim = new Simulation({ buffers: createWorldBuffers([...CROWD_SIZE]), blocks: BLOCKS, rules, seed: 1234, randomTicksPerChunk: randomTickRate(CROWD_SIZE[0], CROWD_SIZE[2]), workers: CROWD_WORKER_OPTIONS, log: () => {} })
 const t0 = performance.now()
@@ -195,12 +197,12 @@ if (ONLY !== undefined && !PHASES[ONLY]) throw new Error(`unknown phase ${ONLY};
  * pose before the order tick to its formation goal after it. Edge costs are the executor's tick counts (4 per flat step,
  * 4 + 2 per climb, 4 + drop per drop); string-pulled diagonals can only be faster. Run between two ticks, so untimed.
  */
-function exactWalks(starts: Map<number, number>, ids: number[]): Map<number, number | null> {
+function exactWalks(starts: Map<number, number>, goals: Map<number, number>, ids: number[]): Map<number, number | null> {
   const nav = new NavigationSystem(w.nav.port, 1 << 22), out = new Map<number, number | null>()
   for (const id of ids) {
-    const u = w.units.get(id), start = starts.get(id)
-    if (!u || u.goal === null || start === undefined) continue
-    const s = nav.request(start, [u.goal])
+    const start = starts.get(id), goal = goals.get(id)
+    if (start === undefined || goal === undefined) continue
+    const s = nav.request(start, [goal])
     while (s.status === 'pending') nav.step(1 << 16)
     out.set(id, s.status === 'found' ? s.cost : null)
   }
@@ -221,7 +223,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
   const from = sim.tick, ms: number[] = [], share: number[] = [], ordered = new Set(moved)
   const first = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
   const orderIds = new Set<number>(), starts = new Map<number, number>(), ideal = new Map<number, number>(), lines = new Map<number, number>()
-  const sampled: number[] = [], allDetours: number[] = [], unreachable: number[] = []
+  const sampled: number[] = [], allDetours: number[] = [], unreachable: number[] = [], goals = new Map<number, number>(), noAccess = new Set<number>()
   let exactMs = 0
   let visitedMax = 0, navBytesMax = 0, failedCommands = 0, ordersDoneAt: number | null = null
   for (let i = 0; i < n; i++) {
@@ -233,10 +235,11 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
     // The goals exist once the order tick ran; the exact searches run here, between ticks.
     if (i === 0 && groups.length) {
       const a = performance.now(), rng = new Pcg32(99)
+      for (const id of moved) { const goal = w.units.get(id)?.goal; if (goal !== undefined && goal !== null) goals.set(id, goal) }
       for (const g of groups) {
         const picks = new Set<number>()
         while (picks.size < Math.min(g.length, g.length > 25 ? 20 : 1)) picks.add(g[rng.nextInt(g.length)]!)
-        const exact = exactWalks(starts, [...picks]), detours: number[] = []
+        const exact = exactWalks(starts, goals, [...picks]), detours: number[] = []
         for (const [id, cost] of exact) {
           const u = w.units.get(id)!
           if (cost === null) { unreachable.push(id); continue }
@@ -264,6 +267,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
     for (const d of wt.details) {
       const key = d.state === 'blocked' ? d.reason ?? 'none' : ''
       if (key && blockedAs.get(d.id) !== key) blocks[key] = (blocks[key] ?? 0) + 1
+      if (key === 'no-access' && ordered.has(d.id)) noAccess.add(d.id)
       blockedAs.set(d.id, key)
     }
     visitedMax = Math.max(visitedMax, wt.stats.visited); navBytesMax = Math.max(navBytesMax, wt.stats.navBytes)
@@ -278,6 +282,12 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
   const lateStraight = moved.map(id => (arrived.get(id) ?? Infinity) - (lines.get(id) ?? -Infinity)), onTimeStraight = lateStraight.filter(n => n <= GRACE).length
   const finite = (n: number | null) => n === null || !Number.isFinite(n) ? null : n
   const work = last.workers!.orders.filter(o => orderIds.has(o.id))
+  // False unreachable (untimed, after the phase): every ordered unit ever blocked 'no-access' gets the exact A* from its
+  // pose at order time to its goal; a found route makes the verdict false. Capped, in id order, since an unreachable
+  // goal costs a whole exhausted search.
+  const suspects = [...noAccess].sort((a, b) => a - b), checked = suspects.slice(0, FALSE_UNREACHABLE_CAP), fa = performance.now()
+  const verdicts = exactWalks(starts, goals, checked), wrong = checked.filter(id => verdicts.get(id) != null)
+  const falseUnreachable = { suspects: suspects.length, endedNoAccess: suspects.filter(id => blockedAs.get(id) === 'no-access').length, checked: verdicts.size, count: wrong.length, ids: wrong.slice(0, 20), endedNoAccessFound: wrong.filter(id => blockedAs.get(id) === 'no-access').length, ms: Math.round(performance.now() - fa) }
   return {
     tickMs: { p50: r3(q(ms, .5)), p95: r3(q(ms, .95)), p99: r3(q(ms, .99)), max: r3(Math.max(...ms)) },
     workersMs: { p50: r3(q(share, .5)), p95: r3(q(share, .95)), p99: r3(q(share, .99)), max: r3(Math.max(...share)) },
@@ -290,6 +300,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
         straightLine: { idealTicks: { p50: q(straights, .5), p95: q(straights, .95), max: straights.length ? Math.max(...straights) : null }, lateTicks: { p50: finite(q(lateStraight, .5)), p95: finite(q(lateStraight, .95)) }, withinPlusGracePct: +(100 * onTimeStraight / moved.length).toFixed(1) } },
     }),
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
+    ...(moved.length > 0 && { falseUnreachable }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
   }
 }
