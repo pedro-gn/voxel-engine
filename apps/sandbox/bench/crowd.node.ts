@@ -1,7 +1,8 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
-// --assert (exit 1 when a phase misses a spec §7 criterion),
+// --assert [--arrival=60s|ideal+60s] (exit 1 when a phase misses a spec §7 criterion; arrival within 60 s of the order,
+// or within 60 s of each unit's ideal walk: 4 ticks per block of Manhattan distance, 2 more per block of rise),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
@@ -190,13 +191,20 @@ if (ONLY !== undefined && !PHASES[ONLY]) throw new Error(`unknown phase ${ONLY};
 function measure(n: number, moved: number[], each?: (i: number) => void) {
   const from = sim.tick, ms: number[] = [], share: number[] = [], ordered = new Set(moved)
   const first = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
-  const orderIds = new Set<number>()
+  const orderIds = new Set<number>(), ideal = new Map<number, number>()
   let visitedMax = 0, navBytesMax = 0, failedCommands = 0, ordersDoneAt: number | null = null
   for (let i = 0; i < n; i++) {
     each?.(i)
     workersMs = 0
     const a = performance.now(); last = sim.step(); ms.push(performance.now() - a); share.push(workersMs)
     const t = last.tick - from
+    // The orders apply on the first tick: each unit's ideal walk is from where it stands then to its assigned destination.
+    if (i === 0) for (const id of moved) {
+      const u = w.units.get(id)
+      if (u?.goal == null) continue
+      const [gx, gy, gz] = sim.layout.voxelCoords(u.goal)
+      ideal.set(id, 4 * (Math.abs(gx - (u.x >> 8)) + Math.abs(gz - (u.z >> 8))) + 2 * Math.max(0, gy - (u.y >> 8)))
+    }
     failedCommands += last.acks.filter(x => !x.ok).length
     for (const e of last.events) {
       const id = (e.payload as { id?: number } | undefined)?.id
@@ -219,12 +227,17 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
   const arrival = moved.map(id => arrived.get(id) ?? Infinity)
   const finite = (n: number | null) => n === null || !Number.isFinite(n) ? null : n
   const work = last.workers!.orders.filter(o => orderIds.has(o.id))
+  // Arrival within 60 s of the ideal walk, over the units this phase could judge: arrived, or past their deadline.
+  const deadline = (id: number) => (ideal.get(id) ?? Infinity) + 1200
+  const judged = moved.filter(id => arrived.has(id) || deadline(id) <= n), onTime = judged.filter(id => (arrived.get(id) ?? Infinity) <= deadline(id))
+  const slack = moved.filter(id => arrived.has(id) && ideal.has(id)).map(id => arrived.get(id)! - ideal.get(id)!)
   return {
     tickMs: { p50: r3(q(ms, .5)), p95: r3(q(ms, .95)), p99: r3(q(ms, .99)), max: r3(Math.max(...ms)) },
     workersMs: { p50: r3(q(share, .5)), p95: r3(q(share, .95)), p99: r3(q(share, .99)), max: r3(Math.max(...share)) },
     ...(moved.length > 0 && {
       firstActionTicks: { p50: finite(q(latency, .5)), p95: finite(q(latency, .95)), started, ordered: moved.length },
       arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null },
+      arrivedVsIdeal: { pct: judged.length ? +(100 * onTime.length / judged.length).toFixed(1) : null, judged: judged.length, p50SlackTicks: q(slack, .5), p95SlackTicks: q(slack, .95) },
     }),
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
@@ -248,16 +261,20 @@ for (const [name, phase] of Object.entries(PHASES)) {
 console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
 if (flag('assert') !== undefined) {
   // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action and arrival.
-  type M = { tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }; arrived?: { pct: number } }
-  const firstLimit = UNITS <= 100 ? 5 : 20, failures: string[] = []
+  type M = { tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }; arrived?: { pct: number }; arrivedVsIdeal?: { pct: number | null; judged: number } }
+  const firstLimit = UNITS <= 100 ? 5 : 20, failures: string[] = [], arrival = flag('arrival') ?? '60s'
+  if (arrival !== '60s' && arrival !== 'ideal+60s') throw new Error(`--arrival must be 60s or ideal+60s, not ${arrival}`)
   const over = (name: string, what: string, value: number | null | undefined, limit: number) => { if (value === null || value === undefined || value > limit) failures.push(`${name}: ${what} ${value ?? 'none'} > ${limit}`) }
   for (const [name, r] of Object.entries(results)) {
     if (name === 'setup') continue
     const m = r as M
     over(name, 'workers p95 ms', m.workersMs.p95, 4); over(name, 'workers max ms', m.workersMs.max, 12); over(name, 'tick p95 ms', m.tickMs.p95, 15)
     if (m.firstActionTicks) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
-    // Arrival is judged over 60 s of sim time, so only when the phase ran that long.
-    if (m.arrived && TICKS >= 1200) { const need = name === 'bottleneck' ? 100 : 99; if (m.arrived.pct < need) failures.push(`${name}: arrived ${m.arrived.pct}% < ${need}%`) }
+    const need = name === 'bottleneck' ? 100 : 99
+    // 60s: arrival is judged over 60 s of sim time, so only when the phase ran that long.
+    if (arrival === '60s' && m.arrived && TICKS >= 1200 && m.arrived.pct < need) failures.push(`${name}: arrived ${m.arrived.pct}% < ${need}%`)
+    // ideal+60s: over the units whose deadline fell inside the phase (or that arrived); none judged is a failure too.
+    if (arrival === 'ideal+60s' && m.arrivedVsIdeal && (m.arrivedVsIdeal.pct ?? 0) < need) failures.push(`${name}: arrived within ideal + 60 s ${m.arrivedVsIdeal.pct ?? 'none'}% of ${m.arrivedVsIdeal.judged} judged < ${need}%`)
   }
   for (const f of failures) console.error(`FAIL ${f}`)
   if (failures.length) process.exit(1)
