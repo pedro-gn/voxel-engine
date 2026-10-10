@@ -5,6 +5,10 @@ import { raycast } from '../../interact/raycast.ts'
 import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
+import { RouteSearch } from '../navigation/routeSearch.ts'
+import { GroupField } from '../navigation/groupField.ts'
+import { splitKey } from '../navigation/regions.ts'
+import { descend } from '../navigation/refine.ts'
 import { walkSweep } from './walkSweep.ts'
 import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
 
@@ -37,6 +41,20 @@ interface Unit {
   unsafeHere: boolean
   /** Consecutive stale searches; each one doubles the wait before the next attempt. */
   stale: number
+  /** A hierarchical route being walked; its refined segments are appended to `path`, two ahead of the unit. */
+  route: Route | null
+  /** Region-confined flat search refining a segment that the field descent could not. */
+  segment: PathSearch | null
+}
+/**
+ * last: pose where the refined path ends; segs: refined segments by end index in `path`, with the region revision they
+ * were refined on; exits: exit keys refined so far; next: next exit of a route search to refine; target: what `segment`
+ * refines (an exit key, or -1 for the goal).
+ */
+interface Route {
+  search: RouteSearch | GroupField; goals: number[]; exits: number[]; next: number; last: number
+  segs: { end: number; region: number; epoch: number }[]; exclude: number[]; finished: boolean; replan: boolean
+  target: { key: number; region: number; epoch: number } | null
 }
 interface Order extends WorkOrderView {
   cursor: number; ids: Set<number> | null; priority: number; parked: number[]; parkedRevision: number
@@ -52,6 +70,9 @@ interface TaskFailure { origin: number; policy: number; nav: number; tiles: Read
 interface Task { order: Order; i: number; pos: Vec3; p: number; expected: number; claim: number; added: number; reason?: WorkBlockReason; failures: Map<number, TaskFailure> }
 const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
+/** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
+const HIER_MIN = 48 * 4, SEGMENT_STEPS = 256
+const STATUSES = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'] as const
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
 export const staleBackoff = (n: number): number => Math.min(32, 1 << Math.min(5, n))
@@ -96,6 +117,11 @@ export class WorkerSystem {
   private policy = 0
   private mutations = 0
   private engineeringVisited = 0
+  /** Operations spent this tick descending region fields; shares the navigation budget. */
+  private refineWork = 0
+  /** Units walking each group field, and the field's hash id in creation order. */
+  private groups = new Map<GroupField, { id: number; users: number }>()
+  private nextGroup = 1
   private dynamicWasBusy = false
   readonly maxUnits: number
   private readonly searchCap: number
@@ -280,7 +306,7 @@ export class WorkerSystem {
       }
       const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
         goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
-        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0 }
+        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, route: null, segment: null }
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
       this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return
@@ -361,6 +387,12 @@ export class WorkerSystem {
       }
       if (destinations.length < units.length) throw new Error('not enough safe formation destinations')
       units.forEach((u, i) => { this.clearOrder(u); if (u.state !== 'incapacitated') { u.available = true; u.goal = destinations[i]!; u.allowDig = c.allowDig === true; u.buildBlock = c.buildBlock ?? 0; u.state = u.motion ? 'walking' : 'planning'; u.retry = 0; u.revision = -1 } })
+      // Units that would each plan a long route share one reverse field from all their destinations.
+      const members = units.filter(u => u.state !== 'incapacitated' && !u.motion && !u.allowDig && !u.buildBlock && !this.escaping(u) && this.estimate(u, [u.goal!]) > HIER_MIN)
+      if (members.length > 1) {
+        const field = this.nav.group(members.map(u => u.goal!), members.map(u => this.position(u)))
+        for (const u of members) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
+      }
     } else if (c.type === 'unitCancel') for (const u of units) { this.clearOrder(u); u.available = false }
     else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.units.delete(u.id); this.dirty.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
     this.revision++
@@ -437,7 +469,7 @@ export class WorkerSystem {
   }
   /** Drops every route artifact: search, path, engineering plan, walking alternative and work-pose claims. */
   private resetRoute(u: Unit): void {
-    this.releaseWorkPoses(u)
+    this.releaseWorkPoses(u); this.dropRoute(u)
     u.engineering?.cancel(); u.engineering = null; u.searchLimited = false; u.actions = []; u.actionCursor = 0; u.alternative = []; u.alternativeCost = 0
     u.search?.cancel(); u.search = null; u.path = []; u.cursor = 0; u.progress = 0; u.escape = []
   }
@@ -564,7 +596,7 @@ export class WorkerSystem {
         if (reason || !goals.length) { this.taskFailure(t, u, reason ?? (this.workGoals(u, t, true).length ? 'traffic' : 'no-access')); continue }
         t.claim = u.id; t.expected = this.port.get(...t.pos); t.reason = undefined; u.task = t; u.reason = undefined; u.stale = 0
         u.workPoses = goals; for (const p of goals) this.workPositions.set(p, u.id)
-        u.search = this.request(u, goals); u.state = 'planning'; this.dirty.add(u.id); break
+        this.plan(u, goals); u.state = 'planning'; this.dirty.add(u.id); break
       }
     }
     this.assignmentCursor = units.length ? (this.assignmentCursor + this.assignmentCap) % units.length : 0
@@ -637,7 +669,8 @@ export class WorkerSystem {
     u.actions = []; u.actionCursor = 0
     // A settled unit parked on the destination never leaves: take the nearest free pose instead of circling it.
     if (!u.task && u.goal !== null && this.settledOn(u.goal, u.id) && !this.retarget(u)) { this.block(u, 'traffic'); return }
-    const goals = u.task ? this.workGoals(u, u.task) : u.goal !== null ? [u.goal] : []
+    // A unit on a route detours to the end of its refined path; the route carries on from there.
+    const goals = u.route && u.route.last >= 0 ? [u.route.last] : u.task ? this.workGoals(u, u.task) : u.goal !== null ? [u.goal] : []
     if (goals.length && goals.some(p => !this.occupied.has(p) || this.occupied.get(p) === u.id)) {
       // Only bodies near the unit matter for a local detour; distant ones will have moved by the time it gets there.
       const blocked = new Set<number>()
@@ -658,7 +691,7 @@ export class WorkerSystem {
   }
   private settledOn(p: number, self: number): boolean {
     const owner = this.occupied.get(p), other = owner === undefined || owner === self ? undefined : this.units.get(owner)
-    return !!other && !other.motion && other.goal === null && !other.task && !other.search && other.path[other.cursor] === undefined
+    return !!other && !other.motion && other.goal === null && !other.task && !other.search && !other.route && other.path[other.cursor] === undefined
   }
   private retarget(u: Unit): boolean {
     const [gx, gy, gz] = this.port.layout.voxelCoords(u.goal!), taken = new Set<number>()
@@ -697,6 +730,7 @@ export class WorkerSystem {
   }
   afterPhysics(): void {
     let engineeringSlots = 0, engineeringWork = 0
+    this.refineWork = 0
     const wasDynamic = this.dynamicWasBusy
     const dynamic = this.port.dynamicBusy()
     // Settling physics may end transient hazards (deep water, structural checks): every failure becomes retryable.
@@ -748,7 +782,7 @@ export class WorkerSystem {
         u.state = 'planning'; u.reason = undefined; this.dirty.add(u.id)
       }
       // Moving out of an unsafe pose is always allowed; only staying idle there is not. Transient checks get a grace period.
-      const idle = u.state === 'idle' && u.goal === null && !u.task && !u.search && u.path[u.cursor] === undefined
+      const idle = u.state === 'idle' && u.goal === null && !u.task && !u.search && !u.route && u.path[u.cursor] === undefined
       u.exposed = idle && u.unsafeHere ? u.exposed + 1 : 0
       if (u.exposed && this.time >= u.retry && (u.exposed >= 20 || !dynamic)) {
         u.search = this.request(u, [], undefined, p => this.safePose(this.port.layout.voxelCoords(p))); u.state = 'planning'; u.retry = this.time + 40; this.dirty.add(u.id); continue
@@ -787,6 +821,7 @@ export class WorkerSystem {
           u.stale = 0
           if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
           u.path = s.path; u.cursor = 1
+          if (u.route) u.route.segs = []
           if (u.task) { this.releaseWorkPoses(u); const p = s.path.at(-1)!; u.workPoses = [p]; this.workPositions.set(p, u.id) }
         }
         else if (s.status === 'stale' || s.status === 'cancelled') { u.path = []; if (s.status === 'stale') u.retry = this.time + staleBackoff(++u.stale) }
@@ -795,25 +830,135 @@ export class WorkerSystem {
           this.block(u, s.status === 'limited' ? 'search-limited' : u.reason === 'traffic' ? 'traffic' : 'no-access', s.seen); continue
         }
       }
+      if (u.route && this.advanceRoute(u)) continue
       if (u.path[u.cursor] !== undefined) { this.beginPathMotion(u); continue }
       if (u.task && this.canWork(this.pose(u), u.task)) {
         u.state = 'working'; u.progress = 0; u.duration = u.task.order.kind === 'build' ? this.build[voxelId(u.task.order.voxel)]! : this.dig[voxelId(this.port.get(...u.task.pos))]!
         this.dirty.add(u.id); continue
       }
-      if (u.task) { if (this.time >= u.retry) u.search = this.request(u, this.workGoals(u, u.task)); u.state = 'planning'; continue }
+      if (u.task) { if (this.time >= u.retry) this.plan(u, this.workGoals(u, u.task)); u.state = 'planning'; continue }
       if (u.goal !== null) {
         if (this.position(u) === u.goal) {
           const [x, y, z] = this.port.layout.voxelCoords(u.goal)
           if (u.x !== x * 256 + 128 || u.y !== y * 256 || u.z !== z * 256 + 128) { this.beginMotion(u, u.goal, u.cursor); continue }
           this.port.emit('unitArrived', { id: u.id }); u.goal = null; u.state = 'idle'; this.dirty.add(u.id)
         }
-        else if (this.time >= u.retry) { u.search = this.request(u, [u.goal]); u.state = 'planning' }
+        else if (this.time >= u.retry) { this.plan(u, [u.goal]); u.state = 'planning' }
       }
       // Nothing left to do (a failed or discarded escape, a sidestep without a goal): become assignable again.
-      if (u.goal === null && !u.task && !u.search && !u.motion && !u.engineering && !u.actions[u.actionCursor] && u.path[u.cursor] === undefined && u.state !== 'idle') { u.state = 'idle'; this.dirty.add(u.id) }
+      if (u.goal === null && !u.task && !u.search && !u.route && !u.motion && !u.engineering && !u.actions[u.actionCursor] && u.path[u.cursor] === undefined && u.state !== 'idle') { u.state = 'idle'; this.dirty.add(u.id) }
     }
     this.engineeringVisited = engineeringWork
-    this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork))
+    this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork - this.refineWork))
+  }
+  private escaping(u: Unit): boolean { const [x, y, z] = this.pose(u); return this.reservations.some(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true)) }
+  /** The flat search heuristic from the unit to its nearest goal. */
+  private estimate(u: Unit, goals: readonly number[]): number {
+    const [x, y, z] = this.pose(u)
+    let h = Infinity
+    for (const g of goals) { const [gx, gy, gz] = this.port.layout.voxelCoords(g); h = Math.min(h, (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2) }
+    return h
+  }
+  /**
+   * Long walks go hierarchical. Escaping a build designation, engineering (dig or build on the way) and short walks stay
+   * on the flat search, like traffic detours and the exposure escape, which call `request` directly.
+   */
+  private plan(u: Unit, goals: readonly number[], exclude: readonly number[] = []): void {
+    this.dropRoute(u)
+    if (this.escaping(u) || u.allowDig || u.buildBlock || !goals.length || this.estimate(u, goals) <= HIER_MIN) { u.search = this.request(u, goals); return }
+    u.escape = []; u.search = null
+    u.route = this.newRoute(this.nav.route(this.position(u), goals, exclude.length ? { exclude: new Set(exclude) } : undefined), goals, exclude)
+  }
+  private newRoute(search: RouteSearch | GroupField, goals: readonly number[], exclude: readonly number[] = []): Route {
+    if (search instanceof GroupField) { const g = this.groups.get(search); if (g) g.users++; else this.groups.set(search, { id: this.nextGroup++, users: 1 }) }
+    return { search, goals: [...goals], exits: [], next: 0, last: -1, segs: [], exclude: [...exclude], finished: false, replan: false, target: null }
+  }
+  /** Drops the route and its segment search; a group field is cancelled when its last unit leaves it. */
+  private dropRoute(u: Unit): void {
+    const r = u.route
+    u.segment?.cancel(); u.segment = null
+    if (!r) return
+    u.route = null
+    if (!(r.search instanceof GroupField)) { r.search.cancel(); return }
+    const g = this.groups.get(r.search)!
+    if (--g.users === 0) { this.groups.delete(r.search); r.search.cancel() }
+  }
+  private claimWorkPose(u: Unit, p: number): void { this.releaseWorkPoses(u); u.workPoses = [p]; this.workPositions.set(p, u.id) }
+  /**
+   * Moves a standing unit along its route: adopts the result, keeps two refined segments ahead, and replans from where it
+   * stands when a region it is about to cross changed or its path was replaced. True when the unit waits this tick.
+   */
+  private advanceRoute(u: Unit): boolean {
+    const r = u.route!, s = r.search
+    if (s.status === 'pending') return true
+    if (s.status !== 'found') {
+      this.dropRoute(u); u.path = []; u.cursor = 0
+      if (s.status === 'stale') { u.retry = this.time + staleBackoff(++u.stale); return false }
+      // A group field that cannot serve falls back to the unit's own route.
+      if (s instanceof GroupField || s.status === 'cancelled') { this.plan(u, r.goals, r.exclude); return true }
+      this.block(u, s.status === 'limited' ? 'search-limited' : 'no-access', s.seen); return true
+    }
+    const here = this.position(u)
+    if (r.last < 0) {
+      if (s instanceof GroupField && !s.next(here)) { this.plan(u, r.goals); return true }
+      u.stale = 0; r.last = here; u.path = [here]; u.cursor = 1
+      if (u.task && s instanceof RouteSearch) this.claimWorkPose(u, s.goal)
+    }
+    if (u.segment && u.segment.status !== 'pending') {
+      const seg = u.segment, target = r.target!
+      u.segment = null; r.target = null
+      if (seg.status === 'found') this.appendSegment(u, r, seg.path, target)
+      else if (seg.status !== 'stale' && seg.status !== 'cancelled') {
+        // Live policy or a confined detour cut the segment: route around that exit, or finish the walk on a flat search.
+        if (target.key < 0) { this.dropRoute(u); return false }
+        r.exclude.push(r.search.region(target.region)!.exits[splitKey(target.key)[1]]!.from); r.replan = true
+      }
+    }
+    const ahead = () => { let n = 0; for (const g of r.segs) if (g.end >= u.cursor) n++; return n }
+    // A path cut or replaced under the route (reservations, a sidestep), or an edit on a segment still to walk.
+    if (u.path[u.cursor] === undefined && !r.finished && !u.segment && here !== r.last) r.replan = true
+    for (const g of r.segs) if (g.end >= u.cursor && this.nav.revisions[g.region] !== g.epoch) r.replan = true
+    while (!r.replan && !r.finished && !u.segment && ahead() < 2 && this.refineNext(u, r));
+    if (r.replan) { const { goals, exclude } = r; u.path = []; u.cursor = 0; this.plan(u, goals, exclude); return true }
+    if (r.finished && !u.segment && u.path[u.cursor] === undefined) { this.dropRoute(u); return false }
+    return u.path[u.cursor] === undefined
+  }
+  /** Refines the next segment by field descent, or starts a confined search for it; true when a segment was appended. */
+  private refineNext(u: Unit, r: Route): boolean {
+    const steps = Math.min(SEGMENT_STEPS, Math.floor((this.searchCap - this.refineWork - 1) / 5))
+    if (steps < 1) return false
+    const s = r.search, L = this.port.layout, from = r.last, index = this.nav.tileOfPose(from), region = s.region(index)
+    if (!region || region.epoch !== this.nav.revisions[index]) { r.replan = true; return false }
+    let key = -1
+    if (s instanceof RouteSearch) key = r.next < s.keys.length ? s.keys[r.next]! : -1
+    else {
+      const n = s.next(from)
+      // The goal region: the unit's own destination is reached by a flat search, not the field to the nearest goal.
+      if (!n || n.exit < 0) { if (n) r.finished = true; else r.replan = true; return false }
+      key = n.exit
+    }
+    const field = key >= 0 ? splitKey(key)[1] : (s as RouteSearch).goalFields.get(index)
+    if (field === undefined || key >= 0 && splitKey(key)[0] !== index) { r.replan = true; return false }
+    const target = { key, region: index, epoch: region.epoch }
+    const d = descend(region, field, from, p => this.poseOk(u, L.voxelCoords(p)) && (this.occupied.get(p) ?? u.id) === u.id, L, steps)
+    this.refineWork += d.ops
+    if (d.ok || d.cut) { this.appendSegment(u, r, d.path, d.ok ? target : null); return d.ok }
+    const goals = key >= 0 ? [region.exits[splitKey(key)[1]]!.from] : r.goals.filter(p => this.nav.tileOfPose(p) === index)
+    u.segment = this.nav.request(from, goals, undefined, { region: index }); r.target = target
+    return false
+  }
+  /** Appends a refined path, then the crossing into the next region (or, for the goal, ends the route there). */
+  private appendSegment(u: Unit, r: Route, path: readonly number[], target: Route['target']): void {
+    for (let i = 1; i < path.length; i++) u.path.push(path[i]!)
+    r.last = u.path.at(-1)!
+    const index = this.nav.tileOfPose(path[0]!)
+    r.segs = r.segs.filter(g => g.end >= u.cursor)
+    r.segs.push({ end: u.path.length - 1, region: index, epoch: target?.epoch ?? this.nav.revisions[index]! })
+    if (!target) return
+    if (target.key < 0) { r.finished = true; if (u.task) this.claimWorkPose(u, r.last); return }
+    const exit = r.search.region(target.region)!.exits[splitKey(target.key)[1]]!
+    u.path.push(exit.to); r.last = exit.to; r.exits.push(target.key); r.next++
+    r.segs[r.segs.length - 1]!.end = u.path.length - 1
   }
   private engineer(u: Unit, searchLimited = false): void {
     u.searchLimited = searchLimited
@@ -838,7 +983,7 @@ export class WorkerSystem {
     const barriers = [...this.barriers].map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })); this.barriers.clear()
     const drops = [...this.dirtyDrops.values()]; this.dirtyDrops.clear()
     return { poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }) })),
-      stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles, regionBytes: this.nav.regions.bytes, regions: this.nav.regions.size } }
+      stats: { units: this.units.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited + this.refineWork, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles, regionBytes: this.nav.regions.bytes, regions: this.nav.regions.size } }
   }
   mixState(mix: (n: number) => void): void {
     const reason = (r: WorkBlockReason | undefined) => mix(r === undefined ? -1 : ['no-access', 'missing-material', 'missing-tool', 'unsafe', 'traffic', 'search-limited', 'target-changed'].indexOf(r))
@@ -867,6 +1012,16 @@ export class WorkerSystem {
       mix(u.task ? 1 : 0); if (u.task) task(u.task)
       mix(u.motion ? 1 : 0)
       if (u.motion) { mix(u.motion.from); mix(u.motion.to); mix(u.motion.cursor); mix(u.motion.flat ? 1 : 0); mix(u.motion.elapsed); mix(u.motion.ticks); numbers(u.motion.start); numbers(u.motion.cells); numbers([...(u.motion.area ?? [])]) }
+      mix(u.route ? 1 : 0)
+      if (u.route) {
+        const r = u.route, s = r.search
+        mix(s instanceof GroupField ? this.groups.get(s)!.id : -1); mix(STATUSES.indexOf(s.status))
+        if (s instanceof RouteSearch) { mix(s.cost); numbers(s.keys); mix(s.goal) }
+        numbers(r.goals); numbers(r.exits); mix(r.next); mix(r.last); numbers(r.exclude); mix(r.finished ? 1 : 0); mix(r.replan ? 1 : 0)
+        mix(r.segs.length); for (const g of r.segs) { mix(g.end); mix(g.region); mix(g.epoch) }
+        mix(r.target ? r.target.key : -2); mix(r.target?.region ?? -1); mix(r.target?.epoch ?? -1)
+      }
+      mix(u.segment ? 1 : 0); u.segment?.mixState(mix)
       mix(u.search ? 1 : 0)
       u.search?.mixState(mix)
       mix(u.engineering ? 1 : 0); u.engineering?.mixState(mix); mix(u.searchLimited ? 1 : 0); mix(u.allowDig ? 1 : 0); mix(u.buildBlock); mix(u.actionCursor); mix(u.alternativeCost); mix(u.actions.length)

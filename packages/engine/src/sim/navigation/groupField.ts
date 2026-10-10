@@ -1,14 +1,14 @@
 import type { NavigationSystem, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { SOURCES, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
-import { RegionReader } from './routeSearch.ts'
+import { ROUTE_WEIGHT, RegionReader } from './routeSearch.ts'
 
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
 type Phase = 'seed' | 'search' | 'validate'
 const PHASES: readonly Phase[] = ['seed', 'search', 'validate']
 
 /**
- * Reverse abstract A* from a destination over region exits, shared by every unit of a move order. D(exit) is the cost
+ * Reverse weighted abstract A* (ROUTE_WEIGHT) from a destination over region exits, shared by every unit of a move order. D(exit) is the cost
  * from the exit's `from` pose to the nearest goal; each start is a node of its own, settled when popped. The heuristic
  * is the flat one from the nearest box of starts (one per start tile), so the search grows toward the group instead of
  * in every direction. Source tiles are read only when their mask says they may step into the expanded region.
@@ -19,6 +19,7 @@ export class GroupField {
   private readonly goals: readonly number[]
   private readonly starts: readonly number[]
   private readonly maxNodes: number
+  private readonly weight: number
   private readonly goalRegions = new Map<number, number[]>()
   /** Start indices by region, and per start region the box of its starts (min x, z, max x, y, z) for the heuristic. */
   private readonly startRegions = new Map<number, number[]>()
@@ -44,8 +45,8 @@ export class GroupField {
   private validation: Iterator<[number, number]> | null = null
   private validateRevision = 0
   private validationProgress = 0
-  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 32768) {
-    this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes
+  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 32768, weight = ROUTE_WEIGHT) {
+    this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     const L = nav.port.layout
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
     const boxes = new Map<number, number[]>()
@@ -69,6 +70,8 @@ export class GroupField {
     if (!goals.length || !starts.length) this.status = 'found'
   }
   get seen(): Map<number, number> { return this.reader.seen }
+  /** The region record this field read for a tile (whatever its epoch now), so exit keys keep their meaning. */
+  region(index: number): Region | undefined { return this.reader.regions.get(index) }
   get bytes(): number {
     let n = this.heap.size * 24 + this.d.size * 32 + this.closed.size * 16
     for (const f of this.goalFields.values()) n += f.byteLength
@@ -132,7 +135,7 @@ export class GroupField {
     if (old === undefined && this.d.size >= this.maxNodes) { this.status = 'limited'; return }
     this.d.set(key, d)
     if (key >= this.startBase) { this.heap.push(key, d, 0); return }
-    const h = this.h(at); this.heap.push(key, d + h, h)
+    const h = this.h(at) * this.weight; this.heap.push(key, d + h, h)
     // A start in the exit's region may now reach the goals through it.
     const [region, e] = splitKey(key), starts = this.startRegions.get(region)
     if (!starts) return
@@ -168,7 +171,7 @@ export class GroupField {
       if (this.closed.has(key)) continue
       if (key >= this.startBase) { if (f === this.d.get(key)) { this.closed.add(key); this.settled++ }; continue }
       const [region, e] = splitKey(key), at = this.reader.regions.get(region)!.exits[e]!.from
-      if (f !== this.d.get(key)! + this.h(at)) continue
+      if (f !== this.d.get(key)! + this.h(at) * this.weight) continue
       this.closed.add(key); this.expanding = key; this.source = 0
     }
     this.spent += used
@@ -216,7 +219,7 @@ export class GroupField {
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
-    mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); numbers(this.goals); numbers(this.starts); mix(this.maxNodes)
+    mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); numbers(this.goals); numbers(this.starts); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
     mix(this.spent); mix(this.debt); mix(this.settled); mix(this.seedCursor); mix(this.seedSource); mix(this.seededStarts ? 1 : 0); mix(this.expanding); mix(this.source)
     mix(this.validateRevision); mix(this.validation ? this.validationProgress : -1)
     this.reader.mixState(mix); this.heap.mixState(mix)

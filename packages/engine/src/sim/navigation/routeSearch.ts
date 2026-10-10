@@ -2,7 +2,13 @@ import { edgeCost, type NavigationSystem, type PathResult, type PathStatus } fro
 import { IdHeap } from './heap.ts'
 import { RegionBuild, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
 
-export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 8192 */ }
+export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 8192 */; weight?: number /* default ROUTE_WEIGHT */ }
+/**
+ * Heuristic weight of route and group searches. Rough surfaces tie A* across whole rectangles of regions (every step
+ * costs about its Manhattan share), so an exact search builds ten times the regions; 1.25 bounds the abstract cost at
+ * 1.25× its optimum and measured 3–7% over exact flat A* on an adversarial bumpy floor.
+ */
+export const ROUTE_WEIGHT = 1.25
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
 type Phase = 'start' | 'search' | 'validate'
 const PHASES: readonly Phase[] = ['start', 'search', 'validate']
@@ -53,7 +59,7 @@ export class RegionReader {
   }
 }
 
-/** Abstract A* over region exits: exact in-region fields, one representative crossing per run; optimal over that graph. */
+/** Weighted abstract A* over region exits: exact in-region fields, one representative crossing per run. */
 export class RouteSearch {
   private readonly nav: NavigationSystem
   private readonly reader: RegionReader
@@ -63,12 +69,15 @@ export class RouteSearch {
   private readonly goalRegions = new Map<number, number[]>()
   private readonly exclude?: ReadonlySet<number>
   private readonly maxNodes: number
+  private readonly weight: number
   status: PathStatus = 'pending'
   cost = 0
   spent = 0
   readonly estimate: number
   /** After 'found': the exits to take, in order (the `from` poses), then the goal pose that the last segment reaches. */
   exits: number[] = []
+  /** The exit keys behind `exits`, in the same order. */
+  keys: number[] = []
   goal = -1
   /** Per-query goal fields, keyed by region index: cost from a region slot to the nearest goal. */
   readonly goalFields = new Map<number, Uint16Array>()
@@ -91,7 +100,7 @@ export class RouteSearch {
   private validationProgress = 0
   constructor(nav: NavigationSystem, store: RegionStore, start: number, goals: readonly number[], options?: RouteOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.start = start; this.goals = goals
-    this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 8192
+    this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 8192; this.weight = options?.weight ?? ROUTE_WEIGHT
     const L = nav.port.layout
     this.goalCoords = goals.map(p => L.voxelCoords(p))
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
@@ -99,6 +108,8 @@ export class RouteSearch {
     if (!goals.length || !nav.stand(...L.voxelCoords(start))) this.status = 'unreachable'
   }
   get seen(): Map<number, number> { return this.reader.seen }
+  /** The region record this search read for a tile (whatever its epoch now), so exit keys keep their meaning. */
+  region(index: number): Region | undefined { return this.reader.regions.get(index) }
   get bytes(): number {
     let n = this.heap.size * 24 + this.g.size * 48 + this.closed.size * 16
     for (const f of this.goalFields.values()) n += f.byteLength
@@ -120,7 +131,7 @@ export class RouteSearch {
     const old = this.g.get(key)
     if (old !== undefined && old <= g) return
     if (old === undefined && this.g.size >= this.maxNodes) { this.status = 'limited'; return }
-    this.g.set(key, g); this.parent.set(key, parent); this.heap.push(key, g + this.h(at), this.h(at))
+    this.g.set(key, g); this.parent.set(key, parent); this.heap.push(key, g + this.h(at) * this.weight, this.h(at))
   }
   step(cap: number): number {
     let used = 0
@@ -135,7 +146,7 @@ export class RouteSearch {
       if (this.bestParent >= 0 && this.bestGoal <= this.heap.peekF()) { this.reconstruct(); continue }
       if (!this.heap.size) { this.phase = 'validate'; this.validateRevision = this.nav.revision; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
-      if (this.closed.has(key) || f !== this.g.get(key)! + this.h(this.exitOf(key).to)) continue
+      if (this.closed.has(key) || f !== this.g.get(key)! + this.h(this.exitOf(key).to) * this.weight) continue
       this.closed.add(key); this.expanding = key; this.relax = 0
     }
     this.spent += used
@@ -183,7 +194,7 @@ export class RouteSearch {
     const L = this.nav.port.layout, keys: number[] = []
     for (let k = this.bestParent; k > 0; k = this.parent.get(k)!) keys.push(k)
     keys.reverse()
-    this.exits = keys.map(k => this.exitOf(k).from)
+    this.exits = keys.map(k => this.exitOf(k).from); this.keys = keys
     // The goal the last segment reaches: follow the goal field's first optimal step from the last entry pose.
     const last = keys.at(-1), index = last === undefined ? this.nav.tileOfPose(this.start) : this.exitOf(last).target
     const r = this.reader.regions.get(index)!, field = this.goalFields.get(index)!
@@ -210,12 +221,12 @@ export class RouteSearch {
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
-    mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); mix(this.start); numbers(this.goals); mix(this.maxNodes)
+    mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); mix(this.start); numbers(this.goals); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
     numbers([...(this.exclude ?? [])].sort((a, b) => a - b))
     mix(this.cost); mix(this.spent); mix(this.debt); mix(this.cut ? 1 : 0); mix(this.expanding); mix(this.relax)
     mix(this.bestGoal === Infinity ? -1 : this.bestGoal); mix(this.bestParent); mix(this.validateRevision); mix(this.validation ? this.validationProgress : -1)
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.g.size); for (const [k, g] of this.g) { mix(k); mix(g); mix(this.parent.get(k)!) }
-    numbers(this.closed); numbers(this.exits); mix(this.goal)
+    numbers(this.closed); numbers(this.keys); mix(this.goal)
   }
 }
