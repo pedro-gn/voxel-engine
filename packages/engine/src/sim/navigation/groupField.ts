@@ -81,7 +81,8 @@ export class GroupField {
     for (const f of this.goalFields.values()) n += f.byteLength
     return n
   }
-  cancel(): void { this.status = 'cancelled'; this.reader.job = null }
+  /** Cancels a pending field; a settled one keeps its status, so callers can read it after their last unit leaves. */
+  cancel(): void { if (this.status !== 'pending') return; this.status = 'cancelled'; this.reader.drop() }
   /** Cost to the goals from exit `key` (1 + region*4096 + e), or Infinity when unknown or unreachable. */
   distance(key: number): number { return this.d.get(key) ?? Infinity }
   /** The best exit key to take from `pose` (or -1 when the pose's region is a goal region and the goal field is best), and its total cost. */
@@ -181,7 +182,7 @@ export class GroupField {
     }
     this.spent += used
     // Settled: next() reads only the distances and the regions, so the frontier goes.
-    if (this.status !== 'pending' && (this.heap.size || this.closed.size)) { this.heap.clear(); this.closed.clear(); this.reader.job = null }
+    if (this.status !== 'pending' && (this.heap.size || this.closed.size)) { this.heap.clear(); this.closed.clear(); this.reader.drop() }
     return used
   }
   /** Goal regions: their goal fields seed the exits entering them, and the starts standing in them. */

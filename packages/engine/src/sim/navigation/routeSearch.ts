@@ -20,6 +20,9 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
   return h === Infinity ? 0 : h
 }
 
+/** Readers stepping each shared build; a build its last reader leaves unfinished is dropped from `nav.building`. */
+const builders = new WeakMap<RegionBuild, number>()
+
 /**
  * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision,
  * so a change before the search finishes ends it stale; a region is kept by reference for the search's lifetime.
@@ -44,7 +47,7 @@ export class RegionReader {
     if (r) return this.adopt(r)
     let job = this.nav.building.get(index)
     if (!job) { job = new RegionBuild(this.nav, index); this.nav.building.set(index, job) }
-    this.job = job
+    this.job = job; builders.set(job, (builders.get(job) ?? 0) + 1)
     return undefined
   }
   private adopt(r: Region): Region {
@@ -59,9 +62,18 @@ export class RegionReader {
       const r = job.result()
       if (this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
       if (this.store.get(r.index) !== r) this.store.put(r)
-      this.adopt(r); this.job = null
+      this.adopt(r); this.drop()
     }
     return used
+  }
+  /** Leaves the pending build; when no reader is left on an unfinished one, nobody resumes it, so it goes. */
+  drop(): void {
+    const job = this.job
+    if (!job) return
+    this.job = null
+    const users = builders.get(job)! - 1
+    builders.set(job, users)
+    if (!users && !job.done && this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
   }
   mixState(mix: (n: number) => void): void {
     mix(this.seen.size); for (const [ti, rev] of this.seen) { mix(ti); mix(rev) }
@@ -126,7 +138,8 @@ export class RouteSearch {
     for (const f of this.goalFields.values()) n += f.byteLength
     return n
   }
-  cancel(): void { this.status = 'cancelled'; this.reader.job = null }
+  /** Cancels a pending search; a settled one keeps its status, so callers can read it after dropping the route. */
+  cancel(): void { if (this.status !== 'pending') return; this.status = 'cancelled'; this.reader.drop() }
   result(): PathResult { return { status: this.status, path: this.exits, cost: this.cost } }
   private h(p: number): number { const [x, y, z] = this.nav.port.layout.voxelCoords(p); return routeHeuristic(this.goalCoords, x, y, z) }
   /** The region with its goal field computed, or undefined while it is being built. */
@@ -178,7 +191,7 @@ export class RouteSearch {
     const last = this.keys.length ? this.exitOf(this.keys.at(-1)!).target : this.nav.tileOfPose(this.start)
     for (const index of [...this.reader.regions.keys()]) if (!keep.has(index)) this.reader.regions.delete(index)
     for (const index of [...this.goalFields.keys()]) if (index !== last || this.status !== 'found') this.goalFields.delete(index)
-    this.heap.clear(); this.g.clear(); this.parent.clear(); this.closed.clear(); this.reader.job = null
+    this.heap.clear(); this.g.clear(); this.parent.clear(); this.closed.clear(); this.reader.drop()
   }
   private exitOf(key: number) { const [r, e] = splitKey(key); return this.reader.regions.get(r)!.exits[e]! }
   private begin(): number {

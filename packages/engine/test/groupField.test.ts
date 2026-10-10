@@ -84,3 +84,14 @@ it('mixes its state', () => {
   const sig = (s: GroupField) => { const v: number[] = []; s.mixState(n => v.push(n)); return v }
   expect(sig(a)).not.toEqual(sig(b))
 })
+it('cancel keeps a settled field and cancels only a pending one, freeing its build', () => {
+  const { nav, layout } = fixture(128), store = nav.regions
+  const g = new GroupField(nav, store, [layout.voxelIndex(120, 4, 120)], [layout.voxelIndex(4, 4, 4)])
+  settle(g); g.cancel(); expect(g.status).toBe('found')
+  const cut = new GroupField(nav, store, [layout.voxelIndex(120, 4, 120)], [layout.voxelIndex(4, 4, 4)], 2)
+  settle(cut); cut.cancel(); expect(cut.status).toBe('limited')
+  const { nav: fresh, layout: l2 } = fixture(64)
+  const p = new GroupField(fresh, fresh.regions, [l2.voxelIndex(60, 4, 60)], [l2.voxelIndex(4, 4, 4)])
+  p.step(50); expect(fresh.building.size).toBe(1)
+  p.cancel(); expect(p.status).toBe('cancelled'); expect(fresh.building.size).toBe(0)
+})
