@@ -149,7 +149,7 @@ describe('living script', () => {
 describe('quarry cycle', () => {
   const I: Ids = { water: 1, stone: 2, planks: 3, beam: 4, glass: 5, dirt: 6 }
   const q = QUARRY(SITE)
-  const order = (id: number, kind: 'dig' | 'build', done: number, total = 360, cancelled = false) => ({ id, kind, min: q.min, max: q.max, voxel: 0, total, done, pending: total - done, cancelled })
+  const order = (id: number, kind: 'dig' | 'build', done: number, total = 360, cancelled = false) => ({ id, kind, min: q.min, max: q.max, voxel: 0, total, done, pending: total - done, cancelled, effectivePriority: 64 })
   it('waits while the latest quarry order is open, then issues the opposite one', () => {
     expect(quarryCycle([order(4, 'dig', 100)], SITE, I)).toEqual([])
     expect(quarryCycle([order(4, 'dig', 360)], SITE, I)).toMatchObject([{ type: 'workBuild', voxel: I.dirt, priority: 64 }])
