@@ -1,12 +1,18 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
-// --assert (exit 1 when a phase misses a spec §7 criterion).
+// --assert (exit 1 when a phase misses a spec §7 criterion),
+// --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
+// --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
+import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
+import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
+import { BUILD_WEIGHT, RegionBuild } from '@elovox/engine/src/sim/navigation/regions.ts'
 import { Simulation, type TickResult } from '@elovox/engine/src/sim/simulation.ts'
 import { WORKER_STATES } from '@elovox/engine/src/sim/workers/types.ts'
+import { HIER_MIN } from '@elovox/engine/src/sim/workers/workers.ts'
 import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
 import { terrainGenerator } from '@elovox/terrain'
 import { readFileSync } from 'node:fs'
@@ -45,22 +51,106 @@ for (const k of ['beforePhysics', 'afterPhysics'] as const) {
 }
 
 if (flag('opcost') !== undefined) {
-  // One long flat search, west pad to east pad, sliced like the workers slice it; three runs (the first warms the JIT).
-  // Then the same search at the workers' node limit (16,384), which ends limited: the cost of the searches units run today.
-  const L = sim.layout, from = L.voxelIndex(PADS.west.min[0] + 32, PADS.west.y, PADS.west.min[2] + 32), to = L.voxelIndex(PADS.east.min[0] + 32, PADS.east.y, PADS.east.min[2] + 32)
-  const runs = []
-  for (let run = 0; run < 6; run++) {
-    const nav = new NavigationSystem(w.nav.port, run < 3 ? 1 << 20 : 16384), s = nav.request(from, [to])
-    let visited = 0, ms = 0, slices = 0
-    while (s.status === 'pending') { const a = performance.now(); nav.step(4096); ms += performance.now() - a; visited += nav.visited; slices++ }
-    runs.push({ maxNodes: nav.maxNodes, status: s.status, visited, slices, ms: +ms.toFixed(1), nsPerOp: +(ms * 1e6 / visited).toFixed(1), pathNodes: s.path.length, cost: s.cost })
+  // Where a navigation operation's time goes. Every search is sliced like the workers slice it (nav.step(4096)).
+  //  long: west pad centre to east pad centre on a fresh system, then again on the same system (warm edge cache),
+  //        with the default 512-tile cache and with a 65,536-tile one; then at the workers' node limit (16,384).
+  //  short: 200 searches of 10–30 blocks inside the west pad, timed on a second pass over a warm system.
+  // Each row also gives operations per discovered node and per expanded node (4 neighbour probes per expansion),
+  // counted on an untimed replay: the searches are deterministic, so the replay does the same work.
+  const L = sim.layout, at = (p: typeof PADS.west, dx = 0, dz = 0) => L.voxelIndex(p.min[0] + 32 + dx, p.y, p.min[2] + 32 + dz)
+  const from = at(PADS.west), to = at(PADS.east)
+  const run = (nav: NavigationSystem, pairs: [number, number][]) => {
+    let visited = 0, ms = 0, nodes = 0, found = 0
+    for (const [a, b] of pairs) {
+      const s = nav.request(a, [b])
+      while (s.status === 'pending') { const t = performance.now(); nav.step(4096); ms += performance.now() - t; visited += nav.visited }
+      nodes += (s as unknown as { count: number }).count; if (s.status === 'found') found++
+    }
+    return { visited, ms, nodes, found }
   }
-  console.log(JSON.stringify({ node: process.version, opcost: runs }, null, 2))
+  const probes = (nav: NavigationSystem) => { let n = 0; const f = nav.neighbor.bind(nav); nav.neighbor = (p, d, seen) => { n++; return f(p, d, seen) }; return () => n }
+  const row = (label: string, r: ReturnType<typeof run>, expansions: number, extra: object = {}) => ({
+    label, ...extra, searches: undefined as number | undefined, found: r.found, visited: r.visited, ms: +r.ms.toFixed(1), nsPerOp: +(r.ms * 1e6 / r.visited).toFixed(1),
+    nodes: r.nodes, opsPerNode: +(r.visited / r.nodes).toFixed(2), expansions, opsPerExpansion: +(r.visited / expansions).toFixed(2),
+  })
+  const rows = []
+  const replay = (maxNodes: number, cache: number, pairs: [number, number][]) => { const nav = new NavigationSystem(w.nav.port, maxNodes, cache), n = probes(nav); run(nav, pairs); return n() / 4 }
+  run(new NavigationSystem(w.nav.port, 1 << 20), [[from, to]]) // JIT warm-up
+  for (const cache of [512, 1 << 16]) {
+    const nav = new NavigationSystem(w.nav.port, 1 << 20, cache), e = replay(1 << 20, cache, [[from, to]])
+    rows.push(row('long, cold edge cache', run(nav, [[from, to]]), e, { cacheTiles: cache }))
+    rows.push(row('long, same system again', run(nav, [[from, to]]), e, { cacheTiles: cache, tilesHeld: nav.cacheTiles }))
+  }
+  rows.push(row('long, workers node limit', run(new NavigationSystem(w.nav.port, 16384), [[from, to]]), replay(16384, 512, [[from, to]])))
+  const rng = new Pcg32(5), pairs: [number, number][] = []
+  while (pairs.length < 200) {
+    const sx = rng.nextInt(64) - 32, sz = rng.nextInt(64) - 32, gx = rng.nextInt(64) - 32, gz = rng.nextInt(64) - 32, d = Math.hypot(gx - sx, gz - sz)
+    if (d >= 10 && d <= 30) pairs.push([at(PADS.west, sx, sz), at(PADS.west, gx, gz)])
+  }
+  const short = new NavigationSystem(w.nav.port); run(short, pairs)
+  rows.push({ ...row('short 10-30 blocks, warm', run(short, pairs), replay(16384, 512, pairs)), searches: pairs.length })
+  console.log(JSON.stringify({ node: process.version, opcost: rows }, null, 2))
+  process.exit(0)
+}
+
+if (flag('buildcost') !== undefined) {
+  // ns per region-build step, by phase, to calibrate BUILD_WEIGHT against --opcost: builds every tile of a square of
+  // tiles around the west pad (the pad's tile layer and the ones above and below), twice (the first warms the JIT).
+  // A slice of 64 charged operations is timed under the phase it starts in, so phase splits are approximate.
+  const L = sim.layout, radius = Number(flag('radius') ?? 8), cx = (PADS.west.min[0] + 32) >> 4, cz = (PADS.west.min[2] + 32) >> 4, cy = PADS.west.y >> 4
+  const tx = L.size[0] >> 4, tz = L.size[2] >> 4, ty = L.size[1] >> 4, runs = []
+  for (let run = 0; run < 2; run++) {
+    const nav = new NavigationSystem({ layout: L, registry: w.nav.port.registry, get: w.nav.port.get })
+    const steps: Record<string, number> = {}, ms: Record<string, number> = {}
+    let charged = 0, regions = 0, empty = 0, exits = 0
+    for (let y = Math.max(0, cy - 1); y <= Math.min(ty - 1, cy + 1); y++) for (let z = cz - radius; z <= cz + radius; z++) for (let x = cx - radius; x <= cx + radius; x++) {
+      if (x < 0 || z < 0 || x >= tx || z >= tz) continue
+      const b = new RegionBuild(nav, x + z * tx + y * tx * tz)
+      while (!b.done) { const phase = b.stage, a = performance.now(); charged += b.step(64); ms[phase] = (ms[phase] ?? 0) + performance.now() - a }
+      for (const [phase, n] of Object.entries(b.counts)) steps[phase] = (steps[phase] ?? 0) + n
+      const r = b.result(); regions++; if (!r.poses.length) empty++; exits += r.exits.length
+    }
+    const totalMs = Object.values(ms).reduce((s, n) => s + n, 0), totalSteps = Object.values(steps).reduce((s, n) => s + n, 0)
+    runs.push({ regions, empty, meanExits: +(exits / regions).toFixed(1), buildWeight: BUILD_WEIGHT, charged, steps, ms: Object.fromEntries(Object.entries(ms).map(([k, v]) => [k, +v.toFixed(1)])),
+      nsPerStep: Object.fromEntries(Object.keys(steps).map(k => [k, +((ms[k] ?? 0) * 1e6 / steps[k]!).toFixed(1)])), nsPerStepAll: +(totalMs * 1e6 / totalSteps).toFixed(1), nsPerChargedOp: +(totalMs * 1e6 / charged).toFixed(1) })
+  }
+  console.log(JSON.stringify({ node: process.version, buildcost: runs }, null, 2))
   process.exit(0)
 }
 
 const q = (a: number[], p: number) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))]! }
 const r3 = (n: number | null) => n === null ? null : +n.toFixed(3)
+
+if (flag('quality') !== undefined) {
+  // Path quality (Task H7): 500 seeded pairs of surface poses, an exact flat A* (node limit 2^22) against a route search,
+  // both on geometry alone (no water or hazard policy, which routes leave to refinement). Regions stay cached across pairs.
+  const L = sim.layout, port = { layout: L, registry: w.nav.port.registry, get: w.nav.port.get }, nav = new NavigationSystem(port, 1 << 22)
+  const rng = new Pcg32(Number(flag('seed') ?? 5)), pairs = Number(flag('pairs') ?? 500)
+  const surface = () => { for (;;) { const x = rng.nextInt(CROWD_SIZE[0]), z = rng.nextInt(CROWD_SIZE[2]); for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.stand(x, y, z)) return L.voxelIndex(x, y, z) } }
+  const ratios: number[] = [], shortRatios: number[] = [], flatOps: number[] = [], routeOps: number[] = [], flatMs: number[] = [], routeMs: number[] = [], disagree: unknown[] = []
+  let agree = 0, unreachable = 0
+  for (let i = 0; i < pairs; i++) {
+    const start = surface(), goal = surface()
+    const flat = nav.request(start, [goal])
+    let ops = 0, a = performance.now()
+    while (flat.status === 'pending') { nav.step(1 << 16); ops += nav.visited }
+    flatMs.push(performance.now() - a); flatOps.push(ops)
+    const route = new RouteSearch(nav, nav.regions, start, [goal])
+    a = performance.now()
+    while (route.status === 'pending') route.step(32768)
+    routeMs.push(performance.now() - a); routeOps.push(route.spent)
+    if (route.status === flat.status) agree++
+    else if (disagree.length < 10) disagree.push({ i, start: L.voxelCoords(start), goal: L.voxelCoords(goal), flat: flat.status, route: route.status })
+    if (flat.status === 'unreachable') unreachable++
+    // The gate is over pairs units would route (estimate past HIER_MIN); shorter walks stay flat in the workers.
+    const [x, y, z] = L.voxelCoords(start), [gx, gy, gz] = L.voxelCoords(goal), routed = (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2 > HIER_MIN
+    if (flat.status === 'found' && route.status === 'found' && flat.cost) (routed ? ratios : shortRatios).push(route.cost / flat.cost)
+    if (i % 50 === 49) console.error(`quality ${i + 1}/${pairs}`)
+  }
+  const stats = (a: number[]) => ({ mean: r3(a.reduce((s, n) => s + n, 0) / a.length), p50: r3(q(a, .5)), p95: r3(q(a, .95)), max: r3(Math.max(...a)) })
+  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, disagree, routedFound: ratios.length, costRatio: stats(ratios), gate: { meanMax: 1.10, p95Max: 1.25, pass: (stats(ratios).mean ?? 9) <= 1.10 && (stats(ratios).p95 ?? 9) <= 1.25 && agree === pairs }, shortFound: shortRatios.length, shortCostRatio: shortRatios.length ? stats(shortRatios) : null, flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes }, null, 2))
+  process.exit(0)
+}
 const WALKING = WORKER_STATES.indexOf('walking')
 /** The hierarchy's region store, read defensively: absent before it exists (the baseline), so cold or warm shows. */
 const regions = () => { const s = (w.nav as unknown as { regions?: { size?: number; bytes?: number } }).regions; return { count: s?.size ?? 0, bytes: s?.bytes ?? 0 } }
@@ -148,7 +238,7 @@ for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
   const atOrder = regions(), orders = phase.orders(ids); submit(orders)
-  const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as { ids: number[] }).ids : [])
+  const moved = orders.flatMap(c => c.type === 'unitMove' ? (c as unknown as { ids: number[] }).ids : [])
   churnEdits = 0
   const m = measure(TICKS, moved, phase.each)
   const atEnd = regions()

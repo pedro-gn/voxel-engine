@@ -6,6 +6,9 @@ import { WORKERS_SIZE, WORKER_OPTIONS } from './scenes/workers.ts'
 import { LIVING_SIZE, LIVING_WORKER_OPTIONS } from './scenes/living.ts'
 import { createLiving, createLivingBar } from './livingScript.ts'
 import livingDoc from './terrain/living.terrain.json'
+import { CROWD_SIZE, CROWD_WORKER_OPTIONS } from './scenes/crowd.ts'
+import { createCrowd, createCrowdBar, crowdCamera } from './crowdScript.ts'
+import crowdDoc from './terrain/crowd.terrain.json'
 import { createControls } from './controls.ts'
 import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
@@ -23,7 +26,7 @@ import { createFirstPerson } from './firstPerson.ts'
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
 const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' || sceneParam === 'workers' || sceneParam === 'living' ? sceneParam : 'world'
+const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' || sceneParam === 'workers' || sceneParam === 'living' || sceneParam === 'crowd' ? sceneParam : 'world'
 if (sceneName === 'collapse') HOTBAR.splice(4, 2, 'structural_planks', 'structural_glass')
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
@@ -42,6 +45,7 @@ const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) :
 const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
   : sceneName === 'workers' ? [...WORKERS_SIZE]
   : sceneName === 'living' ? [...LIVING_SIZE]
+  : sceneName === 'crowd' ? [...CROWD_SIZE]
   : sceneName === 'collapse' ? [...COLLAPSE_SIZE]
   : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
@@ -65,16 +69,16 @@ const engine = await createEngine({
       ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'caves'
       ? () => new Worker(new URL('./caves.worker.ts', import.meta.url), { type: 'module' })
-    : sceneName === 'terrain' || sceneName === 'living'
+    : sceneName === 'terrain' || sceneName === 'living' || sceneName === 'crowd'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' }
-    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : sceneName === 'living' ? livingDoc : terrainDoc,
-  genWorker: terrainDoc || sceneName === 'living' ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
+    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : sceneName === 'living' ? livingDoc : sceneName === 'crowd' ? crowdDoc : terrainDoc,
+  genWorker: terrainDoc || sceneName === 'living' || sceneName === 'crowd' ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
-    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : {}) }
-    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : {}) },
+    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : sceneName === 'crowd' ? { workers: CROWD_WORKER_OPTIONS } : {}) }
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : sceneName === 'crowd' ? { workers: CROWD_WORKER_OPTIONS } : {}) },
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // ?nobatch: one mesh per chunk layer instead of region batches (the before/after of perf candidate #3).
@@ -129,7 +133,7 @@ if (sceneName === 'collapse') {
     s.target[0] = 56; s.target[1] = 12; s.target[2] = 46; s.distance = 140; s.pitch = 0.75; s.yaw = 0.7
   }
 }
-const unitsScene = sceneName === 'workers' || sceneName === 'living'
+const unitsScene = sceneName === 'workers' || sceneName === 'living' || sceneName === 'crowd'
 createControls(engine, { collapsed: editing || unitsScene })
 if (unitsScene) Object.assign(document.getElementById('controls')!.style, { top: 'auto', right: 'auto', bottom: '12px', left: '12px' })
 const editor = editing
@@ -139,6 +143,7 @@ const editor = editing
 // The bean stands at the camera target, facing the camera; V toggles idle / walk.
 engine.controls.apply(engine.camera)
 const [bx, , bz] = engine.controls.current.target
+if (sceneName === 'crowd') crowdCamera(engine)
 if (sceneName === 'workers') {
   for (const s of [engine.controls.goal, engine.controls.current]) { s.target[0] = 44; s.target[1] = 7; s.target[2] = 34; s.distance = 125; s.pitch = .8; s.yaw = .7 }
   engine.controls.apply(engine.camera)
@@ -214,4 +219,7 @@ if (collapse) {
 }
 const living = sceneName === 'living' ? createLiving(engine) : null
 if (living) { living.camera('default'); await living.setup(); createLivingBar(living) }
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, fp, ready: true } })
+// ?units=N: the crowd's size (the e2e uses 50).
+const crowd = sceneName === 'crowd' ? createCrowd(engine, Number(params.get('units') ?? 1000)) : null
+if (crowd) createCrowdBar(crowd)
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, ready: true } })

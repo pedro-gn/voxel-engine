@@ -29,7 +29,7 @@ export interface WorkOrderView {
   /** Priority plus aging while the order waits without progress; it orders expansion, parking and assignment. */
   effectivePriority: number
 }
-export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number }
+export interface WorkerStats { units: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number; regionBytes: number; regions: number }
 export interface WorkerBarrier {
   /** The unit that made the edit, and the edited voxel. */
   unit: number; pos: Vec3

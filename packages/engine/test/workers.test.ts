@@ -1180,6 +1180,26 @@ describe('traffic scenarios', () => {
     expect(passed || views.some(v => v.state === 'blocked' && v.reason === 'traffic'), JSON.stringify(views)).toBe(true)
     expect(Math.max(...changes)).toBeLessThanOrEqual(40)
   })
+  it('two units on hierarchical routes meet head-on in a long corridor with a pocket and both arrive', () => {
+    // A 1-wide corridor on z=5 from x=2 to x=125 with one pocket at (64,6): both routes are long enough to go hierarchical.
+    const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 32]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx, cx) {
+      for (let z = 0; z < 32; z++) for (let lx = 0; lx < 32; lx++) {
+        const x = cx * 32 + lx
+        for (let y = 0; y < 4; y++) ctx.set(lx, y, z, 1)
+        const wall = z === 4 && x >= 2 && x <= 125 || z === 6 && x >= 2 && x <= 125 && x !== 64 || z === 7 && x === 64 || z === 5 && (x === 2 || x === 125)
+        if (wall) for (let y = 4; y < 6; y++) ctx.set(lx, y, z, 1)
+      }
+    } })
+    spawn(sim, [3, 4, 5]); spawn(sim, [124, 4, 5])
+    sim.submit(0, ++seq, { type: 'unitMove', ids: [1], pos: [123, 4, 5] }); sim.submit(0, ++seq, { type: 'unitMove', ids: [2], pos: [4, 4, 5] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    const targets = goals(sim)
+    let routed = false
+    for (let i = 0; i < 200; i++) { sim.step(); routed ||= [...sim.workers!.units.values()].every(u => u.route !== null) }
+    expect(routed).toBe(true)
+    allReach(sim, targets, 2000)
+  })
   it('churn: walls dropped on the route ahead never trap a body, and every unit arrives or finds its goal sealed', () => {
     const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 128]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
     sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
