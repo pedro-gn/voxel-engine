@@ -957,6 +957,35 @@ describe('traffic scenarios', () => {
     expect(passed || views.some(v => v.state === 'blocked' && v.reason === 'traffic'), JSON.stringify(views)).toBe(true)
     expect(Math.max(...changes)).toBeLessThanOrEqual(40)
   })
+  it('churn: walls dropped on the route ahead never trap a body, and every unit arrives or finds its goal sealed', () => {
+    const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 128]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
+    for (let i = 0; i < 20; i++) spawn(sim, [8, 4, 4 + 6 * i])
+    for (let i = 0; i < 20; i++) sim.submit(0, ++seq, { type: 'unitMove', ids: [i + 1], pos: [120, 4, 4 + 6 * i] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    const w = sim.workers!, L = sim.layout
+    for (let i = 0; i < 1500; i++) {
+      // Walls drop for the first 600 ticks; the rest is time to settle.
+      if (i % 10 === 0 && i < 600) {
+        // A 1×3×3 wall across the route three nodes ahead of the lowest walking id; a fill through a body is refused.
+        const u = [...w.units.values()].find(u => u.state === 'walking'), at = u ? u.path.indexOf(L.voxelIndex(u.x >> 8, u.y >> 8, u.z >> 8)) : -1
+        const next = u && at >= 0 ? u.path[at + 3] : undefined
+        if (next !== undefined) { const [x, y, z] = L.voxelCoords(next); sim.submit(0, ++seq, { type: 'fillRegion', min: [x, y, Math.max(0, z - 1)], max: [x, y + 2, Math.min(127, z + 1)], voxel: 1 }) }
+      }
+      sim.step(); noOverlap(sim, i)
+      for (const v of [...w.units.keys()].map(id => w.view(id)!)) for (let y = v.y256 >> 8; y <= (v.y256 + 511) >> 8; y++)
+        for (let z = (v.z256 - 96) >> 8; z <= (v.z256 + 95) >> 8; z++) for (let x = (v.x256 - 96) >> 8; x <= (v.x256 + 95) >> 8; x++) expect(sim.store.getVoxel(x, y, z), `unit ${v.id} body at ${x},${y},${z} tick ${i}`).toBe(0)
+    }
+    for (let i = 0; i < 20; i++) {
+      const v = w.view(i + 1)!, home = v.state === 'idle' && v.x256 === 120 * 256 + 128 && v.z256 === (4 + 6 * i) * 256 + 128
+      expect(home || v.state === 'blocked' && v.reason === 'no-access', `unit ${i + 1}: ${JSON.stringify(v)}`).toBe(true)
+      if (home) continue
+      // A unit that gave up really is sealed off from its destination.
+      const s = w.nav.request(L.voxelIndex(v.x256 >> 8, v.y256 >> 8, v.z256 >> 8), [L.voxelIndex(120, 4, 4 + 6 * i)])
+      while (s.status === 'pending') w.nav.step(1 << 20)
+      expect(s.status, `unit ${i + 1} gave up on a reachable destination`).not.toBe('found')
+    }
+  })
   it('replays the head-on with the same hashes', () => {
     const a = headOn(true), b = headOn(true)
     for (let i = 0; i < 600; i++) { a.step(); b.step(); if (i % 50 === 0) expect(a.hash(), `tick ${i}`).toBe(b.hash()) }
