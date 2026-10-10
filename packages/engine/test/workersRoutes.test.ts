@@ -45,6 +45,25 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     }
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 220 * 256 + 128, z256: 5 * 256 + 128 })
   })
+  it('replacing the world under a unit holding a settled route drops the route and replans on the new world', () => {
+    const sim = makeWide(128); spawn(sim, [5, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [120, 4, 5] })
+    const u = sim.workers!.units.get(1)!
+    until(sim, () => u.route !== null && u.route.last >= 0 && u.route.search.status === 'found' && u.state === 'walking', 200)
+    const old = u.route!.search
+    // The new world has a wall across the old route with a gap at z > 30.
+    sim.generate({ generateColumn(ctx, cx, cz) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) { for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); if (cx * 32 + x === 60 && cz * 32 + z <= 30) for (let y = 4; y < 8; y++) ctx.set(x, y, z, 1) } } })
+    expect(u.route).toBeNull(); expect(u.segment).toBeNull(); expect(u.path.length).toBeLessThanOrEqual(u.cursor)
+    expect(old.status).toBe('found'); expect(sim.workers!.nav.regions.size).toBe(0)
+    let replanned = false
+    for (let i = 0; i < 3000 && u.state !== 'idle'; i++) {
+      sim.step()
+      if (u.route && u.route.search !== old) replanned = true
+      expect((u.x >> 8) === 60 && (u.z >> 8) <= 30 && u.y < 8 * 256).toBe(false)
+    }
+    expect(replanned).toBe(true)
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 120 * 256 + 128, z256: 5 * 256 + 128 })
+  })
   it('escape from a build designation stays on the flat search', () => {
     // Spawn inside a build box, then order a long move: the first query must be a PathSearch with an allowed override.
     const sim = makeWide(256); spawn(sim, [10, 4, 10])

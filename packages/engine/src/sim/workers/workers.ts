@@ -209,7 +209,12 @@ export class WorkerSystem {
     if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
-  invalidateAll(): void { this.nav.reset(); this.revision++; this.worldRevision++; this.policy++ }
+  invalidateAll(): void {
+    // Routes refine from region records of the old world, and the reset restarts tile revisions at 0, so an old record
+    // could pass for current: drop every route and its refined path still to walk; the unit plans again where it stands.
+    for (const u of this.units.values()) if (u.route || u.segment) { this.dropRoute(u); u.path = u.path.slice(0, u.cursor) }
+    this.nav.reset(); this.revision++; this.worldRevision++; this.policy++
+  }
   geometryChanged(old: Uint16Array, value: Uint16Array): boolean {
     const R = this.port.registry
     for (let i = 0; i < old.length; i++) {
