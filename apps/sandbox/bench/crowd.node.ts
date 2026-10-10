@@ -3,6 +3,7 @@
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT).
+// --grace=N (arrival allowance past each unit's straight-line walk, ticks, default 1200).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 import type { Command } from '@elovox/engine'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
@@ -23,6 +24,10 @@ import {
 
 const flag = (name: string) => process.argv.find(a => a === `--${name}` || a.startsWith(`--${name}=`))?.split('=')[1] ?? (process.argv.includes(`--${name}`) ? '' : undefined)
 const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 1200), ONLY = flag('phase')
+/** Arrival allowance past a unit's ideal walk, in ticks (default 60 s). */
+const GRACE = Number(flag('grace') ?? 1200)
+/** Ticks per block at the workers' walking speed (WALK_SPEED 64 / 256 of a block per tick, 5 blocks/s). */
+const TICKS_PER_BLOCK = 4
 const doc = JSON.parse(readFileSync(new URL('../src/terrain/crowd.terrain.json', import.meta.url), 'utf8'))
 const sim = new Simulation({ buffers: createWorldBuffers([...CROWD_SIZE]), blocks: BLOCKS, rules, seed: 1234, randomTicksPerChunk: randomTickRate(CROWD_SIZE[0], CROWD_SIZE[2]), workers: CROWD_WORKER_OPTIONS, log: () => {} })
 const t0 = performance.now()
@@ -189,13 +194,21 @@ if (ONLY !== undefined && !PHASES[ONLY]) throw new Error(`unknown phase ${ONLY};
 function measure(n: number, moved: number[], each?: (i: number) => void) {
   const from = sim.tick, ms: number[] = [], share: number[] = [], ordered = new Set(moved)
   const first = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
-  const orderIds = new Set<number>()
+  const orderIds = new Set<number>(), ideal = new Map<number, number>()
   let visitedMax = 0, navBytesMax = 0, failedCommands = 0, ordersDoneAt: number | null = null
   for (let i = 0; i < n; i++) {
     each?.(i)
     workersMs = 0
     const a = performance.now(); last = sim.step(); ms.push(performance.now() - a); share.push(workersMs)
     const t = last.tick - from
+    // Ideal walk: the straight line from the unit's pose to its formation goal, a lower bound on any route (the goal
+    // exists once the order tick ran). Units without a goal (refused or none) get none.
+    if (i === 0) for (const id of moved) {
+      const u = w.units.get(id)
+      if (!u || u.goal === null) continue
+      const [gx, , gz] = sim.layout.voxelCoords(u.goal)
+      ideal.set(id, Math.ceil(Math.hypot(u.x / 256 - gx - .5, u.z / 256 - gz - .5) * TICKS_PER_BLOCK))
+    }
     failedCommands += last.acks.filter(x => !x.ok).length
     for (const e of last.events) {
       const id = (e.payload as { id?: number } | undefined)?.id
@@ -215,7 +228,8 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
   }
   // Over every ordered unit: a unit that never walked counts as Infinity, so a percentile landing on it reports null.
   const latency = moved.map(id => first.get(id) ?? Infinity), started = latency.filter(Number.isFinite).length
-  const arrival = moved.map(id => arrived.get(id) ?? Infinity)
+  const arrival = moved.map(id => arrived.get(id) ?? Infinity), ideals = [...ideal.values()]
+  const late = moved.map(id => (arrived.get(id) ?? Infinity) - (ideal.get(id) ?? 0)), onTime = late.filter(n => n <= GRACE).length
   const finite = (n: number | null) => n === null || !Number.isFinite(n) ? null : n
   const work = last.workers!.orders.filter(o => orderIds.has(o.id))
   return {
@@ -223,7 +237,9 @@ function measure(n: number, moved: number[], each?: (i: number) => void) {
     workersMs: { p50: r3(q(share, .5)), p95: r3(q(share, .95)), p99: r3(q(share, .99)), max: r3(Math.max(...share)) },
     ...(moved.length > 0 && {
       firstActionTicks: { p50: finite(q(latency, .5)), p95: finite(q(latency, .95)), started, ordered: moved.length },
-      arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null },
+      arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null,
+        idealTicks: { p50: q(ideals, .5), p95: q(ideals, .95), max: ideals.length ? Math.max(...ideals) : null, units: ideals.length },
+        lateTicks: { p50: finite(q(late, .5)), p95: finite(q(late, .95)) }, withinIdealPlusGrace: { graceTicks: GRACE, pct: +(100 * onTime / moved.length).toFixed(1) } },
     }),
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
