@@ -93,4 +93,37 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     }
     expect(run()).toEqual(run())
   })
+  /** Counts the route searches the workers start. */
+  function countRoutes(sim: Simulation) {
+    const nav = sim.workers!.nav, route = nav.route.bind(nav), count = { n: 0 }
+    nav.route = (...args) => { count.n++; return route(...args) }
+    return count
+  }
+  it('a long move to a walled-in destination blocks with no-access instead of replanning every tick', () => {
+    const sim = makeWide(128); spawn(sim, [5, 4, 5])
+    // A ring of stone two high around (100,4,100): the destination stands, but nothing reaches it.
+    for (const [min, max] of [[[98, 4, 98], [102, 5, 98]], [[98, 4, 102], [102, 5, 102]], [[98, 4, 99], [98, 5, 101]], [[102, 4, 99], [102, 5, 101]]] as const) cmd(sim, { type: 'fillRegion', min: [...min], max: [...max], voxel: 1 })
+    const routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [100, 4, 100] })
+    expect(sim.workers!.units.get(1)!.route?.search).toBeInstanceOf(RouteSearch)
+    until(sim, () => sim.workers!.view(1)?.state === 'blocked', 400)
+    expect(sim.workers!.view(1)?.reason).toBe('no-access')
+    const before = routes.n
+    let visited = 0
+    for (let i = 0; i < 100; i++) visited += sim.step().workers!.stats.visited
+    expect(routes.n - before).toBe(0); expect(visited).toBe(0); expect(sim.workers!.nav.pending).toBe(0)
+  })
+  it('a route that ends stale backs off instead of replanning the same tick', () => {
+    const sim = makeWide(128); spawn(sim, [5, 4, 5])
+    const routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [100, 4, 100] })
+    const u = sim.workers!.units.get(1)!, search = u.route!.search as RouteSearch
+    expect(routes.n).toBe(1)
+    // As if a region it read changed under it.
+    ;(search as unknown as { status: string }).status = 'stale'
+    sim.step()
+    const time = (sim.workers as unknown as { time: number }).time
+    expect(u.route).toBeNull(); expect(routes.n).toBe(1); expect(u.retry).toBeGreaterThan(time)
+    until(sim, () => routes.n === 2, 40)
+  })
 })
