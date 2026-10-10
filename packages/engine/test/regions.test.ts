@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
-import { RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField } from '../src/sim/navigation/regions.ts'
+import { BUILD_WEIGHT, RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField } from '../src/sim/navigation/regions.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
 
@@ -88,4 +88,24 @@ it('a walled-off pocket inside a region cannot reach the exits', () => {
   const r = build(nav, nav.tileOf(16, 4, 16))
   expect(exitCosts(r, layout.voxelIndex(20, 4, 20), layout).every(c => c === UNREACHED)).toBe(true)
   expect(exitCosts(r, layout.voxelIndex(16, 4, 16), layout).every(c => c !== UNREACHED)).toBe(true)
+})
+it('poses standing on a falling block are not region poses: a sand strip splits a floor with no exit across it', () => {
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'sand', falls: true }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => y < 3 ? 1 : y === 3 ? (x >= 20 && x <= 22 ? 2 : 1) : 0 })
+  const r = build(nav, nav.tileOf(16, 4, 16))
+  expect(nav.stand(21, 4, 20)).toBe(true); expect(nav.regionStand(21, 4, 20)).toBe(false)
+  expect(r.poses.length).toBe(256 - 3 * 16)
+  for (const e of r.exits) { const [x] = layout.voxelCoords(e.from), [tx] = layout.voxelCoords(e.to); expect(x < 20 === tx < 20).toBe(true) }
+  // Cells west of the strip cannot reach the east part inside the region.
+  const west = exitCosts(r, layout.voxelIndex(17, 4, 20), layout)
+  r.exits.forEach((e, i) => { if (layout.voxelCoords(e.from)[0] > 22) expect(west[i]).toBe(UNREACHED) })
+})
+it('build steps are charged at BUILD_WEIGHT per operation and counted by phase', () => {
+  const { nav } = fixture()
+  const b = new RegionBuild(nav, nav.tileOf(16, 4, 16))
+  let charged = 0
+  while (!b.done) { const used = b.step(10); expect(used).toBeLessThanOrEqual(10); charged += used }
+  const steps = Object.values(b.counts).reduce((a, n) => a + n, 0)
+  expect(b.counts.poses).toBeGreaterThanOrEqual(4096); expect(b.counts.fields).toBeGreaterThan(0)
+  expect(charged).toBeGreaterThanOrEqual(Math.ceil(steps / BUILD_WEIGHT)); expect(charged).toBeLessThanOrEqual(Math.ceil(steps / BUILD_WEIGHT) + 1 + steps / BUILD_WEIGHT / 10)
 })

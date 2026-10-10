@@ -23,6 +23,7 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
 /**
  * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision,
  * so a change before the search finishes ends it stale; a region is kept by reference for the search's lifetime.
+ * A build in progress is shared by every query that needs its tile: whoever steps it pays, in query order.
  */
 export class RegionReader {
   readonly nav: NavigationSystem
@@ -32,6 +33,8 @@ export class RegionReader {
   job: RegionBuild | null = null
   stale = false
   constructor(nav: NavigationSystem, store: RegionStore) { this.nav = nav; this.store = store }
+  /** Records a tile's revision before anything is read from it, so an edit there before it is read ends the search stale. */
+  pin(index: number): void { if (!this.seen.has(index)) this.seen.set(index, this.nav.revisions[index]!) }
   /** The region, or undefined while a build for it runs (step the job, then ask again). */
   need(index: number): Region | undefined {
     const known = this.regions.get(index)
@@ -39,7 +42,9 @@ export class RegionReader {
     if (this.job?.index === index) return undefined
     const r = this.store.get(index)
     if (r) return this.adopt(r)
-    this.job = new RegionBuild(this.nav, index)
+    let job = this.nav.building.get(index)
+    if (!job) { job = new RegionBuild(this.nav, index); this.nav.building.set(index, job) }
+    this.job = job
     return undefined
   }
   private adopt(r: Region): Region {
@@ -50,7 +55,12 @@ export class RegionReader {
   /** Steps the pending build; returns operations used. */
   build(cap: number): number {
     const job = this.job!, used = job.step(cap)
-    if (job.done) { const r = job.result(); this.store.put(r); this.adopt(r); this.job = null }
+    if (job.done) {
+      const r = job.result()
+      if (this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
+      if (this.store.get(r.index) !== r) this.store.put(r)
+      this.adopt(r); this.job = null
+    }
     return used
   }
   mixState(mix: (n: number) => void): void {
@@ -106,6 +116,7 @@ export class RouteSearch {
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
     this.estimate = this.h(start)
     if (!goals.length || !nav.stand(...L.voxelCoords(start))) this.status = 'unreachable'
+    this.reader.pin(nav.tileOfPose(start)); for (const r of this.goalRegions.keys()) this.reader.pin(r)
   }
   get seen(): Map<number, number> { return this.reader.seen }
   /** The region record this search read for a tile (whatever its epoch now), so exit keys keep their meaning. */
@@ -172,9 +183,10 @@ export class RouteSearch {
   private exitOf(key: number) { const [r, e] = splitKey(key); return this.reader.regions.get(r)!.exits[e]! }
   private begin(): number {
     const L = this.nav.port.layout, index = this.nav.tileOfPose(this.start), r = this.need(index)
-    if (!r) return 0
+    if (!r || this.reader.stale) return 0
     const slot = slotOf(r, this.start, L), P = r.poses.length
-    if (slot < 0) { this.status = 'unreachable'; return 1 }
+    // The start stood when asked and its tile is unchanged, so it stands on a block that falls: no proof either way.
+    if (slot < 0) { this.status = 'limited'; return 1 }
     r.exits.forEach((x, e) => {
       const c = r.fields[e * P + slot]!
       if (c === UNREACHED) return

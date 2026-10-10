@@ -403,7 +403,7 @@ export class WorkerSystem {
       if (destinations.length < units.length) throw new Error('not enough safe formation destinations')
       units.forEach((u, i) => { this.clearOrder(u); if (u.state !== 'incapacitated') { u.available = true; u.goal = destinations[i]!; u.allowDig = c.allowDig === true; u.buildBlock = c.buildBlock ?? 0; u.state = u.motion ? 'walking' : 'planning'; u.retry = 0; u.revision = -1 } })
       // Units that would each plan a long route share one reverse field from all their destinations.
-      const members = units.filter(u => u.state !== 'incapacitated' && !u.motion && !u.allowDig && !u.buildBlock && !this.escaping(u) && this.estimate(u, [u.goal!]) > HIER_MIN)
+      const members = units.filter(u => u.state !== 'incapacitated' && !u.motion && this.routable(u) && this.estimate(u, [u.goal!]) > HIER_MIN)
       if (members.length > 1) {
         const field = this.nav.group(members.map(u => u.goal!), members.map(u => this.position(u)))
         for (const u of members) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
@@ -944,6 +944,8 @@ export class WorkerSystem {
     this.engineeringVisited = engineeringWork
     this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork - this.refineWork))
   }
+  /** Whether the unit may plan on the region layer: no engineering, no designation to escape, not standing on sand. */
+  private routable(u: Unit): boolean { return !u.allowDig && !u.buildBlock && !this.escaping(u) && this.nav.regionStand(...this.pose(u)) }
   private escaping(u: Unit): boolean { const [x, y, z] = this.pose(u); return this.reservations.some(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true)) }
   /** The flat search heuristic from the unit to its nearest goal. */
   private estimate(u: Unit, goals: readonly number[]): number {
@@ -953,12 +955,12 @@ export class WorkerSystem {
     return h
   }
   /**
-   * Long walks go hierarchical. Escaping a build designation, engineering (dig or build on the way) and short walks stay
-   * on the flat search, like traffic detours and the exposure escape, which call `request` directly.
+   * Long walks go hierarchical. Escaping a build designation, standing on sand, engineering (dig or build on the way)
+   * and short walks stay on the flat search, like traffic detours and the exposure escape, which call `request` directly.
    */
   private plan(u: Unit, goals: readonly number[], exclude: readonly number[] = []): void {
     this.dropRoute(u)
-    if (this.escaping(u) || u.allowDig || u.buildBlock || !goals.length || this.estimate(u, goals) <= HIER_MIN) { u.search = this.request(u, goals); return }
+    if (!this.routable(u) || !goals.length || this.estimate(u, goals) <= HIER_MIN) { u.search = this.request(u, goals); return }
     u.escape = []; u.search = null
     u.route = this.newRoute(this.nav.route(this.position(u), goals, exclude.length ? { exclude: new Set(exclude) } : undefined), goals, exclude)
   }

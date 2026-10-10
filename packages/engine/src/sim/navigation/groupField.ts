@@ -24,6 +24,8 @@ export class GroupField {
   /** Start indices by region, and per start region the box of its starts (min x, z, max x, y, z) for the heuristic. */
   private readonly startRegions = new Map<number, number[]>()
   private readonly boxes: number[][]
+  /** Debt per heuristic evaluation: one operation per 16 start boxes. */
+  private readonly hCost: number
   private readonly startBase: number
   status: PathStatus = 'pending'
   spent = 0
@@ -56,7 +58,9 @@ export class GroupField {
       if (!box) boxes.set(r, [x, z, x, y, z])
       else { box[0] = Math.min(box[0]!, x); box[1] = Math.min(box[1]!, z); box[2] = Math.max(box[2]!, x); box[3] = Math.max(box[3]!, y); box[4] = Math.max(box[4]!, z) }
     })
-    this.boxes = [...boxes.values()]
+    this.boxes = [...boxes.values()]; this.hCost = this.boxes.length >> 4
+    for (const r of this.goalRegions.keys()) this.reader.pin(r)
+    for (const r of this.startRegions.keys()) this.reader.pin(r)
     this.startBase = 1 + nav.revisions.length * 4096
     // Lower bound from the goals' box: linear in starts + goals, where the exact minimum would be their product.
     const g0 = [Infinity, Infinity, Infinity], g1 = [-Infinity, -Infinity, -Infinity]
@@ -99,6 +103,7 @@ export class GroupField {
   }
   /** Flat lower bound of the cost from the nearest start box to `p`; consistent, as a minimum of consistent bounds. */
   private h(p: number): number {
+    this.debt += this.hCost
     const [x, y, z] = this.nav.port.layout.voxelCoords(p)
     let h = Infinity
     for (const [x0, z0, x1, y1, z1] of this.boxes) {

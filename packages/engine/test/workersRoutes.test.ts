@@ -53,6 +53,13 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     const u = sim.workers!.units.get(1)!
     expect(u.route).toBeNull(); expect(u.search).toBeInstanceOf(PathSearch); expect(u.escape.length).toBe(1)
   })
+  it('a unit standing on sand plans its long walk on the flat search', () => {
+    const sim = makeWide(256); spawn(sim, [10, 4, 10])
+    cmd(sim, { type: 'fillRegion', min: [10, 3, 10], max: [10, 3, 10], voxel: 4 })
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [200, 4, 200] })
+    const u = sim.workers!.units.get(1)!
+    expect(u.route).toBeNull(); expect(u.search).toBeInstanceOf(PathSearch)
+  })
   it('a group move resolves every unit from one group field and every unit arrives', () => {
     const sim = makeWide(256)
     for (let i = 0; i < 20; i++) spawn(sim, [4 + (i % 5) * 2, 4, 4 + Math.floor(i / 5) * 2])

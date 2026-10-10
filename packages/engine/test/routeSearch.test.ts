@@ -115,3 +115,36 @@ it('reuses regions from the store: a second identical search costs far less', ()
   expect(b.cost).toBe(a.cost); expect(b.exits).toEqual(a.exits)
   expect(b.spent * 10).toBeLessThan(a.spent)
 })
+function sandy(gap: boolean) {
+  // A sand strip x 30..33 across the whole floor, with an optional stone gap at z 50..52.
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'sand', falls: true }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => y < 3 ? 1 : y === 3 ? (x >= 30 && x <= 33 && !(gap && z >= 50 && z <= 52) ? 2 : 1) : 0 })
+  return { nav, layout, store: new RegionStore(nav) }
+}
+it('a goal reachable only across sand is unreachable, and a stone gap in the sand is the way around', () => {
+  const a = sandy(false)
+  expect(route(a.nav, a.store, a.layout.voxelIndex(4, 4, 4), [a.layout.voxelIndex(60, 4, 4)]).status).toBe('unreachable')
+  const b = sandy(true), s = route(b.nav, b.store, b.layout.voxelIndex(4, 4, 4), [b.layout.voxelIndex(60, 4, 4)])
+  expect(s.status).toBe('found')
+  expect(s.cost).toBeGreaterThanOrEqual((56 + 46 * 2) * 4)
+  // A start standing on sand has no region pose: no proof, so limited.
+  expect(route(b.nav, b.store, b.layout.voxelIndex(31, 4, 4), [b.layout.voxelIndex(60, 4, 4)]).status).toBe('limited')
+})
+it('an edit to the start between the request and its first slice ends the route stale, not unreachable', () => {
+  const { nav, layout, solid } = fixture(64)
+  const start = layout.voxelIndex(5, 4, 5), r = nav.route(start, [layout.voxelIndex(50, 4, 50)])
+  solid.add(layout.voxelIndex(5, 5, 5)); nav.invalidate(5, 5, 5)
+  while (r.status === 'pending') nav.step(4096)
+  expect(r.status).toBe('stale')
+})
+it('concurrent cold routes over the same tiles share the region builds', () => {
+  const one = fixture(128), a = one.nav.route(one.layout.voxelIndex(2, 4, 2), [one.layout.voxelIndex(125, 4, 125)])
+  let single = 0
+  while (a.status === 'pending') { one.nav.step(4096); single += one.nav.visited }
+  const many = fixture(128), routes = Array.from({ length: 8 }, (_, i) => many.nav.route(many.layout.voxelIndex(2 + i, 4, 2), [many.layout.voxelIndex(125, 4, 125)]))
+  let shared = 0
+  while (routes.some(r => r.status === 'pending')) { many.nav.step(4096); shared += many.nav.visited }
+  expect(routes.every(r => r.status === 'found')).toBe(true)
+  expect(shared).toBeLessThan(single * 1.3)
+  expect(many.nav.building.size).toBe(0)
+})

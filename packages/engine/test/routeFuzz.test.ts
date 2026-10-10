@@ -83,4 +83,5 @@ it('routes agree with exact flat A* on reachability, and routed pairs stay near 
   console.log(`route fuzz: ${ratios.length} routed found, ${unreachable} unreachable, ${groups} group starts; cost ratio mean ${mean.toFixed(4)} p95 ${sorted[Math.floor(sorted.length * 0.95)]!.toFixed(4)} max ${sorted.at(-1)!.toFixed(4)}`)
   expect(unreachable).toBeGreaterThan(0)
   expect(mean).toBeLessThanOrEqual(1.10)
+  expect(sorted[Math.floor(sorted.length * 0.95)]!).toBeLessThanOrEqual(1.25)
 })

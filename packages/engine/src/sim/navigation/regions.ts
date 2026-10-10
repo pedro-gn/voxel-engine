@@ -3,6 +3,12 @@ import { edgeCost, type NavigationSystem } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 
 export const UNREACHED = 0xffff
+/**
+ * Build steps (pose cells, edges, crossings, field pops and relaxations, and the synchronous passes between phases)
+ * charged as one navigation operation: a build step costs a fraction of a flat search's operation, whose neighbour
+ * probes read several voxels. Provisional; calibrated by the bench's op-cost and build-cost probes.
+ */
+export const BUILD_WEIGHT = 4
 /** Exits per region that fit in an exit key. */
 const MAX_EXITS = 4095, RUN = 8
 /** A run of crossings to one neighbour region, represented by its middle crossing: `from` in the region, `to` beyond it. */
@@ -47,11 +53,20 @@ function sourceBits(x: number, y: number, z: number): number {
 interface Crossing { slot: number; d: number; to: number; cost: number; target: number; sy: number; ty: number; along: number; across: number }
 type Phase = 'poses' | 'edges' | 'exits' | 'reverse' | 'fields' | 'done'
 const PHASES: readonly Phase[] = ['poses', 'edges', 'exits', 'reverse', 'fields', 'done']
+export type BuildPhase = Exclude<Phase, 'done'>
 
-/** Builds a Region in slices, one operation per cell, edge, crossing, pop or relaxation; restarts if its tile changes. */
+/**
+ * Builds a Region in slices: one step per cell, edge, crossing, pop or relaxation, and the passes between phases as
+ * debt; BUILD_WEIGHT steps are charged as one operation. Restarts if its tile changes. Region poses exclude poses
+ * whose support block falls (the live policy always rejects them), so routes never plan across sand.
+ */
 export class RegionBuild {
   readonly index: number
   done = false
+  /** Steps spent per phase, for the bench's cost table; not simulation state. */
+  readonly counts: Record<BuildPhase, number> = { poses: 0, edges: 0, exits: 0, reverse: 0, fields: 0 }
+  private debt = 0
+  private built: Region | null = null
   private readonly nav: NavigationSystem
   private readonly origin: [number, number, number]
   private epoch = 0
@@ -82,36 +97,43 @@ export class RegionBuild {
     this.origin = [(index % tx) << 4, Math.floor(index / (tx * tz)) << 4, (Math.floor(index / tx) % tz) << 4]
     this.restart()
   }
+  get stage(): Phase { return this.phase }
+  private charge(steps: number): void { this.debt += steps; if (this.phase !== 'done') this.counts[this.phase] += steps }
   private restart(): void {
-    this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0
+    this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0; this.charge(256)
     this.slots = new Int16Array(4096).fill(-1); this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0
     this.heap.clear(); this.field = 0; this.expanding = -1; this.edge = 0
   }
   private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) }
+  /** Returns charged operations, at most `cap`. */
   step(cap: number): number {
     let used = 0
     if (this.done) return 0
     if (this.nav.revisions[this.index] !== this.epoch) this.restart()
-    const L = this.nav.port.layout, [ox, oy, oz] = this.origin
-    while (used < cap && !this.done) {
+    const L = this.nav.port.layout, [ox, oy, oz] = this.origin, limit = cap * BUILD_WEIGHT
+    while (used < limit && !this.done) {
+      if (this.debt) { const pay = Math.min(this.debt, limit - used); this.debt -= pay; used += pay; continue }
       used++
+      if (this.phase !== 'done') this.counts[this.phase]++
       if (this.phase === 'poses') {
         const c = this.cursor++, x = ox + (c & 15), z = oz + ((c >> 4) & 15), y = oy + (c >> 8)
-        if (this.nav.stand(x, y, z)) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
+        if (this.nav.regionStand(x, y, z)) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
         if (this.cursor === 4096) {
           const P = this.count
           this.poses = new Int32Array(P); this.next = new Int16Array(P * 4).fill(-1); this.degree = new Int32Array(P)
           for (let s = 0; s < P; s++) { const l = this.locals[s]!; this.poses[s] = L.voxelIndex(ox + (l & 15), oy + (l >> 8), oz + ((l >> 4) & 15)) }
-          this.phase = 'edges'; this.cursor = 0
+          this.charge(P); this.phase = 'edges'; this.cursor = 0
         }
       } else if (this.phase === 'edges') {
-        if (this.cursor === this.count * 4) { this.phase = 'exits'; this.cursor = 0; this.sortCrossings(); continue }
+        if (this.cursor === this.count * 4) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
         const slot = this.cursor >> 2, d = this.cursor & 3, pose = this.poses[slot]!, to = this.nav.neighbor(pose, d)
         this.cursor++
         if (to < 0) continue
         const target = this.nav.tileOfPose(to)
-        if (target === this.index) { const t = this.slots[localOf(L, to)]!; this.next[slot * 4 + d] = t; this.degree[t]!++; continue }
-        const [fx, fy, fz] = L.voxelCoords(pose), ty = L.voxelCoords(to)[1]
+        // A neighbour the region layer does not stand on (sand) is no edge and no crossing.
+        if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * 4 + d] = t; this.degree[t]!++ }; continue }
+        const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
+        if (!this.nav.regionStand(tx, ty, tz)) continue
         this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
       } else if (this.phase === 'exits') {
         const cr = this.crossings
@@ -122,11 +144,11 @@ export class RegionBuild {
         this.revStart = new Int32Array(P + 1)
         for (let s = 0; s < P; s++) this.revStart[s + 1] = this.revStart[s]! + this.degree[s]!
         this.rev = new Int16Array(this.revStart[P]!); this.fill = this.revStart.slice(0, P)
-        this.phase = 'reverse'; this.cursor = 0
+        this.charge(P + this.runs.length); this.phase = 'reverse'; this.cursor = 0
       } else if (this.phase === 'reverse') {
         if (this.cursor === this.count) {
           this.fields = new Uint16Array(this.exits.length * this.count).fill(UNREACHED)
-          this.phase = 'fields'; this.field = 0; this.seed(); continue
+          this.phase = 'fields'; this.charge(Math.ceil(this.fields.length / 64)); this.field = 0; this.seed(); continue
         }
         const s = this.cursor++
         for (let d = 0; d < 4; d++) { const t = this.next[s * 4 + d]!; if (t >= 0) this.rev[this.fill[t]!++] = s }
@@ -140,14 +162,16 @@ export class RegionBuild {
           continue
         }
         const s = this.expanding
-        if (this.edge === this.revStart[s + 1]) { this.expanding = -1; used--; continue }
+        if (this.edge === this.revStart[s + 1]) { this.expanding = -1; used--; this.counts.fields--; continue }
         const src = this.rev[this.edge++]!, g = Math.min(UNREACHED - 1, this.fields[f + s]! + this.cost(src, s))
         if (g < this.fields[f + src]!) { this.fields[f + src] = g; this.heap.push(src, g, 0) }
       }
     }
-    return used
+    return Math.ceil(used / BUILD_WEIGHT)
   }
   private sortCrossings(): void {
+    const n = this.crossings.length
+    this.charge(n ? n * Math.ceil(Math.log2(n + 1)) : 0)
     this.crossings.sort((a, b) => a.d - b.d || a.target - b.target || a.along - b.along || a.across - b.across || a.sy - b.sy || a.ty - b.ty)
   }
   /**
@@ -178,14 +202,16 @@ export class RegionBuild {
     const s = this.slots[localOf(this.nav.port.layout, this.exits[this.field]!.from)]!
     this.fields[this.field * this.count + s] = 0; this.heap.clear(); this.heap.push(s, 0, 0); this.expanding = -1
   }
+  /** The built region; the same record for every query that shared this build. */
   result(): Region {
     if (!this.done) throw new Error('region build is not done')
+    if (this.built) return this.built
     const r: Region = { index: this.index, epoch: this.epoch, slots: this.slots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
     r.bytes = r.slots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32
-    return r
+    return this.built = r
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.index); mix(this.epoch); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length); mix(this.sources)
+    mix(this.index); mix(this.epoch); mix(this.debt); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length); mix(this.sources)
     mix(this.field); mix(this.expanding); mix(this.edge); this.heap.mixState(mix)
   }
 }

@@ -1,7 +1,7 @@
 import type { Layout } from '../../world/layout.ts'
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
-import { RegionStore } from './regions.ts'
+import { RegionStore, type RegionBuild } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
 import { GroupField } from './groupField.ts'
 
@@ -37,6 +37,8 @@ export class NavigationSystem {
   private requests: NavQuery[] = []
   /** Geometry-only region records shared by route and group queries. */
   readonly regions: RegionStore
+  /** Region builds in progress by tile, shared by the queries that need them. */
+  readonly building = new Map<number, RegionBuild>()
   private cursor = 0
   readonly maxNodes: number
   readonly cacheLimit: number
@@ -66,7 +68,7 @@ export class NavigationSystem {
         for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) this.revisions[xx + zz * this.tx + yy * this.tx * this.tz]!++
     this.revision++
   }
-  reset(): void { this.tiles.clear(); this.regions.clear(); this.revisions.fill(0); this.revision++; for (const s of this.requests) s.cancel(); this.requests = [] }
+  reset(): void { this.tiles.clear(); this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; for (const s of this.requests) s.cancel(); this.requests = [] }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
    * expanded next to it. Route and group queries read geometry only, so policy never cancels them.
@@ -89,6 +91,13 @@ export class NavigationSystem {
   }
   stand(x: number, y: number, z: number): boolean {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
+  }
+  /**
+   * A pose of the region layer: it stands, and not on a block that falls. The live policy always rejects poses on
+   * falling blocks, so the region layer drops them as geometry; flat searches still stand there (to search out of sand).
+   */
+  regionStand(x: number, y: number, z: number): boolean {
+    return this.stand(x, y, z) && (y === 0 || this.port.registry.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
   }
   allowed(p: number): boolean { const c = this.port.layout.voxelCoords(p); return (this.port.safe?.(...c) ?? true) && !(this.port.hazard?.(...c) ?? false) }
   neighbor(p: number, d: number, seen?: Map<number, number>): number {
@@ -153,6 +162,7 @@ export class NavigationSystem {
     mix(this.revision); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
     mix(this.requests.length)
     for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
+    mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
   }
 }
 
