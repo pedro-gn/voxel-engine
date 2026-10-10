@@ -1129,6 +1129,9 @@ export class WorkerSystem {
         }
         // An idle owner with no refuge in reach of one window walks to the nearest pose off u's route instead.
         if (idle) { this.makeWay(o, u); continue }
+        // Neither has a way out: an idle unit standing next to either of them makes room.
+        const near = this.idleNeighbour(u, o)
+        if (near) { this.makeWay(near, u); continue }
       }
       if (!u.repair) this.startRepair(u)
     }
@@ -1158,7 +1161,7 @@ export class WorkerSystem {
     u.projection = null; this.project(u)
     o.conflict = { t: T + 1, owner: u.id }
     // o looks for a refuge off u's remaining route that it can reach ahead of u and hold until the window's end.
-    const route = new Set(u.path.slice(Math.max(0, u.cursor - 1))); route.add(this.position(u))
+    const route = this.routeAndGoals(u, o)
     this.startRepair(o, p => !route.has(p))
     const r = o.repair
     const used = r ? r.step(Math.min(cap, r.remaining)) : 0
@@ -1173,10 +1176,29 @@ export class WorkerSystem {
     if (this.projecting(u)) this.project(u); else this.holdHere(u)
     return { ok: false, used }
   }
+  /** The first idle unit (by id order) whose body is within one block of u's or o's, if any. */
+  private idleNeighbour(u: Unit, o: Unit): Unit | undefined {
+    for (const c of this.units.values()) if (c !== u && c !== o && !c.projection && this.idleUnit(c)) {
+      for (const v of [u, o]) if (Math.abs(c.x - v.x) <= 384 && Math.abs(c.z - v.z) <= 384 && Math.abs(c.y - v.y) <= 256) return c
+    }
+    return undefined
+  }
+  /** Every other unit's destination: poses a unit must not end a plan or a make-way walk on. */
+  private goalsBut(o: Unit): Set<number> {
+    const out = new Set<number>()
+    for (const other of this.units.values()) if (other !== o && other.goal !== null) out.add(other.goal)
+    return out
+  }
+  /** Poses a unit making way for u must not end on: u's pose and remaining route, and every other unit's destination. */
+  private routeAndGoals(u: Unit, o: Unit): Set<number> {
+    const out = this.goalsBut(o)
+    for (const p of u.path.slice(Math.max(0, u.cursor - 1))) out.add(p)
+    out.add(this.position(u))
+    return out
+  }
   /** Sends an idle unit to the nearest free pose off u's route within MAKE_WAY_RADIUS; it stays idle while it looks. */
   private makeWay(o: Unit, u: Unit): void {
-    const L = this.port.layout, route = new Set(u.path.slice(Math.max(0, u.cursor - 1))), from = this.position(o), [ox, oy, oz] = this.pose(o)
-    route.add(this.position(u))
+    const L = this.port.layout, route = this.routeAndGoals(u, o), from = this.position(o), [ox, oy, oz] = this.pose(o)
     const near = (p: number) => { const [x, y, z] = L.voxelCoords(p); return Math.abs(x - ox) <= MAKE_WAY_RADIUS && Math.abs(z - oz) <= MAKE_WAY_RADIUS && Math.abs(y - oy) <= 4 }
     o.search = this.nav.request(from, [], undefined, {
       allowed: p => near(p) && this.nav.allowed(p),
@@ -1220,7 +1242,9 @@ export class WorkerSystem {
     }
     const targets = refuge ? [] : u.path.slice(cursor, cursor + REPAIR_SPAN)
     if (!targets.length && !refuge) { u.repairAfter = T + 8; return }
-    u.repair = new SpaceTimeSearch(this.spaceTimePort(u, start, pose), this.table, u.id, start, startTick, targets, undefined, undefined, refuge)
+    // A unit with nothing to do stays where its plan ends, so that must not be someone else's destination.
+    const goals = u.goal === null && !u.task ? this.goalsBut(u) : null
+    u.repair = new SpaceTimeSearch(this.spaceTimePort(u, start, pose), this.table, u.id, start, startTick, targets, undefined, undefined, refuge, goals ? p => goals.has(p) : undefined)
     u.repairFrom = { path: u.path, cursor, start, startTick }
   }
   /** Adopts a found plan if the unit is still where and when it starts: its poses, then the rest of the route it rejoins. */

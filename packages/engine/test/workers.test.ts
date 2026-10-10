@@ -1072,32 +1072,46 @@ describe('traffic scenarios', () => {
     expect(t.horizon(1)).toBe(t.now - 1)
     for (let x = 3; x <= 28; x++) expect(t.owner(sim.store.layout.voxelIndex(x, 4, 5), t.now + 1)).toBe(0)
   })
-  /** Every unit stands idle at its assigned destination at some tick within the bound (arrived units may later make way). */
+  /** Every unit arrives (the unitArrived event) at its assigned destination within the bound; arrived units may later make way. */
   function allReach(sim: Simulation, targets: Map<number, readonly number[]>, bound: number) {
     const reached = new Set<number>()
     for (let i = 0; i < bound && reached.size < targets.size; i++) {
-      sim.step(); noOverlap(sim, i)
-      for (const [id, [x, y, z]] of targets) { const v = sim.workers!.view(id)!; if (v.state === 'idle' && v.x256 >> 8 === x && v.y256 >> 8 === y && v.z256 >> 8 === z) reached.add(id) }
+      for (const e of sim.step().events) if (e.type === 'unitArrived') {
+        const id = (e.payload as { id: number }).id, v = sim.workers!.view(id)!, [x, y, z] = targets.get(id) ?? []
+        if (v.x256 === x! * 256 + 128 && v.y256 === y! * 256 && v.z256 === z! * 256 + 128) reached.add(id)
+      }
+      noOverlap(sim, i)
     }
     expect([...targets.keys()].filter(id => !reached.has(id)), 'units that never reached their destination').toEqual([])
   }
-  it('two groups of seven cross in a two-wide corridor', () => {
-    // Both groups start head-on in the z=5 lane and end in the z=6 lane, so every destination is free when ordered.
-    // Ten a side gridlocks: both fronts fill both lanes and no unit has a refuge (a known limit, see the report).
+  /**
+   * Ten units a side in a two-wide corridor (z=5 and z=6), each ordered 16 blocks along it, all in one tick so every
+   * destination is free when ordered. `staggered` is the plan's layout: both groups alternate rows, so both lanes carry
+   * both directions; otherwise both groups start head-on in the z=5 lane and end in the z=6 lane.
+   */
+  function twoWide(staggered: boolean) {
     const sim = make(ctx => {
       for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
       for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
     })
-    const orders = new Map<number, number>()
-    for (let x = 3; x <= 9; x++) orders.set(spawn(sim, [x, 4, 5]), x + 16)
-    for (let x = 22; x <= 28; x++) orders.set(spawn(sim, [x, 4, 5]), x - 16)
-    // All orders in one tick, so no unit has moved onto another's destination yet.
-    for (const [id, x] of orders) sim.submit(0, ++seq, { type: 'unitMove', ids: [id], pos: [x, 4, 6] })
+    const orders = new Map<number, [number, number]>()
+    for (let x = 3; x <= 12; x++) { const z = staggered ? 5 + (x & 1) : 5; orders.set(spawn(sim, [x, 4, z]), [x + 16, staggered ? z : 6]) }
+    for (let x = 19; x <= 28; x++) { const z = staggered ? 5 + ((x + 1) & 1) : 5; orders.set(spawn(sim, [x, 4, z]), [x - 16, staggered ? z : 6]) }
+    for (const [id, [x, z]] of orders) sim.submit(0, ++seq, { type: 'unitMove', ids: [id], pos: [x, 4, z] })
     expect(sim.step().acks.every(a => a.ok)).toBe(true)
     const targets = goals(sim)
-    expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, x]) => [id, x, 6]))
+    expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, [x, z]]) => [id, x, z]))
+    return { sim, targets }
+  }
+  it('two groups of ten cross in a two-wide corridor, head-on in one lane', () => {
+    const { sim, targets } = twoWide(false)
     allReach(sim, targets, 2000)
   })
+  it('two groups of ten cross in a two-wide corridor from staggered rows', () => {
+    // Both lanes start with both directions in them; keeping right sorts them out, more slowly.
+    const { sim, targets } = twoWide(true)
+    allReach(sim, targets, 4000)
+  }, 30_000)
   /** Two one-wide corridors crossing at (16,16), a unit at each end ordered to the opposite end. */
   function crossing() {
     const sim = make(ctx => {
