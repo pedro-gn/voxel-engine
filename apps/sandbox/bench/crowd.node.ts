@@ -176,7 +176,7 @@ const prebuildStatus = (): PrebuildStatus | null => {
 }
 /** The region store's byte cap: the prebuild's, else the store's own (a private field, read for the report). */
 const regionCap = () => prebuildStatus()?.capBytes ?? (w.nav as unknown as { regions?: { maxBytes?: number } }).regions?.maxBytes ?? null
-const WARMUP = COLD ? 'cold' : prebuildStatus() ? 'prebuild' : 'interim-groupfield'
+const WARMUP = COLD ? null : prebuildStatus() ? 'prebuild' : 'interim-groupfield'
 
 /** Despawns everyone and cancels every open order, then spawns `UNITS` on `pads`; returns the new ids. */
 function respawn(pads: PadName[], before: Command[] = [], stock: { block: number; count: number }[] = []): { ids: number[]; spawnFailed: number } {
