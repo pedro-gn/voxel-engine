@@ -55,7 +55,7 @@ interface Unit {
    */
   stuck: number; best: number; bestTarget: number
   /** A pending space-time repair, the route it rejoins and where and when it starts. */
-  repair: SpaceTimeSearch | null; repairFrom: { path: readonly number[]; cursor: number; start: number; startTick: number } | null; repairAfter: number
+  repair: SpaceTimeSearch | null; repairFrom: { path: readonly number[]; cursor: number; start: number; startTick: number; at: number } | null; repairAfter: number
   /** A repair plan: stand on path[i] through untils[i] before stepping on. Valid only for the path it was made for. */
   schedule: { path: readonly number[]; untils: number[] } | null
   /** The unit that took this one's right of way, and until when this one keeps yielding to it. */
@@ -114,6 +114,8 @@ const MAX_REPAIRS = 8, REPAIR_SPAN = 24, STUCK_STEP = 20
 const PREEMPT_DELAY = 8, YIELD_TICKS = 200
 /** Ticks before a unit that adopted a repair plan may repair again; ticks stuck before it falls back to detours and traffic blocks. */
 const REPAIR_COOLDOWN = 8, STUCK_LIMIT = 160
+/** Ticks a repair may stay pending before it is dropped. */
+const REPAIR_TICKS = 4
 /** How far an idle unit may walk to clear someone's route when no refuge is in reach of one window. */
 const MAKE_WAY_RADIUS = 16
 /** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
@@ -780,7 +782,11 @@ export class WorkerSystem {
     let cells: number[], area: Set<number> | null = null
     if (flat) {
       const sweep = visibleCells ?? walkSweep(this.port.layout, start, [tx * 256 + 128, u.y, tz * 256 + 128])
-      if (!visibleCells && !this.walkable(u, sweep, y)) { this.block(u, 'unsafe'); return false }
+      if (!visibleCells && !this.walkable(u, sweep, y)) {
+        // Stopped off the grid (a cut motion), the straight line may clip a corner the step itself does not: center first.
+        if (from !== to && (u.x !== x * 256 + 128 || u.z !== z * 256 + 128)) return this.beginMotion(u, from, u.cursor)
+        this.block(u, 'unsafe'); return false
+      }
       const valid = new Set(sweep); area = valid
       cells = walkSweep(this.port.layout, start, this.motionPose(to, 1, ticks, start)).filter(p => valid.has(p))
     } else cells = this.verticalCells(to, ticks, start)
@@ -1310,7 +1316,7 @@ export class WorkerSystem {
       .sort((a, b) => this.outranks(a, b) ? -1 : this.outranks(b, a) ? 1 : 0)
     let started = 0, used = 0
     for (const u of conflicted) {
-      if (started >= MAX_REPAIRS) break
+      if (started >= MAX_REPAIRS || used >= cap) break
       if (u.repair || !u.conflict) continue
       const o = this.units.get(u.conflict.owner)
       if (!o || o === u) continue
@@ -1347,14 +1353,22 @@ export class WorkerSystem {
       }
       if (!u.repair) this.startRepair(u)
     }
-    for (const u of this.units.values()) {
-      const r = u.repair
-      if (!r) continue
+    // Repairs left pending share the rest, starting from a unit that rotates with the tick; one pending for
+    // REPAIR_TICKS is dropped, so no unit waits behind a search that starves.
+    const pending = [...this.units.values()].filter(u => u.repair)
+    for (let n = 0; n < pending.length; n++) {
+      const u = pending[(T + n) % pending.length]!, r = u.repair!
       if (used < cap) used += r.step(cap - used)
-      if (r.status === 'found') this.applyRepair(u)
-      else if (r.status === 'failed') { u.repair = null; u.repairFrom = null; u.repairAfter = T + 8 }
+      if (r.status === 'pending' && T - u.repairFrom!.at >= REPAIR_TICKS) { u.repair = null; u.repairFrom = null; u.repairAfter = T + 8; continue }
+      this.settleRepair(u)
     }
     return used
+  }
+  /** Adopts a found repair, or drops a failed one and waits before the next. */
+  private settleRepair(u: Unit): void {
+    const r = u.repair!
+    if (r.status === 'found') this.applyRepair(u)
+    else if (r.status === 'failed') { u.repair = null; u.repairFrom = null; u.repairAfter = this.time + 8 }
   }
   /**
    * u takes the cells o has from the conflict on: o drops its plan, u (if still) waits PREEMPT_DELAY ticks so o can
@@ -1582,7 +1596,7 @@ export class WorkerSystem {
     // A unit with nothing to do stays where its plan ends, so that must not be someone else's destination.
     const goals = u.goal === null && !u.task ? this.goalsBut(u) : null
     u.repair = new SpaceTimeSearch(this.spaceTimePort(u, start, pose), this.table, u.id, start, startTick, targets, undefined, undefined, refuge, goals ? p => goals.has(p) : undefined, ahead.at(-1))
-    u.repairFrom = { path: u.path, cursor, start, startTick }
+    u.repairFrom = { path: u.path, cursor, start, startTick, at: T }
   }
   /** Adopts a found plan if the unit is still where and when it starts: its poses, then the rest of the route it rejoins. */
   private applyRepair(u: Unit): void {
@@ -1656,7 +1670,7 @@ export class WorkerSystem {
       mix(u.conflict ? 1 : 0); if (u.conflict) { mix(u.conflict.t); mix(u.conflict.owner) }
       mix(u.stuck); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : []); mix(u.laned?.path === u.path ? u.laned.len : -1)
       mix(u.repair ? 1 : 0); u.repair?.mixState(mix)
-      if (u.repairFrom) { mix(u.repairFrom.cursor); mix(u.repairFrom.start); mix(u.repairFrom.startTick); mix(u.repairFrom.path === u.path ? 1 : 0) }
+      if (u.repairFrom) { mix(u.repairFrom.cursor); mix(u.repairFrom.start); mix(u.repairFrom.startTick); mix(u.repairFrom.at); mix(u.repairFrom.path === u.path ? 1 : 0) }
       mix(u.route ? 1 : 0)
       if (u.route) {
         const r = u.route, s = r.search
