@@ -1152,6 +1152,18 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, [x, z]]) => [id, x, z]))
     return { sim, targets }
   }
+  it('a unit walks the right-hand lane of a two-wide corridor and steps back for a destination in the other', () => {
+    const sim = make(ctx => {
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
+      for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    })
+    spawn(sim, [3, 4, 5]); cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    const u = sim.workers!.units.get(1)!, lanes = new Set<number>()
+    // Heading +x, the right hand is +z: the z=6 lane.
+    for (let i = 0; i < 600 && u.goal !== null; i++) { sim.step(); if ((u.x >> 8) >= 6 && (u.x >> 8) <= 24) lanes.add(u.z >> 8) }
+    expect([...lanes]).toEqual([6])
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
+  })
   it('two groups of ten cross in a two-wide corridor, head-on in one lane', () => {
     const { sim, targets } = twoWide(false)
     allReach(sim, targets, 2000)
@@ -1250,6 +1262,39 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect(sim.step().acks.every(a => a.ok)).toBe(true)
     allReach(sim, goals(sim), 5000)
   }, 60_000)
+  it('thirty a side cross a 128-long two-wide corridor', () => {
+    // Both groups start head-on in the z=5 lane and end in the z=6 lane 92 blocks along: each keeps to its right lane.
+    const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 32]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx, cx) {
+      for (let z = 0; z < 32; z++) for (let lx = 0; lx < 32; lx++) {
+        const x = cx * 32 + lx
+        for (let y = 0; y < 4; y++) ctx.set(lx, y, z, 1)
+        if ((z === 4 || z === 7) && x >= 2 && x <= 125 || (z === 5 || z === 6) && (x === 2 || x === 125)) for (let y = 4; y < 6; y++) ctx.set(lx, y, z, 1)
+      }
+    } })
+    const orders = new Map<number, number>()
+    for (let x = 3; x < 33; x++) orders.set(spawn(sim, [x, 4, 5]), x + 92)
+    for (let x = 95; x < 125; x++) orders.set(spawn(sim, [x, 4, 5]), x - 92)
+    for (const [id, x] of orders) sim.submit(0, ++seq, { type: 'unitMove', ids: [id], pos: [x, 4, 6] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    allReach(sim, goals(sim), 3000)
+  }, 60_000)
+  it('four a side cross a one-wide gate in a wall', () => {
+    // A full wall at x=32 with a one-wide gate at z=32; each group, one move order, goes to the other side.
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 32, 64]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx, cx, cz) {
+      for (let lz = 0; lz < 32; lz++) for (let lx = 0; lx < 32; lx++) {
+        const x = cx * 32 + lx, z = cz * 32 + lz
+        for (let y = 0; y < 4; y++) ctx.set(lx, y, lz, 1)
+        if (x === 32 && z !== 32) for (let y = 4; y < 32; y++) ctx.set(lx, y, lz, 1)
+      }
+    } })
+    const west = [0, 1, 2, 3].map(i => spawn(sim, [15 + 2 * (i % 2), 4, 31 + 2 * (i >> 1)]))
+    const east = [0, 1, 2, 3].map(i => spawn(sim, [49 - 2 * (i % 2), 4, 31 + 2 * (i >> 1)]))
+    sim.submit(0, ++seq, { type: 'unitMove', ids: west, pos: [48, 4, 32] }); sim.submit(0, ++seq, { type: 'unitMove', ids: east, pos: [16, 4, 32] })
+    expect(sim.step().acks.every(a => a.ok)).toBe(true)
+    allReach(sim, goals(sim), 1500)
+  })
   it('churn: walls dropped on the route ahead never trap a body, and every unit arrives or finds its goal sealed', () => {
     const sim = new Simulation({ buffers: createWorldBuffers([128, 32, 128]), blocks, seed: 1, randomTicksPerChunk: 0, workers: {} })
     sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
