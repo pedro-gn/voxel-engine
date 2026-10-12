@@ -86,7 +86,7 @@ export class NavigationSystem {
     let n = this.revisions.byteLength + this.regions.bytes
     for (const t of this.tiles.values()) n += t.slots.byteLength + t.edges.byteLength
     for (const s of this.requests) n += s.bytes
-    return n
+    return n + this.landmarks.bytes
   }
   tileOf(x: number, y: number, z: number): number { return (x >> 4) + (z >> 4) * this.tx + (y >> 4) * this.tx * this.tz }
   tileOfPose(p: number): number { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.tileOf(r - z * this.sx, y, z) }
@@ -204,9 +204,11 @@ export class NavigationSystem {
   prebuild(cap: number, anchors: readonly number[]): number {
     let used = 0
     const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
-    // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built.
+    // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built; a store too
+    // full to take them drops them instead (a reader still building one keeps its own).
+    if (this.full) this.building.clear()
     for (const index of this.building.keys()) {
-      if (used >= cap || this.full) break
+      if (used >= cap) break
       const { region, used: spent } = this.regionNow(index, cap - used)
       used += spent
       if (!region) break
@@ -262,7 +264,7 @@ export class NavigationSystem {
    */
   prebuildStatus(): { built: number; ground: number; queued: number; bytes: number; capBytes: number; landmarks: boolean; done: boolean } {
     const ground = this.revisions.length, built = this.regions.built, landmarks = this.landmarks.current() !== null
-    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, landmarks, done: built === ground && landmarks || this.full }
+    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, landmarks, done: built === ground && this.landmarks.settled() || this.full }
   }
   /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
   route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {

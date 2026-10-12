@@ -2,7 +2,7 @@ import type { Layout } from '../../world/layout.ts'
 import type { NavigationSystem, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { SOURCES, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
-import { RegionReader } from './routeSearch.ts'
+import { RegionReader, type RelaxedRecords } from './routeSearch.ts'
 import { NO_COST, type LandmarkTables } from './landmarks.ts'
 
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
@@ -55,9 +55,10 @@ export function startClusters(starts: readonly number[], layout: Layout, reach =
  * the expanded region. With landmark tables (ALT) the heuristic is also the bound they give from the starts' cheapest
  * cost to a landmark, less the exit's own cost to it.
  *
- * `exhaust`: no starts, and the search runs until nothing is left to expand (the landmark tables are made this way).
+ * `exhaust`: no starts, and the search runs until nothing is left to expand; `relaxed` reads the relaxed graph (poses on
+ * falling blocks standable). The landmark tables are made this way.
  */
-export interface GroupOptions { landmarks?: LandmarkTables | null; exhaust?: boolean }
+export interface GroupOptions { landmarks?: LandmarkTables | null; exhaust?: boolean; relaxed?: RelaxedRecords }
 export class GroupField {
   private readonly nav: NavigationSystem
   private readonly reader: RegionReader
@@ -96,7 +97,7 @@ export class GroupField {
   private source = 0
   private debt = 0
   constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = GROUP_WEIGHT, options?: GroupOptions) {
-    this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
+    this.nav = nav; this.reader = new RegionReader(nav, store, options?.relaxed); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     this.exhaust = options?.exhaust ?? false
     this.alt = starts.length ? options?.landmarks === undefined ? nav.landmarks.current() : options.landmarks : null
     const L = nav.port.layout

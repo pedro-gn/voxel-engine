@@ -39,6 +39,11 @@ export interface Region {
   overflow: boolean
   /** Bit k set when tile SOURCES[k] may hold poses that step into this region (conservative, from this region's poses). */
   sources: number
+  /**
+   * `relaxed`: built with poses on falling blocks standable (for landmark tables only). `relaxes`: a relaxed build of
+   * this tile would differ, because a pose of it or a crossing target beyond it stands on a falling block.
+   */
+  relaxed: boolean; relaxes: boolean
   bytes: number
 }
 /** Fixed per-record overhead counted in `bytes`; tiles with no pose share every array and cost only this. */
@@ -108,8 +113,10 @@ export class RegionBuild {
   private field = 0
   private expanding = -1
   private edge = 0
-  constructor(nav: NavigationSystem, index: number) {
-    this.nav = nav; this.index = index
+  readonly relaxed: boolean
+  private relaxes = false
+  constructor(nav: NavigationSystem, index: number, relaxed = false) {
+    this.nav = nav; this.index = index; this.relaxed = relaxed
     const tx = nav.port.layout.size[0] >> 4, tz = nav.port.layout.size[2] >> 4
     this.origin = [(index % tx) << 4, Math.floor(index / (tx * tz)) << 4, (Math.floor(index / tx) % tz) << 4]
     this.restart()
@@ -118,7 +125,7 @@ export class RegionBuild {
   private charge(steps: number): void { this.debt += steps; if (this.phase !== 'done') this.counts[this.phase] += steps }
   private restart(): void {
     this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0; this.done = false; this.built = null
-    this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0
+    this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0; this.relaxes = false
     this.heap.clear(); this.field = 0; this.expanding = -1; this.edge = 0
     if (this.vacant()) { this.phase = 'done'; this.done = true; this.debt = 1; return }
     this.charge(256); this.slots = new Int16Array(4096).fill(-1)
@@ -151,7 +158,9 @@ export class RegionBuild {
       if (this.phase !== 'done') this.counts[this.phase]++
       if (this.phase === 'poses') {
         const c = this.cursor++, x = ox + (c & 15), z = oz + ((c >> 4) & 15), y = oy + (c >> 8)
-        if (this.nav.regionStand(x, y, z)) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
+        const stands = this.nav.stand(x, y, z), region = stands && (this.relaxed || this.nav.regionStand(x, y, z))
+        if (stands && !region) this.relaxes = true
+        if (region) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
         if (this.cursor === 4096) {
           const P = this.count
           this.poses = new Int32Array(P); this.next = new Int16Array(P * 4).fill(-1); this.degree = new Int32Array(P)
@@ -167,7 +176,7 @@ export class RegionBuild {
         // A neighbour the region layer does not stand on (sand) is no edge and no crossing.
         if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * 4 + d] = t; this.degree[t]!++ }; continue }
         const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
-        if (!this.nav.regionStand(tx, ty, tz)) continue
+        if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; continue }
         this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
       } else if (this.phase === 'exits') {
         const cr = this.crossings
@@ -254,13 +263,13 @@ export class RegionBuild {
     if (!this.done) throw new Error('region build is not done')
     if (this.built) return this.built
     const r: Region = this.count
-      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
-      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, bytes: 0 }
+      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
+      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
     r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
     return this.built = r
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.index); mix(this.epoch); mix(this.debt); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length); mix(this.sources)
+    mix(this.index); mix(this.epoch); mix(this.debt); mix(PHASES.indexOf(this.phase)); mix(this.cursor); mix(this.count); mix(this.crossings.length); mix(this.runs.length); mix(this.exits.length); mix(this.sources); mix(this.relaxed ? 1 : 0); mix(this.relaxes ? 1 : 0)
     mix(this.field); mix(this.expanding); mix(this.edge); this.heap.mixState(mix)
   }
 }

@@ -79,3 +79,22 @@ it('a solid edit retires the tables until the prebuild has recomputed them; a fa
   const start = layout.voxelIndex(20, 4, 20), goal = layout.voxelIndex(236, 4, 20), r = settle(new RouteSearch(nav, nav.regions, start, [goal]))
   expect(r.status).toBe('found'); expect(r.cost).toBeLessThanOrEqual(1.25 * flat(nav, start, goal).cost)
 })
+it('the tables stay a lower bound when sand gets wet and opens a way the regions did not have', { timeout: 120_000 }, () => {
+  // The wall at x = 128 has a doorway at z 16..24 whose floor is sand: no region pose stands there until it gets wet.
+  const layout = new Layout([256, 32, 256]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'sand', falls: true }, { name: 'wet_sand' }])
+  const STONE = registry.id('stone'), SAND = registry.id('sand'), WET = registry.id('wet_sand'), door = (z: number) => z >= 16 && z <= 24
+  let wet = false
+  const get = (x: number, y: number, z: number) => x === 128 && y === 3 && door(z) ? wet ? WET : SAND : y < 4 || x === 128 && z < 232 && y < 12 && !door(z) ? STONE : 0
+  const nav = new NavigationSystem({ layout, registry, get }, 1 << 20)
+  warm(nav)
+  const tables = nav.landmarks.current()
+  wet = true
+  for (let z = 16; z <= 24; z++) nav.invalidate(128, 3, z, false)
+  // A falls-only change keeps the tables: they were computed as if sand could be stood on.
+  expect(nav.landmarks.current()).toBe(tables)
+  while (!nav.prebuilt) nav.prebuild(8192, [])
+  for (const [ax, az, bx, bz] of [[20, 20, 236, 20], [100, 20, 156, 20], [120, 100, 140, 100], [64, 10, 200, 30]] as const) {
+    const a = layout.voxelIndex(ax, 4, az), b = layout.voxelIndex(bx, 4, bz), e = flat(nav, a, b), r = settle(new RouteSearch(nav, nav.regions, a, [b]))
+    expect(r.cost, `${ax},${az} -> ${bx},${bz}`).toBeLessThanOrEqual(1.25 * e.cost)
+  }
+})

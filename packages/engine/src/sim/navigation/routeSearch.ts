@@ -22,6 +22,11 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
 }
 
 /**
+ * Relaxed reading for landmark tables: a tile whose current record would not change with poses on falling blocks
+ * standable is read from the store; any other gets a relaxed record, built into `records` (one landmark job's own).
+ */
+export interface RelaxedRecords { records: Map<number, Region>; building: Map<number, RegionBuild> }
+/**
  * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision, and
  * a region whose tile changed after it was first read (or pinned) goes into `changed`; the search keeps using the
  * record it read, by reference, and decides at the end which changes matter (see each search's validation).
@@ -35,7 +40,8 @@ export class RegionReader {
   /** Tiles that changed after this reader first read or pinned them. */
   readonly changed = new Set<number>()
   job: RegionBuild | null = null
-  constructor(nav: NavigationSystem, store: RegionStore) { this.nav = nav; this.store = store }
+  readonly relaxed?: RelaxedRecords
+  constructor(nav: NavigationSystem, store: RegionStore, relaxed?: RelaxedRecords) { this.nav = nav; this.store = store; this.relaxed = relaxed }
   /** Records a tile's revision before anything is read from it, so an edit there before it is read counts as a change. */
   pin(index: number): void { if (!this.seen.has(index)) this.seen.set(index, this.nav.revisions[index]!) }
   /** Whether a tile this reader saw changed since: recorded on a later read, or found now. */
@@ -47,10 +53,14 @@ export class RegionReader {
     const known = this.regions.get(index)
     if (known) { if (known.epoch !== this.nav.revisions[index]) this.changed.add(index); return known }
     if (this.job?.index === index) return undefined
-    const r = this.store.get(index)
-    if (r) return this.adopt(r)
-    let job = this.nav.building.get(index)
-    if (!job) { job = new RegionBuild(this.nav, index); this.nav.building.set(index, job) }
+    const r = this.store.get(index), x = this.relaxed
+    if (r && (!x || !r.relaxes)) return this.adopt(r)
+    // A relaxed record stays good through falls-only changes: it never read whether a block falls.
+    const rr = x?.records.get(index)
+    if (rr) return this.adopt(rr)
+    const building = x ? x.building : this.nav.building
+    let job = building.get(index)
+    if (!job) { job = new RegionBuild(this.nav, index, x !== undefined); building.set(index, job) }
     this.job = job
     return undefined
   }
@@ -63,9 +73,12 @@ export class RegionReader {
   build(cap: number): number {
     const job = this.job!, used = job.step(cap)
     if (job.done) {
-      const r = job.result()
-      if (this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
-      if (this.store.get(r.index) !== r) this.store.put(r)
+      const r = job.result(), x = this.relaxed
+      if (x) { x.building.delete(job.index); x.records.set(r.index, r) }
+      else {
+        if (this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
+        if (this.store.get(r.index) !== r) this.store.put(r)
+      }
       this.adopt(r); this.drop()
     }
     return used

@@ -266,3 +266,14 @@ it('a search that exhausts only because blocked poses (bodies) shut it in proves
   expect(s.status).toBe('limited')
   expect(s.restricted).toBe(true); expect(nav.request(start, [goal]).restricted).toBe(false)
 })
+it('a store too full to take more drops the half-built regions instead of keeping them in the hash forever', () => {
+  const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 }, 16384, 512, 40_000)
+  for (let i = 0; i < 200 && !nav.prebuildStatus().done; i++) nav.prebuild(4096, [])
+  expect(nav.prebuildStatus().built).toBeLessThan(nav.prebuildStatus().ground)
+  // A refinement build left after one slice on a tile the store never took.
+  const t = [...Array(nav.revisions.length).keys()].find(i => !nav.regions.get(i))!
+  expect(nav.regionNow(t, 4).region).toBeUndefined(); expect(nav.building.size).toBe(1)
+  nav.prebuild(4096, [])
+  expect(nav.building.size).toBe(0)
+})
