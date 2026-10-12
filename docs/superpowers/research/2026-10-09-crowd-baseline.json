@@ -1,0 +1,1345 @@
+{
+  "note": "Sub-project 5b crowd baseline, taken 2026-10-12 on a quiet machine (18 GB free, CPU ~9%) at pre-5b code (detached e5eff43: main d63ffe1 + the crowd bench). Worker options as on main: searchCap 8192 (WORKER_OPTIONS). Two passes of each phase, one phase per process (--phase=name), 1,000 units, 4,400 ticks per phase. No unit ever started walking in the move phases (every long flat search ends search-limited), so the phase length did not matter; round 2 runs phases of 6,600 ticks. summary is the worse of the two passes per metric (higher for times, lower for counts and percentages). opCost and buildCost are the quiet probes of the same day: opcost at pre-5b code (old, 0ec6cbe) and at integration 3671bc5 (new); buildcost at 3671bc5. firstP95 \"null\" means the 95th percentile fell on a unit that never started.",
+  "date": "2026-10-12",
+  "node": "v24.5.0",
+  "code": {
+    "baseline": "e5eff43 (pre-5b)",
+    "opCostOld": "0ec6cbe (pre-5b)",
+    "opCostNew": "3671bc5",
+    "buildCost": "3671bc5"
+  },
+  "units": 1000,
+  "ticksPerPhase": 4400,
+  "searchCap": 8192,
+  "summary": [
+    {
+      "phase": "mass",
+      "tickP95": 7.319,
+      "tickMax": 36.824,
+      "wP95": 2.905,
+      "wMax": 29.617,
+      "started": 0,
+      "ordered": 1000,
+      "firstP95": "null",
+      "arrivedPct": 0,
+      "withinIdeal": 0,
+      "allAfter": null,
+      "falseUnreach": 0,
+      "traffic": 0,
+      "blocks": "[{\"search-limited\":456},{\"search-limited\":456}]",
+      "visitedMax": 8192,
+      "navMB": 9.1,
+      "regionsEnd": 0,
+      "idealP95": 5126
+    },
+    {
+      "phase": "scatter",
+      "tickP95": 7.296,
+      "tickMax": 35.339,
+      "wP95": 2.942,
+      "wMax": 22.61,
+      "started": 0,
+      "ordered": 1000,
+      "firstP95": "null",
+      "arrivedPct": 0,
+      "withinIdeal": 0,
+      "allAfter": null,
+      "falseUnreach": 0,
+      "traffic": 0,
+      "blocks": "[{\"search-limited\":464},{\"search-limited\":464}]",
+      "visitedMax": 8192,
+      "navMB": 11.9,
+      "regionsEnd": 0,
+      "idealP95": 5030
+    },
+    {
+      "phase": "bottleneck",
+      "tickP95": 7.206,
+      "tickMax": 24.353,
+      "wP95": 2.851,
+      "wMax": 18.554,
+      "started": 0,
+      "ordered": 1000,
+      "firstP95": "null",
+      "arrivedPct": 0,
+      "withinIdeal": 0,
+      "allAfter": null,
+      "falseUnreach": 0,
+      "traffic": 0,
+      "blocks": "[{\"search-limited\":456},{\"search-limited\":456}]",
+      "visitedMax": 8192,
+      "navMB": 9.1,
+      "regionsEnd": 0,
+      "idealP95": 5193
+    },
+    {
+      "phase": "work",
+      "tickP95": 9.868,
+      "tickMax": 23.19,
+      "wP95": 5.278,
+      "wMax": 14.771,
+      "started": null,
+      "ordered": null,
+      "firstP95": null,
+      "arrivedPct": null,
+      "withinIdeal": null,
+      "allAfter": null,
+      "falseUnreach": null,
+      "traffic": 0,
+      "blocks": "[{},{}]",
+      "visitedMax": 8192,
+      "navMB": 9.1,
+      "regionsEnd": 0,
+      "idealP95": null,
+      "workDone": 177,
+      "workTotal": 1472,
+      "workAllDoneAfter": null
+    },
+    {
+      "phase": "churn",
+      "tickP95": 7.283,
+      "tickMax": 36.184,
+      "wP95": 2.954,
+      "wMax": 25.599,
+      "started": 0,
+      "ordered": 1000,
+      "firstP95": "null",
+      "arrivedPct": 0,
+      "withinIdeal": 0,
+      "allAfter": null,
+      "falseUnreach": 0,
+      "traffic": 0,
+      "blocks": "[{\"search-limited\":464},{\"search-limited\":464}]",
+      "visitedMax": 8192,
+      "navMB": 12.1,
+      "regionsEnd": 0,
+      "idealP95": 5018
+    }
+  ],
+  "passes": [
+    {
+      "mass": {
+        "generateMs": 4244,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.245,
+            "p95": 3.721,
+            "p99": 4.883,
+            "max": 5.45
+          },
+          "workersMs": {
+            "p50": 0.404,
+            "p95": 0.734,
+            "p99": 3.081,
+            "max": 3.327
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.167,
+            "p95": 7.319,
+            "p99": 9.643,
+            "max": 34.042
+          },
+          "workersMs": {
+            "p50": 2.357,
+            "p95": 2.905,
+            "p99": 5.262,
+            "max": 25.64
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 4798,
+              "p95": 5126,
+              "max": 5206,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 20,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 3188,
+                "p95": 4990,
+                "max": 4990
+              },
+              "detourTicks": {
+                "p50": 2185,
+                "max": 2185
+              },
+              "ms": 4286
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2613,
+                "p95": 2941,
+                "max": 3021
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 456
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 9510912,
+          "failedCommands": 0
+        }
+      },
+      "scatter": {
+        "generateMs": 4254,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.278,
+            "p95": 3.45,
+            "p99": 4.634,
+            "max": 5.328
+          },
+          "workersMs": {
+            "p50": 0.423,
+            "p95": 0.67,
+            "p99": 2.435,
+            "max": 3.321
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.2,
+            "p95": 7.296,
+            "p99": 9.52,
+            "max": 35.339
+          },
+          "workersMs": {
+            "p50": 2.362,
+            "p95": 2.942,
+            "p99": 5.183,
+            "max": 19.337
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 2955,
+              "p95": 5030,
+              "max": 5201,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 2966,
+                "p95": 5006,
+                "max": 5083
+              },
+              "detourTicks": {
+                "p50": 888,
+                "max": 2213
+              },
+              "ms": 5022
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2016,
+                "p95": 2918,
+                "max": 2989
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 464
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 12484608,
+          "failedCommands": 0
+        }
+      },
+      "bottleneck": {
+        "generateMs": 4225,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.218,
+            "p95": 3.432,
+            "p99": 5.065,
+            "max": 6.128
+          },
+          "workersMs": {
+            "p50": 0.399,
+            "p95": 0.626,
+            "p99": 2.178,
+            "max": 3.724
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.05,
+            "p95": 7.206,
+            "p99": 9.642,
+            "max": 24.353
+          },
+          "workersMs": {
+            "p50": 2.274,
+            "p95": 2.808,
+            "p99": 5.202,
+            "max": 18.554
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 5049,
+              "p95": 5193,
+              "max": 5257,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 4982,
+                "p95": 5164,
+                "max": 5174
+              },
+              "detourTicks": {
+                "p50": 2236,
+                "max": 2236
+              },
+              "ms": 13068
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2821,
+                "p95": 2965,
+                "max": 3021
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 456
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 9510912,
+          "failedCommands": 0
+        }
+      },
+      "work": {
+        "generateMs": 4191,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.205,
+            "p95": 3.474,
+            "p99": 4.996,
+            "max": 5.85
+          },
+          "workersMs": {
+            "p50": 0.403,
+            "p95": 0.677,
+            "p99": 3.071,
+            "max": 3.428
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.593,
+            "p95": 8.284,
+            "p99": 10.146,
+            "max": 21.658
+          },
+          "workersMs": {
+            "p50": 2.827,
+            "p95": 4.694,
+            "p99": 6.135,
+            "max": 14.771
+          },
+          "work": {
+            "orders": 20,
+            "done": 177,
+            "total": 1472,
+            "allDoneAfterTicks": null
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 8192,
+          "navBytesMax": 9549824,
+          "failedCommands": 0
+        }
+      },
+      "churn": {
+        "generateMs": 4204,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.258,
+            "p95": 3.603,
+            "p99": 4.919,
+            "max": 5.408
+          },
+          "workersMs": {
+            "p50": 0.425,
+            "p95": 0.787,
+            "p99": 2.804,
+            "max": 3.152
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.096,
+            "p95": 7.283,
+            "p99": 9.621,
+            "max": 36.184
+          },
+          "workersMs": {
+            "p50": 2.341,
+            "p95": 2.954,
+            "p99": 5.236,
+            "max": 25.599
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 2983,
+              "p95": 5018,
+              "max": 5159,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 3024,
+                "p95": 4974,
+                "max": 5118
+              },
+              "detourTicks": {
+                "p50": 894,
+                "max": 2209
+              },
+              "ms": 5040
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2033,
+                "p95": 2910,
+                "max": 3008
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 464
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 12644352,
+          "failedCommands": 0,
+          "churnEdits": 0
+        }
+      }
+    },
+    {
+      "mass": {
+        "generateMs": 4231,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.232,
+            "p95": 3.737,
+            "p99": 5.161,
+            "max": 5.363
+          },
+          "workersMs": {
+            "p50": 0.405,
+            "p95": 0.723,
+            "p99": 1.585,
+            "max": 3.245
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.092,
+            "p95": 7.172,
+            "p99": 9.438,
+            "max": 36.824
+          },
+          "workersMs": {
+            "p50": 2.289,
+            "p95": 2.866,
+            "p99": 5.097,
+            "max": 29.617
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 4798,
+              "p95": 5126,
+              "max": 5206,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 20,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 3188,
+                "p95": 4990,
+                "max": 4990
+              },
+              "detourTicks": {
+                "p50": 2185,
+                "max": 2185
+              },
+              "ms": 4137
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2613,
+                "p95": 2941,
+                "max": 3021
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 456
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 9510912,
+          "failedCommands": 0
+        }
+      },
+      "scatter": {
+        "generateMs": 4177,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.216,
+            "p95": 3.426,
+            "p99": 4.44,
+            "max": 5.359
+          },
+          "workersMs": {
+            "p50": 0.392,
+            "p95": 0.772,
+            "p99": 2.623,
+            "max": 3.252
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.106,
+            "p95": 7.246,
+            "p99": 9.506,
+            "max": 34.319
+          },
+          "workersMs": {
+            "p50": 2.359,
+            "p95": 2.913,
+            "p99": 5.237,
+            "max": 22.61
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 2955,
+              "p95": 5030,
+              "max": 5201,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 2966,
+                "p95": 5006,
+                "max": 5083
+              },
+              "detourTicks": {
+                "p50": 888,
+                "max": 2213
+              },
+              "ms": 5060
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2016,
+                "p95": 2918,
+                "max": 2989
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 464
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 12484608,
+          "failedCommands": 0
+        }
+      },
+      "bottleneck": {
+        "generateMs": 4216,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.241,
+            "p95": 3.526,
+            "p99": 5.112,
+            "max": 5.324
+          },
+          "workersMs": {
+            "p50": 0.395,
+            "p95": 0.661,
+            "p99": 1.653,
+            "max": 3.233
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.065,
+            "p95": 7.158,
+            "p99": 9.584,
+            "max": 23.498
+          },
+          "workersMs": {
+            "p50": 2.293,
+            "p95": 2.851,
+            "p99": 5.183,
+            "max": 16.41
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 5049,
+              "p95": 5193,
+              "max": 5257,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 4982,
+                "p95": 5164,
+                "max": 5174
+              },
+              "detourTicks": {
+                "p50": 2236,
+                "max": 2236
+              },
+              "ms": 13234
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2821,
+                "p95": 2965,
+                "max": 3021
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 456
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 9510912,
+          "failedCommands": 0
+        }
+      },
+      "work": {
+        "generateMs": 4217,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.208,
+            "p95": 3.49,
+            "p99": 4.992,
+            "max": 5.487
+          },
+          "workersMs": {
+            "p50": 0.396,
+            "p95": 0.619,
+            "p99": 2.434,
+            "max": 2.652
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.867,
+            "p95": 9.868,
+            "p99": 14.922,
+            "max": 23.19
+          },
+          "workersMs": {
+            "p50": 2.939,
+            "p95": 5.278,
+            "p99": 7.303,
+            "max": 14.181
+          },
+          "work": {
+            "orders": 20,
+            "done": 177,
+            "total": 1472,
+            "allDoneAfterTicks": null
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 8192,
+          "navBytesMax": 9549824,
+          "failedCommands": 0
+        }
+      },
+      "churn": {
+        "generateMs": 4195,
+        "setup": {
+          "spawnFailed": 0,
+          "tickMs": {
+            "p50": 2.252,
+            "p95": 3.639,
+            "p99": 4.815,
+            "max": 5.306
+          },
+          "workersMs": {
+            "p50": 0.395,
+            "p95": 0.713,
+            "p99": 2.602,
+            "max": 3.082
+          },
+          "trafficBlocks": 0,
+          "blocks": {},
+          "visitedMax": 0,
+          "navBytesMax": 131072,
+          "failedCommands": 0
+        },
+        "result": {
+          "units": 1000,
+          "spawnFailed": 0,
+          "regionsAtOrder": 0,
+          "regionBytesAtOrder": 0,
+          "regionsAtEnd": 0,
+          "regionBytesAtEnd": 0,
+          "tickMs": {
+            "p50": 6.174,
+            "p95": 7.264,
+            "p99": 9.582,
+            "max": 35.953
+          },
+          "workersMs": {
+            "p50": 2.348,
+            "p95": 2.897,
+            "p99": 5.185,
+            "max": 24.927
+          },
+          "firstActionTicks": {
+            "p50": null,
+            "p95": null,
+            "started": 0,
+            "ordered": 1000
+          },
+          "arrived": {
+            "pct": 0,
+            "p50Ticks": null,
+            "p95Ticks": null,
+            "allAfterTicks": null,
+            "idealTicks": {
+              "p50": 2983,
+              "p95": 5018,
+              "max": 5159,
+              "units": 1000
+            },
+            "lateTicks": {
+              "p50": null,
+              "p95": null
+            },
+            "withinIdealPlusGrace": {
+              "graceTicks": 1200,
+              "pct": 0
+            },
+            "exactSamples": {
+              "found": 40,
+              "unreachable": 0,
+              "unreachableIds": [],
+              "costTicks": {
+                "p50": 3024,
+                "p95": 4974,
+                "max": 5118
+              },
+              "detourTicks": {
+                "p50": 894,
+                "max": 2209
+              },
+              "ms": 5073
+            },
+            "straightLine": {
+              "idealTicks": {
+                "p50": 2033,
+                "p95": 2910,
+                "max": 3008
+              },
+              "lateTicks": {
+                "p50": null,
+                "p95": null
+              },
+              "withinPlusGracePct": 0
+            }
+          },
+          "falseUnreachable": {
+            "suspects": 0,
+            "endedNoAccess": 0,
+            "checked": 0,
+            "count": 0,
+            "ids": [],
+            "endedNoAccessFound": 0,
+            "ms": 0
+          },
+          "trafficBlocks": 0,
+          "blocks": {
+            "search-limited": 464
+          },
+          "visitedMax": 8192,
+          "navBytesMax": 12644352,
+          "failedCommands": 0,
+          "churnEdits": 0
+        }
+      }
+    }
+  ],
+  "opCost": {
+    "old": [
+      {
+        "label": "long, cold edge cache",
+        "cacheTiles": 512,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 340.3,
+        "nsPerOp": 268.5,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 252889,
+        "opsPerExpansion": 5.01
+      },
+      {
+        "label": "long, same system again",
+        "cacheTiles": 512,
+        "tilesHeld": 512,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 350.6,
+        "nsPerOp": 276.6,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 252889,
+        "opsPerExpansion": 5.01
+      },
+      {
+        "label": "long, cold edge cache",
+        "cacheTiles": 65536,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 333.6,
+        "nsPerOp": 263.1,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 252889,
+        "opsPerExpansion": 5.01
+      },
+      {
+        "label": "long, same system again",
+        "cacheTiles": 65536,
+        "tilesHeld": 1310,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 267.4,
+        "nsPerOp": 210.9,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 252889,
+        "opsPerExpansion": 5.01
+      },
+      {
+        "label": "long, workers node limit",
+        "found": 0,
+        "visited": 78790,
+        "ms": 19.4,
+        "nsPerOp": 246,
+        "nodes": 16384,
+        "opsPerNode": 4.81,
+        "expansions": 15758,
+        "opsPerExpansion": 5
+      },
+      {
+        "label": "short 10-30 blocks, warm",
+        "searches": 200,
+        "found": 200,
+        "visited": 34947,
+        "ms": 5.1,
+        "nsPerOp": 146.7,
+        "nodes": 15637,
+        "opsPerNode": 2.23,
+        "expansions": 5141,
+        "opsPerExpansion": 6.8
+      }
+    ],
+    "new": [
+      {
+        "label": "long, cold edge cache",
+        "cacheTiles": 512,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 199.7,
+        "nsPerOp": 157.6,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 0,
+        "opsPerExpansion": null
+      },
+      {
+        "label": "long, same system again",
+        "cacheTiles": 512,
+        "tilesHeld": 512,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 202.3,
+        "nsPerOp": 159.6,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 0,
+        "opsPerExpansion": null
+      },
+      {
+        "label": "long, cold edge cache",
+        "cacheTiles": 65536,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 203.4,
+        "nsPerOp": 160.4,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 0,
+        "opsPerExpansion": null
+      },
+      {
+        "label": "long, same system again",
+        "cacheTiles": 65536,
+        "tilesHeld": 1310,
+        "found": 1,
+        "visited": 1267617,
+        "ms": 134.9,
+        "nsPerOp": 106.4,
+        "nodes": 254839,
+        "opsPerNode": 4.97,
+        "expansions": 0,
+        "opsPerExpansion": null
+      },
+      {
+        "label": "long, workers node limit",
+        "found": 0,
+        "visited": 78790,
+        "ms": 10.9,
+        "nsPerOp": 138.4,
+        "nodes": 16384,
+        "opsPerNode": 4.81,
+        "expansions": 0,
+        "opsPerExpansion": null
+      },
+      {
+        "label": "short 10-30 blocks, warm",
+        "searches": 200,
+        "found": 200,
+        "visited": 34947,
+        "ms": 3.4,
+        "nsPerOp": 96.4,
+        "nodes": 15637,
+        "opsPerNode": 2.23,
+        "expansions": 0,
+        "opsPerExpansion": null
+      }
+    ]
+  },
+  "buildCost": [
+    {
+      "regions": 867,
+      "empty": 493,
+      "meanExits": 4.1,
+      "buildWeight": 4,
+      "charged": 1979944,
+      "steps": {
+        "poses": 3849401,
+        "edges": 442372,
+        "exits": 97387,
+        "reverse": 77084,
+        "fields": 3452761
+      },
+      "ms": {
+        "poses": 200,
+        "edges": 42,
+        "exits": 8,
+        "reverse": 4.2,
+        "fields": 129
+      },
+      "nsPerStep": {
+        "poses": 51.9,
+        "edges": 94.9,
+        "exits": 82.6,
+        "reverse": 54.1,
+        "fields": 37.4
+      },
+      "nsPerStepAll": 48.4,
+      "nsPerChargedOp": 193.5
+    },
+    {
+      "regions": 867,
+      "empty": 493,
+      "meanExits": 4.1,
+      "buildWeight": 4,
+      "charged": 1979944,
+      "steps": {
+        "poses": 3849401,
+        "edges": 442372,
+        "exits": 97387,
+        "reverse": 77084,
+        "fields": 3452761
+      },
+      "ms": {
+        "poses": 192.4,
+        "edges": 37,
+        "exits": 5.5,
+        "reverse": 3.6,
+        "fields": 115.3
+      },
+      "nsPerStep": {
+        "poses": 50,
+        "edges": 83.5,
+        "exits": 56.4,
+        "reverse": 46.6,
+        "fields": 33.4
+      },
+      "nsPerStepAll": 44.7,
+      "nsPerChargedOp": 178.7
+    }
+  ]
+}
