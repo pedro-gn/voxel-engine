@@ -63,6 +63,14 @@ export class SpaceTimeSearch {
   private readonly lanes = new Map<number, number>()
   private parents: number[] = []
   private heap: number[] = []
+  /** Pure per pose for the search's life: coordinates, heuristic, body cells; and per step, with q: its cells and ticks. */
+  private readonly coordsOf = new Map<number, [number, number, number]>()
+  private readonly hOf = new Map<number, number>()
+  private readonly bodyOf = new Map<number, number[]>()
+  private readonly stepOf = new Map<number, { q: number; k: number; cells: number[] }>()
+  /** Live lookups (edges, policy) cached within one step() call only: they may change between ticks. */
+  private readonly near = new Map<number, number>()
+  private readonly open = new Map<number, boolean>()
   private expanding = -1
   /** 0 is the wait, 1..4 the planar steps. */
   private action = 0
@@ -78,10 +86,34 @@ export class SpaceTimeSearch {
   }
   private h(p: number): number {
     if (!this.targets.length) return 0
-    const [x, , z] = this.port.coords(p), n = this.targets.length
-    let h = Infinity
+    let h = this.hOf.get(p)
+    if (h !== undefined) return h
+    const [x, , z] = this.coords(p), n = this.targets.length
+    h = Infinity
     for (let i = 0; i < n; i++) { const c = this.targetCoords[i]!; h = Math.min(h, 4 * (Math.abs(x - c[0]) + Math.abs(z - c[2])) + 4 * (n - 1 - i)) }
+    this.hOf.set(p, h)
     return h
+  }
+  private coords(p: number): [number, number, number] {
+    let c = this.coordsOf.get(p)
+    if (!c) { c = this.port.coords(p); this.coordsOf.set(p, c) }
+    return c
+  }
+  private cellsOf(p: number): number[] {
+    let c = this.bodyOf.get(p)
+    if (!c) { c = this.port.cellsOf(p); this.bodyOf.set(p, c) }
+    return c
+  }
+  private neighbor(p: number, d: number): number {
+    const key = p * 4 + d
+    let q = this.near.get(key)
+    if (q === undefined) { q = this.port.neighbor(p, d); this.near.set(key, q) }
+    return q
+  }
+  private allowed(q: number): boolean {
+    let v = this.open.get(q)
+    if (v === undefined) { v = this.port.allowed(q); this.open.set(q, v) }
+    return v
   }
   private f(id: number): number { return this.gs[id]! + this.hs[id]! }
   /**
@@ -93,7 +125,7 @@ export class SpaceTimeSearch {
     if (this.right < 0) return 0
     let v = this.lanes.get(p)
     if (v === undefined) {
-      const q = this.port.neighbor(p, this.right), room = q >= 0 && this.port.allowed(q) ? LANE_COST : 0
+      const q = this.neighbor(p, this.right), room = q >= 0 && this.allowed(q) ? LANE_COST : 0
       v = room && !this.targetSet.has(p) && this.port.oncoming?.(p, HEADING[this.right]!) ? PASSAGE_COST : room
       this.lanes.set(p, v)
     }
@@ -139,12 +171,12 @@ export class SpaceTimeSearch {
    */
   private holdable(p: number): boolean {
     if (this.avoid?.(p)) return false
-    const cells = this.port.cellsOf(p)
+    const cells = this.cellsOf(p)
     for (let t = this.end + 1; t < this.table.now + 2 * this.table.window; t++) if (!this.table.free(this.owner, t, cells)) return false
     return true
   }
   private inBox(q: number): boolean {
-    const [x, y, z] = this.port.coords(q), [ox, oy, oz] = this.origin
+    const [x, y, z] = this.coords(q), [ox, oy, oz] = this.origin
     return Math.abs(x - ox) <= this.radius && Math.abs(z - oz) <= this.radius && Math.abs(y - oy) <= 4
   }
   private finish(id: number): void {
@@ -166,6 +198,7 @@ export class SpaceTimeSearch {
   /** Spends at most `cap` operations; returns how many it used. */
   step(cap: number): number {
     let used = 0
+    this.near.clear(); this.open.clear()
     while (used < cap && this.status === 'pending') {
       if (this.ops >= this.maxOps) { this.status = 'failed'; break }
       used++; this.ops++
@@ -182,13 +215,15 @@ export class SpaceTimeSearch {
       }
       const id = this.expanding, p = this.poses[id]!, t = this.ticks[id]!
       if (this.action === 0) {
-        if (this.table.free(this.owner, t + 1, this.port.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p))
+        if (this.table.free(this.owner, t + 1, this.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p))
       } else {
-        const q = this.port.neighbor(p, this.action - 1)
-        if (q >= 0 && this.inBox(q) && this.port.allowed(q) && !this.closed(q)) {
-          const k = this.port.ticksOf(p, q)
+        const d = this.action - 1, q = this.neighbor(p, d)
+        if (q >= 0 && this.inBox(q) && this.allowed(q) && !this.closed(q)) {
+          let s = this.stepOf.get(p * 4 + d)
+          if (!s || s.q !== q) { s = { q, k: this.port.ticksOf(p, q), cells: this.port.stepCells(p, q) }; this.stepOf.set(p * 4 + d, s) }
+          const k = s.k
           if (t + k <= this.end) {
-            const cells = this.port.stepCells(p, q)
+            const cells = s.cells
             let ok = true
             for (let i = 1; i <= k && ok; i++) ok = this.table.free(this.owner, t + i, cells)
             if (ok) this.add(q, t + k, id, this.gs[id]! + k * (1 + this.lane(q) + this.off(p)))
