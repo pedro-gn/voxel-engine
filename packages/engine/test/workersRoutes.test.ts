@@ -247,3 +247,21 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 240)).toBeLessThanOrEqual(4)
   })
 })
+describe('traffic blocks on group routes', { timeout: 60_000 }, () => {
+  it('a unit blocked on traffic keeps its group route and carries on from where it stands, without a route of its own', () => {
+    const sim = makeWide(256)
+    for (let i = 0; i < 8; i++) spawn(sim, [4 + (i % 4) * 2, 4, 100 + Math.floor(i / 4) * 2])
+    const nav = sim.workers!.nav, route = nav.route.bind(nav), routes = { n: 0 }
+    nav.route = (...args) => { routes.n++; return route(...args) }
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [240, 4, 102] })
+    const w = sim.workers! as unknown as { units: Map<number, { route: { search: unknown } | null; goal: number | null; x: number }>; block(u: unknown, reason: string): void }
+    const u = w.units.get(1)!
+    until(sim, () => (u.x >> 8) > 40, 1500)
+    const field = u.route!.search
+    expect(field).toBeInstanceOf(GroupField)
+    w.block(u, 'traffic')
+    expect(u.route?.search).toBe(field)
+    until(sim, () => [...w.units.values()].every(v => v.goal === null), 4000)
+    expect(routes.n).toBe(0)
+  })
+})

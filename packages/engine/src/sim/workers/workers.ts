@@ -566,7 +566,12 @@ export class WorkerSystem {
     u.search?.cancel(); u.search = null; u.path = []; u.cursor = 0; u.progress = 0; u.escape = []; u.repair = null; u.repairFrom = null
   }
   private block(u: Unit, reason: WorkBlockReason, tiles?: ReadonlyMap<number, number>): void {
+    // Traffic says nothing about the way: a moving unit keeps its settled route and carries on from where it stands when
+    // it retries, instead of planning a route of its own (a crowd of those queues behind one another's searches).
+    const keep = reason === 'traffic' && !u.task && u.route && u.route.search.status !== 'pending' ? u.route : null
+    if (keep) u.route = null
     this.resetRoute(u); u.stale = 0
+    if (keep) { u.route = keep; keep.last = -1; keep.target = null; keep.segs = []; keep.finished = false }
     u.reason = reason; u.retry = this.time + (reason === 'traffic' ? 20 : 40); u.revision = this.revision
     if (u.task) { if (u.task.order.id < 0) this.targets.delete(u.task.p); this.taskFailure(u.task, u, reason, tiles); u.task.claim = 0; u.task = null }
     // Only a move order waits in 'blocked'; a unit without one stays assignable.
