@@ -873,8 +873,9 @@ export class WorkerSystem {
       // Only bodies near the unit matter for a local detour; distant ones will have moved by the time it gets there.
       const blocked = new Set<number>()
       for (const other of this.units.values()) if (other !== u && Math.abs(other.x - u.x) <= 8 * 256 && Math.abs(other.z - u.z) <= 8 * 256 && Math.abs(other.y - u.y) <= 4 * 256) for (const p of other.cells) blocked.add(p)
-      // A detour in a two-wide passage keeps out of the oncoming lane, except to reach its goal there.
-      const d = this.heading(u), ends = new Set(goals), keep = d < 0 ? undefined : (p: number) => ends.has(p) || !this.oncomingLane(p, d)
+      // A detour in a two-wide passage keeps out of the oncoming lane, except to reach its goal there or to pass a body
+      // that is not on its way.
+      const d = this.heading(u), ends = new Set(goals), keep = d < 0 || other && !this.onItsWay(other) ? undefined : (p: number) => ends.has(p) || !this.oncomingLane(p, d)
       u.search?.cancel(); u.search = this.request(u, goals, blocked, undefined, keep); u.path = []; u.cursor = 0; u.wait = 0; u.reason = 'traffic'; u.state = 'planning'; this.dirty.add(u.id); return
     }
     // Sidestep attempts start from wait 0 (no nested yield) but failed ones still count toward the traffic block.
@@ -1524,10 +1525,15 @@ export class WorkerSystem {
     if (!dx && !dz) return -1
     return Math.abs(dx) >= Math.abs(dz) ? (dx > 0 ? 0 : 1) : dz > 0 ? 2 : 3
   }
-  /** Whether u walks behind o: o is ahead of u and on its way in the same direction (walking, or waiting to walk on). */
+  /** Whether o is on its way: walking, or waiting to walk on along a path it has (not blocked, not waiting on a search). */
+  private onItsWay(o: Unit): boolean { return o.state !== 'blocked' && !o.search && (o.motion !== null || o.path[o.cursor] !== undefined) }
+  /**
+   * Whether u walks behind o: o is ahead of u and on its way in the same direction. A still or blocked unit that keeps
+   * its goal shields no one: waiting behind it would be forever.
+   */
   private follows(u: Unit, o: Unit): boolean {
     const d = this.heading(u)
-    if (d < 0 || this.heading(o) !== d) return false
+    if (d < 0 || this.heading(o) !== d || !this.onItsWay(o)) return false
     const [dx, dz] = DIRS[d]!
     return (o.x - u.x) * dx + (o.z - u.z) * dz > 0
   }
@@ -1575,6 +1581,9 @@ export class WorkerSystem {
       const p = path[i]!, s = this.level(p, r)
       if (s < 0 || this.nav.tileOfPose(s) !== this.nav.tileOfPose(p) || !this.poseOk(u, L.voxelCoords(s)) || lane.length && this.nav.neighbor(lane.at(-1)!, d) !== s) break
       if (bodies && (this.poseHeld(s, u) || !walksWith(this.occupied.get(s)))) break
+      // A lane never runs through a body that is not on its way: the path passes it in the other lane.
+      const still = this.occupied.get(s), o = still === undefined || still === u.id ? undefined : this.units.get(still)
+      if (o && !this.onItsWay(o)) break
       lane.push(s)
     }
     return lane
@@ -1615,8 +1624,8 @@ export class WorkerSystem {
   /**
    * Keeps right in passages exactly two poses wide, before anyone meets there: every straight run of the path still to
    * walk that lies in the oncoming lane (see oncomingLane) moves to the right lane, if that lane runs more than LANE_MIN
-   * nodes (a pocket beside the path is no lane; it stays free as a refuge). Lanes are geometry, so bodies do not matter
-   * here and the result is the same whenever it runs; `laned` remembers how far the current path was looked at.
+   * nodes (a pocket beside the path is no lane; it stays free as a refuge). Lanes are geometry, except that one never
+   * runs through a body that is not on its way; `laned` remembers how far the current path was looked at.
    */
   private keepRight(u: Unit): void {
     const done = u.laned?.path === u.path ? u.laned.len - 1 : 0

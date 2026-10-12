@@ -1164,6 +1164,32 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...lanes]).toEqual([6])
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
   })
+  /** Unit 1 ordered out of a sealed corridor stays blocked where it stands, goal kept; unit 2 then walks up behind it. */
+  function behindBlocked(twoWide: boolean) {
+    const sim = make(ctx => {
+      const walls = twoWide ? [4, 7] : [4, 6], lanes = twoWide ? [5, 6] : [5]
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) for (const z of walls) ctx.set(x, y, z, 1)
+      for (let y = 4; y < 6; y++) for (const z of lanes) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    })
+    const z = twoWide ? 6 : 5
+    spawn(sim, [15, 4, z]); spawn(sim, [3, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [31, 4, z] })
+    for (let i = 0; i < 50; i++) sim.step()
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'blocked', reason: 'no-access' })
+    cmd(sim, { type: 'unitMove', ids: [2], pos: [28, 4, z] })
+    return { sim, two: sim.workers!.units.get(2)! }
+  }
+  it('a unit behind one that is blocked with its goal kept passes it through the other lane of a two-wide corridor', () => {
+    const { sim, two } = behindBlocked(true)
+    for (let i = 0; i < 3000 && two.goal !== null; i++) sim.step()
+    expect(two.goal).toBeNull()
+  })
+  it('a unit behind one that is blocked in a one-wide corridor gives up on traffic instead of waiting forever', () => {
+    const { sim, two } = behindBlocked(false)
+    let blocked = false
+    for (let i = 0; i < 3000 && !blocked; i++) { sim.step(); blocked = two.state === 'blocked' && two.reason === 'traffic' }
+    expect(blocked).toBe(true)
+  })
   it('a unit stuck in the middle of a climb does not search from mid-air, which would read as no access', () => {
     // The floor rises one block at x = 10; unit 1 climbs it, unit 2 stands far off.
     type U = { id: number; conflict: { t: number; owner: number } | null; motion: { flat: boolean } | null; stuck: number; best: number; reason?: string; state: string }
