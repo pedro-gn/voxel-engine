@@ -1,24 +1,29 @@
 import type { Layout } from '../../world/layout.ts'
 import { edgeCost } from './navigation.ts'
-import { UNREACHED, exitKey, slotOf, type Region } from './regions.ts'
+import { UNREACHED, exitKey, landing, slotOf, type Exit, type Region } from './regions.ts'
 
 /**
  * Walks down a region field from `from` to a pose of cost 0, taking at each pose the first direction whose step is
  * optimal and allowed. `field` is an exit index (that exit's field) or a field over the region's slots. One operation
  * per step and one per inspected edge, so at most 1 + 5 × maxSteps. `ok` is false when no allowed optimal step exists
  * before cost 0, or when `maxSteps` ran out first (`cut`): the path is then an optimal prefix to continue from.
+ * With `exit` (the exit whose field this is), optimal steps toward the exit's face go first, and the descent ends at
+ * the first crossing of the exit's run it reaches: units spread along the face keep their lanes through the portal.
  */
-export function descend(region: Region, field: Uint16Array | number, from: number, allowed: (p: number) => boolean, layout: Layout, maxSteps = 256): { path: number[]; ops: number; ok: boolean; cut: boolean } {
+export function descend(region: Region, field: Uint16Array | number, from: number, allowed: (p: number) => boolean, layout: Layout, maxSteps = 256, exit?: Exit): { path: number[]; ops: number; ok: boolean; cut: boolean } {
   const P = region.poses.length, base = typeof field === 'number' ? field * P : 0, values = typeof field === 'number' ? region.fields : field
   const path = [from]
   let slot = slotOf(region, from, layout), ops = 1
   if (slot < 0 || values[base + slot] === undefined) return { path, ops, ok: false, cut: false }
+  let face = 0
+  if (exit) { const [fx, , fz] = layout.voxelCoords(exit.from), [tx, , tz] = layout.voxelCoords(exit.to); face = tx > fx ? 0 : tx < fx ? 1 : tz > fz ? 2 : 3 }
   for (let steps = 0; values[base + slot]! > 0; steps++) {
+    if (exit) { ops++; if (landing(exit, region.poses[slot]!) >= 0) return { path, ops, ok: true, cut: false } }
     if (steps === maxSteps) return { path, ops, ok: false, cut: true }
     const here = values[base + slot]!, pose = region.poses[slot]!
     let moved = -1
-    for (let d = 0; d < 4 && moved < 0; d++) {
-      const t = region.next[slot * 4 + d]!
+    for (let k = 0; k < 4 && moved < 0; k++) {
+      const d = k === 0 ? face : k <= face ? k - 1 : k, t = region.next[slot * 4 + d]!
       ops++
       if (t >= 0 && values[base + t]! + edgeCost(layout, pose, region.poses[t]!) === here && allowed(region.poses[t]!)) moved = t
     }

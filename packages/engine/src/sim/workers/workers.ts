@@ -7,7 +7,7 @@ import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { RouteSearch } from '../navigation/routeSearch.ts'
 import { GroupField, startClusters } from '../navigation/groupField.ts'
-import { exitKey, reverseField, slotOf, splitKey, type Region } from '../navigation/regions.ts'
+import { exitKey, landing, reverseField, slotOf, splitKey, type Region } from '../navigation/regions.ts'
 import { descend, nextHop } from '../navigation/refine.ts'
 import { walkSweep } from './walkSweep.ts'
 import { ReservationTable } from './reservations.ts'
@@ -1231,10 +1231,11 @@ export class WorkerSystem {
     const steps = Math.min(SEGMENT_STEPS, Math.floor((this.searchCap - this.refineWork - 1) / 5))
     if (steps < 1) return false
     const target = { key: hop.e < 0 ? -1 : exitKey(index, hop.e), region: index, epoch: region.epoch, record: region }
-    const d = descend(region, hop.e < 0 ? goal! : hop.e, from, p => this.poseOk(u, L.voxelCoords(p)) && (this.occupied.get(p) ?? u.id) === u.id, L, steps)
+    const d = descend(region, hop.e < 0 ? goal! : hop.e, from, p => this.poseOk(u, L.voxelCoords(p)) && (this.occupied.get(p) ?? u.id) === u.id, L, steps, hop.e < 0 ? undefined : region.exits[hop.e])
     this.refineWork += d.ops
     if (d.ok || d.cut) { this.appendSegment(u, r, d.path, d.ok ? target : null); return d.ok }
-    const goals = hop.e >= 0 ? [region.exits[hop.e]!.from] : r.goals.filter(p => this.nav.tileOfPose(p) === index)
+    const crossings = hop.e >= 0 ? region.exits[hop.e]!.crossings : null
+    const goals = crossings ? Array.from({ length: crossings.length >> 1 }, (_, i) => crossings[2 * i]!) : r.goals.filter(p => this.nav.tileOfPose(p) === index)
     u.segment = this.nav.request(from, goals, undefined, { region: index }); r.target = target
     return false
   }
@@ -1247,8 +1248,9 @@ export class WorkerSystem {
     r.segs.push({ end: u.path.length - 1, region: index, epoch: target?.epoch ?? this.nav.revisions[index]! })
     if (!target) return
     if (target.key < 0) { r.finished = true; if (u.task && !this.claimWorkPose(u, r.last)) r.replan = true; return }
-    const exit = target.record.exits[splitKey(target.key)[1]]!
-    u.path.push(exit.to); r.last = exit.to; r.exits.push(target.key)
+    // The unit crosses at the crossing of the run its segment reached.
+    const exit = target.record.exits[splitKey(target.key)[1]]!, to = landing(exit, r.last)
+    u.path.push(to); r.last = to; r.exits.push(target.key)
     r.segs[r.segs.length - 1]!.end = u.path.length - 1
   }
   /** A motion that advanced or began this tick; a paused one waits in place like a unit without a motion. */

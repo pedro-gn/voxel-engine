@@ -43,3 +43,18 @@ it('descends a goal field to the goal and fails from a pose that cannot reach it
   expect(field[slotOf(r, far, layout)]).toBe(UNREACHED)
   expect(descend(r, field, far, () => true, layout).ok).toBe(false)
 })
+it('given its exit, a descent heads for the exit face first and crosses at the first crossing of the run it reaches', () => {
+  const { nav, layout } = fixture()
+  const r = build(nav, nav.tileOf(16, 4, 16))
+  // The run on the +z face (z = 31) for x = 24..31; its middle crossing is at x = 28.
+  const e = r.exits.findIndex(x => layout.voxelCoords(x.from)[2] === 31 && layout.voxelCoords(x.from)[0] >= 24), x = r.exits[e]!
+  expect(layout.voxelCoords(x.from)).toEqual([28, 4, 31])
+  // From (25, 4, 20) the unit walks +z to the face, crossing at x = 25, not across to x = 28.
+  const d = descend(r, e, layout.voxelIndex(25, 4, 20), () => true, layout, 256, x)
+  expect(d.ok).toBe(true); expect(d.path.at(-1)).toBe(layout.voxelIndex(25, 4, 31)); expect(d.path).toHaveLength(12)
+  // From the side of the run (x = 20) it reaches the face, then walks along it to the run's first crossing (x = 24).
+  const side = descend(r, e, layout.voxelIndex(20, 4, 28), () => true, layout, 256, x)
+  expect(side.ok).toBe(true); expect(side.path.at(-1)).toBe(layout.voxelIndex(24, 4, 31))
+  // Without the exit it goes to the middle crossing, as before.
+  expect(descend(r, e, layout.voxelIndex(25, 4, 20), () => true, layout).path.at(-1)).toBe(x.from)
+})

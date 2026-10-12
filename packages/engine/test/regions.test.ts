@@ -121,8 +121,9 @@ it('the column index finds the same slot as a dense cell table, and empty tiles 
     const [ox, oy, oz] = [(index % 4) * 16, 0, (Math.floor(index / 4) % 4) * 16]
     for (let c = 0; c < 4096; c++) expect(slotOf(r, layout.voxelIndex(ox + (c & 15), oy + (c >> 8), oz + ((c >> 4) & 15)), layout)).toBe(dense[c])
     for (let c = 0; c < 256; c++) if (r.cols[c + 1]! - r.cols[c]! > 1) multi++
-    const old = 8192 + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32
-    expect(r.bytes).toBe(old - 8192 + 64 + 514 + 2 * r.poses.length)
+    // Each exit: 48 bytes plus its crossings, two Int32 per crossing.
+    const exits = r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0)
+    expect(r.bytes).toBe(r.poses.byteLength + r.next.byteLength + r.fields.byteLength + exits + 64 + 514 + 2 * r.poses.length)
   }
   expect(multi).toBeGreaterThan(0)
   const a = build(nav, nav.tileOf(16, 20, 16)), b = build(nav, nav.tileOf(32, 20, 32))
@@ -144,4 +145,17 @@ it('a tile inside a uniform chunk with no support below builds at once, and one 
   expect(low.r.poses.length).toBe(256); expect(low.r.exits).toEqual(build(plain, plain.tileOf(8, 32, 8)).exits)
   // Lower half above air (x >= 32 has no solid layer at 16..31): the dense chunk below is not uniform, so it builds.
   expect(charged(nav.tileOf(40, 32, 8)).r.poses.length).toBe(0)
+})
+it('an exit keeps its whole run of crossings, each with where it lands', () => {
+  const { nav, layout } = fixture()
+  const r = build(nav, nav.tileOf(16, 4, 16))
+  // The run on the +x face (x = 31) for z = 16..23.
+  const e = r.exits.findIndex(x => layout.voxelCoords(x.from)[0] === 31 && layout.voxelCoords(x.from)[2] < 24)
+  const x = r.exits[e]!
+  expect(x.crossings.length).toBe(16)
+  for (let i = 0; i < x.crossings.length; i += 2) {
+    const [fx, fy, fz] = layout.voxelCoords(x.crossings[i]!), [tx, ty, tz] = layout.voxelCoords(x.crossings[i + 1]!)
+    expect([fx, fy, tx, ty, tz]).toEqual([31, 4, 32, 4, fz])
+  }
+  expect(x.from).toBe(x.crossings[8]); expect(x.to).toBe(x.crossings[9])
 })

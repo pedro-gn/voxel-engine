@@ -12,8 +12,14 @@ export const UNREACHED = 0xffff
 export const BUILD_WEIGHT = 4
 /** Exits per region that fit in an exit key. */
 const MAX_EXITS = 4095, RUN = 8
-/** A run of crossings to one neighbour region, represented by its middle crossing: `from` in the region, `to` beyond it. */
-export interface Exit { from: number; to: number; cost: number; target: number }
+/**
+ * A run of crossings to one neighbour region (a portal), represented by its middle crossing: `from` in the region, `to`
+ * beyond it, at `cost`. `crossings` holds every crossing of the run as (from, to) pairs: a unit walking toward the
+ * middle crossing crosses at the first one it reaches, so a group keeps up to a run's width of lanes.
+ */
+export interface Exit { from: number; to: number; cost: number; target: number; crossings: Int32Array }
+/** Where crossing the exit from `from` (one of its crossings' `from` poses) lands, or -1. */
+export const landing = (exit: Exit, from: number): number => { const c = exit.crossings; for (let i = 0; i < c.length; i += 2) if (c[i] === from) return c[i + 1]!; return -1 }
 /** Geometry-only abstract record of one 16³ navigation tile. */
 export interface Region {
   index: number; epoch: number
@@ -222,8 +228,9 @@ export class RegionBuild {
     if (full >= 0) this.closeRun(full)
   }
   private closeRun(i: number): void {
-    const run = this.runs.splice(i, 1)[0]!, c = run[Math.floor(run.length / 2)]!
-    this.exits.push({ from: this.poses[c.slot]!, to: c.to, cost: c.cost, target: c.target })
+    const run = this.runs.splice(i, 1)[0]!, c = run[Math.floor(run.length / 2)]!, crossings = new Int32Array(run.length * 2)
+    run.forEach((x, k) => { crossings[2 * k] = this.poses[x.slot]!; crossings[2 * k + 1] = x.to })
+    this.exits.push({ from: this.poses[c.slot]!, to: c.to, cost: c.cost, target: c.target, crossings })
   }
   private seed(): void {
     if (this.field >= this.exits.length) return
@@ -249,7 +256,7 @@ export class RegionBuild {
     const r: Region = this.count
       ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, bytes: 0 }
       : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, bytes: 0 }
-    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.length * 32 : 0)
+    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
     return this.built = r
   }
   mixState(mix: (n: number) => void): void {
