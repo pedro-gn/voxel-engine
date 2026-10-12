@@ -6,7 +6,7 @@ import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { RouteSearch } from '../navigation/routeSearch.ts'
-import { GroupField } from '../navigation/groupField.ts'
+import { GroupField, startClusters } from '../navigation/groupField.ts'
 import { exitKey, reverseField, slotOf, splitKey, type Region } from '../navigation/regions.ts'
 import { descend, nextHop } from '../navigation/refine.ts'
 import { walkSweep } from './walkSweep.ts'
@@ -453,11 +453,12 @@ export class WorkerSystem {
       }
       if (destinations.length < units.length) throw new Error('not enough safe formation destinations')
       units.forEach((u, i) => { this.clearOrder(u); if (u.state !== 'incapacitated') { u.available = true; u.goal = destinations[i]!; u.allowDig = c.allowDig === true; u.buildBlock = c.buildBlock ?? 0; u.state = u.motion ? 'walking' : 'planning'; u.retry = 0; u.revision = -1 } })
-      // Units that would each plan a long route share one reverse field from all their destinations.
+      // Units that would each plan a long route share one reverse field from their destinations, one per cluster of starts.
       const members = units.filter(u => u.state !== 'incapacitated' && !u.motion && this.routable(u) && this.estimate(u, [u.goal!]) > HIER_MIN)
-      if (members.length > 1) {
-        const field = this.nav.group(members.map(u => u.goal!), members.map(u => this.position(u)))
-        for (const u of members) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
+      for (const cluster of startClusters(members.map(u => this.position(u)), this.port.layout)) {
+        if (cluster.length < 2) continue
+        const group = cluster.map(i => members[i]!), field = this.nav.group(group.map(u => u.goal!), group.map(u => this.position(u)))
+        for (const u of group) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
       }
     } else if (c.type === 'unitCancel') for (const u of units) { this.clearOrder(u); u.available = false }
     else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
@@ -1102,7 +1103,8 @@ export class WorkerSystem {
   private advanceRoute(u: Unit): boolean {
     const r = u.route!, s = r.search
     if (s.status === 'pending') return true
-    if (s.status !== 'found') {
+    // A group field cut by its node cap still serves: units it missed find no way on and plan their own route.
+    if (s.status !== 'found' && !(s instanceof GroupField && s.status === 'limited')) {
       // Read before dropRoute, which cancels the search: an unreachable route must block, not replan every tick.
       const status = s.status
       this.dropRoute(u); u.path = []; u.cursor = 0
