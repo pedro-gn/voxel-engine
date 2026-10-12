@@ -9,7 +9,7 @@ const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'lim
 type Phase = 'seed' | 'search' | 'validate'
 const PHASES: readonly Phase[] = ['seed', 'search', 'validate']
 /**
- * Once a start is covered, the search stops when the cheapest open cost passes FAR × the farthest covered start plus
+ * Once a start is covered, the search stops when every open way costs more than FAR × the farthest covered start plus
  * FAR_SLACK: a start nothing reaches would otherwise make it exhaust the world. Starts left open still read next().
  */
 const FAR = 1.5, FAR_SLACK = 512
@@ -251,7 +251,8 @@ export class GroupField {
       if (this.phase === 'seed') { this.seed(); continue }
       if (this.phase === 'validate') { this.validate(); continue }
       if (this.expanding >= 0) { this.expand(); continue }
-      if (!this.exhaust && this.covered === this.starts.length || !this.heap.size || this.covered && this.heap.peekF() > this.farthest * FAR + FAR_SLACK) { this.phase = 'validate'; continue }
+      // The heap orders by d + weight × h, at most weight × (d + h): past weight × the far bound, every open way costs more.
+      if (!this.exhaust && this.covered === this.starts.length || !this.heap.size || this.covered && this.heap.peekF() > this.weight * (this.farthest * FAR + FAR_SLACK)) { this.phase = 'validate'; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
       if (this.closed.has(key)) continue
       const [region, e] = splitKey(key), r = this.reader.regions.get(region)!, at = r.exits[e]!.from

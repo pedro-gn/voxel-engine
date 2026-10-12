@@ -97,7 +97,9 @@ it('a start nothing reaches does not make the field explore the whole world for 
   expect(g.status).toBe('found')
   for (const s of reachable) expect(g.next(s)).not.toBeNull()
   expect(g.next(sealed)).toBeNull()
-  expect(g.spent).toBeLessThan(alone.spent / 3)
+  // The far stop must let a weighted field reach starts up to FAR × the farthest covered one, so it explores past
+  // them by the weight; still well short of the whole world a field for the sealed start alone exhausts.
+  expect(g.spent).toBeLessThan(alone.spent * 0.75)
 })
 it('hundreds of starts on one pad cost little more than one: starts are covered by exits, not searched', () => {
   const { nav, layout } = fixture(256), goals = [layout.voxelIndex(230, 4, 128)]
@@ -149,4 +151,13 @@ it('cancel keeps a settled field and cancels only a pending one, leaving its bui
   p.step(50); expect(fresh.building.size).toBe(1)
   const job = [...fresh.building.values()][0]!
   p.cancel(); expect(p.status).toBe('cancelled'); expect(fresh.building.get(job.index)).toBe(job)
+})
+it('a weighted field covers starts on both sides of its goal: the far stop compares unweighted costs', () => {
+  // A 1024 × 64 strip; the goal in the middle, five starts 480 blocks west and five 480 blocks east.
+  const layout = new Layout([1024, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
+  const goal = layout.voxelIndex(512, 4, 32), starts = [...[30, 31, 32, 33, 34].map(z => layout.voxelIndex(32, 4, z)), ...[30, 31, 32, 33, 34].map(z => layout.voxelIndex(992, 4, z))]
+  const g = new GroupField(nav, nav.regions, [goal], starts, 1 << 20, 2)
+  settle(g)
+  for (const s of starts) expect(g.next(s), `start ${layout.voxelCoords(s)}`).not.toBeNull()
 })

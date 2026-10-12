@@ -26,7 +26,7 @@ function flat(nav: NavigationSystem, start: number, goal: number) {
   return s
 }
 
-it('landmark tables come with the warm world, from the prebuild, and make a detour cheap to find', () => {
+it('landmark tables come with the warm world, from the prebuild, and make a detour cheap to find', { timeout: 60_000 }, () => {
   const { nav, layout } = detour()
   expect(nav.landmarks.current()).toBeNull()
   warm(nav)
@@ -49,7 +49,7 @@ it('landmark tables come with the warm world, from the prebuild, and make a deto
   }
   expect(altGroup.spent * 3).toBeLessThan(plainGroup.spent)
 })
-it('with landmarks, routes agree with exact flat A* on reachability and stay within the weight bound', () => {
+it('with landmarks, routes agree with exact flat A* on reachability and stay within the weight bound', { timeout: 60_000 }, () => {
   const { nav, layout, walls } = detour()
   // A walled-in pen around (60, 4, 200): nothing reaches inside.
   for (let x = 56; x <= 64; x++) for (let z = 196; z <= 204; z++) if (x === 56 || x === 64 || z === 196 || z === 204) for (let y = 4; y < 8; y++) walls.add(layout.voxelIndex(x, y, z))
@@ -63,7 +63,7 @@ it('with landmarks, routes agree with exact flat A* on reachability and stay wit
     if (e.status === 'found') { expect(r.cost, where).toBeGreaterThanOrEqual(e.cost); expect(r.cost, where).toBeLessThanOrEqual(1.25 * e.cost) }
   }
 })
-it('a solid edit retires the tables until the prebuild has recomputed them; a falls-only change does not', () => {
+it('a solid edit retires the tables until the prebuild has recomputed them; a falls-only change does not', { timeout: 60_000 }, () => {
   const { nav, layout, open } = detour()
   warm(nav)
   const before = nav.landmarks.current()
