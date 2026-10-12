@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BoxGeometry, Group, InstancedMesh, Mesh, MeshStandardMaterial, PerspectiveCamera } from 'three/webgpu'
-import { WORKER_STATES, type Engine, type WorkerTick, type WorkerView } from '@elovox/engine'
+import { WORKER_STATES, type Engine, type WorkerBarrier, type WorkerTick, type WorkerView } from '@elovox/engine'
 import { Layout } from '@elovox/engine/src/world/layout.ts'
 import { createWorkersView } from '../src/workersView.ts'
+import { DELAY_MS } from '../src/poseTimeline.ts'
 
 vi.mock('three/addons/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
@@ -42,12 +43,14 @@ function unit(id: number, x = 100): WorkerView {
 describe('workers view input and proxy picking', () => {
   let view: Awaited<ReturnType<typeof createWorkersView>>, canvas: Element, panel: Element, engine: Engine
   let emit: (type: string, value: unknown) => void
+  let clock = 0, ticks = 0
   let submit: ReturnType<typeof vi.fn>
   beforeEach(async () => {
     const body = new Element()
     vi.stubGlobal('document', { head: new Element(), body, createElement: (tag: string) => new Element(tag) })
     vi.stubGlobal('window', new EventTarget())
-    vi.spyOn(performance, 'now').mockReturnValue(0)
+    clock = 0; ticks = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
     const listeners = new Map<string, Set<(value: any) => void>>()
     emit = (type, value) => { for (const fn of listeners.get(type) ?? []) fn(value) }
     const camera = new PerspectiveCamera(50, 800 / 600, .1, 1000)
@@ -55,7 +58,7 @@ describe('workers view input and proxy picking', () => {
     submit = vi.fn()
     engine = {
       scene: new Group(), camera, controls: { lastDragDistance: 50 }, submit,
-      blocks: { id: () => 1, name: () => 'planks' }, physics: { paused: false }, meshVersion: () => 0, layout: new Layout([128, 32, 128]),
+      blocks: { id: () => 1, name: () => 'planks' }, physics: { paused: false }, meshVersion: () => 0, meshFailed: () => false, layout: new Layout([128, 32, 128]),
       pickScreen: () => null,
       on(type: string, fn: (value: any) => void) { const set = listeners.get(type) ?? new Set(); set.add(fn); listeners.set(type, set); return () => set.delete(fn) },
     } as unknown as Engine
@@ -65,10 +68,14 @@ describe('workers view input and proxy picking', () => {
   })
   afterEach(() => { view?.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-  function publish(units: WorkerView[], barriers: { chunk: number; version: number }[] = [], now = 50) {
-    const tick = { barriers, details: units, poses: Int32Array.from(units.flatMap(u => [u.id, u.x256, u.y256, u.z256, u.facing, WORKER_STATES.indexOf(u.state), 0, 0, 0])) } as unknown as WorkerTick
-    emit('workers', tick); emit('frame', { dt: .05, now }); engine.scene.updateMatrixWorld(true)
+  /** One sim tick arrives on time (tick × 50 ms); with `draw`, a frame then shows it on sim time. */
+  function publish(units: WorkerView[], barriers: WorkerBarrier[] = [], draw = true) {
+    clock = ++ticks * 50
+    const tick = { tick: ticks, barriers, details: units, poses: Int32Array.from(units.flatMap(u => [u.id, u.x256, u.y256, u.z256, u.facing, WORKER_STATES.indexOf(u.state), 0, 0, 0])) } as unknown as WorkerTick
+    emit('workers', tick)
+    if (draw) frame(clock + DELAY_MS)
   }
+  function frame(now: number) { clock = now; emit('preFrame', { dt: .05, now }); engine.scene.updateMatrixWorld(true) }
   function click(button = 0) { pointer(canvas, 'pointerdown', button); pointer(canvas, 'pointerup', button) }
   function summary() { return panel.querySelector('.workers-status')!.textContent }
   function tool(label: string) { panel.querySelector('.workers-tools')!.children.find(b => b.textContent === label)!.dispatchEvent(new Event('click')) }
@@ -84,14 +91,38 @@ describe('workers view input and proxy picking', () => {
     expect(actions.children.map(b => b.textContent)).toContain('Selecionar todas')
     plain.dispose()
   })
-  it('holds only units near a pending mesh barrier and releases a barrier whose mesh never arrives', () => {
-    const near = unit(1, 1), far = unit(2, 80)
-    publish([near, far])
-    const chunk = engine.layout.chunkOf(1, 0, 0)
-    publish([{ ...near, x256: 2 * 256 }, { ...far, x256: 81 * 256 }], [{ chunk, version: 5 }], 100)
-    expect(skinX(1)).toBe(1); expect(skinX(2)).toBe(81)
-    publish([{ ...near, x256: 2 * 256 }, { ...far, x256: 81 * 256 }], [], 2000)
-    expect(skinX(1)).toBe(2)
+  const edit = (unit: number, pos: [number, number, number], chunk = 0, version = 5): WorkerBarrier => ({ unit, pos, chunks: [{ chunk, version }] })
+  const moved = (by: number, ...units: WorkerView[]) => units.map(u => ({ ...u, x256: u.x256 + by * 256 }))
+  it('holds only the editing unit and units next to the edit until its meshes arrive', () => {
+    const units = [unit(1, 5), unit(2, 11), unit(3, 14)]
+    publish(units)
+    let versions = 0; engine.meshVersion = () => versions
+    // Unit 1 dug at x 11: it waits wherever it is, unit 2 stands beside the edit, unit 3 is 3 blocks away.
+    publish(moved(1, ...units), [edit(1, [11, 0, 0])])
+    expect([skinX(1), skinX(2), skinX(3)]).toEqual([5, 11, 15])
+    versions = 5; frame(clock + 16)
+    expect([skinX(1), skinX(2), skinX(3)]).toEqual([6, 12, 15])
+  })
+  it('releases a barrier on a chunk that failed to mesh on the next frame', () => {
+    publish([unit(1, 5)])
+    publish([unit(1, 6)], [edit(1, [11, 0, 0], 3)])
+    expect(skinX(1)).toBe(5)
+    engine.meshFailed = (ci: number) => ci === 3
+    frame(clock + 16)
+    expect(skinX(1)).toBe(6)
+  })
+  it('stops holding for a mesh that never arrives after 250 ms', () => {
+    publish([unit(1, 5)])
+    publish([unit(1, 6)], [edit(1, [11, 0, 0])])
+    const since = ticks * 50
+    frame(since + 250); expect(skinX(1)).toBe(5)
+    frame(since + 260); expect(skinX(1)).toBe(6)
+  })
+  it('places units in preFrame, on sim time between the ticks around it', () => {
+    publish([unit(1, 0)])
+    publish([unit(1, 1)], [], false)
+    frame(clock + DELAY_MS - 25)   // halfway between the two ticks
+    expect(skinX(1)).toBeCloseTo(.5, 5)
   })
   it('does not select an incapacitated unit through its hidden body', () => {
     engine.controls.lastDragDistance = 0
@@ -105,7 +136,7 @@ describe('workers view input and proxy picking', () => {
     publish([{ ...unit(1, 1), z256: 256, facing: 1, state: 'idle' }])
     expect(skin.rotation.y).toBeGreaterThan(0)
     expect(skin.rotation.y).toBeLessThan(Math.PI / 4)
-    for (let i = 0; i < 20; i++) emit('frame', { dt: .05, now: 100 + i * 50 })
+    for (let i = 0; i < 20; i++) frame(clock + 50)
     expect(skin.rotation.y).toBeCloseTo(Math.PI / 4, 3)
     Object.assign(engine.physics, { paused: true }); const before = skin.rotation.y
     publish([{ ...unit(1, 2), z256: 0, facing: 3, state: 'walking' }])

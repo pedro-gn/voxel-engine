@@ -1,63 +1,136 @@
 import type { Layout } from '../../world/layout.ts'
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
+import { RegionBuild, RegionStore, type Region } from './regions.ts'
+import { RouteSearch, type RouteOptions } from './routeSearch.ts'
+import { GroupField } from './groupField.ts'
+import { Landmarks } from './landmarks.ts'
 
-export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean }
+/** `uniform`: the voxel filling the whole chunk at (x, y, z) when the chunk is uniform, so region builds skip tiles nothing stands in. */
+export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean; uniform?(x: number, y: number, z: number): number | undefined }
 export type PathStatus = 'pending' | 'found' | 'unreachable' | 'limited' | 'stale' | 'cancelled'
 export interface PathResult { status: PathStatus; path: number[]; cost: number }
-/** `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit goals). */
-export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean }
+/** A sliced query the navigation budget schedules: flat searches, route searches and group fields. */
+export interface NavQuery { status: PathStatus; spent: number; readonly estimate: number; readonly seen: Map<number, number>; step(cap: number): number; cancel(): void; mixState(mix: (n: number) => void): void; readonly bytes: number }
+/**
+ * `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit
+ * goals); `region` confines expansions to one tile, and a search that had to skip a pose outside it ends `limited`.
+ */
+export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean; region?: number }
 const DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1]
 const UNSET = -2
 /** First slice of a new search estimated short: such routes finish in it instead of queueing behind long searches. */
 const FRESH_SLICE = 512, SHORT_ESTIMATE = 32 * 4
+/** Long queries sliced together; the rest wait their turn. */
+const WINDOW = 8
+/** Prebuild rings: tiles within this many columns of an anchor, on its level and the levels above and below. */
+const RING = 2
+/** Prebuild stops while the region store is fuller than this share of its cap, so it never evicts what queries read. */
+const PREBUILD_FILL = 0.9
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
+/** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
+export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
 
 /** Lazy support graph. Geometry only: live occupancy, water and structural safety are checked by the executor. */
 export class NavigationSystem {
   readonly port: NavigationPort
   readonly revisions: Uint32Array
   revision = 0
+  /** Bumped by every change of solid geometry (not by the falls rule alone): landmark tables are valid for one count. */
+  geometry = 0
+  /**
+   * Tiles where the falls rule alone has changed (sand that got wet or dried, say), and a count bumped each time a tile
+   * joins them: landmark tables treat poses on falling blocks in and next to those tiles as standable.
+   */
+  readonly flippy: Uint8Array
+  flips = 0
   visited = 0
   private readonly tiles = new Map<number, Tile>()
   private readonly tx: number
   private readonly tz: number
-  private requests: PathSearch[] = []
+  private requests: NavQuery[] = []
+  /** Geometry-only region records shared by route and group queries. */
+  readonly regions: RegionStore
+  /** Region builds in progress by tile, shared by the queries that need them. */
+  readonly building = new Map<number, RegionBuild>()
+  /** Landmark tables (ALT heuristic) for route and group searches, computed by the prebuild. */
+  readonly landmarks = new Landmarks(this)
+  /**
+   * Background prebuild cursor: phase 0 walks rings around the anchors (ring, anchor, k), phase 1 every tile by index
+   * (tile); `built` counts tiles built this pass, and a pass that built none sets `prebuilt`.
+   */
+  private readonly pre = { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }
+  /** A whole prebuild pass found every tile current. */
+  prebuilt = false
+  /** Prebuild passes completed: after the first one every tile was built once (a warm world). Not simulation state. */
+  prebuildPasses = 0
   private cursor = 0
+  /** The tile the last edge read: the four edges of a pose skip the map. Always the map's entry for `lastTile`. */
+  private lastTile = -1
+  private last: Tile | null = null
   readonly maxNodes: number
   readonly cacheLimit: number
-  constructor(port: NavigationPort, maxNodes = 16384, cacheLimit = 512) {
+  /** World x size and x × z plane, to decode pose indices without allocating. */
+  readonly sx: number
+  readonly plane: number
+  /**
+   * Bumped by every step and every edit or policy change. Between bumps nothing the live policy reads can change, so a
+   * search may remember the poses it rejected for the rest of the pass.
+   */
+  pass = 0
+  constructor(port: NavigationPort, maxNodes = 16384, cacheLimit = 512, storeBytes = 64 * 1024 * 1024) {
     if (port.layout.voxelCount > 0x80000000) throw new RangeError('navigation needs voxel indices to fit positive int32')
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
+    this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
-    this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4))
+    this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
+    this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
   get cacheTiles(): number { return this.tiles.size }
   get bytes(): number {
-    let n = this.revisions.byteLength
+    let n = this.revisions.byteLength + this.regions.bytes
     for (const t of this.tiles.values()) n += t.slots.byteLength + t.edges.byteLength
     for (const s of this.requests) n += s.bytes
-    return n
+    return n + this.landmarks.bytes
   }
   tileOf(x: number, y: number, z: number): number { return (x >> 4) + (z >> 4) * this.tx + (y >> 4) * this.tx * this.tz }
-  invalidate(x: number, y: number, z: number): void { this.invalidateBox(x, y, z, x, y, z) }
+  tileOfPose(p: number): number { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.tileOf(r - z * this.sx, y, z) }
+  /**
+   * `solid`: whether solid geometry changed (that retires the landmark tables); `falls`: whether only the falls rule
+   * changed (sand that got wet or dried), which marks the tiles `flippy`. A change of neither (a structural role) does
+   * neither.
+   */
+  invalidate(x: number, y: number, z: number, solid = true, falls = !solid): void { this.invalidateBox(x, y, z, x, y, z, solid, falls) }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
-  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void {
+  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true, falls = !solid): void {
+    if (solid) this.geometry++
+    const flippy = this.flippy, plane = this.tx * this.tz
     const [sx, sy, sz] = this.port.layout.size
     for (let yy = Math.max(0, (y0 - 2) >> 4); yy <= Math.min((sy >> 4) - 1, (y1 + 3) >> 4); yy++)
       for (let zz = Math.max(0, (z0 - 1) >> 4); zz <= Math.min((sz >> 4) - 1, (z1 + 1) >> 4); zz++)
-        for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) this.revisions[xx + zz * this.tx + yy * this.tx * this.tz]!++
-    this.revision++
+        for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) {
+          const t = xx + zz * this.tx + yy * plane
+          this.revisions[t]!++
+          if (falls && !solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
+        }
+    this.revision++; this.pass++
   }
-  reset(): void { this.tiles.clear(); this.revisions.fill(0); this.revision++; for (const s of this.requests) s.cancel(); this.requests = [] }
-  /** Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that expanded next to it. */
+  reset(): void {
+    this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
+    Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset()
+  }
+  /**
+   * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
+   * expanded next to it. Route and group queries read geometry only, so policy never cancels them.
+   */
   invalidatePolicy(min?: readonly number[], max?: readonly number[]): void {
-    this.revision++
-    for (const s of this.requests) if (!min || !max || this.explored(s, min, max)) s.cancel()
+    this.revision++; this.pass++
+    for (const s of this.requests) if (s instanceof PathSearch && (!min || !max || this.explored(s, min, max))) s.cancel()
   }
   /** Whether a search expanded a pose with an edge that may reach a pose in the voxel box [min, max]. */
-  explored(s: PathSearch, min: readonly number[], max: readonly number[]): boolean {
+  explored(s: NavQuery, min: readonly number[], max: readonly number[]): boolean {
     const x0 = (min[0]! - 1) >> 4, x1 = (max[0]! + 1) >> 4, y0 = (min[1]! - 3) >> 4, y1 = (max[1]! + 2) >> 4, z0 = (min[2]! - 1) >> 4, z1 = (max[2]! + 1) >> 4
     for (const ti of s.seen.keys()) {
       const x = ti % this.tx, z = Math.floor(ti / this.tx) % this.tz, y = Math.floor(ti / (this.tx * this.tz))
@@ -71,15 +144,33 @@ export class NavigationSystem {
   stand(x: number, y: number, z: number): boolean {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
-  allowed(p: number): boolean { const c = this.port.layout.voxelCoords(p); return (this.port.safe?.(...c) ?? true) && !(this.port.hazard?.(...c) ?? false) }
+  /**
+   * A pose of the region layer: it stands, and not on a block that falls. The live policy always rejects poses on
+   * falling blocks, so the region layer drops them as geometry; flat searches still stand there (to search out of sand).
+   */
+  regionStand(x: number, y: number, z: number): boolean {
+    return this.stand(x, y, z) && (y === 0 || this.port.registry.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+  }
+  allowed(p: number): boolean {
+    const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0, x = r - z * this.sx
+    return (this.port.safe?.(x, y, z) ?? true) && !(this.port.hazard?.(x, y, z) ?? false)
+  }
+  /** Records tile `ti` in a search's `seen` with the revision it was first read at. */
+  see(seen: Map<number, number>, ti: number): void { if (!seen.has(ti)) seen.set(ti, this.revisions[ti]!) }
   neighbor(p: number, d: number, seen?: Map<number, number>): number {
-    const L = this.port.layout, [x, y, z] = L.voxelCoords(p), ti = this.tileOf(x, y, z)
-    seen?.set(ti, seen.get(ti) ?? this.revisions[ti]!)
-    let tile = this.tiles.get(ti)
+    const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0, x = r - z * this.sx, ti = this.tileOf(x, y, z)
+    if (seen) this.see(seen, ti)
+    return this.edge(x, y, z, ti, d)
+  }
+  /** The support edge `d` of pose (x, y, z) in tile `ti`, or -1. */
+  edge(x: number, y: number, z: number, ti: number, d: number): number {
+    const L = this.port.layout
+    let tile = ti === this.lastTile ? this.last : this.tiles.get(ti)
     if (!tile || tile.epoch !== this.revisions[ti]) {
       if (!tile && this.tiles.size >= this.cacheLimit) this.tiles.delete(this.tiles.keys().next().value!)
       tile = { epoch: this.revisions[ti]!, slots: new Int16Array(4096).fill(-1), edges: new Int32Array(1024).fill(UNSET), used: 0 }; this.tiles.set(ti, tile)
     }
+    this.lastTile = ti; this.last = tile
     const local = (x & 15) + ((z & 15) << 4) + ((y & 15) << 8)
     let slot = tile.slots[local]!
     if (slot < 0) {
@@ -101,8 +192,105 @@ export class NavigationSystem {
   request(start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions): PathSearch {
     const s = new PathSearch(this, start, goals, blocked, options); this.requests.push(s); return s
   }
+  /**
+   * The current record of a tile, from the store or by stepping its build (shared with the queries building it) with
+   * at most `cap` operations; `region` is undefined while the build still runs.
+   */
+  regionNow(index: number, cap: number): { region: Region | undefined; used: number } {
+    const known = this.regions.get(index)
+    if (known || cap <= 0) return { region: known, used: 0 }
+    let job = this.building.get(index)
+    if (!job) { job = new RegionBuild(this, index); this.building.set(index, job) }
+    const used = job.step(cap)
+    if (!job.done) return { region: undefined, used }
+    const r = job.result()
+    if (this.building.get(index) === job) this.building.delete(index)
+    if (this.regions.get(index) !== r) this.regions.put(r)
+    return { region: r, used }
+  }
+  /**
+   * Builds regions ahead of need with operations the tick left unused, in a fixed order: the tiles within RING columns
+   * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
+   * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
+   * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
+   * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes;
+   * `now` (the tick) lets them wait for edits to settle (see Landmarks). Returns the operations used, at most `cap`.
+   */
+  prebuild(cap: number, anchors: readonly number[], now?: number): number {
+    let used = 0
+    const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
+    // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built; a store too
+    // full to take them drops them instead (a reader still building one keeps its own).
+    if (this.full) this.building.clear()
+    for (const index of this.building.keys()) {
+      if (used >= cap) break
+      const { region, used: spent } = this.regionNow(index, cap - used)
+      used += spent
+      if (!region) break
+    }
+    if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used, now)
+    while (pre.idle !== this.revision && used < cap && !this.full) {
+      let tile = -1
+      if (pre.phase === 0) {
+        // Ring r has 8r columns (1 for r = 0), each on three levels.
+        const r = pre.ring, side = 2 * r + 1, columns = r ? 8 * r : 1
+        if (r > RING) { pre.phase = 1; pre.ring = 0; continue }
+        if (pre.anchor >= anchors.length) { pre.ring++; pre.anchor = 0; pre.k = 0; continue }
+        if (pre.k >= columns * 3) { pre.anchor++; pre.k = 0; continue }
+        const a = anchors[pre.anchor]!, ax = a % tx, az = Math.floor(a / tx) % tz, ay = Math.floor(a / (tx * tz))
+        const c = Math.floor(pre.k / 3), level = ay + (pre.k % 3) - 1
+        // Walk the ring's perimeter from its corner: top edge, right edge, bottom edge, left edge.
+        const edge = r ? Math.floor(c / (side - 1)) : 0, at = r ? c % (side - 1) : 0
+        const dx = r === 0 ? 0 : edge === 0 ? -r + at : edge === 1 ? r : edge === 2 ? r - at : -r
+        const dz = r === 0 ? 0 : edge === 0 ? -r : edge === 1 ? -r + at : edge === 2 ? r : r - at
+        const x = ax + dx, z = az + dz
+        if (x >= 0 && z >= 0 && x < tx && z < tz && level >= 0 && level < ty) tile = x + z * tx + level * tx * tz
+      } else {
+        if (pre.tile >= this.revisions.length) {
+          this.prebuilt = pre.built === 0; this.prebuildPasses++
+          Object.assign(pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: this.prebuilt ? this.revision : -1 })
+          // A pass with nothing to build: the next one waits for a change.
+          if (this.prebuilt) break
+          continue
+        }
+        tile = pre.tile
+      }
+      if (tile < 0) { pre.k++; continue }
+      used++
+      if (this.regions.get(tile)) { if (pre.phase === 0) pre.k++; else pre.tile++; continue }
+      const { region, used: spent } = this.regionNow(tile, cap - used)
+      used += spent
+      if (!region) break
+      pre.built++
+      if (pre.phase === 0) pre.k++; else pre.tile++
+    }
+    // A store too full to take more leaves prebuild nothing to do either.
+    if (this.full) this.prebuilt = true
+    this.visited += used
+    return used
+  }
+  /** Whether the region store is too full for the prebuild to go on. */
+  private get full(): boolean { return this.regions.bytes >= this.regions.maxBytes * PREBUILD_FILL }
+  /**
+   * Prebuild progress, for warm-ups: `built` tiles have had a record since the last reset, of `ground` (every tile of the
+   * world needs one; an empty tile shares a 64-byte record), `queued` never had one. Done once every tile was built, or
+   * once the store is too full for the prebuild to go on (then built < ground); with every tile built, the landmark
+   * tables must be current too. Edits later rebuild in the background and leave the regions warm.
+   */
+  prebuildStatus(): { built: number; ground: number; queued: number; bytes: number; capBytes: number; landmarks: boolean; done: boolean } {
+    const ground = this.revisions.length, built = this.regions.built, landmarks = this.landmarks.current() !== null
+    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, landmarks, done: built === ground && this.landmarks.settled() || this.full }
+  }
+  /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
+  route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {
+    const s = new RouteSearch(this, this.regions, start, goals, options); this.requests.push(s); return s
+  }
+  /** One reverse abstract search from the goals that every start descends. */
+  group(goals: readonly number[], starts: readonly number[]): GroupField {
+    const s = new GroupField(this, this.regions, goals, starts); this.requests.push(s); return s
+  }
   step(cap: number): void {
-    this.visited = 0
+    this.visited = 0; this.pass++
     this.requests = this.requests.filter(s => s.status === 'pending')
     // New short searches share half the budget; the rest (and any leftover) goes to a bounded FIFO window,
     // which completes long searches one batch at a time instead of slicing all of them at once.
@@ -115,7 +303,7 @@ export class NavigationSystem {
     this.requests = this.requests.filter(s => s.status === 'pending')
     let guard = this.requests.length
     while (cap > 0 && this.requests.length && guard > 0) {
-      this.cursor %= Math.min(4, this.requests.length)
+      this.cursor %= Math.min(WINDOW, this.requests.length)
       const s = this.requests[this.cursor]!, used = s.step(Math.min(cap, 128))
       cap -= used; this.visited += used
       if (s.status !== 'pending') { this.requests.splice(this.cursor, 1); guard = this.requests.length }
@@ -123,9 +311,12 @@ export class NavigationSystem {
     }
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.revision); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
+    mix(this.revision); mix(this.geometry); mix(this.flips); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
     mix(this.requests.length)
-    for (const s of this.requests) s.mixState(mix)
+    for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
+    mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
+    this.landmarks.mixState(mix)
+    const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
   }
 }
 
@@ -162,25 +353,47 @@ export class PathSearch {
   private readonly goalSet: Set<number>
   private readonly allow?: (p: number) => boolean
   private readonly accept?: (p: number) => boolean
+  private readonly region?: number
+  /** Whether confinement or a blocked pose (a body, which moves on) cut an edge: an exhausted search then proves nothing. */
+  private cut = false
+  /** Goal coordinates, x y z per goal, for the heuristic. */
+  private readonly goalCoords: Int32Array
+  /** The pose being expanded, decoded once for its four edges, and its tile. */
+  private ex = 0
+  private ey = 0
+  private ez = 0
+  private eti = 0
+  /** Poses the policy rejected during navigation pass `rejectedPass`; the policy cannot change within a pass. */
+  private readonly rejected = new Set<number>()
+  private rejectedPass = -1
   constructor(nav: NavigationSystem, start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions) {
-    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept
+    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept; this.region = options?.region
     this.goalSet = new Set(goals)
+    this.goalCoords = new Int32Array(goals.length * 3)
+    goals.forEach((g, i) => this.goalCoords.set(nav.port.layout.voxelCoords(g), i * 3))
     this.estimate = this.h(start)
     if (!goals.length && !this.accept || !nav.stand(...nav.port.layout.voxelCoords(start))) { this.status = 'unreachable'; return }
     this.add(start, 0, -1)
   }
   get bytes(): number { return this.positions.byteLength * 6 }
+  /** Whether a blocked set narrows the search: its failures are traffic, not terrain. */
+  get restricted(): boolean { return this.blocked !== undefined && this.blocked.size > 0 }
   cancel(): void { this.status = 'cancelled' }
   result(): PathResult { return { status: this.status, path: this.path, cost: this.cost } }
   private permits(p: number): boolean { return this.allow ? this.allow(p) : this.nav.allowed(p) }
+  /** `permits` for a pose not discovered yet, asked once per pose per pass. */
+  private admits(p: number): boolean {
+    if (this.rejectedPass !== this.nav.pass) { this.rejected.clear(); this.rejectedPass = this.nav.pass }
+    if (this.rejected.has(p)) return false
+    if (this.permits(p)) return true
+    this.rejected.add(p); return false
+  }
   private h(p: number): number {
-    if (!this.goals.length) return 0
-    const [x, y, z] = this.nav.port.layout.voxelCoords(p)
+    const G = this.goalCoords
+    if (!G.length) return 0
+    const plane = this.nav.plane, sx = this.nav.sx, y = (p / plane) | 0, r = p - y * plane, z = (r / sx) | 0, x = r - z * sx
     let h = 0xffffffff
-    for (const goal of this.goals) {
-      const [gx, gy, gz] = this.nav.port.layout.voxelCoords(goal)
-      h = Math.min(h, (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2)
-    }
+    for (let i = 0; i < G.length; i += 3) h = Math.min(h, (Math.abs(x - G[i]!) + Math.abs(z - G[i + 2]!)) * 4 + Math.max(0, G[i + 1]! - y) * 2)
     return h
   }
   private less(a: number, b: number): boolean {
@@ -191,8 +404,7 @@ export class PathSearch {
     const x = this.heap[a]!, y = this.heap[b]!; this.heap[a] = y; this.heap[b] = x; this.indices[x] = b; this.indices[y] = a
   }
   private up(i: number): void { while (i) { const p = (i - 1) >> 1; if (!this.less(this.heap[i]!, this.heap[p]!)) break; this.swap(i, p); i = p } }
-  private add(p: number, g: number, parent: number): void {
-    let id = this.ids.get(p)
+  private add(p: number, g: number, parent: number, id = this.ids.get(p)): void {
     if (id === undefined) {
       if (this.count >= this.nav.maxNodes) { this.status = 'limited'; return }
       id = this.count++
@@ -230,7 +442,7 @@ export class PathSearch {
         const next = this.validation.next()
         if (!next.done) { this.validationProgress++; if (this.nav.revisions[next.value[0]] !== next.value[1]) this.status = 'stale' }
         else if (this.validateRevision !== this.nav.revision) { this.validateRevision = this.nav.revision; this.validation = null; this.validationProgress = 0 }
-        else this.status = this.path.length ? 'found' : 'unreachable'
+        else this.status = this.path.length ? 'found' : this.cut ? 'limited' : 'unreachable'
       } else if (this.phase === 'path') {
         if (this.reconstruct < 0) this.phase = 'reverse'
         else { this.path.push(this.positions[this.reconstruct]!); this.reconstruct = this.parents[this.reconstruct]! }
@@ -244,10 +456,18 @@ export class PathSearch {
         this.expanding = this.pop(); this.direction = 0
         if (this.goalSet.has(this.positions[this.expanding]!) || this.accept?.(this.positions[this.expanding]!)) { this.cost = this.gs[this.expanding]!; this.reconstruct = this.expanding; this.phase = 'path' }
       } else {
-        const L = this.nav.port.layout, p = this.positions[this.expanding]!, to = this.nav.neighbor(p, this.direction, this.seen)
-        if (to >= 0 && !this.blocked?.has(to) && this.permits(to)) {
-          const sy = L.voxelCoords(p)[1], ty = L.voxelCoords(to)[1]
-          this.add(to, this.gs[this.expanding]! + 4 + (ty > sy ? 2 : sy - ty), this.expanding)
+        const nav = this.nav
+        if (this.direction === 0) {
+          const p = this.positions[this.expanding]!, y = (p / nav.plane) | 0, r = p - y * nav.plane, z = (r / nav.sx) | 0
+          this.ex = r - z * nav.sx; this.ey = y; this.ez = z; this.eti = nav.tileOf(this.ex, y, z); nav.see(this.seen, this.eti)
+        }
+        const to = nav.edge(this.ex, this.ey, this.ez, this.eti, this.direction)
+        if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
+        else if (to >= 0 && this.blocked?.has(to)) this.cut = true
+        else if (to >= 0) {
+          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty), id = this.ids.get(to)
+          // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
+          if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
         }
         if (++this.direction === 4) this.expanding = -1
       }
@@ -257,7 +477,7 @@ export class PathSearch {
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }
-    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0)
+    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0); mix(this.region ?? -1); mix(this.cut ? 1 : 0)
     mix(['search', 'path', 'reverse', 'validate'].indexOf(this.phase)); mix(this.validateRevision); mix(this.reverseCursor)
     numbers(this.goals); numbers([...(this.blocked ?? [])].sort((a, b) => a - b))
     mix(this.count); mix(this.size); mix(this.expanding); mix(this.direction); mix(this.reconstruct)

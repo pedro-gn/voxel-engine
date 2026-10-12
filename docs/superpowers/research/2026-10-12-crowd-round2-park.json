@@ -1,0 +1,358 @@
+{
+  "date": "2026-10-12T23:50:10.162Z",
+  "commit": "dea8a1f",
+  "node": "v24.5.0",
+  "living": {
+    "a": "main d63ffe1 (nav-main)",
+    "b": "feat/navigation-scale dea8a1f",
+    "order": "AB, BA, AB",
+    "summary": {
+      "idle": {
+        "mainP50": [
+          2.773,
+          2.789,
+          2.867
+        ],
+        "branchP50": [
+          3.063,
+          3.096,
+          3.087
+        ],
+        "medianDeltaMs": 0.298
+      },
+      "work": {
+        "mainP50": [
+          3.126,
+          3.156,
+          3.298
+        ],
+        "branchP50": [
+          4.256,
+          4.303,
+          4.411
+        ],
+        "medianDeltaMs": 1.147
+      },
+      "dam": {
+        "mainP50": [
+          5.458,
+          5.428,
+          5.782
+        ],
+        "branchP50": [
+          6.77,
+          6.799,
+          7.051
+        ],
+        "medianDeltaMs": 1.341
+      },
+      "collapse": {
+        "mainP50": [
+          5.831,
+          5.84,
+          6.173
+        ],
+        "branchP50": [
+          6.887,
+          6.94,
+          6.968
+        ],
+        "medianDeltaMs": 1.1
+      }
+    },
+    "runs": [
+      {
+        "tag": "l4",
+        "date": "2026-10-12T23:44:50.742Z",
+        "node": "v24.5.0",
+        "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+        "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+        "order": "AB",
+        "runs": [
+          {
+            "build": "A",
+            "results": {
+              "idle": {
+                "p50": 2.773,
+                "p95": 2.975,
+                "max": 3.387
+              },
+              "work": {
+                "p50": 3.126,
+                "p95": 4.633,
+                "max": 16.618
+              },
+              "dam": {
+                "p50": 5.458,
+                "p95": 6.194,
+                "max": 8.543
+              },
+              "collapse": {
+                "p50": 5.831,
+                "p95": 8.05,
+                "max": 13.148
+              }
+            }
+          },
+          {
+            "build": "B",
+            "results": {
+              "idle": {
+                "p50": 3.063,
+                "p95": 4.118,
+                "max": 4.893
+              },
+              "work": {
+                "p50": 4.256,
+                "p95": 6.513,
+                "max": 21.055
+              },
+              "dam": {
+                "p50": 6.77,
+                "p95": 8.716,
+                "max": 11.023
+              },
+              "collapse": {
+                "p50": 6.887,
+                "p95": 8.582,
+                "max": 15.511
+              }
+            }
+          }
+        ]
+      },
+      {
+        "tag": "l5",
+        "date": "2026-10-12T23:45:48.264Z",
+        "node": "v24.5.0",
+        "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+        "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+        "order": "BA",
+        "runs": [
+          {
+            "build": "B",
+            "results": {
+              "idle": {
+                "p50": 3.096,
+                "p95": 4.199,
+                "max": 4.927
+              },
+              "work": {
+                "p50": 4.303,
+                "p95": 6.588,
+                "max": 23.24
+              },
+              "dam": {
+                "p50": 6.799,
+                "p95": 8.778,
+                "max": 10.361
+              },
+              "collapse": {
+                "p50": 6.94,
+                "p95": 8.462,
+                "max": 15.146
+              }
+            }
+          },
+          {
+            "build": "A",
+            "results": {
+              "idle": {
+                "p50": 2.789,
+                "p95": 3.021,
+                "max": 3.458
+              },
+              "work": {
+                "p50": 3.156,
+                "p95": 4.817,
+                "max": 17.433
+              },
+              "dam": {
+                "p50": 5.428,
+                "p95": 6.192,
+                "max": 6.971
+              },
+              "collapse": {
+                "p50": 5.84,
+                "p95": 7.989,
+                "max": 13.451
+              }
+            }
+          }
+        ]
+      },
+      {
+        "tag": "l6",
+        "date": "2026-10-12T23:46:48.080Z",
+        "node": "v24.5.0",
+        "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+        "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+        "order": "AB",
+        "runs": [
+          {
+            "build": "A",
+            "results": {
+              "idle": {
+                "p50": 2.867,
+                "p95": 3.22,
+                "max": 4.164
+              },
+              "work": {
+                "p50": 3.298,
+                "p95": 5.559,
+                "max": 23.396
+              },
+              "dam": {
+                "p50": 5.782,
+                "p95": 8.022,
+                "max": 9.945
+              },
+              "collapse": {
+                "p50": 6.173,
+                "p95": 8.963,
+                "max": 19.771
+              }
+            }
+          },
+          {
+            "build": "B",
+            "results": {
+              "idle": {
+                "p50": 3.087,
+                "p95": 4.333,
+                "max": 6.64
+              },
+              "work": {
+                "p50": 4.411,
+                "p95": 7.685,
+                "max": 30.303
+              },
+              "dam": {
+                "p50": 7.051,
+                "p95": 9.355,
+                "max": 14.763
+              },
+              "collapse": {
+                "p50": 6.968,
+                "p95": 9.528,
+                "max": 20.212
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "massSanity": {
+    "note": "one warm run, not a gate pass",
+    "results": {
+      "units": 1000,
+      "spawnFailed": 0,
+      "warmUp": {
+        "mode": "prebuild",
+        "ticks": 7853,
+        "ms": 48106,
+        "built": 32768,
+        "ground": 32768,
+        "queued": 0,
+        "bytes": 45555508,
+        "capBytes": 67108864,
+        "landmarks": true,
+        "done": true,
+        "stoppedByCap": false,
+        "timedOut": false,
+        "regionsBuilt": 29077
+      },
+      "regionsAtOrder": 32582,
+      "regionBytesAtOrder": 45555508,
+      "regionsAtEnd": 32672,
+      "regionBytesAtEnd": 45851202,
+      "tickMs": {
+        "p50": 17.487,
+        "p95": 23.556,
+        "p99": 28.158,
+        "max": 41.09
+      },
+      "workersMs": {
+        "p50": 11.538,
+        "p95": 17.095,
+        "p99": 20.503,
+        "max": 32.559
+      },
+      "firstActionTicks": {
+        "p50": 90,
+        "p95": 103,
+        "started": 1000,
+        "ordered": 1000
+      },
+      "arrived": {
+        "pct": 9.8,
+        "p50Ticks": null,
+        "p95Ticks": null,
+        "allAfterTicks": null,
+        "idealTicks": {
+          "p50": 4798,
+          "p95": 5126,
+          "max": 5206,
+          "units": 1000
+        },
+        "lateTicks": {
+          "p50": null,
+          "p95": null
+        },
+        "withinIdealPlusGrace": {
+          "graceTicks": 1200,
+          "pct": 7.3
+        },
+        "exactSamples": {
+          "found": 20,
+          "unreachable": 0,
+          "unreachableIds": [],
+          "costTicks": {
+            "p50": 3188,
+            "p95": 4990,
+            "max": 4990
+          },
+          "detourTicks": {
+            "p50": 2185,
+            "max": 2185
+          },
+          "ms": 2446
+        },
+        "straightLine": {
+          "idealTicks": {
+            "p50": 2613,
+            "p95": 2941,
+            "max": 3021
+          },
+          "lateTicks": {
+            "p50": null,
+            "p95": null
+          },
+          "withinPlusGracePct": 2.5
+        }
+      },
+      "falseUnreachable": {
+        "suspects": 0,
+        "endedNoAccess": 0,
+        "checked": 0,
+        "count": 0,
+        "ids": [],
+        "endedNoAccessFound": 0,
+        "ms": 0
+      },
+      "trafficBlocks": 20215,
+      "blocks": {
+        "traffic": 20215,
+        "unsafe": 32
+      },
+      "visitedMax": 8213,
+      "navBytesMax": 61379018,
+      "failedCommands": 0,
+      "landmarks": {
+        "currentPct": 13.1,
+        "newRelaxedTiles": 11
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 import { BlockRegistry, type BlockDef } from '../blocks/registry.ts'
-import type { WorldBuffers } from '../world/buffers.ts'
+import { decodeUniform, type WorldBuffers } from '../world/buffers.ts'
 import { ChunkStore, WorldFullError } from '../world/chunkStore.ts'
 import { CHUNK_VOLUME, type Layout } from '../world/layout.ts'
 import { AIR, blockLight, skyLight, voxelId, voxelState, withState } from '../world/voxel.ts'
@@ -155,6 +155,8 @@ export class Simulation {
         edit(pos, expected, value, commit) {
           if (sim.store.getVoxel(...pos) !== expected || sim.collapse.overlaps(...pos) || sim.registry.solid[voxelId(value)] && (sim.workers!.overlaps(...pos) || sim.gravity.occupies(...pos))) return false
           sim.store.prepareChunks([sim.layout.chunkOf(...pos)])
+          // Neighbours whose mesh the edit changes move their version too, so the view's barrier waits for their new mesh.
+          sim.store.touchChunks(sim.layout.chunksAround(...pos))
           sim.applySet(...pos, value, true, commit); return true
         },
         safe(x, y, z) {
@@ -165,6 +167,7 @@ export class Simulation {
         hazard: (x, y, z) => sim.gravity.sweptOverlaps(x, y, z) || sim.collapse.sweptOverlaps(x, y, z),
         dynamicBusy: () => sim.water.cols.tiles.awakeCount() > 0 || sim.gravity.count > 0 || sim.collapse.busy,
         emit: (type, payload) => sim.events.push({ tick: sim.tick, type, payload }),
+        uniform: (x, y, z) => { const e = sim.store.table[sim.layout.chunkOf(x, y, z)]!; return e < 0 ? decodeUniform(e) : undefined },
       }, o.workers)
     }
     this.ctx = this.makeContext()
@@ -195,7 +198,7 @@ export class Simulation {
 
   /** Writes a generated column into the world. Chunks stay open until finishGenerate or replaceColumns commits. */
   applyColumn(cx: number, cz: number, column: Uint16Array): void {
-    if (this.workers && (this.workers.units.size || this.workers.nav.cacheTiles || this.workers.nav.pending)) this.workers.invalidateAll()
+    if (this.workers && (this.workers.units.size || this.workers.nav.cacheTiles || this.workers.nav.regions.size || this.workers.nav.pending)) this.workers.invalidateAll()
     const L = this.layout
     if (column.length !== 32 * 32 * L.size[1]) throw new RangeError(`column has ${column.length} voxels, expected ${32 * 32 * L.size[1]}`)
     for (let cy = 0; cy < L.cy; cy++) {
@@ -362,7 +365,7 @@ export class Simulation {
     const events = this.events
     this.events = []
     const collapse = this.collapse.publication(this.store.versions)
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions) }) }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions, t) }) }
   }
 
   hash(): number {

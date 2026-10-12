@@ -1,0 +1,245 @@
+{
+  "date": "2026-10-12T23:29:33.292Z",
+  "a": "main d63ffe1 (nav-main)",
+  "b": "feat/navigation-scale 9e3c7b4",
+  "order": "AB, BA, AB",
+  "summary": {
+    "order": "AB, BA, AB (A = main d63ffe1, B = branch)",
+    "phases": {
+      "idle": {
+        "mainP50": [
+          2.958,
+          2.939,
+          2.848
+        ],
+        "branchP50": [
+          3.972,
+          3.323,
+          3.56
+        ],
+        "medianDeltaMs": 0.621
+      },
+      "work": {
+        "mainP50": [
+          3.219,
+          3.334,
+          3.668
+        ],
+        "branchP50": [
+          4.811,
+          4.861,
+          5.547
+        ],
+        "medianDeltaMs": 1.527
+      },
+      "dam": {
+        "mainP50": [
+          6.008,
+          5.637,
+          5.649
+        ],
+        "branchP50": [
+          7.823,
+          7.553,
+          7.545
+        ],
+        "medianDeltaMs": 1.904
+      },
+      "collapse": {
+        "mainP50": [
+          6.5,
+          7.166,
+          6.097
+        ],
+        "branchP50": [
+          8.385,
+          8.915,
+          8.053
+        ],
+        "medianDeltaMs": 1.885
+      }
+    }
+  },
+  "runs": [
+    {
+      "tag": "l1",
+      "date": "2026-10-12T23:24:29.610Z",
+      "node": "v24.5.0",
+      "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+      "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+      "order": "AB",
+      "runs": [
+        {
+          "build": "A",
+          "results": {
+            "idle": {
+              "p50": 2.958,
+              "p95": 3.715,
+              "max": 5.563
+            },
+            "work": {
+              "p50": 3.219,
+              "p95": 5.475,
+              "max": 19.315
+            },
+            "dam": {
+              "p50": 6.008,
+              "p95": 8.702,
+              "max": 34.94
+            },
+            "collapse": {
+              "p50": 6.5,
+              "p95": 9.576,
+              "max": 18.249
+            }
+          }
+        },
+        {
+          "build": "B",
+          "results": {
+            "idle": {
+              "p50": 3.972,
+              "p95": 6.318,
+              "max": 8.256
+            },
+            "work": {
+              "p50": 4.811,
+              "p95": 7.919,
+              "max": 31.536
+            },
+            "dam": {
+              "p50": 7.823,
+              "p95": 11.028,
+              "max": 21.823
+            },
+            "collapse": {
+              "p50": 8.385,
+              "p95": 13.221,
+              "max": 21.13
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tag": "l2",
+      "date": "2026-10-12T23:25:42.105Z",
+      "node": "v24.5.0",
+      "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+      "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+      "order": "BA",
+      "runs": [
+        {
+          "build": "B",
+          "results": {
+            "idle": {
+              "p50": 3.323,
+              "p95": 4.615,
+              "max": 7.676
+            },
+            "work": {
+              "p50": 4.861,
+              "p95": 7.531,
+              "max": 33.872
+            },
+            "dam": {
+              "p50": 7.553,
+              "p95": 11.579,
+              "max": 19.05
+            },
+            "collapse": {
+              "p50": 8.915,
+              "p95": 12.547,
+              "max": 22.546
+            }
+          }
+        },
+        {
+          "build": "A",
+          "results": {
+            "idle": {
+              "p50": 2.939,
+              "p95": 3.92,
+              "max": 5.899
+            },
+            "work": {
+              "p50": 3.334,
+              "p95": 5.508,
+              "max": 22.847
+            },
+            "dam": {
+              "p50": 5.637,
+              "p95": 7.793,
+              "max": 11.408
+            },
+            "collapse": {
+              "p50": 7.166,
+              "p95": 11.915,
+              "max": 20.894
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tag": "l3",
+      "date": "2026-10-12T23:26:46.973Z",
+      "node": "v24.5.0",
+      "a": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-main",
+      "b": "C:/Users/pedro/Desktop/Projetos/voxel-engine/.claude/worktrees/nav-integration",
+      "order": "AB",
+      "runs": [
+        {
+          "build": "A",
+          "results": {
+            "idle": {
+              "p50": 2.848,
+              "p95": 3.244,
+              "max": 4.464
+            },
+            "work": {
+              "p50": 3.668,
+              "p95": 5.846,
+              "max": 22.479
+            },
+            "dam": {
+              "p50": 5.649,
+              "p95": 7.459,
+              "max": 11.068
+            },
+            "collapse": {
+              "p50": 6.097,
+              "p95": 8.377,
+              "max": 19.299
+            }
+          }
+        },
+        {
+          "build": "B",
+          "results": {
+            "idle": {
+              "p50": 3.56,
+              "p95": 4.594,
+              "max": 5.748
+            },
+            "work": {
+              "p50": 5.547,
+              "p95": 8.869,
+              "max": 34.678
+            },
+            "dam": {
+              "p50": 7.545,
+              "p95": 11.003,
+              "max": 29.171
+            },
+            "collapse": {
+              "p50": 8.053,
+              "p95": 11.624,
+              "max": 20.755
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
