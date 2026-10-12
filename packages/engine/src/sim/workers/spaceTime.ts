@@ -50,7 +50,10 @@ export class SpaceTimeSearch {
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
   private readonly targetSet: ReadonlySet<number>
+  /** The current state id of each (pose, tick) key; a cheaper way there replaces it until the state is popped. */
   private readonly ids = new Map<number, number>()
+  /** Keys of (pose, tick) states already popped. */
+  private readonly popped = new Set<number>()
   private poses: number[] = []
   private ticks: number[] = []
   private gs: number[] = []
@@ -96,6 +99,8 @@ export class SpaceTimeSearch {
     }
     return v
   }
+  /** Extra cost per tick spent off the refuge while looking for one: a refuge plan leaves the route at once. */
+  private off(p: number): number { return this.refuge && !this.refuge(p) ? 1 : 0 }
   /** Whether a step may not enter q: the oncoming lane of a passage. */
   private closed(q: number): boolean { return this.lane(q) === PASSAGE_COST }
   /** Lower f first, then more progress (lower h), then the lower pose: a total order, so ties never depend on insertion. */
@@ -103,9 +108,10 @@ export class SpaceTimeSearch {
     const fa = this.f(a), fb = this.f(b)
     return fa < fb || fa === fb && (this.hs[a]! < this.hs[b]! || this.hs[a] === this.hs[b] && this.poses[a]! < this.poses[b]!)
   }
+  private key(p: number, t: number): number { return p * (this.table.window + 1) + (t - this.startTick) }
   private add(p: number, t: number, parent: number, g: number): void {
-    const key = p * (this.table.window + 1) + (t - this.startTick)
-    if (this.ids.has(key)) return
+    const key = this.key(p, t), old = this.ids.get(key)
+    if (old !== undefined && (this.popped.has(key) || this.gs[old]! <= g)) return
     const id = this.poses.length
     this.ids.set(key, id); this.poses.push(p); this.ticks.push(t); this.gs.push(g); this.hs.push(this.h(p)); this.parents.push(parent)
     let i = this.heap.length
@@ -165,7 +171,10 @@ export class SpaceTimeSearch {
       used++; this.ops++
       if (this.expanding < 0) {
         if (!this.heap.length) { this.status = 'failed'; break }
-        const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!
+        const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!, key = this.key(p, t)
+        // A state reached more cheaply after this entry was queued is popped from its newer entry.
+        if (this.ids.get(key) !== id) continue
+        this.popped.add(key)
         if (t >= this.end ? (this.refuge ? this.refuge(p) : true) && (this.targets.includes(p) || this.holdable(p)) : this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
         if (t >= this.end) continue
         this.expanding = id; this.action = 0
@@ -173,7 +182,7 @@ export class SpaceTimeSearch {
       }
       const id = this.expanding, p = this.poses[id]!, t = this.ticks[id]!
       if (this.action === 0) {
-        if (this.table.free(this.owner, t + 1, this.port.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p))
+        if (this.table.free(this.owner, t + 1, this.port.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p))
       } else {
         const q = this.port.neighbor(p, this.action - 1)
         if (q >= 0 && this.inBox(q) && this.port.allowed(q) && !this.closed(q)) {
@@ -182,7 +191,7 @@ export class SpaceTimeSearch {
             const cells = this.port.stepCells(p, q)
             let ok = true
             for (let i = 1; i <= k && ok; i++) ok = this.table.free(this.owner, t + i, cells)
-            if (ok) this.add(q, t + k, id, this.gs[id]! + k * (1 + this.lane(q)))
+            if (ok) this.add(q, t + k, id, this.gs[id]! + k * (1 + this.lane(q) + this.off(p)))
           }
         }
       }

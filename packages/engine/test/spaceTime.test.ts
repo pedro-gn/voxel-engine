@@ -117,3 +117,13 @@ it('never overtakes through the oncoming lane of a passage, unless its route run
   const along = run(new SpaceTimeSearch(lanes, table, 1, idx(0, 1), 0, [idx(0, 0), ...[1, 2, 3, 4, 5].map(x => idx(x, 0))]))
   expect(along.plan!.rejoin).toBeGreaterThanOrEqual(0)
 })
+it('a refuge plan gets off the route at once instead of loitering on it until the window ends', () => {
+  // A one-wide corridor with a pocket at (4,1); the unit stands at (2,0) and nothing is reserved.
+  const { port, idx } = corridor(['..........', '####.#####']), table = new ReservationTable(32)
+  const route = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(x => idx(x, 0)))
+  const s = run(new SpaceTimeSearch(port, table, 1, idx(2, 0), 0, [], undefined, undefined, p => !route.has(p), undefined, idx(9, 0)))
+  expect(s.status).toBe('found')
+  expect(s.plan!.steps.map(st => st.pose)).toEqual([idx(2, 0), idx(3, 0), idx(4, 0), idx(4, 1)])
+  // Two steps to the pocket's mouth and one into it, without waiting on the way.
+  expect(s.plan!.steps.slice(0, 3).map(st => st.until)).toEqual([0, 4, 8])
+})
