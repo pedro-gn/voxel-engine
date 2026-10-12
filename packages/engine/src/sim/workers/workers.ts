@@ -25,7 +25,12 @@ export interface WorkerPort {
   dynamicBusy(): boolean
   emit(type: string, payload: unknown): void
 }
-type Motion = { from: number; to: number; cursor: number; start: [number, number, number]; flat: boolean; elapsed: number; ticks: number; cells: number[]; area: Set<number> | null }
+/**
+ * `world` and `policy`: the world revision and policy its cells and target were validated against when it began (world
+ * -1 when physics was busy then). While both still hold and physics stays quiet, those checks cannot fail. `axis`: the
+ * direction of a centered one-block flat step (see axisStep), else -1. Both derived, not hashed.
+ */
+type Motion = { from: number; to: number; cursor: number; start: [number, number, number]; flat: boolean; elapsed: number; ticks: number; cells: number[]; area: Set<number> | null; world: number; policy: number; axis: number }
 /**
  * What a moving unit has reserved: through tick t, ending on Q8 pose `pose`, with path nodes from `cursor` still to
  * project. `end` and `first` are the tick the in-flight motion ends and the node the projection steps to next; a
@@ -805,7 +810,7 @@ export class WorkerSystem {
     }
     // Owning the first tick now keeps projections made later this tick from claiming the cells it just took.
     for (let t = this.time + 1; t <= this.time + (flat ? 1 : ticks); t++) this.table.reserve(u.id, t, cells)
-    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
+    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area, world: this.dynamicWasBusy ? -1 : this.worldRevision, policy: this.policy, axis: flat ? this.axisStep(start, to) : -1 }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
   }
   private stepTicks(start: readonly [number, number, number], to: number): number {
     const [tx, ty, tz] = this.port.layout.voxelCoords(to), y = start[1] >> 8
@@ -945,8 +950,10 @@ export class WorkerSystem {
         const sourcePhase = m.elapsed === 0 || this.port.layout.voxelCoords(m.to)[1] * 256 > m.start[1] && u.x === m.start[0] && u.z === m.start[2]
         if (m.flat && !this.hasSupport(u) || sourcePhase && !this.hasSupport({ x: m.start[0], y: m.start[1], z: m.start[2] })) { this.fall(u); continue }
         const next = this.motionPose(m.to, m.elapsed + 1, m.ticks, m.start)
-        const cells = m.flat ? walkSweep(this.port.layout, [u.x, u.y, u.z], next).filter(p => m.area!.has(p)) : m.cells
-        if (!(m.flat ? this.walkable(u, cells, u.y >> 8) : this.volumeFree(cells)) || !this.poseOk(u, this.port.layout.voxelCoords(m.to))) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)); this.block(u, 'unsafe'); continue }
+        const cells = m.flat ? this.motionCells(m, m.elapsed, [u.x, u.y, u.z], next) : m.cells
+        // The whole sweep and the target were checked when the motion began; only a changed world can fail them now.
+        const known = !dynamic && !wasDynamic && m.world === this.worldRevision && m.policy === this.policy
+        if (!known && (!(m.flat ? this.walkable(u, cells, u.y >> 8) : this.volumeFree(cells)) || !this.poseOk(u, this.port.layout.voxelCoords(m.to)))) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)); this.block(u, 'unsafe'); continue }
         if (m.flat && (!this.table.free(u.id, this.time, cells) || !this.reserve(u, cells))) {
           this.reserve(u, this.body(u.x, u.y, u.z)); u.wait++; u.reason = 'traffic'; this.dirty.add(u.id)
           const owner = cells.map(p => this.occupied.get(p) ?? (this.table.owner(p, this.time) || undefined)).find(id => id !== undefined && id !== u.id)
@@ -1246,7 +1253,7 @@ export class WorkerSystem {
     if (pr.stood) { this.table.releaseFrom(u.id, pr.t + 1); pr.stood = false }
     if (m) while (pr.t < pr.end && pr.t < limit) {
       const e = m.elapsed + pr.t - T, a = this.motionPose(m.to, e, m.ticks, m.start), b = this.motionPose(m.to, e + 1, m.ticks, m.start)
-      if (!this.claim(u, pr.t + 1, m.flat ? walkSweep(L, a, b).filter(p => m.area!.has(p)) : m.cells)) return this.stand(u, pr)
+      if (!this.claim(u, pr.t + 1, m.flat ? this.motionCells(m, e, a, b) : m.cells)) return this.stand(u, pr)
       pr.t++; pr.pose = b
     }
     while (pr.t < limit) {
@@ -1267,6 +1274,10 @@ export class WorkerSystem {
       }
       pr.t = from + ticks; pr.pose = this.motionPose(to, ticks, ticks, start); pr.cursor++
     }
+  }
+  /** The cells a flat motion sweeps from pose a (its tick e) to pose b (tick e + 1), within its validated area. */
+  private motionCells(m: Motion, e: number, a: readonly [number, number, number], b: readonly [number, number, number]): number[] {
+    return m.axis >= 0 ? this.stepCellsAt(m.start, m.to, m.axis, e) : walkSweep(this.port.layout, a, b).filter(p => m.area!.has(p))
   }
   /**
    * The direction of a one-block flat step from the center of a cell to a planar neighbour's center, with room above
@@ -1341,8 +1352,9 @@ export class WorkerSystem {
    */
   private cooperate(cap: number): number {
     const T = this.time
+    // Best right of way first: the order of outranks, from keys computed once per unit.
     const conflicted = [...this.units.values()].filter(u => u.conflict?.owner && !u.repair && T >= u.repairAfter && u.state !== 'incapacitated' && (u.motion || u.path[u.cursor] !== undefined))
-      .sort((a, b) => this.outranks(a, b) ? -1 : this.outranks(b, a) ? 1 : 0)
+      .map(u => ({ u, p: this.priority(u), r: this.rotation(u) })).sort((a, b) => b.p - a.p || a.r - b.r || a.u.id - b.u.id).map(k => k.u)
     let started = 0, used = 0
     for (const u of conflicted) {
       if (started >= MAX_REPAIRS || used >= cap) break
