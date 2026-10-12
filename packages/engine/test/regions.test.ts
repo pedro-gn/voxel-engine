@@ -129,3 +129,19 @@ it('the column index finds the same slot as a dense cell table, and empty tiles 
   expect(a.poses.length).toBe(0); expect(a.bytes).toBe(64)
   expect(a.cols).toBe(b.cols); expect(a.fields).toBe(b.fields); expect(a.exits).toBe(b.exits); expect(Object.isFrozen(a.exits)).toBe(true)
 })
+it('a tile inside a uniform chunk with no support below builds at once, and one above a ground chunk still finds its poses', () => {
+  // 64 high: chunk layer y 0..31 is dense ground (floor top at y = 3 and a solid layer 16..31 in x < 32), y 32..63 is uniform air.
+  const layout = new Layout([64, 64, 64]), registry = new BlockRegistry([{ name: 'stone' }])
+  const get = (x: number, y: number, z: number) => y < 4 || y < 32 && y >= 16 && x < 32 ? 1 : 0
+  const uniform = (x: number, y: number, z: number) => y >= 32 ? 0 : undefined
+  const nav = new NavigationSystem({ layout, registry, get, uniform })
+  const charged = (index: number) => { const b = new RegionBuild(nav, index); let n = 0; do n += b.step(64); while (!b.done); return { n, r: b.result() } }
+  // Upper half of the uniform air chunk: nothing can stand there.
+  const high = charged(nav.tileOf(40, 48, 8))
+  expect(high.r.poses.length).toBe(0); expect(high.n).toBe(1)
+  // Lower half, above a solid layer in x < 32: the bottom row stands, and it is built in full.
+  const low = charged(nav.tileOf(8, 32, 8)), plain = new NavigationSystem({ layout, registry, get })
+  expect(low.r.poses.length).toBe(256); expect(low.r.exits).toEqual(build(plain, plain.tileOf(8, 32, 8)).exits)
+  // Lower half above air (x >= 32 has no solid layer at 16..31): the dense chunk below is not uniform, so it builds.
+  expect(charged(nav.tileOf(40, 32, 8)).r.poses.length).toBe(0)
+})

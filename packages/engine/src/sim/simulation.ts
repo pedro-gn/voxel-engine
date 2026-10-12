@@ -1,5 +1,5 @@
 import { BlockRegistry, type BlockDef } from '../blocks/registry.ts'
-import type { WorldBuffers } from '../world/buffers.ts'
+import { decodeUniform, type WorldBuffers } from '../world/buffers.ts'
 import { ChunkStore, WorldFullError } from '../world/chunkStore.ts'
 import { CHUNK_VOLUME, type Layout } from '../world/layout.ts'
 import { AIR, blockLight, skyLight, voxelId, voxelState, withState } from '../world/voxel.ts'
@@ -167,6 +167,7 @@ export class Simulation {
         hazard: (x, y, z) => sim.gravity.sweptOverlaps(x, y, z) || sim.collapse.sweptOverlaps(x, y, z),
         dynamicBusy: () => sim.water.cols.tiles.awakeCount() > 0 || sim.gravity.count > 0 || sim.collapse.busy,
         emit: (type, payload) => sim.events.push({ tick: sim.tick, type, payload }),
+        uniform: (x, y, z) => { const e = sim.store.table[sim.layout.chunkOf(x, y, z)]!; return e < 0 ? decodeUniform(e) : undefined },
       }, o.workers)
     }
     this.ctx = this.makeContext()

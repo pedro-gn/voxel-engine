@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
 import { RegionStore, splitKey } from '../src/sim/navigation/regions.ts'
 import { RouteSearch } from '../src/sim/navigation/routeSearch.ts'
-import { GroupField } from '../src/sim/navigation/groupField.ts'
+import { GroupField, startClusters } from '../src/sim/navigation/groupField.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
 
@@ -67,15 +67,55 @@ it('a start inside a goal region descends the goal field', () => {
   expect(g.next(layout.voxelIndex(36, 4, 36))).toEqual({ exit: -1, cost: 32 })
   expect(g.next(layout.voxelIndex(4, 4, 4))!.exit).toBeGreaterThan(0)
 })
-it('ends limited, never unreachable, when its node cap cuts it, and stale when a region it read changes', () => {
+it('ends limited, never unreachable, when its node cap cuts it, and still serves when a goal region changes under it', () => {
   const { nav, layout } = fixture(256), store = new RegionStore(nav)
   const g = new GroupField(nav, store, [layout.voxelIndex(250, 4, 250)], [layout.voxelIndex(2, 4, 2)], 4)
   settle(g)
   expect(g.status).toBe('limited')
+  // Units recover from a changed region on their own (nextHop), so the field's costs stay worth serving.
   const h = new GroupField(nav, store, [layout.voxelIndex(250, 4, 250)], [layout.voxelIndex(2, 4, 2)])
   h.step(30000); nav.invalidate(250, 4, 250)
   settle(h)
-  expect(h.status).toBe('stale')
+  expect(h.status).toBe('found'); expect(h.next(layout.voxelIndex(2, 4, 2))).not.toBeNull()
+})
+it('a field cut by its node cap still serves the starts it settled', () => {
+  const { nav, layout } = fixture(256), store = new RegionStore(nav)
+  const near = layout.voxelIndex(200, 4, 200), far = layout.voxelIndex(2, 4, 2)
+  const whole = new GroupField(nav, store, [layout.voxelIndex(250, 4, 250)], [near, far]); settle(whole)
+  const g = new GroupField(nav, store, [layout.voxelIndex(250, 4, 250)], [near, far], Math.ceil((whole as unknown as { d: Map<number, number> }).d.size / 2))
+  settle(g)
+  expect(g.status).toBe('limited')
+  expect(g.next(near)!.cost).toBe(whole.next(near)!.cost)
+})
+it('a start nothing reaches does not make the field explore the whole world for the others', { timeout: 60_000 }, () => {
+  const { nav, layout, solid } = fixture(512)
+  // A ring around (40, 4, 300): that start stands, but nothing reaches it.
+  for (let x = 38; x <= 42; x++) for (let z = 298; z <= 302; z++) if (x === 38 || x === 42 || z === 298 || z === 302) for (let y = 4; y < 8; y++) solid.add(layout.voxelIndex(x, y, z))
+  const goals = [layout.voxelIndex(250, 4, 290)], reachable = [layout.voxelIndex(30, 4, 290), layout.voxelIndex(32, 4, 292)], sealed = layout.voxelIndex(40, 4, 300)
+  const alone = new GroupField(nav, new RegionStore(nav, 1 << 30), goals, [sealed]); settle(alone)
+  const g = new GroupField(nav, new RegionStore(nav, 1 << 30), goals, [...reachable, sealed]); settle(g)
+  expect(g.status).toBe('found')
+  for (const s of reachable) expect(g.next(s)).not.toBeNull()
+  expect(g.next(sealed)).toBeNull()
+  expect(g.spent).toBeLessThan(alone.spent / 3)
+})
+it('hundreds of starts on one pad cost little more than one: starts are covered by exits, not searched', () => {
+  const { nav, layout } = fixture(256), goals = [layout.voxelIndex(230, 4, 128)]
+  const pad = Array.from({ length: 256 }, (_, i) => layout.voxelIndex(8 + 2 * (i % 16), 4, 112 + 2 * Math.floor(i / 16)))
+  // Warm the store first, so both measure the search alone.
+  const store = new RegionStore(nav); settle(new GroupField(nav, store, goals, pad))
+  const one = new GroupField(nav, store, goals, [pad[136]!]); settle(one)
+  const many = new GroupField(nav, store, goals, pad); settle(many)
+  expect(many.status).toBe('found')
+  for (const s of pad) expect(many.next(s)).not.toBeNull()
+  expect(many.spent).toBeLessThan(one.spent * 1.5 + pad.length * 4)
+})
+it('splits starts into clusters of nearby columns, chained, in order of first start', () => {
+  const { layout } = fixture(512), at = (x: number, z: number) => layout.voxelIndex(x, 4, z)
+  // 0 and 2 share a column; 1 is two columns from 0; 3 is far; 4 chains to 3 through 5.
+  const starts = [at(10, 10), at(40, 10), at(12, 12), at(300, 300), at(360, 300), at(330, 300)]
+  expect(startClusters(starts, layout)).toEqual([[0, 1, 2], [3, 4, 5]])
+  expect(startClusters([at(10, 10), at(100, 10)], layout)).toEqual([[0], [1]])
 })
 it('a change in a region it explored away from its goals and starts leaves the field found', () => {
   const { nav, layout } = fixture(128)

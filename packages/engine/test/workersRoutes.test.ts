@@ -127,10 +127,46 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(sim.workers!.units.get(1)!.route?.search).toBeInstanceOf(RouteSearch)
     until(sim, () => sim.workers!.view(1)?.state === 'blocked', 400)
     expect(sim.workers!.view(1)?.reason).toBe('no-access')
+    // Spare operations prebuild the world first; once it is all built they rest too.
+    until(sim, () => sim.workers!.nav.prebuilt, 2000)
     const before = routes.n
     let visited = 0
     for (let i = 0; i < 100; i++) visited += sim.step().workers!.stats.visited
     expect(routes.n - before).toBe(0); expect(visited).toBe(0); expect(sim.workers!.nav.pending).toBe(0)
+  })
+  it('a move from two far-apart clusters makes one group field per cluster', () => {
+    const sim = makeWide(256)
+    for (let i = 0; i < 4; i++) spawn(sim, [4 + i * 2, 4, 4])
+    for (let i = 0; i < 4; i++) spawn(sim, [4 + i * 2, 4, 200])
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [220, 4, 100] })
+    const units = [...sim.workers!.units.values()], fields = units.map(u => u.route?.search)
+    expect(new Set(fields).size).toBe(2); expect(fields.every(f => f instanceof GroupField)).toBe(true)
+    expect(fields[0]).toBe(fields[3]); expect(fields[4]).toBe(fields[7]); expect(fields[0]).not.toBe(fields[4])
+    until(sim, () => units.every(u => u.goal === null), 4000)
+  })
+  it('a group field that ended limited still serves its units: none plans a route of its own', () => {
+    const sim = makeWide(256)
+    for (let i = 0; i < 6; i++) spawn(sim, [4 + i * 2, 4, 4])
+    const routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [200, 4, 200] })
+    const field = sim.workers!.units.get(1)!.route!.search as GroupField
+    until(sim, () => field.status !== 'pending', 200)
+    // As if its node cap cut it after settling every start.
+    ;(field as unknown as { status: string }).status = 'limited'
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 4000)
+    expect(routes.n).toBe(0)
+  })
+  it('spare operations prebuild the world, nearest the units first, within the budget, and a long move then starts warm', () => {
+    const sim = makeWide(256, undefined, { searchCap: 4096 }); spawn(sim, [200, 4, 200])
+    const nav = sim.workers!.nav, near = nav.tileOf(200, 4, 200)
+    sim.step()
+    expect(nav.regions.get(near)).toBeDefined()
+    for (let i = 0; i < 3000 && !nav.prebuilt; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(4096)
+    expect(nav.prebuilt).toBe(true)
+    expect(nav.regions.size).toBe(nav.revisions.length)
+    // Warm: the route is found in its first slice, and the unit sets off at once.
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [10, 4, 10] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking', 3)
   })
   it('a route that ends stale backs off instead of replanning the same tick', () => {
     const sim = makeWide(128); spawn(sim, [5, 4, 5])

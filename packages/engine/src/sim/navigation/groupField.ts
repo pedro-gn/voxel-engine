@@ -1,3 +1,4 @@
+import type { Layout } from '../../world/layout.ts'
 import type { NavigationSystem, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { SOURCES, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
@@ -6,12 +7,45 @@ import { ROUTE_WEIGHT, RegionReader } from './routeSearch.ts'
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
 type Phase = 'seed' | 'search' | 'validate'
 const PHASES: readonly Phase[] = ['seed', 'search', 'validate']
+/**
+ * Once a start is covered, the search stops when the cheapest open cost passes FAR × the farthest covered start plus
+ * FAR_SLACK: a start nothing reaches would otherwise make it exhaust the world. Starts left open still read next().
+ */
+const FAR = 1.5, FAR_SLACK = 512
+
+/**
+ * Splits a move's starts into clusters whose 16² columns lie within `reach` columns of one another, chained. One field
+ * per cluster aims its heuristic at its own starts; one field for clusters far apart must expand everything cheaper
+ * than its farthest start. Start indices per cluster, clusters in order of their first start.
+ */
+export function startClusters(starts: readonly number[], layout: Layout, reach = 2): number[][] {
+  const columns = new Map<number, number>(), parent: number[] = [], at: [number, number][] = [], of = new Int32Array(starts.length)
+  const root = (i: number): number => { while (parent[i] !== i) i = parent[i] = parent[parent[i]!]!; return i }
+  const W = (layout.size[0] >> 4) + 1
+  starts.forEach((p, i) => {
+    const [x, , z] = layout.voxelCoords(p), cx = x >> 4, cz = z >> 4, key = cx + cz * W
+    let c = columns.get(key)
+    if (c === undefined) {
+      c = parent.length; columns.set(key, c); parent.push(c); at.push([cx, cz])
+      for (let dz = -reach; dz <= reach; dz++) for (let dx = -reach; dx <= reach; dx++) {
+        const n = columns.get(cx + dx + (cz + dz) * W)
+        if (n !== undefined && cx + dx >= 0 && cx + dx < W && n !== c) { const a = root(n), b = root(c); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b) }
+      }
+    }
+    of[i] = c
+  })
+  const out = new Map<number, number[]>()
+  starts.forEach((_, i) => { const r = root(of[i]!), list = out.get(r); if (list) list.push(i); else out.set(r, [i]) })
+  return [...out.values()]
+}
 
 /**
  * Reverse weighted abstract A* (ROUTE_WEIGHT) from a destination over region exits, shared by every unit of a move order. D(exit) is the cost
- * from the exit's `from` pose to the nearest goal; each start is a node of its own, settled when popped. The heuristic
- * is the flat one from the nearest box of starts (one per start tile), so the search grows toward the group instead of
- * in every direction. Source tiles are read only when their mask says they may step into the expanded region.
+ * from the exit's `from` pose to the nearest goal. A start is covered once an exit of its region that it reaches is
+ * closed; units read their own best exit at next() time, so starts are not search nodes and cost one operation each
+ * when covered. The heuristic is the flat one from the nearest box of starts (one per start tile), so the search grows
+ * toward the group instead of in every direction. Source tiles are read only when their mask says they may step into
+ * the expanded region.
  */
 export class GroupField {
   private readonly nav: NavigationSystem
@@ -26,7 +60,8 @@ export class GroupField {
   private readonly boxes: number[][]
   /** Debt per heuristic evaluation: one operation per 16 start boxes. */
   private readonly hCost: number
-  private readonly startBase: number
+  /** Start indices not covered yet, by region. */
+  private readonly open = new Map<number, number[]>()
   status: PathStatus = 'pending'
   spent = 0
   readonly estimate: number
@@ -36,15 +71,16 @@ export class GroupField {
   private readonly closed = new Set<number>()
   /** Exits of a region grouped by target region, built when the region is first read. */
   private readonly into = new Map<number, Map<number, number[]>>()
-  private settled = 0
+  private covered = 0
+  /** Cost of the farthest start covered so far. */
+  private farthest = 0
   private phase: Phase = 'seed'
   private seedCursor = 0
   private seedSource = 0
-  private seededStarts = false
   private expanding = -1
   private source = 0
   private debt = 0
-  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 32768, weight = ROUTE_WEIGHT) {
+  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = ROUTE_WEIGHT) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     const L = nav.port.layout
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
@@ -56,9 +92,9 @@ export class GroupField {
       else { box[0] = Math.min(box[0]!, x); box[1] = Math.min(box[1]!, z); box[2] = Math.max(box[2]!, x); box[3] = Math.max(box[3]!, y); box[4] = Math.max(box[4]!, z) }
     })
     this.boxes = [...boxes.values()]; this.hCost = this.boxes.length >> 4
+    for (const [r, list] of this.startRegions) this.open.set(r, [...list])
     for (const r of this.goalRegions.keys()) this.reader.pin(r)
     for (const r of this.startRegions.keys()) this.reader.pin(r)
-    this.startBase = 1 + nav.revisions.length * 4096
     // Lower bound from the goals' box: linear in starts + goals, where the exact minimum would be their product.
     const g0 = [Infinity, Infinity, Infinity], g1 = [-Infinity, -Infinity, -Infinity]
     for (const p of goals) L.voxelCoords(p).forEach((v, a) => { g0[a] = Math.min(g0[a]!, v); g1[a] = Math.max(g1[a]!, v) })
@@ -139,17 +175,24 @@ export class GroupField {
     if (old !== undefined && old <= d) return
     if (old === undefined && this.d.size >= this.maxNodes) { this.status = 'limited'; return }
     this.d.set(key, d)
-    if (key >= this.startBase) { this.heap.push(key, d, 0); return }
     const h = this.h(at) * this.weight; this.heap.push(key, d + h, h)
-    // A start in the exit's region may now reach the goals through it.
-    const [region, e] = splitKey(key), starts = this.startRegions.get(region)
-    if (!starts) return
-    const r = this.reader.regions.get(region)!, P = r.poses.length, L = this.nav.port.layout
-    for (const i of starts) {
-      const slot = slotOf(r, this.starts[i]!, L), c = slot < 0 ? UNREACHED : r.fields[e * P + slot]!
+  }
+  /**
+   * Covers the open starts of region `index` that reach `field` (an exit index, or a goal field over the region's
+   * slots) at the cost it adds to `base`; a start that is no pose of the region has nothing more to learn either.
+   */
+  private cover(r: Region, field: number | Uint16Array, base: number): void {
+    const list = this.open.get(r.index)
+    if (!list) return
+    const L = this.nav.port.layout, P = r.poses.length
+    const left = list.filter(i => {
+      const slot = slotOf(r, this.starts[i]!, L), c = slot < 0 ? 0 : typeof field === 'number' ? r.fields[field * P + slot]! : field[slot]!
       this.debt++
-      if (c !== UNREACHED) this.push(this.startBase + i, c + d, -1)
-    }
+      if (c === UNREACHED) return true
+      this.covered++; if (slot >= 0) this.farthest = Math.max(this.farthest, base + c)
+      return false
+    })
+    if (left.length) this.open.set(r.index, left); else this.open.delete(r.index)
   }
   /** Relaxes every exit of region `source` that enters `region`, given the cost from each pose of `region` to the goals. */
   private relaxInto(source: Region, region: Region, cost: (slot: number) => number): void {
@@ -170,31 +213,27 @@ export class GroupField {
       if (this.phase === 'seed') { this.seed(); continue }
       if (this.phase === 'validate') { this.validate(); continue }
       if (this.expanding >= 0) { this.expand(); continue }
-      if (this.settled === this.starts.length || !this.heap.size) { this.phase = 'validate'; continue }
+      if (this.covered === this.starts.length || !this.heap.size || this.covered && this.heap.peekF() > this.farthest * FAR + FAR_SLACK) { this.phase = 'validate'; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
       if (this.closed.has(key)) continue
-      if (key >= this.startBase) { if (f === this.d.get(key)) { this.closed.add(key); this.settled++ }; continue }
-      const [region, e] = splitKey(key), at = this.reader.regions.get(region)!.exits[e]!.from
+      const [region, e] = splitKey(key), r = this.reader.regions.get(region)!, at = r.exits[e]!.from
       if (f !== this.d.get(key)! + this.h(at) * this.weight) continue
       this.closed.add(key); this.expanding = key; this.source = 0
+      this.cover(r, e, this.d.get(key)!)
     }
     this.spent += used
     // Settled: next() reads only the distances and the regions, so the frontier goes.
     if (this.status !== 'pending' && (this.heap.size || this.closed.size)) { this.heap.clear(); this.closed.clear(); this.reader.drop() }
     return used
   }
-  /** Goal regions: their goal fields seed the exits entering them, and the starts standing in them. */
+  /** Goal regions: their goal fields seed the exits entering them, and cover the starts standing in them. */
   private seed(): void {
     const regions = [...this.goalRegions.keys()]
     if (this.seedCursor === regions.length) { this.phase = 'search'; return }
     const index = regions[this.seedCursor]!, r = this.need(index)
     if (!r) return
     const field = this.goalFields.get(index)!
-    if (!this.seededStarts) {
-      this.seededStarts = true
-      const L = this.nav.port.layout
-      for (const i of this.startRegions.get(index) ?? []) { const slot = slotOf(r, this.starts[i]!, L); this.debt++; if (slot >= 0 && field[slot] !== UNREACHED) this.push(this.startBase + i, field[slot]!, -1) }
-    }
+    if (this.seedSource === 0) this.cover(r, field, 0)
     while (this.seedSource < SOURCES.length && this.status === 'pending') {
       const si = this.source3(index, this.seedSource)
       const s = si < 0 ? undefined : this.need(si)
@@ -202,7 +241,7 @@ export class GroupField {
       if (s) this.relaxInto(s, r, slot => field[slot]!)
       this.seedSource++
     }
-    this.seedCursor++; this.seedSource = 0; this.seededStarts = false
+    this.seedCursor++; this.seedSource = 0
   }
   /** Expanding exit e of region A: every exit entering A reaches the goals through e. */
   private expand(): void {
@@ -217,20 +256,17 @@ export class GroupField {
     this.expanding = -1
   }
   /**
-   * Stale only when a goal or start region changed since it was read: every unit depends on those. A change elsewhere
-   * leaves distances that are at worst slightly off, and each unit re-checks a region's revision before it walks it.
+   * Never stale: a field proves nothing (a start it misses plans its own route), and a unit standing in a region that
+   * changed since the field read it prices its way on from the current record (nextHop), so the costs keep serving.
    */
-  private validate(): void {
-    const pinned = [...this.goalRegions.keys(), ...this.startRegions.keys()]
-    this.debt += pinned.length
-    this.status = pinned.some(t => this.reader.moved(t)) ? 'stale' : 'found'
-  }
+  private validate(): void { this.status = 'found' }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
     mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); numbers(this.goals); numbers(this.starts); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
-    mix(this.spent); mix(this.debt); mix(this.settled); mix(this.seedCursor); mix(this.seedSource); mix(this.seededStarts ? 1 : 0); mix(this.expanding); mix(this.source)
+    mix(this.spent); mix(this.debt); mix(this.covered); mix(this.farthest); mix(this.seedCursor); mix(this.seedSource); mix(this.expanding); mix(this.source)
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.d.size); for (const [k, d] of this.d) { mix(k); mix(d) }
     numbers(this.closed)
+    mix(this.open.size); for (const [r, list] of this.open) { mix(r); numbers(list) }
   }
 }

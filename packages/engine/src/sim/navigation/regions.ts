@@ -1,4 +1,5 @@
 import type { Layout } from '../../world/layout.ts'
+import { voxelId } from '../../world/voxel.ts'
 import { edgeCost, type NavigationSystem } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 
@@ -110,16 +111,33 @@ export class RegionBuild {
   get stage(): Phase { return this.phase }
   private charge(steps: number): void { this.debt += steps; if (this.phase !== 'done') this.counts[this.phase] += steps }
   private restart(): void {
-    this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0; this.charge(256)
-    this.slots = new Int16Array(4096).fill(-1); this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0
+    this.epoch = this.nav.revisions[this.index]!; this.phase = 'poses'; this.cursor = 0; this.count = 0; this.done = false; this.built = null
+    this.crossings = []; this.exits = []; this.runs = []; this.overflow = false; this.sources = 0
     this.heap.clear(); this.field = 0; this.expanding = -1; this.edge = 0
+    if (this.vacant()) { this.phase = 'done'; this.done = true; this.debt = 1; return }
+    this.charge(256); this.slots = new Int16Array(4096).fill(-1)
+  }
+  /**
+   * Whether nothing can stand in the tile, read from chunk uniformity alone: a tile inside a uniform solid chunk has no
+   * clear cell, and one inside a uniform open chunk has no support unless it sits on the chunk below (lower half, not
+   * the world floor) and that chunk is not uniformly open too.
+   */
+  private vacant(): boolean {
+    const uniform = this.nav.port.uniform, [x, y, z] = this.origin, v = uniform?.(x, y, z)
+    if (v === undefined) return false
+    const solid = this.nav.port.registry.solid
+    if (solid[voxelId(v)]) return true
+    if (y & 16) return true
+    if (y === 0) return false
+    const below = uniform!(x, y - 1, z)
+    return below !== undefined && !solid[voxelId(below)]
   }
   private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) }
   /** Returns charged operations, at most `cap`. */
   step(cap: number): number {
     let used = 0
-    if (this.done) return 0
     if (this.nav.revisions[this.index] !== this.epoch) this.restart()
+    if (this.done) { const pay = Math.min(this.debt, cap * BUILD_WEIGHT); this.debt -= pay; return Math.ceil(pay / BUILD_WEIGHT) }
     const L = this.nav.port.layout, [ox, oy, oz] = this.origin, limit = cap * BUILD_WEIGHT
     while (used < limit && !this.done) {
       if (this.debt) { const pay = Math.min(this.debt, limit - used); this.debt -= pay; used += pay; continue }
@@ -269,10 +287,10 @@ export function reverseField(region: Region, targets: readonly number[], layout:
 /** Region records by tile, in insertion order; stale records are dropped on read, the oldest evicted past the byte cap. */
 export class RegionStore {
   private readonly nav: NavigationSystem
-  private readonly maxBytes: number
+  readonly maxBytes: number
   private readonly regions = new Map<number, Region>()
   private total = 0
-  constructor(nav: NavigationSystem, maxBytes = 32 * 1024 * 1024) { this.nav = nav; this.maxBytes = maxBytes }
+  constructor(nav: NavigationSystem, maxBytes = 64 * 1024 * 1024) { this.nav = nav; this.maxBytes = maxBytes }
   get bytes(): number { return this.total }
   get size(): number { return this.regions.size }
   get(index: number): Region | undefined {
