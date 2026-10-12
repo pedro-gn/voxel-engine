@@ -142,4 +142,27 @@ TBD.
 
 ## User checkpoint: `?scene=crowd`
 
-TBD.
+Start the dev server from the integration worktree and open the crowd scene:
+
+```
+cd .claude/worktrees/nav-integration/apps/sandbox
+npm run dev -- --port 5196 --strictPort
+```
+
+Then open `http://localhost:5196/?scene=crowd`. The camera looks down on the 1024² crowd world with its five pads. The
+bar at the bottom drives the scale benchmark's events:
+
+1. **Criar 1.000**: clears the pads and spawns 1,000 units, half on the west pad and half on the north pad. Runs once.
+   Regions and landmark tables are built in the background with spare budget; the bench waits ~4,700 ticks (about
+   4 minutes) for a fully warm world. Orders given earlier still work; the first units only start more slowly.
+2. **Todos → leste**: one move order, everyone to the east pad (the long west → east trip goes around the sand belt).
+3. **Espalhar**: scattered destinations 200–800 blocks away; each press draws new ones.
+4. **Gargalo**: builds the full-height wall at x = 832 with a one-wide and a two-wide gate, then sends half the units
+   east and half west through it. Runs once.
+5. **Obras**: the 20 work orders (digs and builds) on the pads.
+
+What to look at: how soon units start after an order; whether units ever stand inside one another or pass through
+walls (they should not); whether playback stays smooth (units are drawn ~75 ms behind the newest tick, at constant
+speed). Known at this commit (see Measurements): with all 1,000 units moving, the units of a pad merge into long
+single-file lines and jam where paths cross. Many units wait for long stretches, most do not arrive within the
+benchmark's time, and the simulation runs slower than real time while the jam lasts.
