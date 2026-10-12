@@ -5,7 +5,8 @@ import { RegionBuild, RegionStore, type Region } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
 import { GroupField } from './groupField.ts'
 
-export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean }
+/** `uniform`: the voxel filling the whole chunk at (x, y, z) when the chunk is uniform, so region builds skip tiles nothing stands in. */
+export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean; uniform?(x: number, y: number, z: number): number | undefined }
 export type PathStatus = 'pending' | 'found' | 'unreachable' | 'limited' | 'stale' | 'cancelled'
 export interface PathResult { status: PathStatus; path: number[]; cost: number }
 /** A sliced query the navigation budget schedules: flat searches, route searches and group fields. */
@@ -21,6 +22,10 @@ const UNSET = -2
 const FRESH_SLICE = 512, SHORT_ESTIMATE = 32 * 4
 /** Long queries sliced together; the rest wait their turn. */
 const WINDOW = 8
+/** Prebuild rings: tiles within this many columns of an anchor, on its level and the levels above and below. */
+const RING = 2
+/** Prebuild stops while the region store is fuller than this share of its cap, so it never evicts what queries read. */
+const PREBUILD_FILL = 0.9
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
 /** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
@@ -39,6 +44,15 @@ export class NavigationSystem {
   readonly regions: RegionStore
   /** Region builds in progress by tile, shared by the queries that need them. */
   readonly building = new Map<number, RegionBuild>()
+  /**
+   * Background prebuild cursor: phase 0 walks rings around the anchors (ring, anchor, k), phase 1 every tile by index
+   * (tile); `built` counts tiles built this pass, and a pass that built none sets `prebuilt`.
+   */
+  private readonly pre = { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }
+  /** A whole prebuild pass found every tile current. */
+  prebuilt = false
+  /** Prebuild passes completed: after the first one every tile was built once (a warm world). Not simulation state. */
+  prebuildPasses = 0
   private cursor = 0
   /** The tile the last edge read: the four edges of a pose skip the map. Always the map's entry for `lastTile`. */
   private lastTile = -1
@@ -53,13 +67,13 @@ export class NavigationSystem {
    * search may remember the poses it rejected for the rest of the pass.
    */
   pass = 0
-  constructor(port: NavigationPort, maxNodes = 16384, cacheLimit = 512) {
+  constructor(port: NavigationPort, maxNodes = 16384, cacheLimit = 512, storeBytes = 64 * 1024 * 1024) {
     if (port.layout.voxelCount > 0x80000000) throw new RangeError('navigation needs voxel indices to fit positive int32')
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4))
-    this.regions = new RegionStore(this)
+    this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
   get cacheTiles(): number { return this.tiles.size }
@@ -80,7 +94,10 @@ export class NavigationSystem {
         for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) this.revisions[xx + zz * this.tx + yy * this.tx * this.tz]!++
     this.revision++; this.pass++
   }
-  reset(): void { this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = [] }
+  reset(): void {
+    this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
+    Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
+  }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
    * expanded next to it. Route and group queries read geometry only, so policy never cancels them.
@@ -168,6 +185,57 @@ export class NavigationSystem {
     if (this.regions.get(index) !== r) this.regions.put(r)
     return { region: r, used }
   }
+  /**
+   * Builds regions ahead of need with operations the tick left unused, in a fixed order: the tiles within RING columns
+   * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
+   * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
+   * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
+   * pass that built nothing until a tile changes. Returns the operations used, at most `cap`.
+   */
+  prebuild(cap: number, anchors: readonly number[]): number {
+    let used = 0
+    const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
+    if (pre.idle === this.revision) return 0
+    while (used < cap && this.regions.bytes < this.regions.maxBytes * PREBUILD_FILL) {
+      let tile = -1
+      if (pre.phase === 0) {
+        // Ring r has 8r columns (1 for r = 0), each on three levels.
+        const r = pre.ring, side = 2 * r + 1, columns = r ? 8 * r : 1
+        if (r > RING) { pre.phase = 1; pre.ring = 0; continue }
+        if (pre.anchor >= anchors.length) { pre.ring++; pre.anchor = 0; pre.k = 0; continue }
+        if (pre.k >= columns * 3) { pre.anchor++; pre.k = 0; continue }
+        const a = anchors[pre.anchor]!, ax = a % tx, az = Math.floor(a / tx) % tz, ay = Math.floor(a / (tx * tz))
+        const c = Math.floor(pre.k / 3), level = ay + (pre.k % 3) - 1
+        // Walk the ring's perimeter from its corner: top edge, right edge, bottom edge, left edge.
+        const edge = r ? Math.floor(c / (side - 1)) : 0, at = r ? c % (side - 1) : 0
+        const dx = r === 0 ? 0 : edge === 0 ? -r + at : edge === 1 ? r : edge === 2 ? r - at : -r
+        const dz = r === 0 ? 0 : edge === 0 ? -r : edge === 1 ? -r + at : edge === 2 ? r : r - at
+        const x = ax + dx, z = az + dz
+        if (x >= 0 && z >= 0 && x < tx && z < tz && level >= 0 && level < ty) tile = x + z * tx + level * tx * tz
+      } else {
+        if (pre.tile >= this.revisions.length) {
+          this.prebuilt = pre.built === 0; this.prebuildPasses++
+          Object.assign(pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: this.prebuilt ? this.revision : -1 })
+          // A pass with nothing to build: the next one waits for a change.
+          if (this.prebuilt) break
+          continue
+        }
+        tile = pre.tile
+      }
+      if (tile < 0) { pre.k++; continue }
+      used++
+      if (this.regions.get(tile)) { if (pre.phase === 0) pre.k++; else pre.tile++; continue }
+      const { region, used: spent } = this.regionNow(tile, cap - used)
+      used += spent
+      if (!region) break
+      pre.built++
+      if (pre.phase === 0) pre.k++; else pre.tile++
+    }
+    // A store too full to take more leaves prebuild nothing to do either.
+    if (this.regions.bytes >= this.regions.maxBytes * PREBUILD_FILL) this.prebuilt = true
+    this.visited += used
+    return used
+  }
   /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
   route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {
     const s = new RouteSearch(this, this.regions, start, goals, options); this.requests.push(s); return s
@@ -202,6 +270,7 @@ export class NavigationSystem {
     mix(this.requests.length)
     for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
+    const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
   }
 }
 

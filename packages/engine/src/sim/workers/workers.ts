@@ -24,6 +24,8 @@ export interface WorkerPort {
   hazard(x: number, y: number, z: number): boolean
   dynamicBusy(): boolean
   emit(type: string, payload: unknown): void
+  /** The voxel filling the whole chunk at (x, y, z) when the chunk is uniform; lets region builds skip empty tiles. */
+  uniform?(x: number, y: number, z: number): number | undefined
 }
 type Motion = { from: number; to: number; cursor: number; start: [number, number, number]; flat: boolean; elapsed: number; ticks: number; cells: number[]; area: Set<number> | null }
 /**
@@ -1045,7 +1047,14 @@ export class WorkerSystem {
     }
     const repairWork = this.cooperate(Math.max(0, this.searchCap - engineeringWork - this.refineWork))
     this.engineeringVisited = engineeringWork + repairWork
-    this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork))
+    const rest = Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork)
+    this.assign(); this.nav.step(rest)
+    // What the tick left unused builds regions ahead, around the units first.
+    if (rest > this.nav.visited) {
+      const anchors = new Set<number>()
+      for (const u of this.units.values()) if (u.state !== 'incapacitated') anchors.add(this.nav.tileOfPose(this.position(u)))
+      this.nav.prebuild(rest - this.nav.visited, [...anchors])
+    }
   }
   /** Whether the unit may plan on the region layer: no engineering, no designation to escape, not standing on sand. */
   private routable(u: Unit): boolean { return !u.allowDig && !u.buildBlock && !this.escaping(u) && this.nav.regionStand(...this.pose(u)) }

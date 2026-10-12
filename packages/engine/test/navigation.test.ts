@@ -180,3 +180,41 @@ it('marks an exhausted engineering search as limited when a viable detour exits 
   while (s.status === 'pending') expect(s.step(32)).toBeLessThanOrEqual(32)
   expect(s.status).toBe('limited')
 })
+it('prebuilds regions with spare operations: rings around anchors first, then every tile by index, within the cap', () => {
+  const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
+  const anchor = nav.tileOf(100, 4, 100), order: number[] = []
+  const put = nav.regions.put.bind(nav.regions)
+  nav.regions.put = r => { order.push(r.index); put(r) }
+  for (let tick = 0; tick < 2000 && !nav.prebuilt; tick++) expect(nav.prebuild(512, [anchor])).toBeLessThanOrEqual(512)
+  expect(nav.prebuilt).toBe(true)
+  expect(nav.regions.size).toBe(nav.revisions.length)
+  // The anchor's tile first, then its 3 × 3 ring, before any tile by index.
+  expect(order[0]).toBe(anchor)
+  const ring = (t: number) => Math.max(Math.abs((t % 8) - (anchor % 8)), Math.abs((Math.floor(t / 8) % 8) - (Math.floor(anchor / 8) % 8)))
+  expect(order.slice(0, 9).every(t => ring(t) <= 1)).toBe(true)
+  // Once everything is built, a pass costs one operation per tile checked and builds nothing.
+  const size = nav.regions.bytes
+  nav.prebuild(512, [anchor])
+  expect(nav.regions.bytes).toBe(size)
+})
+it('prebuild rebuilds a tile an edit invalidated and stops short of the store cap', () => {
+  const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
+  while (!nav.prebuilt) nav.prebuild(4096, [])
+  nav.invalidate(40, 4, 40)
+  const t = nav.tileOf(40, 4, 40)
+  expect(nav.regions.get(t)).toBeUndefined()
+  for (let i = 0; i < 100 && !nav.regions.get(t); i++) nav.prebuild(4096, [])
+  expect(nav.regions.get(t)).toBeDefined()
+  // A store near its cap is not churned: prebuild stops instead of evicting what it built.
+  const capped = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 }, 16384, 512, 40_000)
+  let puts = 0
+  const put = capped.regions.put.bind(capped.regions)
+  capped.regions.put = r => { puts++; put(r) }
+  for (let i = 0; i < 200; i++) capped.prebuild(4096, [])
+  const settled = puts
+  for (let i = 0; i < 200; i++) capped.prebuild(4096, [])
+  expect(puts).toBe(settled)
+  expect(capped.regions.size).toBeLessThan(capped.revisions.length)
+})

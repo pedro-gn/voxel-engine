@@ -127,6 +127,8 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(sim.workers!.units.get(1)!.route?.search).toBeInstanceOf(RouteSearch)
     until(sim, () => sim.workers!.view(1)?.state === 'blocked', 400)
     expect(sim.workers!.view(1)?.reason).toBe('no-access')
+    // Spare operations prebuild the world first; once it is all built they rest too.
+    until(sim, () => sim.workers!.nav.prebuilt, 2000)
     const before = routes.n
     let visited = 0
     for (let i = 0; i < 100; i++) visited += sim.step().workers!.stats.visited
@@ -153,6 +155,18 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     ;(field as unknown as { status: string }).status = 'limited'
     until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 4000)
     expect(routes.n).toBe(0)
+  })
+  it('spare operations prebuild the world, nearest the units first, within the budget, and a long move then starts warm', () => {
+    const sim = makeWide(256, undefined, { searchCap: 4096 }); spawn(sim, [200, 4, 200])
+    const nav = sim.workers!.nav, near = nav.tileOf(200, 4, 200)
+    sim.step()
+    expect(nav.regions.get(near)).toBeDefined()
+    for (let i = 0; i < 3000 && !nav.prebuilt; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(4096)
+    expect(nav.prebuilt).toBe(true)
+    expect(nav.regions.size).toBe(nav.revisions.length)
+    // Warm: the route is found in its first slice, and the unit sets off at once.
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [10, 4, 10] })
+    until(sim, () => sim.workers!.view(1)?.state === 'walking', 3)
   })
   it('a route that ends stale backs off instead of replanning the same tick', () => {
     const sim = makeWide(128); spawn(sim, [5, 4, 5])
