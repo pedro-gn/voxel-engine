@@ -228,9 +228,13 @@ it('reports prebuild progress: every tile built once, or stopped by the store ca
   expect(partway.built).toBeGreaterThan(0); expect(partway.built + partway.queued).toBe(tiles); expect(partway.done).toBe(false)
   while (!nav.prebuildStatus().done) nav.prebuild(4096, [])
   expect(nav.prebuildStatus()).toMatchObject({ built: tiles, ground: tiles, queued: 0, bytes: nav.regions.bytes, landmarks: true, done: true })
-  // A change of the falls rule leaves the world warm: its tile is rebuilt in the background, every tile was built once.
+  // The first change of the falls rule in a tile retires the landmark tables; once they are computed again, more
+  // changes there leave the world warm (the tile is rebuilt in the background, every tile was built once).
   nav.invalidate(40, 4, 40, false)
-  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, done: true })
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, landmarks: false, done: false })
+  while (!nav.prebuildStatus().done) nav.prebuild(4096, [])
+  nav.invalidate(40, 4, 40, false)
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, landmarks: true, done: true })
   // A solid edit retires the landmark tables until the prebuild has computed them again.
   nav.invalidate(40, 4, 40)
   expect(nav.prebuildStatus()).toMatchObject({ built: tiles, landmarks: false, done: false })

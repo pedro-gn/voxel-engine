@@ -1,7 +1,7 @@
 import type { NavigationSystem } from './navigation.ts'
 import { GroupField } from './groupField.ts'
 import type { RelaxedRecords } from './routeSearch.ts'
-import { UNREACHED, slotOf, splitKey, type Region } from './regions.ts'
+import { SOURCES, UNREACHED, slotOf, splitKey, type Region } from './regions.ts'
 
 /** No cost known: the exit or tile does not reach the landmark, or was not read. */
 export const NO_COST = 0x7fffffff
@@ -13,14 +13,16 @@ export const NO_COST = 0x7fffffff
  */
 export class LandmarkTables {
   readonly geometry: number
+  /** The navigation's count of tiles where the falls rule changed, when the tables were computed. */
+  readonly flips: number
   readonly tiles: readonly number[]
   /** lo[k * tileCount + t]: the cheapest exit of tile t to landmark k (0 on the landmark's own tile), else NO_COST. */
   readonly lo: Int32Array
   /** Per tile: the record epoch every landmark read (else no entry), and the cost from exit e's `from` pose to landmark k at k * exits + e. */
   readonly exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>
   private readonly tileCount: number
-  constructor(geometry: number, tiles: readonly number[], tileCount: number, lo: Int32Array, exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>) {
-    this.geometry = geometry; this.tiles = tiles; this.tileCount = tileCount; this.lo = lo; this.exits = exits
+  constructor(geometry: number, flips: number, tiles: readonly number[], tileCount: number, lo: Int32Array, exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>) {
+    this.geometry = geometry; this.flips = flips; this.tiles = tiles; this.tileCount = tileCount; this.lo = lo; this.exits = exits
   }
   get count(): number { return this.tiles.length }
   /** Lower bound of the cost from any pose of `tile` to landmark k (a pose leaves its tile through an exit). */
@@ -55,11 +57,12 @@ interface Pending { epoch: number; d: Int32Array; record: Region }
 
 /**
  * Computes landmark tables in the background, one landmark at a time, as an exhaustive reverse search over region exits
- * (a group field with no starts), on budget the prebuild hands over. The searches read the relaxed graph, where poses
- * on falling blocks are standable: sand that gets wet adds poses and can only make real ways cheaper than the regions
- * said, never cheaper than the relaxed graph, so the tables stay a lower bound through those changes and are kept. A
- * solid edit (the `geometry` count) retires them at once and starts them over. Exact exit costs are kept only for
- * tiles read from the shared store (their record has nothing to relax); a relaxed tile keeps its tile bound only.
+ * (a group field with no starts), on budget the prebuild hands over. Sand that gets wet adds poses and can make real
+ * ways cheaper than the regions said, so in and next to tiles where the falls rule has ever changed (`nav.flippy`) the
+ * searches read the relaxed graph, with poses on falling blocks standable: changes there keep the tables a lower bound.
+ * Elsewhere sand stays a barrier, which is what the tables are for on a sand belt. The first falls change in a new tile,
+ * or any solid edit, retires the tables at once and starts them over. Exact exit costs are kept only for tiles read from
+ * the shared store; a relaxed tile keeps its tile bound only.
  */
 export class Landmarks {
   private readonly nav: NavigationSystem
@@ -67,7 +70,7 @@ export class Landmarks {
   /** A job whose search ended limited: no tables until the geometry changes (its costs could be too high). */
   private failed = -1
   private job: {
-    geometry: number; tiles: number[]; k: number; field: GroupField | null; lo: Int32Array; exits: Map<number, Pending>
+    geometry: number; flips: number; tiles: number[]; k: number; field: GroupField | null; lo: Int32Array; exits: Map<number, Pending>
     relaxed: RelaxedRecords
     /** The finished field's costs, read in place, and how many were read. */
     harvest: IterableIterator<[number, number]> | null; at: number; best: [number, Pending][] | null
@@ -76,9 +79,9 @@ export class Landmarks {
   } | null = null
   constructor(nav: NavigationSystem) { this.nav = nav }
   /** The tables for new queries: current ones only, so no edit since makes their bounds too high. */
-  current(): LandmarkTables | null { return this.ready && this.ready.geometry === this.nav.geometry ? this.ready : null }
+  current(): LandmarkTables | null { return this.ready && this.ready.geometry === this.nav.geometry && this.ready.flips === this.nav.flips ? this.ready : null }
   /** Nothing left to compute for the current geometry: tables are current, or the last job ended limited. */
-  settled(): boolean { return this.current() !== null || this.failed === this.nav.geometry }
+  settled(): boolean { return this.current() !== null || this.failed === this.nav.geometry * 0x10000 + this.nav.flips }
   reset(): void { this.ready = null; this.job = null; this.failed = -1 }
   /** Bytes held: the tables, and a job's partial tables and relaxed records. */
   get bytes(): number {
@@ -93,7 +96,7 @@ export class Landmarks {
     let used = 0
     while (used < cap && !this.settled()) {
       const job = this.job
-      if (!job || job.geometry !== this.nav.geometry) { this.start(); used++; if (!this.job!.tiles.length) { this.finish(); break }; continue }
+      if (!job || job.geometry !== this.nav.geometry || job.flips !== this.nav.flips) { this.start(); used++; if (!this.job!.tiles.length) { this.finish(); break }; continue }
       if (job.debt) { const pay = Math.min(job.debt, cap - used); job.debt -= pay; used += pay; continue }
       if (job.harvest) { used += this.harvest(cap - used); continue }
       if (job.best) { if (job.at === job.best.length) this.finish(); else used += this.best(cap - used); continue }
@@ -108,7 +111,7 @@ export class Landmarks {
       used += job.field.step(cap - used)
       if (job.field.status === 'pending') continue
       // A search cut short leaves tentative costs, possibly too high for a lower bound: no tables for this geometry.
-      if (job.field.status !== 'found') { this.failed = job.geometry; this.job = null; break }
+      if (job.field.status !== 'found') { this.failed = job.geometry * 0x10000 + job.flips; this.job = null; break }
       job.harvest = job.field.costs(); job.at = 0
     }
     return used
@@ -124,7 +127,14 @@ export class Landmarks {
       }
     }
     const count = tx * tz * ty
-    this.job = { geometry: nav.geometry, tiles, k: 0, field: null, lo: new Int32Array(tiles.length * count).fill(NO_COST), exits: new Map(), relaxed: { records: new Map(), building: new Map() }, harvest: null, at: 0, best: null, debt: 0 }
+    // A tile is relaxed when it, or a tile it may step into or from, has seen the falls rule change.
+    const [tx3, tz3] = [tx, tz], relax = (index: number) => {
+      if (nav.flippy[index]) return true
+      const x = index % tx3, z = Math.floor(index / tx3) % tz3, y = Math.floor(index / (tx3 * tz3))
+      for (const [dx, dy, dz] of SOURCES) { const a = x + dx, b = y + dy, c = z + dz; if (a >= 0 && b >= 0 && c >= 0 && a < tx3 && b < ty && c < tz3 && nav.flippy[a + c * tx3 + b * tx3 * tz3]) return true }
+      return false
+    }
+    this.job = { geometry: nav.geometry, flips: nav.flips, tiles, k: 0, field: null, lo: new Int32Array(tiles.length * count).fill(NO_COST), exits: new Map(), relaxed: { records: new Map(), building: new Map(), relax }, harvest: null, at: 0, best: null, debt: 0 }
     tiles.forEach((t, k) => { this.job!.lo[k * count + t] = 0 })
   }
   /** Reads one finished landmark's exit costs into the tables, one operation per exit. */
@@ -178,7 +188,7 @@ export class Landmarks {
   private finish(): void {
     const job = this.job!, exits = new Map<number, { epoch: number; d: Int32Array }>()
     for (const [index, t] of job.exits) exits.set(index, { epoch: t.epoch, d: t.d })
-    this.ready = new LandmarkTables(job.geometry, job.tiles, this.nav.revisions.length, job.lo, exits)
+    this.ready = new LandmarkTables(job.geometry, job.flips, job.tiles, this.nav.revisions.length, job.lo, exits)
     this.job = null
   }
   mixState(mix: (n: number) => void): void {
@@ -186,7 +196,7 @@ export class Landmarks {
     const job = this.job
     mix(job ? 1 : 0)
     if (!job) return
-    mix(job.geometry); mix(job.tiles.length); for (const t of job.tiles) mix(t); mix(job.k); mix(job.at); mix(job.harvest ? 1 : 0); mix(job.best?.length ?? -1); mix(job.debt)
+    mix(job.geometry); mix(job.flips); mix(job.tiles.length); for (const t of job.tiles) mix(t); mix(job.k); mix(job.at); mix(job.harvest ? 1 : 0); mix(job.best?.length ?? -1); mix(job.debt)
     mix(job.relaxed.records.size); mix(job.relaxed.building.size)
     mix(job.field ? 1 : 0); job.field?.mixState(mix)
   }

@@ -22,10 +22,11 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
 }
 
 /**
- * Relaxed reading for landmark tables: a tile whose current record would not change with poses on falling blocks
- * standable is read from the store; any other gets a relaxed record, built into `records` (one landmark job's own).
+ * Relaxed reading for landmark tables: a tile whose current record would change with poses on falling blocks
+ * standable, and that `relax` names, gets a relaxed record, built into `records` (one landmark job's own); any other is
+ * read from the store.
  */
-export interface RelaxedRecords { records: Map<number, Region>; building: Map<number, RegionBuild> }
+export interface RelaxedRecords { records: Map<number, Region>; building: Map<number, RegionBuild>; relax(index: number): boolean }
 /**
  * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision, and
  * a region whose tile changed after it was first read (or pinned) goes into `changed`; the search keeps using the
@@ -54,7 +55,7 @@ export class RegionReader {
     if (known) { if (known.epoch !== this.nav.revisions[index]) this.changed.add(index); return known }
     if (this.job?.index === index) return undefined
     const r = this.store.get(index), x = this.relaxed
-    if (r && (!x || !r.relaxes)) return this.adopt(r)
+    if (r && (!x || !r.relaxes || !x.relax(index))) return this.adopt(r)
     // A relaxed record stays good through falls-only changes: it never read whether a block falls.
     const rr = x?.records.get(index)
     if (rr) return this.adopt(rr)

@@ -38,6 +38,12 @@ export class NavigationSystem {
   revision = 0
   /** Bumped by every change of solid geometry (not by the falls rule alone): landmark tables are valid for one count. */
   geometry = 0
+  /**
+   * Tiles where the falls rule alone has changed (sand that got wet or dried, say), and a count bumped each time a tile
+   * joins them: landmark tables treat poses on falling blocks in and next to those tiles as standable.
+   */
+  readonly flippy: Uint8Array
+  flips = 0
   visited = 0
   private readonly tiles = new Map<number, Tile>()
   private readonly tx: number
@@ -77,7 +83,7 @@ export class NavigationSystem {
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
-    this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4))
+    this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
     this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
@@ -95,16 +101,21 @@ export class NavigationSystem {
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
   invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true): void {
     if (solid) this.geometry++
+    const flippy = this.flippy, plane = this.tx * this.tz
     const [sx, sy, sz] = this.port.layout.size
     for (let yy = Math.max(0, (y0 - 2) >> 4); yy <= Math.min((sy >> 4) - 1, (y1 + 3) >> 4); yy++)
       for (let zz = Math.max(0, (z0 - 1) >> 4); zz <= Math.min((sz >> 4) - 1, (z1 + 1) >> 4); zz++)
-        for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) this.revisions[xx + zz * this.tx + yy * this.tx * this.tz]!++
+        for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) {
+          const t = xx + zz * this.tx + yy * plane
+          this.revisions[t]!++
+          if (!solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
+        }
     this.revision++; this.pass++
   }
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
-    this.geometry++; this.landmarks.reset()
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset()
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -296,7 +307,7 @@ export class NavigationSystem {
     }
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.revision); mix(this.geometry); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
+    mix(this.revision); mix(this.geometry); mix(this.flips); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
     mix(this.requests.length)
     for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }

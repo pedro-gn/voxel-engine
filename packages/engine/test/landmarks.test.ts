@@ -20,8 +20,9 @@ function warm(nav: NavigationSystem) {
   expect(nav.prebuildStatus()).toMatchObject({ done: true, landmarks: true })
 }
 function settle<T extends { status: string; step(cap: number): number }>(s: T): T { while (s.status === 'pending') expect(s.step(4096)).toBeLessThanOrEqual(4096); return s }
-function flat(nav: NavigationSystem, start: number, goal: number) {
-  const s = nav.request(start, [goal])
+/** Exact flat A*; with `solidGround`, no pose on a falling block, as the live policy and the region layer. */
+function flat(nav: NavigationSystem, start: number, goal: number, solidGround = false) {
+  const L = nav.port.layout, s = nav.request(start, [goal], undefined, solidGround ? { allowed: p => nav.regionStand(...L.voxelCoords(p)) } : undefined)
   while (s.status === 'pending') nav.step(1 << 20)
   return s
 }
@@ -63,8 +64,9 @@ it('with landmarks, routes agree with exact flat A* on reachability and stay wit
     if (e.status === 'found') { expect(r.cost, where).toBeGreaterThanOrEqual(e.cost); expect(r.cost, where).toBeLessThanOrEqual(1.25 * e.cost) }
   }
 })
-it('a solid edit retires the tables until the prebuild has recomputed them; a falls-only change does not', { timeout: 60_000 }, () => {
+it('a solid edit retires the tables until the prebuild has recomputed them; a falls-only change where one was seen does not', { timeout: 60_000 }, () => {
   const { nav, layout, open } = detour()
+  nav.invalidate(30, 4, 30, false)
   warm(nav)
   const before = nav.landmarks.current()
   nav.invalidate(30, 4, 30, false)
@@ -87,14 +89,36 @@ it('the tables stay a lower bound when sand gets wet and opens a way the regions
   const get = (x: number, y: number, z: number) => x === 128 && y === 3 && door(z) ? wet ? WET : SAND : y < 4 || x === 128 && z < 232 && y < 12 && !door(z) ? STONE : 0
   const nav = new NavigationSystem({ layout, registry, get }, 1 << 20)
   warm(nav)
-  const tables = nav.landmarks.current()
+  const routesWithin = () => {
+    for (const [ax, az, bx, bz] of [[20, 20, 236, 20], [100, 20, 156, 20], [120, 100, 140, 100], [64, 10, 200, 30]] as const) {
+      const a = layout.voxelIndex(ax, 4, az), b = layout.voxelIndex(bx, 4, bz), e = flat(nav, a, b), r = settle(new RouteSearch(nav, nav.regions, a, [b]))
+      expect(r.cost, `${ax},${az} -> ${bx},${bz}`).toBeLessThanOrEqual(1.25 * e.cost)
+    }
+  }
   wet = true
   for (let z = 16; z <= 24; z++) nav.invalidate(128, 3, z, false)
-  // A falls-only change keeps the tables: they were computed as if sand could be stood on.
+  // The first falls-only change in a tile retires the tables: they had that sand as a barrier.
+  expect(nav.landmarks.current()).toBeNull()
+  // Computed again, they treat the sand of tiles that have changed so as standable, so it can flip back and forth.
+  warm(nav)
+  const tables = nav.landmarks.current()
+  routesWithin()
+  wet = false
+  for (let z = 16; z <= 24; z++) nav.invalidate(128, 3, z, false)
+  wet = true
+  for (let z = 16; z <= 24; z++) nav.invalidate(128, 3, z, false)
   expect(nav.landmarks.current()).toBe(tables)
   while (!nav.prebuilt) nav.prebuild(8192, [])
-  for (const [ax, az, bx, bz] of [[20, 20, 236, 20], [100, 20, 156, 20], [120, 100, 140, 100], [64, 10, 200, 30]] as const) {
-    const a = layout.voxelIndex(ax, 4, az), b = layout.voxelIndex(bx, 4, bz), e = flat(nav, a, b), r = settle(new RouteSearch(nav, nav.regions, a, [b]))
-    expect(r.cost, `${ax},${az} -> ${bx},${bz}`).toBeLessThanOrEqual(1.25 * e.cost)
-  }
+  routesWithin()
+})
+it('sand that has never changed stays a barrier in the tables, so a detour around it is cheap to find', { timeout: 120_000 }, () => {
+  // A strip of sand at x = 128 for z < 232: nothing stands on it, so the way east goes around its end.
+  const layout = new Layout([256, 32, 256]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'sand', falls: true }])
+  const STONE = registry.id('stone'), SAND = registry.id('sand')
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => x === 128 && y === 3 && z < 232 ? SAND : y < 4 ? STONE : 0 }, 1 << 20)
+  warm(nav)
+  const start = layout.voxelIndex(20, 4, 20), goal = layout.voxelIndex(236, 4, 20)
+  const plain = settle(new RouteSearch(nav, nav.regions, start, [goal], { landmarks: null })), alt = settle(new RouteSearch(nav, nav.regions, start, [goal]))
+  expect(alt.status).toBe('found'); expect(alt.cost).toBeLessThanOrEqual(1.25 * flat(nav, start, goal, true).cost)
+  expect(alt.spent * 3).toBeLessThan(plain.spent)
 })
