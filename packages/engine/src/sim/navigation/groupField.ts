@@ -16,7 +16,7 @@ const PHASES: readonly Phase[] = ['seed', 'search', 'validate']
 export class GroupField {
   private readonly nav: NavigationSystem
   private readonly reader: RegionReader
-  private readonly goals: readonly number[]
+  readonly goals: readonly number[]
   private readonly starts: readonly number[]
   private readonly maxNodes: number
   private readonly weight: number
@@ -82,6 +82,8 @@ export class GroupField {
   cancel(): void { if (this.status !== 'pending') return; this.status = 'cancelled'; this.reader.drop() }
   /** Cost to the goals from exit `key` (1 + region*4096 + e), or Infinity when unknown or unreachable. */
   distance(key: number): number { return this.d.get(key) ?? Infinity }
+  /** The same cost, as a corridor: from the exit's `from` pose to the nearest goal. */
+  toGo(key: number): number { return this.d.get(key) ?? Infinity }
   /** The best exit key to take from `pose` (or -1 when the pose's region is a goal region and the goal field is best), and its total cost. */
   next(pose: number): { exit: number; cost: number } | null {
     const L = this.nav.port.layout, index = this.nav.tileOfPose(pose), r = this.reader.regions.get(index)

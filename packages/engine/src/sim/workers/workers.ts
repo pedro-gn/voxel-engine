@@ -7,8 +7,8 @@ import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { RouteSearch } from '../navigation/routeSearch.ts'
 import { GroupField } from '../navigation/groupField.ts'
-import { splitKey } from '../navigation/regions.ts'
-import { descend } from '../navigation/refine.ts'
+import { exitKey, reverseField, slotOf, splitKey, type Region } from '../navigation/regions.ts'
+import { descend, nextHop } from '../navigation/refine.ts'
 import { walkSweep } from './walkSweep.ts'
 import { ReservationTable } from './reservations.ts'
 import { SpaceTimeSearch, type SpaceTimePort } from './spaceTime.ts'
@@ -80,13 +80,17 @@ interface Unit {
 }
 /**
  * last: pose where the refined path ends; segs: refined segments by end index in `path`, with the region revision they
- * were refined on; exits: exit keys refined so far; next: next exit of a route search to refine; target: what `segment`
- * refines (an exit key, or -1 for the goal).
+ * were refined on; exits: exit keys refined so far; target: what `segment` refines (an exit key, or -1 for the goal) and
+ * the record it refines in; goalField: the cost to the goals over a goal region's current record, when the search's own
+ * is missing or stale (records and fields are functions of a tile's revision: derived, not hashed); recovered: regions
+ * that changed since the search read them where the unit took a way on, and hop: the region of the last way on taken.
  */
 interface Route {
-  search: RouteSearch | GroupField; goals: number[]; exits: number[]; next: number; last: number
+  search: RouteSearch | GroupField; goals: number[]; exits: number[]; last: number
   segs: { end: number; region: number; epoch: number }[]; exclude: number[]; finished: boolean; replan: boolean
-  target: { key: number; region: number; epoch: number } | null
+  target: { key: number; region: number; epoch: number; record: Region } | null
+  goalField: { record: Region; field: Uint16Array } | null
+  recovered: number[]; hop: number
 }
 interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
   cursor: number; ids: Set<number> | null; priority: number; parked: number[]; parkedRevision: number
@@ -117,6 +121,8 @@ const MAKE_WAY_RADIUS = 16
 /** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
 export const HIER_MIN = 48 * 4
 const SEGMENT_STEPS = 256
+/** Regions a route may recover in from costs priced one region ahead before it plans anew. */
+const MAX_RECOVERIES = 16
 const STATUSES = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'] as const
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
@@ -744,9 +750,21 @@ export class WorkerSystem {
     })
   }
   private beginPathMotion(u: Unit): boolean {
+    const L = this.port.layout, y = u.y >> 8, to = u.path[u.cursor]!, back = u.path[u.cursor - 1]
+    // Traffic can stop a step between nodes, off the path: the unit walks straight to the next node, or back onto the
+    // node it stepped from or toward (that line is the stopped step's own), and waits for bodies in the way like any
+    // step instead of failing the neighbour check.
+    const here = this.position(u)
+    if (back !== undefined && here !== back) {
+      for (const [p, cursor] of [[to, u.cursor + 1], [back, u.cursor]] as const) {
+        const [x, ty, z] = L.voxelCoords(p), cells = walkSweep(L, [u.x, u.y, u.z], [x * 256 + 128, u.y, z * 256 + 128])
+        if (ty === y && this.walkable(u, cells, y)) return this.beginMotion(u, p, cursor, cells)
+      }
+      // Neither in reach (another level): a route carries on from where the unit stands.
+      if (u.route && !DIRS.some((_, d) => this.nav.neighbor(here, d) === to)) { this.reseat(u, u.route, here); return false }
+    }
     // A blocked next step needs traffic arbitration, not repeated long visibility probes; a repair plan goes node by node.
-    if (u.wait || u.cursor < this.scheduled(u)) return this.beginMotion(u, u.path[u.cursor]!)
-    const L = this.port.layout, y = u.y >> 8
+    if (u.wait || u.cursor < this.scheduled(u)) return this.beginMotion(u, to)
     let end = u.cursor
     while (end < u.path.length && end < u.cursor + WALK_LOOKAHEAD && L.voxelCoords(u.path[end]!)[1] === y) end++
     // Bound both lookahead and probes; never smooth across stairs or engineering edits.
@@ -769,7 +787,11 @@ export class WorkerSystem {
     let cells: number[], area: Set<number> | null = null
     if (flat) {
       const sweep = visibleCells ?? walkSweep(this.port.layout, start, [tx * 256 + 128, u.y, tz * 256 + 128])
-      if (!visibleCells && !this.walkable(u, sweep, y)) { this.block(u, 'unsafe'); return false }
+      if (!visibleCells && !this.walkable(u, sweep, y)) {
+        // Stopped off-center (traffic cut a step short), the body sweeps a neighbour cell: re-center first, then step.
+        if (from !== to && ((u.x & 255) !== 128 || (u.z & 255) !== 128)) return this.beginMotion(u, from, u.cursor)
+        this.block(u, 'unsafe'); return false
+      }
       const valid = new Set(sweep); area = valid
       cells = walkSweep(this.port.layout, start, this.motionPose(to, 1, ticks, start)).filter(p => valid.has(p))
     } else cells = this.verticalCells(to, ticks, start)
@@ -890,7 +912,8 @@ export class WorkerSystem {
         if (u.state === 'falling' || !u.motion && !this.hasSupport(u)) { this.fall(u); continue }
         if (!u.motion && !this.nav.stand(...this.pose(u)) && this.hasSupport(u)) {
           const from = this.position(u)
-          for (let d = 0; d < 4; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p)) break }
+          // A step off the path: the cursor stays, and the path resumes from wherever the unit then stands.
+          for (let d = 0; d < 4; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p, u.cursor)) break }
           continue
         }
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
@@ -1045,7 +1068,7 @@ export class WorkerSystem {
   }
   private newRoute(search: RouteSearch | GroupField, goals: readonly number[], exclude: readonly number[] = []): Route {
     if (search instanceof GroupField) { const g = this.groups.get(search); if (g) g.users++; else this.groups.set(search, { id: this.nextGroup++, users: 1 }) }
-    return { search, goals: [...goals], exits: [], next: 0, last: -1, segs: [], exclude: [...exclude], finished: false, replan: false, target: null }
+    return { search, goals: [...goals], exits: [], last: -1, segs: [], exclude: [...exclude], finished: false, replan: false, target: null, goalField: null, recovered: [], hop: -1 }
   }
   /** Drops the route and its segment search; a group field is cancelled when its last unit leaves it. */
   private dropRoute(u: Unit): void {
@@ -1071,8 +1094,10 @@ export class WorkerSystem {
     this.releaseWorkPoses(u); u.workPoses = goals; this.plan(u, goals); u.state = 'planning'; this.dirty.add(u.id); return true
   }
   /**
-   * Moves a standing unit along its route: adopts the result, keeps two refined segments ahead, and replans from where it
-   * stands when a region it is about to cross changed or its path was replaced. True when the unit waits this tick.
+   * Moves a standing unit along its route: adopts the result and keeps two refined segments ahead. When a region it is
+   * about to cross changed, or its path was replaced, it carries on from where it stands, and when a segment fails it
+   * takes another way on from the segment's start: both read the route's own costs (`nextHop`), so only a unit with no
+   * way on left plans a new route. True when the unit waits this tick.
    */
   private advanceRoute(u: Unit): boolean {
     const r = u.route!, s = r.search
@@ -1088,50 +1113,82 @@ export class WorkerSystem {
     }
     const here = this.position(u)
     if (r.last < 0) {
-      if (s instanceof GroupField && !s.next(here)) { this.plan(u, r.goals); return true }
       if (u.task && s instanceof RouteSearch && !this.claimWorkPose(u, s.goal)) return this.replanTask(u)
-      u.stale = 0; r.last = here; u.path = [here]; u.cursor = 1
+      u.stale = 0; this.reseat(u, r, here)
     }
     if (u.segment && u.segment.status !== 'pending') {
       const seg = u.segment, target = r.target!
       u.segment = null; r.target = null
-      if (seg.status === 'found') this.appendSegment(u, r, seg.path, target)
+      // A path replaced while the segment was searched no longer ends where the segment starts: the segment goes.
+      if (seg.status === 'found') { if (u.path.at(-1) === seg.path[0]) this.appendSegment(u, r, seg.path, target) }
       else if (seg.status !== 'stale' && seg.status !== 'cancelled') {
-        // Live policy or a confined detour cut the segment: route around that exit, or finish the walk on a flat search.
+        // Live policy or a confined detour cut the segment: go on around that exit, or finish the walk on a flat search.
         if (target.key < 0) { this.dropRoute(u); return false }
-        r.exclude.push(r.search.region(target.region)!.exits[splitKey(target.key)[1]]!.from); r.replan = true
+        r.exclude.push(target.record.exits[splitKey(target.key)[1]]!.from)
       }
     }
     const ahead = () => { let n = 0; for (const g of r.segs) if (g.end >= u.cursor) n++; return n }
     // A path cut or replaced under the route (reservations, a sidestep), or an edit on a segment still to walk.
-    if (u.path[u.cursor] === undefined && !r.finished && !u.segment && here !== r.last) r.replan = true
-    for (const g of r.segs) if (g.end >= u.cursor && this.nav.revisions[g.region] !== g.epoch) r.replan = true
-    while (!r.replan && !r.finished && !u.segment && ahead() < 2 && this.refineNext(u, r));
+    if (u.path[u.cursor] === undefined && !r.finished && !u.segment && here !== r.last) this.reseat(u, r, here)
+    if (r.segs.some(g => g.end >= u.cursor && this.nav.revisions[g.region] !== g.epoch)) this.reseat(u, r, here)
+    // Segments continue from r.last: only while the path still ends there. A refuge or a sidestep that replaced the
+    // path ends elsewhere; the unit walks it first and the route carries on from where it then stands.
+    while (!r.replan && !r.finished && !u.segment && u.path.at(-1) === r.last && ahead() < 2 && this.refineNext(u, r));
     if (r.replan) { if (u.task) return this.replanTask(u); const { goals, exclude } = r; u.path = []; u.cursor = 0; this.plan(u, goals, exclude); return true }
     if (r.finished && !u.segment && u.path[u.cursor] === undefined) { this.dropRoute(u); return false }
     return u.path[u.cursor] === undefined
   }
-  /** Refines the next segment by field descent, or starts a confined search for it; true when a segment was appended. */
+  /** Carries the route on from `here`: the path still to walk is dropped and refinement starts again from the unit's pose. */
+  private reseat(u: Unit, r: Route, here: number): void {
+    u.segment?.cancel(); u.segment = null; r.target = null; r.finished = false
+    u.path = [here]; u.cursor = 1; r.last = here; r.segs = []
+  }
+  /** A tile's record at its current revision: the search's own, the store's, or built on the refinement budget (undefined until done). */
+  private regionAt(s: RouteSearch | GroupField, index: number): Region | undefined {
+    const own = s.region(index)
+    if (own && own.epoch === this.nav.revisions[index]) return own
+    const { region, used } = this.nav.regionNow(index, this.searchCap - this.refineWork)
+    this.refineWork += used
+    return region
+  }
+  /** The cost to the route's goals over a goal region's record: the search's own field, or one computed on this record. */
+  private goalField(r: Route, region: Region): Uint16Array | undefined {
+    const s = r.search, own = s.region(region.index) === region ? s.goalFields.get(region.index) : undefined
+    if (own) return own
+    if (r.goalField?.record === region) return r.goalField.field
+    const goals = (s instanceof GroupField ? s.goals : r.goals).filter(p => this.nav.tileOfPose(p) === region.index)
+    if (!goals.length) return undefined
+    const field = reverseField(region, goals, this.port.layout)
+    this.refineWork += region.poses.length * 5; r.goalField = { record: region, field }
+    return field
+  }
+  /**
+   * Refines the next segment by field descent, or starts a confined search for it; true when a segment was appended.
+   * The way on is the cheapest by the route's own costs from where the path ends; no way on left means a new route.
+   */
   private refineNext(u: Unit, r: Route): boolean {
+    if (this.searchCap - this.refineWork <= 5) return false
+    const s = r.search, L = this.port.layout, from = r.last, index = this.nav.tileOfPose(from), region = this.regionAt(s, index)
+    // The tile changed and its record is being built: the unit waits for it.
+    if (!region) return false
+    const slot = slotOf(region, from, L), goal = slot < 0 ? undefined : this.goalField(r, region)
+    const hop = slot < 0 ? null : nextHop(s, region, slot, L, r.exclude, goal)
+    if (hop) this.refineWork += hop.ops
+    // The route's costs past a changed region were priced through it and can lead back: coming back to recover in it
+    // again, or recovering too often, plans anew.
+    const changed = s.region(index) !== region, back = changed && index !== r.hop && r.recovered.includes(index)
+    if (!hop || back || changed && r.recovered.length >= MAX_RECOVERIES) { r.replan = true; return false }
+    if (changed && !r.recovered.includes(index)) r.recovered.push(index)
+    r.hop = index
+    // A group field's goal: the unit's own destination is reached by a flat search, not the field to the nearest goal.
+    if (hop.e < 0 && s instanceof GroupField) { r.finished = true; return false }
     const steps = Math.min(SEGMENT_STEPS, Math.floor((this.searchCap - this.refineWork - 1) / 5))
     if (steps < 1) return false
-    const s = r.search, L = this.port.layout, from = r.last, index = this.nav.tileOfPose(from), region = s.region(index)
-    if (!region || region.epoch !== this.nav.revisions[index]) { r.replan = true; return false }
-    let key = -1
-    if (s instanceof RouteSearch) key = r.next < s.keys.length ? s.keys[r.next]! : -1
-    else {
-      const n = s.next(from)
-      // The goal region: the unit's own destination is reached by a flat search, not the field to the nearest goal.
-      if (!n || n.exit < 0) { if (n) r.finished = true; else r.replan = true; return false }
-      key = n.exit
-    }
-    const field = key >= 0 ? splitKey(key)[1] : (s as RouteSearch).goalFields.get(index)
-    if (field === undefined || key >= 0 && splitKey(key)[0] !== index) { r.replan = true; return false }
-    const target = { key, region: index, epoch: region.epoch }
-    const d = descend(region, field, from, p => this.poseOk(u, L.voxelCoords(p)) && (this.occupied.get(p) ?? u.id) === u.id, L, steps)
+    const target = { key: hop.e < 0 ? -1 : exitKey(index, hop.e), region: index, epoch: region.epoch, record: region }
+    const d = descend(region, hop.e < 0 ? goal! : hop.e, from, p => this.poseOk(u, L.voxelCoords(p)) && (this.occupied.get(p) ?? u.id) === u.id, L, steps)
     this.refineWork += d.ops
     if (d.ok || d.cut) { this.appendSegment(u, r, d.path, d.ok ? target : null); return d.ok }
-    const goals = key >= 0 ? [region.exits[splitKey(key)[1]]!.from] : r.goals.filter(p => this.nav.tileOfPose(p) === index)
+    const goals = hop.e >= 0 ? [region.exits[hop.e]!.from] : r.goals.filter(p => this.nav.tileOfPose(p) === index)
     u.segment = this.nav.request(from, goals, undefined, { region: index }); r.target = target
     return false
   }
@@ -1144,8 +1201,8 @@ export class WorkerSystem {
     r.segs.push({ end: u.path.length - 1, region: index, epoch: target?.epoch ?? this.nav.revisions[index]! })
     if (!target) return
     if (target.key < 0) { r.finished = true; if (u.task && !this.claimWorkPose(u, r.last)) r.replan = true; return }
-    const exit = r.search.region(target.region)!.exits[splitKey(target.key)[1]]!
-    u.path.push(exit.to); r.last = exit.to; r.exits.push(target.key); r.next++
+    const exit = target.record.exits[splitKey(target.key)[1]]!
+    u.path.push(exit.to); r.last = exit.to; r.exits.push(target.key)
     r.segs[r.segs.length - 1]!.end = u.path.length - 1
   }
   /** A motion that advanced or began this tick; a paused one waits in place like a unit without a motion. */
@@ -1503,7 +1560,7 @@ export class WorkerSystem {
         const r = u.route, s = r.search
         mix(s instanceof GroupField ? this.groups.get(s)!.id : -1); mix(STATUSES.indexOf(s.status))
         if (s instanceof RouteSearch) { mix(s.cost); numbers(s.keys); mix(s.goal) }
-        numbers(r.goals); numbers(r.exits); mix(r.next); mix(r.last); numbers(r.exclude); mix(r.finished ? 1 : 0); mix(r.replan ? 1 : 0)
+        numbers(r.goals); numbers(r.exits); numbers(r.recovered); mix(r.hop); mix(r.last); numbers(r.exclude); mix(r.finished ? 1 : 0); mix(r.replan ? 1 : 0)
         mix(r.segs.length); for (const g of r.segs) { mix(g.end); mix(g.region); mix(g.epoch) }
         mix(r.target ? r.target.key : -2); mix(r.target?.region ?? -1); mix(r.target?.epoch ?? -1)
       }

@@ -136,6 +136,39 @@ describe('simulated workers', () => {
     until(sim, () => sim.workers!.view(1)?.state === 'idle')
     expect(sim.workers!.view(1)).toMatchObject({ x256: x * 256 + 128, z256: z * 256 + 128 })
   })
+  it('a unit stopped off its path between nodes walks on to the next node instead of blocking with target-changed', () => {
+    const sim = make(); spawn(sim, [10, 4, 10])
+    const u = sim.workers!.units.get(1)!, L = sim.layout
+    // As if traffic cut a string-pulled step short: the unit stands off-center in a cell that is not on its path.
+    u.x = 10 * 256 + 220; u.z = 10 * 256 + 220
+    u.path = [L.voxelIndex(11, 4, 10), L.voxelIndex(11, 4, 11)]; u.cursor = 1; u.goal = L.voxelIndex(11, 4, 11); u.state = 'planning'
+    sim.step()
+    expect(u.reason).not.toBe('target-changed'); expect(u.state).toBe('walking')
+    until(sim, () => u.state === 'idle')
+    expect(sim.workers!.view(1)).toMatchObject({ x256: 11 * 256 + 128, z256: 11 * 256 + 128 })
+  })
+  it('a unit stopped off-center beside a drop re-centers in its cell before stepping on, instead of blocking unsafe', () => {
+    const sim = make(ctx => ctx.set(9, 3, 9, 0)); spawn(sim, [10, 4, 10])
+    const u = sim.workers!.units.get(1)!, L = sim.layout
+    // As if traffic stopped a step short: off-center toward the cell whose floor is missing.
+    u.x = 10 * 256 + 51
+    u.path = [L.voxelIndex(10, 4, 10), L.voxelIndex(10, 4, 9)]; u.cursor = 1; u.goal = L.voxelIndex(10, 4, 9); u.state = 'planning'
+    sim.step()
+    expect(u.reason).toBeUndefined(); expect(u.state).toBe('walking')
+    until(sim, () => u.state === 'idle')
+    expect(sim.workers!.view(1)).toMatchObject({ x256: 10 * 256 + 128, z256: 9 * 256 + 128 })
+  })
+  it('a unit stopped off its path that cannot walk straight to the next node steps back onto the path first', () => {
+    // A hole beside the straight line to the next node: the unit returns along its stopped step instead.
+    const sim = make(ctx => ctx.set(10, 3, 11, 0)); spawn(sim, [10, 4, 10])
+    const u = sim.workers!.units.get(1)!, L = sim.layout
+    u.x = 10 * 256 + 160; u.z = 10 * 256 + 160
+    u.path = [L.voxelIndex(11, 4, 10), L.voxelIndex(11, 4, 11)]; u.cursor = 1; u.goal = L.voxelIndex(11, 4, 11); u.state = 'planning'
+    sim.step()
+    expect(u.reason).not.toBe('target-changed'); expect(u.motion?.to).toBe(L.voxelIndex(11, 4, 10))
+    until(sim, () => u.state === 'idle')
+    expect(sim.workers!.view(1)).toMatchObject({ x256: 11 * 256 + 128, z256: 11 * 256 + 128 })
+  })
   it('retries an inaccessible dig after cancelling build designations that reserved every work pose', () => {
     const sim = make(ctx => ctx.set(6, 4, 5, 1)); spawn(sim, [3, 4, 5])
     for (const [x, z] of [[5, 5], [7, 5], [6, 4], [6, 6]]) cmd(sim, { type: 'workBuild', min: [x!, 4, z!], max: [x!, 5, z!], voxel: 2 })

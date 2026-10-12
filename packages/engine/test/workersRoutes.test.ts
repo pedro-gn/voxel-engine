@@ -145,4 +145,69 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(u.route).toBeNull(); expect(routes.n).toBe(1); expect(u.retry).toBeGreaterThan(time)
     until(sim, () => routes.n === 2, 40)
   })
+  /** Path nodes from the unit's pose on: each one is the previous one or a support neighbour of it. */
+  function broken(sim: Simulation, u: { path: number[]; cursor: number }): string | null {
+    const nav = sim.workers!.nav, L = sim.layout, path = u.path.slice(Math.max(0, u.cursor - 1))
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1]!, b = path[i]!
+      if (a !== b && ![0, 1, 2, 3].some(d => nav.neighbor(a, d) === b)) return `${L.voxelCoords(a)} -> ${L.voxelCoords(b)}`
+    }
+    return null
+  }
+  it('routed paths stay continuous through traffic: two groups crossing head-on never block with target-changed', () => {
+    const sim = makeWide(192)
+    for (let i = 0; i < 12; i++) spawn(sim, [8 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    for (let i = 0; i < 12; i++) spawn(sim, [176 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    const ids = [...sim.workers!.units.keys()]
+    cmd(sim, { type: 'unitMove', ids: ids.slice(0, 12), pos: [178, 4, 92] })
+    cmd(sim, { type: 'unitMove', ids: ids.slice(12), pos: [10, 4, 92] })
+    const reasons = new Set<string>()
+    for (let t = 0; t < 3000 && [...sim.workers!.units.values()].some(u => u.goal !== null); t++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) {
+        if (u.reason) reasons.add(u.reason)
+        if (u.route) expect(broken(sim, u), `unit ${u.id} tick ${t}`).toBeNull()
+      }
+    }
+    expect(reasons.has('target-changed')).toBe(false)
+    expect([...sim.workers!.units.values()].filter(u => u.goal !== null).map(u => u.id)).toEqual([])
+  })
+  it('units detoured off their group route by traffic carry on from the group field instead of planning routes of their own', () => {
+    const sim = makeWide(192)
+    for (let i = 0; i < 12; i++) spawn(sim, [8 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    for (let i = 0; i < 12; i++) spawn(sim, [176 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    const ids = [...sim.workers!.units.keys()], routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: ids.slice(0, 12), pos: [178, 4, 92] })
+    cmd(sim, { type: 'unitMove', ids: ids.slice(12), pos: [10, 4, 92] })
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 3000)
+    expect(routes.n).toBe(0)
+  })
+  it('a routed unit moved off its path onto another level carries on from where it stands instead of blocking', () => {
+    // A one-block ridge along z = 21 of every chunk, beside the straight line the route takes at z = 20.
+    const sim = makeWide(256, ctx => { for (let x = 0; x < 32; x++) ctx.set(x, 4, 21, 1) }); spawn(sim, [10, 4, 20])
+    const u = sim.workers!.units.get(1)!, L = sim.layout, routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [220, 4, 20] })
+    until(sim, () => u.route?.search.status === 'found' && u.path[u.cursor] !== undefined && (u.x >> 8) > 40, 2000)
+    // As if pushed off its step: on top of the ridge, off the path and one level up.
+    u.motion = null; u.x = (u.x >> 8) * 256 + 128; u.y = 5 * 256; u.z = 21 * 256 + 128
+    const reasons = new Set<string>()
+    for (let i = 0; i < 3000 && u.goal !== null; i++) { sim.step(); if (u.reason) reasons.add(u.reason) }
+    expect(reasons.has('target-changed')).toBe(false)
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 220 * 256 + 128, z256: 20 * 256 + 128 })
+    expect(routes.n).toBe(1)
+  })
+  it('edits in regions ahead of a walking group are recovered locally: no unit plans a route of its own, all arrive', () => {
+    const sim = makeWide(256)
+    for (let i = 0; i < 8; i++) spawn(sim, [4 + (i % 4) * 2, 4, 100 + Math.floor(i / 4) * 2])
+    const routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [240, 4, 102] })
+    until(sim, () => [...sim.workers!.units.values()].every(u => (u.x >> 8) > 40), 1500)
+    const nav = sim.workers!.nav, before = [...nav.revisions]
+    // Pillars in every region the group still has to cross: each region changes, none is cut.
+    for (let x = 72; x < 240; x += 16) for (let z = 88; z < 120; z += 16) cmd(sim, { type: 'fillRegion', min: [x, 4, z], max: [x, 6, z], voxel: 1 })
+    expect(nav.revisions.filter((r, i) => r !== before[i]).length).toBeGreaterThan(20)
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 4000)
+    expect(routes.n).toBe(0)
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 240)).toBeLessThanOrEqual(4)
+  })
 })

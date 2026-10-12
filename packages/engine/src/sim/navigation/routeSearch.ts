@@ -2,7 +2,7 @@ import { edgeCost, type NavigationSystem, type PathResult, type PathStatus } fro
 import { IdHeap } from './heap.ts'
 import { RegionBuild, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
 
-export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 8192 */; weight?: number /* default ROUTE_WEIGHT */ }
+export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 65536 */; weight?: number /* default ROUTE_WEIGHT */ }
 /**
  * Heuristic weight of route and group searches. Rough surfaces tie A* across whole rectangles of regions (every step
  * costs about its Manhattan share), so an exact search builds ten times the regions; 1.25 bounds the abstract cost at
@@ -107,6 +107,8 @@ export class RouteSearch {
   exits: number[] = []
   /** The exit keys behind `exits`, in the same order. */
   keys: number[] = []
+  /** After 'found': the cost from each key's `from` pose to the goal along the route. */
+  private readonly rest = new Map<number, number>()
   goal = -1
   /** Per-query goal fields, keyed by region index: cost from a region slot to the nearest goal. */
   readonly goalFields = new Map<number, Uint16Array>()
@@ -128,7 +130,7 @@ export class RouteSearch {
   private critical: number[] = []
   constructor(nav: NavigationSystem, store: RegionStore, start: number, goals: readonly number[], options?: RouteOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.start = start; this.goals = goals
-    this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 8192; this.weight = options?.weight ?? ROUTE_WEIGHT
+    this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 65536; this.weight = options?.weight ?? ROUTE_WEIGHT
     const L = nav.port.layout
     this.goalCoords = goals.map(p => L.voxelCoords(p))
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
@@ -147,6 +149,8 @@ export class RouteSearch {
   /** Cancels a pending search; a settled one keeps its status, so callers can read it after dropping the route. */
   cancel(): void { if (this.status !== 'pending') return; this.status = 'cancelled'; this.reader.drop() }
   result(): PathResult { return { status: this.status, path: this.exits, cost: this.cost } }
+  /** Cost to the goal along the found route from the `from` pose of exit `key`, or Infinity off the route. */
+  toGo(key: number): number { return this.rest.get(key) ?? Infinity }
   private h(p: number): number { const [x, y, z] = this.nav.port.layout.voxelCoords(p); return routeHeuristic(this.goalCoords, x, y, z) }
   /** The region with its goal field computed, or undefined while it is being built. */
   private need(index: number): Region | undefined {
@@ -244,6 +248,8 @@ export class RouteSearch {
     for (let k = this.bestParent; k > 0; k = this.parent.get(k)!) keys.push(k)
     keys.reverse()
     this.exits = keys.map(k => this.exitOf(k).from); this.keys = keys
+    // g(k) is the cost from the start to where exit k lands; what is left from its `from` pose adds its crossing back.
+    for (const k of keys) this.rest.set(k, this.bestGoal - this.g.get(k)! + this.exitOf(k).cost)
     // The goal the last segment reaches: follow the goal field's first optimal step from the last entry pose.
     const last = keys.at(-1), index = last === undefined ? this.nav.tileOfPose(this.start) : this.exitOf(last).target
     const r = this.reader.regions.get(index)!, field = this.goalFields.get(index)!
@@ -283,5 +289,6 @@ export class RouteSearch {
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.g.size); for (const [k, g] of this.g) { mix(k); mix(g); mix(this.parent.get(k)!) }
     numbers(this.closed); numbers(this.keys); mix(this.goal)
+    mix(this.rest.size); for (const [k, c] of this.rest) { mix(k); mix(c) }
   }
 }
