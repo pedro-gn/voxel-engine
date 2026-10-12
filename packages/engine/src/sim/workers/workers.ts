@@ -1074,8 +1074,9 @@ export class WorkerSystem {
       }
       if (this.projecting(u)) this.project(u); else this.holdHere(u)
     }
-    // Repairs get at most half of what is left, so searches for units still without a path always progress.
-    const repairWork = this.cooperate(Math.max(0, this.searchCap - engineeringWork - this.refineWork) >> 1)
+    // While navigation queries wait, repairs get at most half of what is left, so units still without a path progress.
+    const left = Math.max(0, this.searchCap - engineeringWork - this.refineWork)
+    const repairWork = this.cooperate(this.nav.pending ? left >> 1 : left)
     this.engineeringVisited = engineeringWork + repairWork
     const rest = Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork)
     this.assign(); this.nav.step(rest)

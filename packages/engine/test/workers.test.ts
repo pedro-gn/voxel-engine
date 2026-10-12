@@ -1164,6 +1164,18 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...lanes]).toEqual([6])
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
   })
+  it('repairs get half of the budget left while navigation queries wait, and all of it otherwise', () => {
+    const { sim, targets } = twoWide(false), w = sim.workers! as unknown as { cooperate(cap: number): number; nav: { pending: number } }
+    const cooperate = w.cooperate.bind(w), seen = { waiting: 0, idle: 0 }
+    w.cooperate = (cap: number) => {
+      // No engineering or routes in this corridor: what is left for repairs is the whole cap.
+      expect(cap).toBe(w.nav.pending ? 4096 >> 1 : 4096)
+      seen[w.nav.pending ? 'waiting' : 'idle']++
+      return cooperate(cap)
+    }
+    allReach(sim, targets, 2000)
+    expect(seen.waiting).toBeGreaterThan(0); expect(seen.idle).toBeGreaterThan(0)
+  })
   it('two groups of ten cross in a two-wide corridor, head-on in one lane', () => {
     const { sim, targets } = twoWide(false)
     allReach(sim, targets, 2000)
