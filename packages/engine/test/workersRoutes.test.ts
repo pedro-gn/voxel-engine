@@ -145,4 +145,31 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(u.route).toBeNull(); expect(routes.n).toBe(1); expect(u.retry).toBeGreaterThan(time)
     until(sim, () => routes.n === 2, 40)
   })
+  /** Path nodes from the unit's pose on: each one is the previous one or a support neighbour of it. */
+  function broken(sim: Simulation, u: { path: number[]; cursor: number }): string | null {
+    const nav = sim.workers!.nav, L = sim.layout, path = u.path.slice(Math.max(0, u.cursor - 1))
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1]!, b = path[i]!
+      if (a !== b && ![0, 1, 2, 3].some(d => nav.neighbor(a, d) === b)) return `${L.voxelCoords(a)} -> ${L.voxelCoords(b)}`
+    }
+    return null
+  }
+  it('routed paths stay continuous through traffic: two groups crossing head-on never block with target-changed', () => {
+    const sim = makeWide(192)
+    for (let i = 0; i < 12; i++) spawn(sim, [8 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    for (let i = 0; i < 12; i++) spawn(sim, [176 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    const ids = [...sim.workers!.units.keys()]
+    cmd(sim, { type: 'unitMove', ids: ids.slice(0, 12), pos: [178, 4, 92] })
+    cmd(sim, { type: 'unitMove', ids: ids.slice(12), pos: [10, 4, 92] })
+    const reasons = new Set<string>()
+    for (let t = 0; t < 3000 && [...sim.workers!.units.values()].some(u => u.goal !== null); t++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) {
+        if (u.reason) reasons.add(u.reason)
+        if (u.route) expect(broken(sim, u), `unit ${u.id} tick ${t}`).toBeNull()
+      }
+    }
+    expect(reasons.has('target-changed')).toBe(false)
+    expect([...sim.workers!.units.values()].filter(u => u.goal !== null).map(u => u.id)).toEqual([])
+  })
 })

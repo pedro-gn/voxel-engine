@@ -1095,7 +1095,8 @@ export class WorkerSystem {
     if (u.segment && u.segment.status !== 'pending') {
       const seg = u.segment, target = r.target!
       u.segment = null; r.target = null
-      if (seg.status === 'found') this.appendSegment(u, r, seg.path, target)
+      // A path replaced while the segment was searched no longer ends where the segment starts: the segment goes.
+      if (seg.status === 'found') { if (u.path.at(-1) === seg.path[0]) this.appendSegment(u, r, seg.path, target) }
       else if (seg.status !== 'stale' && seg.status !== 'cancelled') {
         // Live policy or a confined detour cut the segment: route around that exit, or finish the walk on a flat search.
         if (target.key < 0) { this.dropRoute(u); return false }
@@ -1106,7 +1107,9 @@ export class WorkerSystem {
     // A path cut or replaced under the route (reservations, a sidestep), or an edit on a segment still to walk.
     if (u.path[u.cursor] === undefined && !r.finished && !u.segment && here !== r.last) r.replan = true
     for (const g of r.segs) if (g.end >= u.cursor && this.nav.revisions[g.region] !== g.epoch) r.replan = true
-    while (!r.replan && !r.finished && !u.segment && ahead() < 2 && this.refineNext(u, r));
+    // Segments continue from r.last: only while the path still ends there. A refuge or a sidestep that replaced the
+    // path ends elsewhere; the unit walks it first and the route carries on from where it then stands.
+    while (!r.replan && !r.finished && !u.segment && u.path.at(-1) === r.last && ahead() < 2 && this.refineNext(u, r));
     if (r.replan) { if (u.task) return this.replanTask(u); const { goals, exclude } = r; u.path = []; u.cursor = 0; this.plan(u, goals, exclude); return true }
     if (r.finished && !u.segment && u.path[u.cursor] === undefined) { this.dropRoute(u); return false }
     return u.path[u.cursor] === undefined
