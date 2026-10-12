@@ -202,7 +202,7 @@ scenarios, for the user's visual checkpoint.
 | Metric | Target |
 |---|---|
 | Workers' share of the tick, 1,000 units walking | p95 ≤ 4 ms, max ≤ 12 ms; whole tick p95 ≤ 15 ms |
-| Time to first action | p95 ≤ 1 s with 1,000 simultaneous orders; ≤ 250 ms with 100 |
+| Time to first action | p95 ≤ 1 s with 1,000 simultaneous orders; ≤ 250 ms with 100 — on a warm world, with regions already built (amended 2026-10-12, see below); cold first action is recorded, not gated |
 | Arrival | ≥ 99% of reachable destinations within each unit's ideal walk time + 60 s of sim time; zero false `unreachable` (corrected 2026-10-09, see below) |
 | Route quality | mean ≤ 1.10×, p95 ≤ 1.25× of the exact cost |
 | Bottlenecks | every unit arrives; zero overlaps |
@@ -214,6 +214,12 @@ Correction, 2026-10-09, approved by the user: the arrival target first read "wit
 spec error: units walk 5 blocks/s, so the 200–800-block moves of the benchmark take 40–160 s of walking alone. A unit's
 ideal walk time is the cost in ticks of an exact flat A* under the live policy from its pose to its destination; the
 benchmark phases run long enough to cover the longest moves.
+
+Amendment, 2026-10-12, approved by the user (round 2): the quiet-machine measurements showed that on the crowd world a
+cold group move must build ~3,400 regions (~11.5 M operations, ~70 s at the original budget) before anyone walks,
+because a wide sand belt forces long detours. Regions are therefore built ahead in the background with the spare
+budget, and the region store's cap may rise to 64 MiB. The first-action target is gated on a warm world (the bench
+warms the regions before ordering); the cold first action is measured and reported.
 
 ## 8. Process and deliverables
 
