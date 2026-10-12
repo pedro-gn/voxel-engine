@@ -3,13 +3,14 @@
 // Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 6600: ideal walks reach ~5,200 ticks on the
 // sand detour, plus the 60 s grace), --opcost (ns per navigation operation),
 // --cold (no warm-up before the orders: measures the cold first action; spec §7 gates the first action warm),
+// --warm-cap=N (most untimed warm-up ticks per phase while the engine's region prebuild runs, default 20000),
 // --assert (exit 1 when a phase misses a spec §7 criterion; arrival within each unit's ideal walk + grace),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT),
 // --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
 // --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
-// Unless --cold, each phase builds the regions its moves need before the timed orders (see warmUp).
+// Unless --cold, each phase warms the region store before the timed orders (see warmUp).
 import type { Command } from '@elovox/engine'
 import { GroupField } from '@elovox/engine/src/sim/navigation/groupField.ts'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
@@ -30,6 +31,7 @@ import {
 
 const flag = (name: string) => process.argv.find(a => a === `--${name}` || a.startsWith(`--${name}=`))?.split('=')[1] ?? (process.argv.includes(`--${name}`) ? '' : undefined)
 const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 6600), ONLY = flag('phase'), COLD = flag('cold') !== undefined
+const WARM_CAP = Number(flag('warm-cap') ?? 20000)
 /** Arrival allowance past a unit's ideal walk, in ticks (default 60 s). */
 const GRACE = Number(flag('grace') ?? 1200)
 /** Ticks per block at the workers' walking speed (WALK_SPEED 64 / 256 of a block per tick, 5 blocks/s). */
@@ -166,6 +168,15 @@ if (flag('quality') !== undefined) {
 const WALKING = WORKER_STATES.indexOf('walking')
 /** The hierarchy's region store, read defensively: absent before it exists (the baseline), so cold or warm shows. */
 const regions = () => { const s = (w.nav as unknown as { regions?: { size?: number; bytes?: number } }).regions; return { count: s?.size ?? 0, bytes: s?.bytes ?? 0 } }
+/** The engine's background region prebuild (round 2), read defensively: absent before it lands. */
+type PrebuildStatus = { built: number; ground: number; queued: number; bytes: number; capBytes: number; done: boolean }
+const prebuildStatus = (): PrebuildStatus | null => {
+  const nav = w.nav as unknown as { prebuildStatus?: () => PrebuildStatus }
+  return typeof nav.prebuildStatus === 'function' ? nav.prebuildStatus() : null
+}
+/** The region store's byte cap: the prebuild's, else the store's own (a private field, read for the report). */
+const regionCap = () => prebuildStatus()?.capBytes ?? (w.nav as unknown as { regions?: { maxBytes?: number } }).regions?.maxBytes ?? null
+const WARMUP = COLD ? null : prebuildStatus() ? 'prebuild' : 'interim-groupfield'
 
 /** Despawns everyone and cancels every open order, then spawns `UNITS` on `pads`; returns the new ids. */
 function respawn(pads: PadName[], before: Command[] = [], stock: { block: number; count: number }[] = []): { ids: number[]; spawnFailed: number } {
@@ -312,12 +323,20 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
 }
 
 /**
- * Untimed, before the orders: builds the regions the phase's moves will read, so the first action is measured warm.
- * One group field per move order over the workers' own region store (goal: the order's point; starts: its units'
- * poses), run to the end. Orders without moves (work) walk flat and need no regions.
+ * Untimed, before the orders, with the units spawned and idle: warms the region store so the first action is measured
+ * on a warm world (spec §7 amendment). With the engine's prebuild, ticks until it reports done or WARM_CAP ticks pass
+ * (done with built < ground means the byte cap stopped it). Without it (interim fallback): one group field per move
+ * order over the workers' own store (goal: the order's point; starts: its units' poses), run to the end; orders
+ * without moves (work) get nothing.
  */
 function warmUp(orders: Command[]) {
-  const a = performance.now(), before = regions().count, fields: Record<string, number> = {}
+  const a = performance.now(), before = regions().count
+  if (WARMUP === 'prebuild') {
+    let ticks = 0, s = prebuildStatus()!
+    while (!s.done && ticks < WARM_CAP) { check('warm-up'); ticks++; s = prebuildStatus()! }
+    return { mode: WARMUP, ticks, ms: Math.round(performance.now() - a), ...s, stoppedByCap: s.done && s.built < s.ground, timedOut: !s.done, regionsBuilt: regions().count - before }
+  }
+  const fields: Record<string, number> = {}
   let spent = 0
   for (const c of orders) {
     if (c.type !== 'unitMove') continue
@@ -327,7 +346,7 @@ function warmUp(orders: Command[]) {
     while (g.status === 'pending') g.step(1 << 16)
     spent += g.spent; fields[g.status] = (fields[g.status] ?? 0) + 1
   }
-  return { fields, spent, regionsBuilt: regions().count - before, ms: Math.round(performance.now() - a) }
+  return { mode: WARMUP, fields, spent, regionsBuilt: regions().count - before, ms: Math.round(performance.now() - a) }
 }
 
 const results: Record<string, unknown> = {}
@@ -344,7 +363,7 @@ for (const [name, phase] of Object.entries(PHASES)) {
   results[name] = { units: ids.length, spawnFailed, warmUp: warm, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
   console.error(`${name} done`)
 }
-console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, warm: !COLD, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
+console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, warm: !COLD, warmup: WARMUP, regionCapBytes: regionCap(), generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
 if (flag('assert') !== undefined) {
   // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action (warm runs only: the
   // cold first action is recorded, not gated) and arrival.
