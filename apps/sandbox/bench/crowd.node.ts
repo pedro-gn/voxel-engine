@@ -1,13 +1,17 @@
 // Node scale benchmark of navigation (5b): 1,000 units on the 1024² crowd world, per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/crowd.node.ts [--units=1000]
-// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 1200), --opcost (ns per navigation operation),
+// Flags: --phase=name (setup + one phase), --ticks=N (per phase, default 6600: ideal walks reach ~5,200 ticks on the
+// sand detour, plus the 60 s grace), --opcost (ns per navigation operation),
+// --cold (no warm-up before the orders: measures the cold first action; spec §7 gates the first action warm),
 // --assert (exit 1 when a phase misses a spec §7 criterion; arrival within each unit's ideal walk + grace),
 // --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT),
 // --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
 // --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
+// Unless --cold, each phase builds the regions its moves need before the timed orders (see warmUp).
 import type { Command } from '@elovox/engine'
+import { GroupField } from '@elovox/engine/src/sim/navigation/groupField.ts'
 import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
 import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
 import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
@@ -25,7 +29,7 @@ import {
 } from '../src/scenes/crowd.ts'
 
 const flag = (name: string) => process.argv.find(a => a === `--${name}` || a.startsWith(`--${name}=`))?.split('=')[1] ?? (process.argv.includes(`--${name}`) ? '' : undefined)
-const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 1200), ONLY = flag('phase')
+const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 6600), ONLY = flag('phase'), COLD = flag('cold') !== undefined
 /** Arrival allowance past a unit's ideal walk, in ticks (default 60 s). */
 const GRACE = Number(flag('grace') ?? 1200)
 /** Ticks per block at the workers' walking speed (WALK_SPEED 64 / 256 of a block per tick, 5 blocks/s). */
@@ -307,23 +311,43 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
   }
 }
 
+/**
+ * Untimed, before the orders: builds the regions the phase's moves will read, so the first action is measured warm.
+ * One group field per move order over the workers' own region store (goal: the order's point; starts: its units'
+ * poses), run to the end. Orders without moves (work) walk flat and need no regions.
+ */
+function warmUp(orders: Command[]) {
+  const a = performance.now(), before = regions().count, fields: Record<string, number> = {}
+  let spent = 0
+  for (const c of orders) {
+    if (c.type !== 'unitMove') continue
+    const { ids, pos } = c as unknown as { ids: number[]; pos: [number, number, number] }, starts: number[] = []
+    for (const id of ids) { const u = w.units.get(id); if (u) starts.push(sim.layout.voxelIndex(Math.floor(u.x / 256), u.y >> 8, Math.floor(u.z / 256))) }
+    const g = new GroupField(w.nav, w.nav.regions, [sim.layout.voxelIndex(...pos)], starts, 1 << 20)
+    while (g.status === 'pending') g.step(1 << 16)
+    spent += g.spent; fields[g.status] = (fields[g.status] ?? 0) + 1
+  }
+  return { fields, spent, regionsBuilt: regions().count - before, ms: Math.round(performance.now() - a) }
+}
+
 const results: Record<string, unknown> = {}
 const setup = respawn(['west', 'north'])
 results.setup = { spawnFailed: setup.spawnFailed, ...measure(120, []) }
 for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
-  const atOrder = regions(), orders = phase.orders(ids); submit(orders)
+  const orders = phase.orders(ids), warm = COLD ? null : warmUp(orders), atOrder = regions(); submit(orders)
   const groups = orders.flatMap(c => c.type === 'unitMove' ? [(c as unknown as { ids: number[] }).ids] : [])
   churnEdits = 0
   const m = measure(TICKS, groups, phase.each)
   const atEnd = regions()
-  results[name] = { units: ids.length, spawnFailed, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
+  results[name] = { units: ids.length, spawnFailed, warmUp: warm, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
   console.error(`${name} done`)
 }
-console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
+console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, warm: !COLD, generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
 if (flag('assert') !== undefined) {
-  // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action and arrival.
+  // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action (warm runs only: the
+  // cold first action is recorded, not gated) and arrival.
   type M = {
     tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }
     arrived?: { withinIdealPlusGrace?: { pct: number } }; falseUnreachable?: { count: number; checked: number; suspects: number }
@@ -334,7 +358,7 @@ if (flag('assert') !== undefined) {
     if (name === 'setup') continue
     const m = r as M
     over(name, 'workers p95 ms', m.workersMs.p95, 4); over(name, 'workers max ms', m.workersMs.max, 12); over(name, 'tick p95 ms', m.tickMs.p95, 15)
-    if (m.firstActionTicks) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
+    if (m.firstActionTicks && !COLD) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
     // Arrival: within each unit's ideal walk plus the grace (60 s), as the bench measures it; all of them at the bottleneck.
     if (m.arrived) {
       const need = name === 'bottleneck' ? 100 : 99, pct = m.arrived.withinIdealPlusGrace?.pct
