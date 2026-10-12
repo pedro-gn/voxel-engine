@@ -1119,6 +1119,18 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...targets].map(([id, [x, , z]]) => [id, x, z])).toEqual([...orders].map(([id, [x, z]]) => [id, x, z]))
     return { sim, targets }
   }
+  it('a unit walks the right-hand lane of a two-wide corridor and steps back for a destination in the other', () => {
+    const sim = make(ctx => {
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
+      for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    })
+    spawn(sim, [3, 4, 5]); cmd(sim, { type: 'unitMove', ids: [1], pos: [28, 4, 5] })
+    const u = sim.workers!.units.get(1)!, lanes = new Set<number>()
+    // Heading +x, the right hand is +z: the z=6 lane.
+    for (let i = 0; i < 600 && u.goal !== null; i++) { sim.step(); if ((u.x >> 8) >= 6 && (u.x >> 8) <= 24) lanes.add(u.z >> 8) }
+    expect([...lanes]).toEqual([6])
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
+  })
   it('two groups of ten cross in a two-wide corridor, head-on in one lane', () => {
     const { sim, targets } = twoWide(false)
     allReach(sim, targets, 2000)

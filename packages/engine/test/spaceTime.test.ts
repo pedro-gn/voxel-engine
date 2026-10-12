@@ -102,3 +102,18 @@ it('does not end on a pocket someone else needs after the window', () => {
   const s = run(new SpaceTimeSearch(port, table, 1, idx(0, 0), 0, [idx(7, 0)]))
   expect(s.status).toBe('found'); expect(s.plan!.steps.at(-1)!.pose).toBe(idx(0, 1)); expect(s.plan!.rejoin).toBe(-1)
 })
+it('never overtakes through the oncoming lane of a passage, unless its route runs there', () => {
+  // Row 1 is the right lane heading +x (right of +x is +z); a still body holds it at x=3 through the window.
+  const { port, idx } = corridor(['..........', '..........']), table = new ReservationTable(32), W = 10
+  for (let t = 1; t <= 64; t++) table.reserve(2, t, [idx(3, 1)])
+  const targets = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(x => idx(x, 1)), row0 = (p: number) => Math.floor(p / W) === 0
+  const lanes: SpaceTimePort = { ...port, oncoming: (p, d) => d === 0 ? row0(p) : d === 1 && !row0(p) }
+  const open = run(new SpaceTimeSearch(port, table, 1, idx(0, 1), 0, targets))
+  expect(open.plan!.steps.some(s => row0(s.pose)), 'without lanes it passes on the left').toBe(true)
+  const kept = run(new SpaceTimeSearch(lanes, table, 1, idx(0, 1), 0, targets))
+  expect(kept.status).toBe('found'); expect(kept.plan!.steps.some(s => row0(s.pose))).toBe(false)
+  clear(kept.plan!, 0, table, 1)
+  // A route that runs in that lane may use it.
+  const along = run(new SpaceTimeSearch(lanes, table, 1, idx(0, 1), 0, [idx(0, 0), ...[1, 2, 3, 4, 5].map(x => idx(x, 0))]))
+  expect(along.plan!.rejoin).toBeGreaterThanOrEqual(0)
+})

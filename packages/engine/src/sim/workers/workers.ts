@@ -77,6 +77,8 @@ interface Unit {
   route: Route | null
   /** Region-confined flat search refining a segment that the field descent could not. */
   segment: PathSearch | null
+  /** The path keepRight last looked at and its length then: only nodes appended since are looked at again. */
+  laned: { path: readonly number[]; len: number } | null
 }
 /**
  * last: pose where the refined path ends; segs: refined segments by end index in `path`, with the region revision they
@@ -119,6 +121,10 @@ export const HIER_MIN = 48 * 4
 const SEGMENT_STEPS = 256
 const STATUSES = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'] as const
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const
+/** The planar direction to the right of each of DIRS: right of (dx, dz) is (-dz, dx). The opposite of d is d ^ 1. */
+const RIGHT = [2, 3, 1, 0] as const
+/** Path nodes a lane change must run beside the old path, at least, for the units to pass each other. */
+const LANE_MIN = 4
 /** Ticks to wait after the n-th consecutive stale search: doubling, capped at 32 (and at a safe shift). */
 export const staleBackoff = (n: number): number => Math.min(32, 1 << Math.min(5, n))
 /** Exact ceil(sqrt(n)) for a nonnegative safe integer, independent of floating-point approximations. */
@@ -327,10 +333,12 @@ export class WorkerSystem {
   /** Safety that lets a unit cross the designations it started inside, and only those, on its way out. */
   private exitAllowed(p: number, escape: readonly Order[]): boolean { const c = this.port.layout.voxelCoords(p); return this.port.safe(...c) && !this.port.hazard(...c) && !this.reservedPose(...c, escape) }
   private poseOk(u: Unit, pos: Vec3): boolean { return u.escape.length ? this.nav.stand(...pos) && this.exitAllowed(this.port.layout.voxelIndex(...pos), u.escape) : this.safePose(pos) }
-  private request(u: Unit, goals: readonly number[], blocked?: ReadonlySet<number>, accept?: (p: number) => boolean): PathSearch {
+  /** `also` narrows the live policy for this search (it never admits more). */
+  private request(u: Unit, goals: readonly number[], blocked?: ReadonlySet<number>, accept?: (p: number) => boolean, also?: (p: number) => boolean): PathSearch {
     const [x, y, z] = this.pose(u), escape = this.reservations.filter(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true))
     u.escape = escape
-    return this.nav.request(this.position(u), goals, blocked, { ...(escape.length && { allowed: (p: number) => this.exitAllowed(p, escape) }), ...(accept && { accept }) })
+    const policy = escape.length ? (p: number) => this.exitAllowed(p, escape) : also && ((p: number) => this.nav.allowed(p))
+    return this.nav.request(this.position(u), goals, blocked, { ...(policy && { allowed: also ? (p: number) => policy(p) && also(p) : policy }), ...(accept && { accept }) })
   }
   private stockCount(u: Unit): number { let n = 0; for (const q of u.stock.values()) n += q; return n }
   private ids(cmd: { ids?: unknown }, required = true): Unit[] {
@@ -366,7 +374,7 @@ export class WorkerSystem {
       const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
         goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
         allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time, route: null, segment: null,
-        projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0 }
+        projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null }
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
       this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return
@@ -751,10 +759,13 @@ export class WorkerSystem {
     while (end < u.path.length && end < u.cursor + WALK_LOOKAHEAD && L.voxelCoords(u.path[end]!)[1] === y) end++
     // Bound both lookahead and probes; never smooth across stairs or engineering edits.
     const stride = Math.max(1, Math.ceil((end - u.cursor) / WALK_PROBES))
+    // Through a two-wide passage a shortcut stays on the path's own nodes, so it never cuts across the oncoming lane.
+    const own = this.inPassage(u.path, u.cursor - 1, end) ? new Set(u.path.slice(Math.max(0, u.cursor - 1), end)) : null
     for (let i = end - 1; i > u.cursor; i -= stride) {
       const to = u.path[i]!, [x, , z] = L.voxelCoords(to)
       const cells = walkSweep(L, [u.x, u.y, u.z], [x * 256 + 128, u.y, z * 256 + 128])
       if (cells.some(p => this.occupied.has(p) && this.occupied.get(p) !== u.id) || !this.walkable(u, cells, y)) continue
+      if (own && cells.some(p => L.voxelCoords(p)[1] === y && !own.has(p))) continue
       return this.beginMotion(u, to, i + 1, cells)
     }
     return this.beginMotion(u, u.path[u.cursor]!)
@@ -777,7 +788,7 @@ export class WorkerSystem {
     // A vertical action holds all its cells for its whole duration; a flat step checks each tick as it goes.
     if (!this.tableFree(u, cells, this.time + 1, flat ? 1 : ticks) || !this.reserve(u, cells)) {
       u.wait++; u.reason = 'traffic'; this.dirty.add(u.id)
-      if (u.wait >= 12 && !this.yieldedTo(u, cells, this.time + 1)) this.yield(u)
+      if (u.wait >= 12 && this.escalates(u) && !this.waitsFor(u, cells, this.time + 1)) this.yield(u)
       return false
     }
     // Owning the first tick now keeps projections made later this tick from claiming the cells it just took.
@@ -798,13 +809,26 @@ export class WorkerSystem {
     for (let t = from; t < from + n; t++) if (!this.table.free(u.id, t, cells)) return false
     return true
   }
-  /** Whether the unit blocking these cells is currently yielding to u: u then waits for it instead of detouring. */
-  private yieldedTo(u: Unit, cells: readonly number[], t: number): boolean {
+  /**
+   * Whether a unit waiting on traffic falls back to today's detour, sidestep and traffic block: only once the
+   * cooperative layer (lanes, preemption, repairs) has left it without progress for STUCK_LIMIT ticks.
+   */
+  private escalates(u: Unit): boolean { return u.stuck >= STUCK_LIMIT }
+  /** The first other unit whose body or reservation at tick t is on these cells. */
+  private blocker(u: Unit, cells: readonly number[], t: number): Unit | undefined {
     for (const p of cells) {
       const id = this.occupied.get(p) ?? (this.table.owner(p, t) || undefined), o = id === undefined || id === u.id ? undefined : this.units.get(id)
-      if (o) return o.yieldTo === u.id && this.time < o.yieldUntil
+      if (o) return o
     }
-    return false
+    return undefined
+  }
+  /**
+   * Whether u should wait for the unit blocking these cells instead of detouring: it is yielding to u, or u walks
+   * behind it (a queue is not a conflict; overtaking takes the oncoming lane).
+   */
+  private waitsFor(u: Unit, cells: readonly number[], t: number): boolean {
+    const o = this.blocker(u, cells, t)
+    return !!o && (o.yieldTo === u.id && this.time < o.yieldUntil || this.follows(u, o))
   }
   private yield(u: Unit): void {
     const from = this.position(u), intended = u.path[u.cursor], owner = intended === undefined ? undefined : this.occupied.get(intended)
@@ -820,7 +844,9 @@ export class WorkerSystem {
       // Only bodies near the unit matter for a local detour; distant ones will have moved by the time it gets there.
       const blocked = new Set<number>()
       for (const other of this.units.values()) if (other !== u && Math.abs(other.x - u.x) <= 8 * 256 && Math.abs(other.z - u.z) <= 8 * 256 && Math.abs(other.y - u.y) <= 4 * 256) for (const p of other.cells) blocked.add(p)
-      u.search?.cancel(); u.search = this.request(u, goals, blocked); u.path = []; u.cursor = 0; u.wait = 0; u.reason = 'traffic'; u.state = 'planning'; this.dirty.add(u.id); return
+      // A detour in a two-wide passage keeps out of the oncoming lane, except to reach its goal there.
+      const d = this.heading(u), ends = new Set(goals), keep = d < 0 ? undefined : (p: number) => ends.has(p) || !this.oncomingLane(p, d)
+      u.search?.cancel(); u.search = this.request(u, goals, blocked, undefined, keep); u.path = []; u.cursor = 0; u.wait = 0; u.reason = 'traffic'; u.state = 'planning'; this.dirty.add(u.id); return
     }
     // Sidestep attempts start from wait 0 (no nested yield) but failed ones still count toward the traffic block.
     const wait = u.wait
@@ -916,7 +942,7 @@ export class WorkerSystem {
           // Break head-on symmetry: the unit with the right of way keeps it while the other detours,
           // but never for longer than the traffic block limit.
           const hasPriority = other !== undefined && this.outranks(other, u) && (other.motion !== null || other.state === 'planning')
-          if (u.wait >= 12 && (!hasPriority || u.wait >= 80) && !this.yieldedTo(u, cells, this.time)) { u.motion = null; u.path = []; u.cursor = 0; this.yield(u) }
+          if (u.wait >= 12 && this.escalates(u) && (!hasPriority || u.wait >= 80) && !this.waitsFor(u, cells, this.time)) { u.motion = null; u.path = []; u.cursor = 0; this.yield(u) }
           continue
         }
         if (u.wait || u.reason) { u.wait = 0; u.reason = undefined; this.dirty.add(u.id) }
@@ -990,6 +1016,7 @@ export class WorkerSystem {
         }
       }
       if (u.route && this.advanceRoute(u)) continue
+      if (u.path[u.cursor] !== undefined) this.keepRight(u)
       if (u.repair || this.waitsHere(u)) continue
       if (u.path[u.cursor] !== undefined) { this.beginPathMotion(u); continue }
       if (u.task && this.canWork(this.pose(u), u.task)) {
@@ -1019,7 +1046,8 @@ export class WorkerSystem {
       }
       if (this.projecting(u)) this.project(u); else this.holdHere(u)
     }
-    const repairWork = this.cooperate(Math.max(0, this.searchCap - engineeringWork - this.refineWork))
+    // Repairs get at most half of what is left, so searches for units still without a path always progress.
+    const repairWork = this.cooperate(Math.max(0, this.searchCap - engineeringWork - this.refineWork) >> 1)
     this.engineeringVisited = engineeringWork + repairWork
     this.assign(); this.nav.step(Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork))
   }
@@ -1269,10 +1297,11 @@ export class WorkerSystem {
   /** An idle unit with nothing queued, the only kind asked to step aside. */
   private idleUnit(u: Unit): boolean { return u.state === 'idle' && u.goal === null && !u.task && !u.search && !u.motion && !u.engineering && u.path[u.cursor] === undefined && this.time >= u.retry }
   /**
-   * Resolves conflicts, best right of way first, at most MAX_REPAIRS per tick. A unit takes the right of way from an
-   * idle owner, from an owner already yielding to it, or, once stuck, from a moving owner of lower aged priority or a
-   * still one it outranks, provided the owner finds a refuge off its route; a working owner is never displaced.
-   * Otherwise the unit repairs its own plan with a space-time search. Pending repairs share `cap` operations. Returns
+   * Resolves conflicts, best right of way first, at most MAX_REPAIRS per tick. Head-on, one of the two keeps right
+   * when it has a lane there. A unit takes the right of way from an idle owner or one with nowhere to be, from an
+   * owner already yielding to it, or, once stuck, from a moving owner of lower aged priority or a
+   * still one it outranks, provided the owner finds a refuge off its route; a working owner is never displaced, and
+   * a unit never takes the right of way of the one it walks behind. Otherwise the unit repairs its own plan with a space-time search. Pending repairs share `cap` operations. Returns
    * the operations used.
    */
   private cooperate(cap: number): number {
@@ -1285,15 +1314,20 @@ export class WorkerSystem {
       if (u.repair || !u.conflict) continue
       const o = this.units.get(u.conflict.owner)
       if (!o || o === u) continue
+      // Head-on: whichever of the two has a free lane to its right takes it, and both walk on.
+      if (this.headOn(u, o) && (this.laneChange(u) || !o.repair && this.laneChange(o))) continue
       started++
+      // A unit behind another walking its way waits in the queue; it never takes the leader's right of way.
+      const behind = this.follows(u, o)
       // Repairs that keep it waiting this long have not worked: today's detour, sidestep and traffic block take over.
-      if (u.stuck >= STUCK_LIMIT) { this.cut(u); u.schedule = null; u.wait = 80; this.yield(u); u.stuck = 0; continue }
+      if (u.stuck >= STUCK_LIMIT && !behind) { this.cut(u); u.schedule = null; u.wait = 80; this.yield(u); u.stuck = 0; continue }
       const yielding = o.yieldTo === u.id && T < o.yieldUntil, owed = u.yieldTo === o.id && T < u.yieldUntil
       // An owner already on its way out is left to finish it.
       if (yielding && (this.moving(o) || o.repair)) continue
-      // An idle owner is always asked to step off the route.
-      const idle = !o.projection && this.idleUnit(o)
-      const takes = idle || yielding || !owed && u.stuck >= STUCK_STEP && (this.moving(o) ? this.priority(u) > this.priority(o) : (o.goal !== null || o.task !== null) && this.outranks(u, o))
+      // An idle owner is always asked to step off the route, and so is one with nowhere to be that stands in the way
+      // of a unit with a destination (say, while it walks off someone else's route).
+      const idle = !o.projection && this.idleUnit(o), aimless = !this.moving(o) && o.goal === null && !o.task && (u.goal !== null || u.task !== null)
+      const takes = idle || aimless || yielding || !owed && !behind && u.stuck >= STUCK_STEP && (this.moving(o) ? this.priority(u) > this.priority(o) : (o.goal !== null || o.task !== null) && this.outranks(u, o))
       // Only an owner that walks or waits on plain path steps can be handed a plan: not one working, falling or engineering.
       if (takes && (o.state === 'idle' || o.state === 'planning' || o.state === 'walking' || o.state === 'blocked') && !o.engineering && !o.actions[o.actionCursor] && !o.repair && T >= o.repairAfter) {
         const r = this.preempt(u, o, Math.max(0, cap - used))
@@ -1306,7 +1340,7 @@ export class WorkerSystem {
           if (back.ok) continue
         }
         // An idle owner with no refuge in reach of one window walks to the nearest pose off u's route instead.
-        if (idle) { this.makeWay(o, u); continue }
+        if (idle || aimless && !o.search) { this.makeWay(o, u); continue }
         // Neither has a way out: an idle unit standing next to either of them makes room.
         const near = this.idleNeighbour(u, o)
         if (near) { this.makeWay(near, u); continue }
@@ -1384,6 +1418,130 @@ export class WorkerSystem {
     })
     o.retry = this.time + YIELD_TICKS; this.dirty.add(o.id)
   }
+  /** Planar direction (DIRS index) of a flat step between neighbouring poses a→b, or -1. */
+  private stepDir(a: number, b: number): number {
+    const L = this.port.layout, [ax, ay, az] = L.voxelCoords(a), [bx, by, bz] = L.voxelCoords(b), dx = bx - ax, dz = bz - az
+    if (ay !== by || Math.abs(dx) + Math.abs(dz) !== 1) return -1
+    return dx ? (dx > 0 ? 0 : 1) : dz > 0 ? 2 : 3
+  }
+  /**
+   * The direction a unit travels: the dominant axis toward the node it walks to next, or toward its destination while
+   * it has no path yet; -1 with neither.
+   */
+  private heading(u: Unit): number {
+    const to = u.motion ? u.motion.to : u.path[u.cursor] ?? u.task?.p ?? u.goal ?? undefined
+    if (to === undefined) return -1
+    const [tx, , tz] = this.port.layout.voxelCoords(to), dx = tx * 256 + 128 - u.x, dz = tz * 256 + 128 - u.z
+    if (!dx && !dz) return -1
+    return Math.abs(dx) >= Math.abs(dz) ? (dx > 0 ? 0 : 1) : dz > 0 ? 2 : 3
+  }
+  /** Whether u walks behind o: o is ahead of u and on its way in the same direction (walking, or waiting to walk on). */
+  private follows(u: Unit, o: Unit): boolean {
+    const d = this.heading(u)
+    if (d < 0 || this.heading(o) !== d) return false
+    const [dx, dz] = DIRS[d]!
+    return (o.x - u.x) * dx + (o.z - u.z) * dz > 0
+  }
+  /** Whether o comes straight at u: it travels the opposite way, ahead of u. */
+  private headOn(u: Unit, o: Unit): boolean {
+    const d = this.heading(u)
+    if (d < 0 || this.heading(o) !== (d ^ 1)) return false
+    const [dx, dz] = DIRS[d]!
+    return (o.x - u.x) * dx + (o.z - u.z) * dz > 0
+  }
+  /** The same-height pose next to p in planar direction d, or -1 (a wall, a drop or a step). */
+  private level(p: number, d: number): number {
+    const q = this.nav.neighbor(p, d)
+    return q >= 0 && this.port.layout.voxelCoords(q)[1] === this.port.layout.voxelCoords(p)[1] ? q : -1
+  }
+  /**
+   * Whether pose p is the oncoming lane for a unit heading d: the left lane of a passage exactly two poses wide that
+   * runs on, two wide, for more than LANE_MIN poses along d through p (a pocket beside a one-wide corridor is no lane).
+   */
+  private oncomingLane(p: number, d: number): boolean {
+    const r = RIGHT[d]!, wide = (a: number) => { const s = this.level(a, r); return s >= 0 && this.level(a, r ^ 1) < 0 && this.level(s, r) < 0 }
+    if (!wide(p)) return false
+    let n = 1
+    for (const e of [d, d ^ 1]) for (let a = this.level(p, e); n <= LANE_MIN && a >= 0 && wide(a); a = this.level(a, e)) n++
+    return n > LANE_MIN
+  }
+  /** Whether any of path[from..to) lies in a two-wide passage along its step (either lane). */
+  private inPassage(path: readonly number[], from: number, to: number): boolean {
+    for (let i = Math.max(0, from); i < Math.min(to, path.length - 1); i++) {
+      const d = this.stepDir(path[i]!, path[i + 1]!)
+      if (d >= 0 && (this.oncomingLane(path[i]!, d) || this.oncomingLane(path[i]!, d ^ 1))) return true
+    }
+    return false
+  }
+  /**
+   * The lane right of the straight flat run of path nodes from index b in direction d: for each node, the pose to its
+   * right in the same nav tile, while that pose is safe for u and consecutive, never beside the path's last node. With
+   * `bodies`, also only while no still body holds it and no unit on another way (oncoming, crossing) stands there.
+   */
+  private laneRight(u: Unit, b: number, d: number, bodies: boolean): number[] {
+    const path = u.path, L = this.port.layout, r = RIGHT[d]!, lane: number[] = []
+    const walksWith = (id: number | undefined) => { const o = id === undefined || id === u.id ? undefined : this.units.get(id); return !o || this.heading(o) === d }
+    for (let i = b; i < path.length - 1; i++) {
+      if (i > b && this.stepDir(path[i - 1]!, path[i]!) !== d) break
+      const p = path[i]!, s = this.level(p, r)
+      if (s < 0 || this.nav.tileOfPose(s) !== this.nav.tileOfPose(p) || !this.poseOk(u, L.voxelCoords(s)) || lane.length && this.nav.neighbor(lane.at(-1)!, d) !== s) break
+      if (bodies && (this.poseHeld(s, u) || !walksWith(this.occupied.get(s)))) break
+      lane.push(s)
+    }
+    return lane
+  }
+  /**
+   * Moves the path's straight run from node b one lane to the right (see laneRight), then back onto the old path where
+   * the lane ends; a path that turns right there goes on from the lane. Route segments keep indexing the same nodes,
+   * and a repair plan's schedule, which only covers nodes up to b, stays.
+   */
+  private shiftRight(u: Unit, b: number, lane: readonly number[]): void {
+    const path = u.path, k = b + lane.length - 1, turns = path[k + 1] === lane.at(-1), s = u.schedule
+    u.path = [...path.slice(0, b + 1), ...lane, ...path.slice(turns ? k + 2 : k)]
+    if (u.route) u.route.segs = u.route.segs.map(g => ({ ...g, end: g.end <= b ? g.end : g.end < k ? g.end + 1 : turns ? g.end === k ? k + 1 : g.end : g.end + 2 }))
+    u.schedule = s && s.path === path && s.untils.length <= b + 1 ? { path: u.path, untils: s.untils } : null
+    this.dirty.add(u.id)
+  }
+  /**
+   * Keeps right past an oncoming unit: from the node the unit stands on (stopping a flat motion there), its path takes
+   * the lane to its right, if that lane runs more than LANE_MIN nodes. True when the path changed.
+   */
+  private laneChange(u: Unit): boolean {
+    const m = u.motion, path = u.path
+    if (m && !m.flat || u.engineering || u.actions[u.actionCursor] || u.repair) return false
+    const here = this.position(u)
+    let b = -1
+    for (let i = m ? m.cursor - 1 : u.cursor - 1; i >= Math.max(0, u.cursor - 1); i--) if (path[i] === here) { b = i; break }
+    if (b < 0 || b + 1 >= path.length - 1) return false
+    const d = this.stepDir(path[b]!, path[b + 1]!)
+    if (d < 0) return false
+    const lane = this.laneRight(u, b, d, true)
+    if (lane.length <= LANE_MIN) return false
+    if (m) this.cut(u)
+    this.shiftRight(u, b, lane)
+    u.cursor = b + 1; u.conflict = null; u.wait = 0; u.reason = undefined; u.projection = null
+    if (this.projecting(u)) this.project(u); else this.holdHere(u)
+    return true
+  }
+  /**
+   * Keeps right in passages exactly two poses wide, before anyone meets there: every straight run of the path still to
+   * walk that lies in the oncoming lane (see oncomingLane) moves to the right lane, if that lane runs more than LANE_MIN
+   * nodes (a pocket beside the path is no lane; it stays free as a refuge). Lanes are geometry, so bodies do not matter
+   * here and the result is the same whenever it runs; `laned` remembers how far the current path was looked at.
+   */
+  private keepRight(u: Unit): void {
+    const done = u.laned?.path === u.path ? u.laned.len - 1 : 0
+    let b = Math.max(u.cursor - 1, this.scheduled(u) - 1, done)
+    if (!u.engineering && !u.actions[u.actionCursor]) while (b < u.path.length - 2) {
+      const d = this.stepDir(u.path[b]!, u.path[b + 1]!)
+      if (d >= 0 && this.oncomingLane(u.path[b]!, d)) {
+        const lane = this.laneRight(u, b, d, false)
+        if (lane.length > LANE_MIN) { this.shiftRight(u, b, lane); b += lane.length + 1; continue }
+      }
+      b++
+    }
+    u.laned = { path: u.path, len: u.path.length }
+  }
   /** Stops a flat motion where the unit is, resuming the path from the node it stands on when it is on the route. */
   private cut(u: Unit): void {
     const m = u.motion
@@ -1401,6 +1559,7 @@ export class WorkerSystem {
       cellsOf: p => this.body(...at(p)),
       stepCells: (a, b) => { const s = at(a), e = at(b); return e[1] === s[1] ? walkSweep(L, s, e) : this.verticalCells(b, this.stepTicks(s, b), s) },
       ticksOf: (a, b) => this.stepTicks(at(a), b),
+      oncoming: (p, d) => this.oncomingLane(p, d),
     }
   }
   /**
@@ -1418,11 +1577,11 @@ export class WorkerSystem {
       this.cut(u)
       start = this.position(u); startTick = T + 1; cursor = u.cursor; pose = [u.x, u.y, u.z]
     }
-    const targets = refuge ? [] : u.path.slice(cursor, cursor + REPAIR_SPAN)
+    const ahead = u.path.slice(cursor, cursor + REPAIR_SPAN), targets = refuge ? [] : ahead
     if (!targets.length && !refuge) { u.repairAfter = T + 8; return }
     // A unit with nothing to do stays where its plan ends, so that must not be someone else's destination.
     const goals = u.goal === null && !u.task ? this.goalsBut(u) : null
-    u.repair = new SpaceTimeSearch(this.spaceTimePort(u, start, pose), this.table, u.id, start, startTick, targets, undefined, undefined, refuge, goals ? p => goals.has(p) : undefined)
+    u.repair = new SpaceTimeSearch(this.spaceTimePort(u, start, pose), this.table, u.id, start, startTick, targets, undefined, undefined, refuge, goals ? p => goals.has(p) : undefined, ahead.at(-1))
     u.repairFrom = { path: u.path, cursor, start, startTick }
   }
   /** Adopts a found plan if the unit is still where and when it starts: its poses, then the rest of the route it rejoins. */
@@ -1495,7 +1654,7 @@ export class WorkerSystem {
       const pr = u.projection
       mix(pr ? 1 : 0); if (pr) { mix(pr.cursor); numbers(pr.pose); mix(pr.t); mix(pr.end); mix(pr.first); mix(pr.stood ? 1 : 0); mix(pr.len); mix(pr.endAt) }
       mix(u.conflict ? 1 : 0); if (u.conflict) { mix(u.conflict.t); mix(u.conflict.owner) }
-      mix(u.stuck); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : [])
+      mix(u.stuck); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : []); mix(u.laned?.path === u.path ? u.laned.len : -1)
       mix(u.repair ? 1 : 0); u.repair?.mixState(mix)
       if (u.repairFrom) { mix(u.repairFrom.cursor); mix(u.repairFrom.start); mix(u.repairFrom.startTick); mix(u.repairFrom.path === u.path ? 1 : 0) }
       mix(u.route ? 1 : 0)

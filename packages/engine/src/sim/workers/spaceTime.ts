@@ -12,13 +12,17 @@ export interface SpaceTimePort {
   /** Ticks a step a→b takes: 4 flat, 4 + 2 climb, 4 + d drop. */
   ticksOf(a: number, b: number): number
   coords(p: number): [number, number, number]
+  /** Whether p lies in the oncoming lane of a passage for a unit heading in planar direction d (absent: no lanes). */
+  oncoming?(p: number, d: number): boolean
 }
 /** steps[i]: stand on `pose` through tick `until`, then take the next step. rejoin indexes `targets`, -1 for a pocket. */
 export interface SpaceTimePlan { steps: { pose: number; until: number }[]; rejoin: number }
 export type SpaceTimeStatus = 'pending' | 'found' | 'failed'
 const STATUSES: readonly SpaceTimeStatus[] = ['pending', 'found', 'failed']
-/** Extra cost per tick on a pose with room to its right. */
-const LANE_COST = 1
+/** Extra cost per tick on a pose with room to its right, and on a pose in the oncoming lane of a passage. */
+const LANE_COST = 1, PASSAGE_COST = 8
+/** HEADING[r]: the planar direction (DX/DZ order) whose right-hand direction is r. */
+const HEADING = [3, 2, 0, 1] as const
 
 /**
  * A* over (pose, tick) inside a box around the start, against another owners' reservations. Every state's cost is
@@ -45,6 +49,7 @@ export class SpaceTimeSearch {
   private readonly end: number
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
+  private readonly targetSet: ReadonlySet<number>
   private readonly ids = new Map<number, number>()
   private poses: number[] = []
   private ticks: number[] = []
@@ -58,11 +63,12 @@ export class SpaceTimeSearch {
   private expanding = -1
   /** 0 is the wait, 1..4 the planar steps. */
   private action = 0
-  constructor(port: SpaceTimePort, table: ReservationTable, owner: number, start: number, startTick: number, targets: readonly number[], radius = 8, maxOps = 4096, refuge?: (p: number) => boolean, avoid?: (p: number) => boolean) {
+  /** `toward` orients the lanes when there are no targets (a refuge): a pose ahead on the unit's own way. */
+  constructor(port: SpaceTimePort, table: ReservationTable, owner: number, start: number, startTick: number, targets: readonly number[], radius = 8, maxOps = 4096, refuge?: (p: number) => boolean, avoid?: (p: number) => boolean, toward?: number) {
     this.port = port; this.table = table; this.owner = owner; this.start = start; this.startTick = startTick; this.targets = targets
     this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.avoid = avoid; this.end = startTick + table.window
-    this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p))
-    const last = this.targetCoords.at(-1), dx = last ? last[0] - this.origin[0] : 0, dz = last ? last[2] - this.origin[2] : 0
+    this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p)); this.targetSet = new Set(targets)
+    const last = this.targetCoords.at(-1) ?? (toward === undefined ? undefined : port.coords(toward)), dx = last ? last[0] - this.origin[0] : 0, dz = last ? last[2] - this.origin[2] : 0
     // Right of (dx, dz) is (-dz, dx); directions index DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1].
     this.right = !dx && !dz ? -1 : Math.abs(dx) >= Math.abs(dz) ? dx > 0 ? 2 : 3 : dz > 0 ? 1 : 0
     this.add(start, startTick, -1, 0)
@@ -77,14 +83,21 @@ export class SpaceTimeSearch {
   private f(id: number): number { return this.gs[id]! + this.hs[id]! }
   /**
    * Keep right: one extra per tick spent on a pose with a walkable pose to its right, so in a passage opposing flows
-   * take separate lanes. In the open every pose pays it alike.
+   * take separate lanes. In the open every pose pays it alike. A pose in the oncoming lane of a passage pays
+   * PASSAGE_COST instead, and no step may enter one (see `closed`), unless it is a target: the route runs there.
    */
   private lane(p: number): number {
     if (this.right < 0) return 0
     let v = this.lanes.get(p)
-    if (v === undefined) { const q = this.port.neighbor(p, this.right); v = q >= 0 && this.port.allowed(q) ? LANE_COST : 0; this.lanes.set(p, v) }
+    if (v === undefined) {
+      const q = this.port.neighbor(p, this.right), room = q >= 0 && this.port.allowed(q) ? LANE_COST : 0
+      v = room && !this.targetSet.has(p) && this.port.oncoming?.(p, HEADING[this.right]!) ? PASSAGE_COST : room
+      this.lanes.set(p, v)
+    }
     return v
   }
+  /** Whether a step may not enter q: the oncoming lane of a passage. */
+  private closed(q: number): boolean { return this.lane(q) === PASSAGE_COST }
   /** Lower f first, then more progress (lower h), then the lower pose: a total order, so ties never depend on insertion. */
   private less(a: number, b: number): boolean {
     const fa = this.f(a), fb = this.f(b)
@@ -163,7 +176,7 @@ export class SpaceTimeSearch {
         if (this.table.free(this.owner, t + 1, this.port.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p))
       } else {
         const q = this.port.neighbor(p, this.action - 1)
-        if (q >= 0 && this.inBox(q) && this.port.allowed(q)) {
+        if (q >= 0 && this.inBox(q) && this.port.allowed(q) && !this.closed(q)) {
           const k = this.port.ticksOf(p, q)
           if (t + k <= this.end) {
             const cells = this.port.stepCells(p, q)
@@ -178,7 +191,7 @@ export class SpaceTimeSearch {
     return used
   }
   mixState(mix: (n: number) => void): void {
-    mix(STATUSES.indexOf(this.status)); mix(this.ops); mix(this.owner); mix(this.start); mix(this.startTick); mix(this.radius); mix(this.maxOps); mix(this.refuge ? 1 : 0)
+    mix(STATUSES.indexOf(this.status)); mix(this.ops); mix(this.owner); mix(this.start); mix(this.startTick); mix(this.radius); mix(this.maxOps); mix(this.refuge ? 1 : 0); mix(this.right)
     mix(this.targets.length); for (const p of this.targets) mix(p)
     mix(this.expanding); mix(this.action)
     mix(this.poses.length)
