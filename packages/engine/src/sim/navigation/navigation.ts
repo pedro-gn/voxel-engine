@@ -337,7 +337,7 @@ export class PathSearch {
   private readonly allow?: (p: number) => boolean
   private readonly accept?: (p: number) => boolean
   private readonly region?: number
-  /** Whether confinement skipped a pose: an exhausted search then proves nothing. */
+  /** Whether confinement or a blocked pose (a body, which moves on) cut an edge: an exhausted search then proves nothing. */
   private cut = false
   /** Goal coordinates, x y z per goal, for the heuristic. */
   private readonly goalCoords: Int32Array
@@ -359,6 +359,8 @@ export class PathSearch {
     this.add(start, 0, -1)
   }
   get bytes(): number { return this.positions.byteLength * 6 }
+  /** Whether a blocked set narrows the search: its failures are traffic, not terrain. */
+  get restricted(): boolean { return this.blocked !== undefined && this.blocked.size > 0 }
   cancel(): void { this.status = 'cancelled' }
   result(): PathResult { return { status: this.status, path: this.path, cost: this.cost } }
   private permits(p: number): boolean { return this.allow ? this.allow(p) : this.nav.allowed(p) }
@@ -444,7 +446,8 @@ export class PathSearch {
         }
         const to = nav.edge(this.ex, this.ey, this.ez, this.eti, this.direction)
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
-        else if (to >= 0 && !this.blocked?.has(to)) {
+        else if (to >= 0 && this.blocked?.has(to)) this.cut = true
+        else if (to >= 0) {
           const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)

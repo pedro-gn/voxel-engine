@@ -257,3 +257,12 @@ it('finishes builds that queries or refinement left unfinished before anything e
   while (nav.building.size) nav.prebuild(256, [])
   expect(order.slice(0, 2)).toEqual([t, u])
 })
+it('a search that exhausts only because blocked poses (bodies) shut it in proves nothing: limited, not unreachable', () => {
+  const { nav, layout } = fixture(32)
+  const start = layout.voxelIndex(10, 4, 10), goal = layout.voxelIndex(20, 4, 20)
+  const ring = new Set([[11, 10], [9, 10], [10, 11], [10, 9]].map(([x, z]) => layout.voxelIndex(x!, 4, z!)))
+  const s = nav.request(start, [goal], ring)
+  while (s.status === 'pending') nav.step(1024)
+  expect(s.status).toBe('limited')
+  expect(s.restricted).toBe(true); expect(nav.request(start, [goal]).restricted).toBe(false)
+})

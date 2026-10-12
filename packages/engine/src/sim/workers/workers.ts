@@ -1040,7 +1040,8 @@ export class WorkerSystem {
         else if (s.status === 'stale' || s.status === 'cancelled') { u.path = []; if (s.status === 'stale') u.retry = this.time + staleBackoff(++u.stale) }
         else {
           if (u.goal !== null && (u.allowDig || u.buildBlock) && u.reason !== 'traffic') { this.engineer(u, s.status === 'limited'); continue }
-          this.block(u, s.status === 'limited' ? 'search-limited' : u.reason === 'traffic' ? 'traffic' : 'no-access', s.seen); continue
+          // A detour boxed in by bodies proves nothing about the terrain: it waits on traffic.
+          this.block(u, s.restricted || u.reason === 'traffic' ? 'traffic' : s.status === 'limited' ? 'search-limited' : 'no-access', s.seen); continue
         }
       }
       if (u.route && this.advanceRoute(u)) continue
