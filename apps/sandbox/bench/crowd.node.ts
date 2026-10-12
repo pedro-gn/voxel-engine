@@ -5,7 +5,9 @@
 // --cold (no warm-up before the orders: measures the cold first action; spec §7 gates the first action warm),
 // --warm-cap=N (most untimed warm-up ticks per phase while the engine's region prebuild runs, default 20000),
 // --assert (exit 1 when a phase misses a spec §7 criterion; arrival within each unit's ideal walk + grace),
-// --quality [--pairs=500 --seed=5] (route cost and reachability against an exact flat A* on seeded surface pairs),
+// --quality [--pairs=500 --seed=5 --groups=25 --group-weight=W] (route cost and reachability against an exact flat A* on
+//   seeded surface pairs, on a store warmed by the prebuild with its landmark tables; then group fields, 20 starts in a
+//   cluster each, every start's field cost against its own exact flat A*),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT),
 // --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
 // --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
@@ -137,15 +139,22 @@ const r3 = (n: number | null) => n === null ? null : +n.toFixed(3)
 
 if (flag('quality') !== undefined) {
   // Path quality (Task H7): 500 seeded pairs of surface poses, an exact flat A* (node limit 2^22) against a route search,
-  // both on geometry alone (no water or hazard policy, which routes leave to refinement). Regions stay cached across pairs.
+  // both on geometry alone (no water or hazard policy, which routes leave to refinement) except the one static rule the
+  // live policy always applies and the region layer builds in: no pose on a block that falls (sand). Poses are drawn
+  // the same way. Regions stay cached across pairs.
   const L = sim.layout, port = { layout: L, registry: w.nav.port.registry, get: w.nav.port.get }, nav = new NavigationSystem(port, 1 << 22)
   const rng = new Pcg32(Number(flag('seed') ?? 5)), pairs = Number(flag('pairs') ?? 500)
-  const surface = () => { for (;;) { const x = rng.nextInt(CROWD_SIZE[0]), z = rng.nextInt(CROWD_SIZE[2]); for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.stand(x, y, z)) return L.voxelIndex(x, y, z) } }
+  const solidGround = (p: number) => { const [x, y, z] = L.voxelCoords(p); return nav.regionStand(x, y, z) }, exact = { allowed: solidGround }
+  // Warm, as the workers' store is when units order: every region and the landmark tables.
+  const warmStart = performance.now()
+  while (!nav.prebuildStatus().done) nav.prebuild(1 << 20, [])
+  const warmMs = Math.round(performance.now() - warmStart)
+  const surface = () => { for (;;) { const x = rng.nextInt(CROWD_SIZE[0]), z = rng.nextInt(CROWD_SIZE[2]); for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.regionStand(x, y, z)) return L.voxelIndex(x, y, z) } }
   const ratios: number[] = [], shortRatios: number[] = [], flatOps: number[] = [], routeOps: number[] = [], flatMs: number[] = [], routeMs: number[] = [], disagree: unknown[] = []
   let agree = 0, unreachable = 0
   for (let i = 0; i < pairs; i++) {
     const start = surface(), goal = surface()
-    const flat = nav.request(start, [goal])
+    const flat = nav.request(start, [goal], undefined, exact)
     let ops = 0, a = performance.now()
     while (flat.status === 'pending') { nav.step(1 << 16); ops += nav.visited }
     flatMs.push(performance.now() - a); flatOps.push(ops)
@@ -162,7 +171,32 @@ if (flag('quality') !== undefined) {
     if (i % 50 === 49) console.error(`quality ${i + 1}/${pairs}`)
   }
   const stats = (a: number[]) => ({ mean: r3(a.reduce((s, n) => s + n, 0) / a.length), p50: r3(q(a, .5)), p95: r3(q(a, .95)), max: r3(Math.max(...a)) })
-  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, disagree, routedFound: ratios.length, costRatio: stats(ratios), gate: { meanMax: 1.10, p95Max: 1.25, pass: (stats(ratios).mean ?? 9) <= 1.10 && (stats(ratios).p95 ?? 9) <= 1.25 && agree === pairs }, shortFound: shortRatios.length, shortCostRatio: shortRatios.length ? stats(shortRatios) : null, flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes }, null, 2))
+  // Group fields: a goal and a cluster of 20 starts within 16 blocks of a centre; each start's cost by next() against
+  // its exact flat A*, over starts the workers would route (estimate past HIER_MIN).
+  const groupRatios: number[] = [], groupOps: number[] = [], groupWeight = flag('group-weight') === undefined ? undefined : Number(flag('group-weight'))
+  let groupAgree = 0, groupStarts = 0
+  for (let g = 0; g < Number(flag('groups') ?? 25); g++) {
+    const goal = surface(), centre = L.voxelCoords(surface()), starts: number[] = []
+    for (let tries = 0; starts.length < 20 && tries < 2000; tries++) {
+      const x = centre[0] + rng.nextInt(33) - 16, z = centre[2] + rng.nextInt(33) - 16
+      if (x < 0 || z < 0 || x >= CROWD_SIZE[0] || z >= CROWD_SIZE[2]) continue
+      for (let y = CROWD_SIZE[1] - 2; y > 0; y--) if (nav.regionStand(x, y, z)) { starts.push(L.voxelIndex(x, y, z)); break }
+    }
+    const field = new GroupField(nav, nav.regions, [goal], starts, 65536, groupWeight)
+    while (field.status === 'pending') field.step(1 << 16)
+    groupOps.push(field.spent)
+    for (const s of starts) {
+      const flat = nav.request(s, [goal], undefined, exact)
+      while (flat.status === 'pending') nav.step(1 << 16)
+      const n = field.next(s), [x, y, z] = L.voxelCoords(s), [gx, gy, gz] = L.voxelCoords(goal)
+      groupStarts++
+      if ((n !== null) === (flat.status === 'found')) groupAgree++
+      if (n && flat.status === 'found' && flat.cost && (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2 > HIER_MIN) groupRatios.push(n.cost / flat.cost)
+    }
+    console.error(`group ${g + 1}`)
+  }
+  const group = { weight: groupWeight ?? 'default', starts: groupStarts, agree: groupAgree, routed: groupRatios.length, costRatio: stats(groupRatios), ops: stats(groupOps), gate: { meanMax: 1.10, p95Max: 1.25, pass: (stats(groupRatios).mean ?? 9) <= 1.10 && (stats(groupRatios).p95 ?? 9) <= 1.25 && groupAgree === groupStarts } }
+  console.log(JSON.stringify({ node: process.version, pairs, agree, unreachable, disagree, routedFound: ratios.length, costRatio: stats(ratios), gate: { meanMax: 1.10, p95Max: 1.25, pass: (stats(ratios).mean ?? 9) <= 1.10 && (stats(ratios).p95 ?? 9) <= 1.25 && agree === pairs }, shortFound: shortRatios.length, shortCostRatio: shortRatios.length ? stats(shortRatios) : null, flatOps: stats(flatOps), routeOps: stats(routeOps), flatMs: stats(flatMs), routeMs: stats(routeMs), regions: nav.regions.size, regionBytes: nav.regions.bytes, warmMs, landmarks: nav.landmarks.current()?.count ?? 0, group }, null, 2))
   process.exit(0)
 }
 const WALKING = WORKER_STATES.indexOf('walking')
