@@ -1,7 +1,7 @@
 import type { Layout } from '../../world/layout.ts'
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
-import { RegionStore, type RegionBuild } from './regions.ts'
+import { RegionBuild, RegionStore, type Region } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
 import { GroupField } from './groupField.ts'
 
@@ -151,6 +151,22 @@ export class NavigationSystem {
   }
   request(start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions): PathSearch {
     const s = new PathSearch(this, start, goals, blocked, options); this.requests.push(s); return s
+  }
+  /**
+   * The current record of a tile, from the store or by stepping its build (shared with the queries building it) with
+   * at most `cap` operations; `region` is undefined while the build still runs.
+   */
+  regionNow(index: number, cap: number): { region: Region | undefined; used: number } {
+    const known = this.regions.get(index)
+    if (known || cap <= 0) return { region: known, used: 0 }
+    let job = this.building.get(index)
+    if (!job) { job = new RegionBuild(this, index); this.building.set(index, job) }
+    const used = job.step(cap)
+    if (!job.done) return { region: undefined, used }
+    const r = job.result()
+    if (this.building.get(index) === job) this.building.delete(index)
+    if (this.regions.get(index) !== r) this.regions.put(r)
+    return { region: r, used }
   }
   /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
   route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {

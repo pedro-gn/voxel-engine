@@ -95,6 +95,15 @@ it('an unreachable verdict still ends stale when any region it explored changes'
   while (s.status === 'pending') s.step(4096)
   expect(s.status).toBe('stale')
 })
+it('proves a walled-in goal unreachable past 8,192 exit nodes with the default node limit', { timeout: 60_000 }, () => {
+  const { nav, layout, solid } = fixture(576)
+  for (let x = 548; x <= 552; x++) for (let z = 548; z <= 552; z++) if (x === 548 || x === 552 || z === 548 || z === 552) for (let y = 4; y < 8; y++) solid.add(layout.voxelIndex(x, y, z))
+  const s = new RouteSearch(nav, new RegionStore(nav, 1 << 30), layout.voxelIndex(5, 4, 5), [layout.voxelIndex(550, 4, 550)])
+  let nodes = 0
+  while (s.status === 'pending') { s.step(1 << 16); nodes = Math.max(nodes, (s as unknown as { g: Map<number, number> }).g.size) }
+  expect(nodes).toBeGreaterThan(8192)
+  expect(s.status).toBe('unreachable')
+})
 it('excluded exits are not used, and an exhausted search that skipped one is limited', () => {
   const { nav, layout, solid } = fixture(64), store = new RegionStore(nav)
   const a = route(nav, store, layout.voxelIndex(2, 4, 8), [layout.voxelIndex(60, 4, 8)])

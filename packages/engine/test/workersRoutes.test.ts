@@ -172,4 +172,28 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(reasons.has('target-changed')).toBe(false)
     expect([...sim.workers!.units.values()].filter(u => u.goal !== null).map(u => u.id)).toEqual([])
   })
+  it('units detoured off their group route by traffic carry on from the group field instead of planning routes of their own', () => {
+    const sim = makeWide(192)
+    for (let i = 0; i < 12; i++) spawn(sim, [8 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    for (let i = 0; i < 12; i++) spawn(sim, [176 + (i % 4) * 2, 4, 90 + Math.floor(i / 4) * 2])
+    const ids = [...sim.workers!.units.keys()], routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: ids.slice(0, 12), pos: [178, 4, 92] })
+    cmd(sim, { type: 'unitMove', ids: ids.slice(12), pos: [10, 4, 92] })
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 3000)
+    expect(routes.n).toBe(0)
+  })
+  it('edits in regions ahead of a walking group are recovered locally: no unit plans a route of its own, all arrive', () => {
+    const sim = makeWide(256)
+    for (let i = 0; i < 8; i++) spawn(sim, [4 + (i % 4) * 2, 4, 100 + Math.floor(i / 4) * 2])
+    const routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [240, 4, 102] })
+    until(sim, () => [...sim.workers!.units.values()].every(u => (u.x >> 8) > 40), 1500)
+    const nav = sim.workers!.nav, before = [...nav.revisions]
+    // Pillars in every region the group still has to cross: each region changes, none is cut.
+    for (let x = 72; x < 240; x += 16) for (let z = 88; z < 120; z += 16) cmd(sim, { type: 'fillRegion', min: [x, 4, z], max: [x, 6, z], voxel: 1 })
+    expect(nav.revisions.filter((r, i) => r !== before[i]).length).toBeGreaterThan(20)
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 4000)
+    expect(routes.n).toBe(0)
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 240)).toBeLessThanOrEqual(4)
+  })
 })
