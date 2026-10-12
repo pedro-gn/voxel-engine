@@ -265,3 +265,16 @@ describe('traffic blocks on group routes', { timeout: 60_000 }, () => {
     expect(routes.n).toBe(0)
   })
 })
+describe('background navigation work', { timeout: 60_000 }, () => {
+  it('with no units and no queries, the navigation does no background work', () => {
+    const sim = makeWide(128)
+    for (let i = 0; i < 50; i++) expect(sim.step().workers!.stats.visited).toBe(0)
+  })
+  it('a block that only changes its structural role marks no tile as one where sand flips', () => {
+    // Blocks: 0 stone (fixed), 4 beam (a structural member); both solid, neither falls.
+    const sim = makeWide(64), nav = sim.workers!.nav, flips = nav.flips
+    cmd(sim, { type: 'setBlock', pos: [20, 3, 20], voxel: 5 })
+    expect(sim.store.getVoxel(20, 3, 20) & 0xfff).toBe(5)
+    expect(nav.flips).toBe(flips)
+  })
+})

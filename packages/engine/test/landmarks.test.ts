@@ -122,3 +122,29 @@ it('sand that has never changed stays a barrier in the tables, so a detour aroun
   expect(alt.status).toBe('found'); expect(alt.cost).toBeLessThanOrEqual(1.25 * flat(nav, start, goal, true).cost)
   expect(alt.spent * 3).toBeLessThan(plain.spent)
 })
+it('edits every few ticks retire the tables but do not restart their computation until the edits settle', { timeout: 120_000 }, () => {
+  const { nav, layout, open } = detour()
+  warm(nav)
+  const step = nav.landmarks.step.bind(nav.landmarks)
+  let landmarkOps = 0
+  nav.landmarks.step = (cap: number, now?: number) => { const n = step(cap, now); landmarkOps += n; return n }
+  // A block toggled every 10 ticks for 1,000 ticks, the prebuild running with spare budget each tick.
+  let tick = 1000
+  for (let i = 0; i < 1000; i++, tick++) {
+    if (i % 10 === 0) { const p = layout.voxelIndex(60, 4, 60); if (open.has(p)) open.delete(p); else open.add(p); nav.invalidate(60, 4, 60) }
+    nav.prebuild(8192, [], tick)
+  }
+  expect(nav.landmarks.current()).toBeNull()
+  expect(landmarkOps).toBeLessThan(8192)
+  // Once the edits stop for long enough, the tables are computed again.
+  for (let i = 0; i < 20000 && !nav.landmarks.current(); i++, tick++) nav.prebuild(8192, [], tick)
+  expect(nav.landmarks.current()).not.toBeNull()
+})
+it('a search cut short is remembered by geometry and flip counts apart, with no aliasing between them', () => {
+  const { nav } = detour()
+  const l = nav.landmarks as unknown as { failed: unknown; settled(): boolean }
+  l.failed = { geometry: 0, flips: 65536 }
+  nav.flips = 0; nav.geometry = 1
+  // 1 * 0x10000 + 0 would equal 0 * 0x10000 + 65536.
+  expect(l.settled()).toBe(false)
+})

@@ -96,10 +96,14 @@ export class NavigationSystem {
   }
   tileOf(x: number, y: number, z: number): number { return (x >> 4) + (z >> 4) * this.tx + (y >> 4) * this.tx * this.tz }
   tileOfPose(p: number): number { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.tileOf(r - z * this.sx, y, z) }
-  /** `solid`: whether solid geometry changed, not only whether a block falls (that retires the landmark tables). */
-  invalidate(x: number, y: number, z: number, solid = true): void { this.invalidateBox(x, y, z, x, y, z, solid) }
+  /**
+   * `solid`: whether solid geometry changed (that retires the landmark tables); `falls`: whether only the falls rule
+   * changed (sand that got wet or dried), which marks the tiles `flippy`. A change of neither (a structural role) does
+   * neither.
+   */
+  invalidate(x: number, y: number, z: number, solid = true, falls = !solid): void { this.invalidateBox(x, y, z, x, y, z, solid, falls) }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
-  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true): void {
+  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true, falls = !solid): void {
     if (solid) this.geometry++
     const flippy = this.flippy, plane = this.tx * this.tz
     const [sx, sy, sz] = this.port.layout.size
@@ -108,7 +112,7 @@ export class NavigationSystem {
         for (let xx = Math.max(0, (x0 - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x1 + 1) >> 4); xx++) {
           const t = xx + zz * this.tx + yy * plane
           this.revisions[t]!++
-          if (!solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
+          if (falls && !solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
         }
     this.revision++; this.pass++
   }
@@ -209,10 +213,10 @@ export class NavigationSystem {
    * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
    * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
    * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
-   * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes.
-   * Returns the operations used, at most `cap`.
+   * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes;
+   * `now` (the tick) lets them wait for edits to settle (see Landmarks). Returns the operations used, at most `cap`.
    */
-  prebuild(cap: number, anchors: readonly number[]): number {
+  prebuild(cap: number, anchors: readonly number[], now?: number): number {
     let used = 0
     const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
     // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built; a store too
@@ -224,7 +228,7 @@ export class NavigationSystem {
       used += spent
       if (!region) break
     }
-    if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used)
+    if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used, now)
     while (pre.idle !== this.revision && used < cap && !this.full) {
       let tile = -1
       if (pre.phase === 0) {

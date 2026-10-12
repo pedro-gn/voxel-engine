@@ -49,6 +49,8 @@ export class LandmarkTables {
   }
 }
 
+/** Ticks the geometry and flips must stay unchanged before a landmark computation starts (when the caller gives ticks). */
+export const SETTLE = 200
 /** Landmark positions, as fractions of the world's columns: its corners and edge midpoints. */
 const SPOTS: readonly (readonly [number, number])[] = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]]
 
@@ -67,8 +69,10 @@ interface Pending { epoch: number; d: Int32Array; record: Region }
 export class Landmarks {
   private readonly nav: NavigationSystem
   private ready: LandmarkTables | null = null
-  /** A job whose search ended limited: no tables until the geometry changes (its costs could be too high). */
-  private failed = -1
+  /** A job whose search ended limited: no tables until the geometry or the flips change (its costs could be too high). */
+  private failed: { geometry: number; flips: number } | null = null
+  /** The geometry and flip counts last seen, and the tick (`now`) they last changed at. */
+  private seen = { geometry: -1, flips: -1, at: -Infinity }
   private job: {
     geometry: number; flips: number; tiles: number[]; k: number; field: GroupField | null; lo: Int32Array; exits: Map<number, Pending>
     relaxed: RelaxedRecords
@@ -81,8 +85,8 @@ export class Landmarks {
   /** The tables for new queries: current ones only, so no edit since makes their bounds too high. */
   current(): LandmarkTables | null { return this.ready && this.ready.geometry === this.nav.geometry && this.ready.flips === this.nav.flips ? this.ready : null }
   /** Nothing left to compute for the current geometry: tables are current, or the last job ended limited. */
-  settled(): boolean { return this.current() !== null || this.failed === this.nav.geometry * 0x10000 + this.nav.flips }
-  reset(): void { this.ready = null; this.job = null; this.failed = -1 }
+  settled(): boolean { const f = this.failed; return this.current() !== null || f !== null && f.geometry === this.nav.geometry && f.flips === this.nav.flips }
+  reset(): void { this.ready = null; this.job = null; this.failed = null; this.seen = { geometry: -1, flips: -1, at: -Infinity } }
   /** Bytes held: the tables, and a job's partial tables and relaxed records. */
   get bytes(): number {
     let n = 0
@@ -91,12 +95,20 @@ export class Landmarks {
     if (this.job) { tables(this.job.lo, this.job.exits.values()); for (const r of this.job.relaxed.records.values()) n += r.bytes }
     return n
   }
-  /** Advances the computation by at most `cap` operations; returns those used. */
-  step(cap: number): number {
+  /**
+   * Advances the computation by at most `cap` operations; returns those used. With `now` (the tick), a computation
+   * starts only once the geometry and the flips have stayed unchanged for SETTLE ticks, so a world edited every few
+   * ticks (a quarry) does not restart eight whole-world searches on every edit; the tables stay retired meanwhile.
+   */
+  step(cap: number, now?: number): number {
+    const nav = this.nav, seen = this.seen
+    if (seen.geometry !== nav.geometry || seen.flips !== nav.flips) { this.seen = { geometry: nav.geometry, flips: nav.flips, at: now ?? -Infinity } }
+    if (this.job && (this.job.geometry !== nav.geometry || this.job.flips !== nav.flips)) this.job = null
+    if (!this.job && now !== undefined && now - this.seen.at < SETTLE) return 0
     let used = 0
     while (used < cap && !this.settled()) {
       const job = this.job
-      if (!job || job.geometry !== this.nav.geometry || job.flips !== this.nav.flips) { this.start(); used++; if (!this.job!.tiles.length) { this.finish(); break }; continue }
+      if (!job) { this.start(); used++; if (!this.job!.tiles.length) { this.finish(); break }; continue }
       if (job.debt) { const pay = Math.min(job.debt, cap - used); job.debt -= pay; used += pay; continue }
       if (job.harvest) { used += this.harvest(cap - used); continue }
       if (job.best) { if (job.at === job.best.length) this.finish(); else used += this.best(cap - used); continue }
@@ -111,7 +123,7 @@ export class Landmarks {
       used += job.field.step(cap - used)
       if (job.field.status === 'pending') continue
       // A search cut short leaves tentative costs, possibly too high for a lower bound: no tables for this geometry.
-      if (job.field.status !== 'found') { this.failed = job.geometry * 0x10000 + job.flips; this.job = null; break }
+      if (job.field.status !== 'found') { this.failed = { geometry: job.geometry, flips: job.flips }; this.job = null; break }
       job.harvest = job.field.costs(); job.at = 0
     }
     return used
@@ -192,7 +204,8 @@ export class Landmarks {
     this.job = null
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.ready ? this.ready.geometry : -1); mix(this.ready?.count ?? 0); mix(this.failed)
+    mix(this.ready ? this.ready.geometry : -1); mix(this.ready?.count ?? 0); mix(this.failed?.geometry ?? -1); mix(this.failed?.flips ?? -1)
+    mix(this.seen.geometry); mix(this.seen.flips); mix(this.seen.at === -Infinity ? -1 : this.seen.at)
     const job = this.job
     mix(job ? 1 : 0)
     if (!job) return

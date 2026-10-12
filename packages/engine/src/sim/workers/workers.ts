@@ -232,7 +232,7 @@ export class WorkerSystem {
   afterWrite(x: number, y: number, z: number, old: number, value: number): void {
     const R = this.port.registry, a = voxelId(old), b = voxelId(value)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
-    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b]); this.worldRevision++; this.revision++ }
+    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
   invalidateAll(): void {
@@ -1102,11 +1102,11 @@ export class WorkerSystem {
     this.engineeringVisited = engineeringWork + repairWork
     const rest = Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork)
     this.assign(); this.nav.step(rest)
-    // What the tick left unused builds regions ahead, around the units first.
-    if (rest > this.nav.visited) {
+    // What the tick left unused builds regions ahead, around the units first; with no unit and no query, nothing needs them.
+    if (rest > this.nav.visited && (this.units.size || this.nav.pending)) {
       const anchors = new Set<number>()
       for (const u of this.units.values()) if (u.state !== 'incapacitated') anchors.add(this.nav.tileOfPose(this.position(u)))
-      this.nav.prebuild(rest - this.nav.visited, [...anchors])
+      this.nav.prebuild(rest - this.nav.visited, [...anchors], this.time)
     }
   }
   /** Whether the unit may plan on the region layer: no engineering, no designation to escape, not standing on sand. */
