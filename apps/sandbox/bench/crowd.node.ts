@@ -277,6 +277,10 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
   const sampled: number[] = [], allDetours: number[] = [], unreachable: number[] = [], goals = new Map<number, number>(), noAccess = new Set<number>()
   let exactMs = 0
   let visitedMax = 0, navBytesMax = 0, failedCommands = 0, ordersDoneAt: number | null = null
+  // Ticks the landmark tables were current (read defensively: absent before round 2), and tiles that joined the
+  // relaxed set (a falls-only change seen there) during the phase.
+  const nav = w.nav as unknown as { landmarks?: { current(): unknown }; flips?: number }, flipsAtStart = nav.flips ?? 0
+  let landmarkTicks = 0
   for (let i = 0; i < n; i++) {
     each?.(i)
     if (i === 0) for (const id of moved) { const u = w.units.get(id); if (u) starts.set(id, sim.layout.voxelIndex(Math.floor(u.x / 256), u.y >> 8, Math.floor(u.z / 256))) }
@@ -322,6 +326,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
       blockedAs.set(d.id, key)
     }
     visitedMax = Math.max(visitedMax, wt.stats.visited); navBytesMax = Math.max(navBytesMax, wt.stats.navBytes)
+    if (nav.landmarks?.current()) landmarkTicks++
     const mine = wt.orders.filter(o => orderIds.has(o.id))
     if (ordersDoneAt === null && mine.length && mine.every(o => o.cancelled || o.done === o.total)) ordersDoneAt = t
   }
@@ -353,6 +358,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
     ...(work.length > 0 && { work: { orders: work.length, done: work.reduce((s, o) => s + o.done, 0), total: work.reduce((s, o) => s + o.total, 0), allDoneAfterTicks: ordersDoneAt } }),
     ...(moved.length > 0 && { falseUnreachable }),
     trafficBlocks: blocks.traffic ?? 0, blocks, visitedMax, navBytesMax, failedCommands,
+    landmarks: { currentPct: +(100 * landmarkTicks / n).toFixed(1), newRelaxedTiles: (nav.flips ?? 0) - flipsAtStart },
   }
 }
 
