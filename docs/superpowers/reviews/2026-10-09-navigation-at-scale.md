@@ -4,7 +4,7 @@ Date: TBD. Branch `feat/navigation-scale`, from `main` d63ffe1. Round 2 from 70b
 
 - [Spec](../specs/2026-10-09-navigation-at-scale-design.md) (§7 corrected 2026-10-09, amended 2026-10-12)
 - [Plan](../plans/2026-10-09-navigation-at-scale.md)
-- [ADR 0003](../../adr/0003-TBD.md)
+- [ADR 0003](../../adr/0003-hierarchical-routes-and-reservations.md)
 - Data, all in `../research/`:
   - baseline (pre-5b, quiet, 2026-10-12): `2026-10-09-crowd-baseline.json`
   - round-2 gate runs: TBD
