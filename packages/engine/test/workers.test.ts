@@ -1164,6 +1164,23 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...lanes]).toEqual([6])
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
   })
+  it('a unit stuck in the middle of a climb does not search from mid-air, which would read as no access', () => {
+    // The floor rises one block at x = 10; unit 1 climbs it, unit 2 stands far off.
+    type U = { id: number; conflict: { t: number; owner: number } | null; motion: { flat: boolean } | null; stuck: number; best: number; reason?: string; state: string }
+    const sim = make(ctx => { for (let z = 0; z < 32; z++) for (let x = 10; x < 32; x++) ctx.set(x, 4, z, 1) })
+    spawn(sim, [8, 4, 5]); spawn(sim, [20, 5, 20]); cmd(sim, { type: 'unitMove', ids: [1], pos: [14, 5, 5] })
+    type V = U & { x: number; y: number; z: number }
+    const w = sim.workers! as unknown as { units: Map<number, V>; time: number; nav: { stand(x: number, y: number, z: number): boolean }; cooperate(cap: number): number }, u = w.units.get(1)!
+    // Partway up the step the unit's cell is the step itself: nothing stands there.
+    for (let i = 0; i < 200 && !(u.motion && !u.motion.flat && !w.nav.stand(u.x >> 8, u.y >> 8, u.z >> 8)); i++) sim.step()
+    expect(u.motion?.flat).toBe(false); expect(w.nav.stand(u.x >> 8, u.y >> 8, u.z >> 8)).toBe(false)
+    // Stuck past the limit with a conflict: the old detour, sidestep and traffic block take over.
+    u.conflict = { t: w.time + 1, owner: 2 }; u.stuck = 200; u.best = -1
+    w.cooperate(4096)
+    const reasons = new Set<string>()
+    for (let i = 0; i < 200 && u.state !== 'idle'; i++) { sim.step(); if (u.reason) reasons.add(u.reason) }
+    expect(reasons.has('no-access')).toBe(false)
+  })
   it('a unit whose conflict went away while the right of way was settled starts no repair', () => {
     // Head-on in a one-wide corridor: once they conflict, preemption fails both ways and re-projects both units, which
     // can leave the unit with no conflict at all (as at 1,000 units on the crowd world).

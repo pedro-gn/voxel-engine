@@ -858,6 +858,8 @@ export class WorkerSystem {
     return !!o && (o.yieldTo === u.id && this.time < o.yieldUntil || this.follows(u, o))
   }
   private yield(u: Unit): void {
+    // Partway through a climb or a drop the unit's cell may stand nowhere: a search from there would prove nothing.
+    if (u.motion && !u.motion.flat) return
     const from = this.position(u), intended = u.path[u.cursor], owner = intended === undefined ? undefined : this.occupied.get(intended)
     const other = owner === undefined ? undefined : this.units.get(owner)
     if (other && this.outranks(other, u) && (other.motion !== null || other.state === 'planning' && other.task !== null) && u.wait < 80) return // an active unit with the right of way wins for a while; idle bodies still require a detour
