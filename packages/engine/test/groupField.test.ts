@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
 import { RegionStore, splitKey } from '../src/sim/navigation/regions.ts'
-import { RouteSearch } from '../src/sim/navigation/routeSearch.ts'
+import { ROUTE_WEIGHT, RouteSearch } from '../src/sim/navigation/routeSearch.ts'
 import { GroupField, startClusters } from '../src/sim/navigation/groupField.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
@@ -18,11 +18,11 @@ function route(nav: NavigationSystem, store: RegionStore, start: number, goals: 
 }
 function settle(g: GroupField, cap = 4096) { for (let i = 0; i < 100000 && g.status === 'pending'; i++) expect(g.step(cap)).toBeLessThanOrEqual(cap) }
 
-it('agrees with independent route searches for every start of a group', () => {
+it('agrees with independent route searches for every start of a group, at the routes’ weight', () => {
   const { nav, layout } = fixture(128), store = new RegionStore(nav)
   const goals = [layout.voxelIndex(120, 4, 120), layout.voxelIndex(118, 4, 120)]
   const starts = [layout.voxelIndex(4, 4, 4), layout.voxelIndex(60, 4, 4), layout.voxelIndex(4, 4, 70)]
-  const g = new GroupField(nav, store, goals, starts)
+  const g = new GroupField(nav, store, goals, starts, 65536, ROUTE_WEIGHT)
   settle(g)
   expect(g.status).toBe('found')
   for (const s of starts) {

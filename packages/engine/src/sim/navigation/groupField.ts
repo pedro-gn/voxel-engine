@@ -2,7 +2,7 @@ import type { Layout } from '../../world/layout.ts'
 import type { NavigationSystem, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { SOURCES, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
-import { ROUTE_WEIGHT, RegionReader } from './routeSearch.ts'
+import { RegionReader } from './routeSearch.ts'
 import { NO_COST, type LandmarkTables } from './landmarks.ts'
 
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
@@ -13,6 +13,12 @@ const PHASES: readonly Phase[] = ['seed', 'search', 'validate']
  * FAR_SLACK: a start nothing reaches would otherwise make it exhaust the world. Starts left open still read next().
  */
 const FAR = 1.5, FAR_SLACK = 512
+/**
+ * Heuristic weight of group fields. A field must reach every start of a cluster spread over a pad, so it expands far more
+ * than one route; weight 2 halves or better its operations. Measured on the warm crowd world (25 fields of 20 clustered
+ * starts against exact flat A*): mean 1.056, p95 1.23, reachability agreeing on all 500 starts. Routes keep ROUTE_WEIGHT.
+ */
+export const GROUP_WEIGHT = 2
 
 /**
  * Splits a move's starts into clusters whose 16² columns lie within `reach` columns of one another, chained. One field
@@ -41,7 +47,7 @@ export function startClusters(starts: readonly number[], layout: Layout, reach =
 }
 
 /**
- * Reverse weighted abstract A* (ROUTE_WEIGHT) from a destination over region exits, shared by every unit of a move order. D(exit) is the cost
+ * Reverse weighted abstract A* (GROUP_WEIGHT) from a destination over region exits, shared by every unit of a move order. D(exit) is the cost
  * from the exit's `from` pose to the nearest goal. A start is covered once an exit of its region that it reaches is
  * closed; units read their own best exit at next() time, so starts are not search nodes and cost one operation each
  * when covered. The heuristic is the flat one from the nearest box of starts (one per start tile), so the search grows
@@ -89,7 +95,7 @@ export class GroupField {
   private expanding = -1
   private source = 0
   private debt = 0
-  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = ROUTE_WEIGHT, options?: GroupOptions) {
+  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = GROUP_WEIGHT, options?: GroupOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     this.exhaust = options?.exhaust ?? false
     this.alt = starts.length ? options?.landmarks === undefined ? nav.landmarks.current() : options.landmarks : null
