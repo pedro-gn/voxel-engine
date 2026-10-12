@@ -1187,7 +1187,7 @@ export class WorkerSystem {
     if (hop) this.refineWork += hop.ops
     // The route's costs past a changed region were priced through it and can lead back: coming back to recover in it
     // again, or recovering too often, plans anew.
-    const changed = s.region(index) !== region, back = changed && index !== r.hop && r.recovered.includes(index)
+    const own = s.region(index), changed = own !== undefined && own !== region, back = changed && index !== r.hop && r.recovered.includes(index)
     if (!hop || back || changed && r.recovered.length >= MAX_RECOVERIES) { r.replan = true; return false }
     if (changed && !r.recovered.includes(index)) r.recovered.push(index)
     r.hop = index
