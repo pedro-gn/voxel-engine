@@ -180,6 +180,11 @@ export class WorkerSystem {
   private engineeringVisited = 0
   /** Operations spent this tick descending region fields; shares the navigation budget. */
   private refineWork = 0
+  /** Bumped whenever a unit's destination changes; the goal index is rebuilt from it. */
+  private goalsVersion = 0
+  private goalIndex: { version: number; count: Map<number, number> } | null = null
+  /** Index deltas of the cells a centered one-block axis step sweeps in each of its ticks, by direction * 4 + tick. */
+  private stepPatterns = new Map<number, number[]>()
   /** Units walking each group field, and the field's hash id in creation order. */
   private groups = new Map<GroupField, { id: number; users: number }>()
   private nextGroup = 1
@@ -352,7 +357,7 @@ export class WorkerSystem {
   private clearOrder(u: Unit): void {
     // Flat shortcuts may span many nodes; cancellation must stop at the current supported pose.
     if (u.motion?.flat) { u.motion = null; this.reserve(u, this.body(u.x, u.y, u.z)) }
-    this.resetRoute(u); u.goal = null; u.stale = 0
+    this.resetRoute(u); u.goal = null; u.stale = 0; this.goalsVersion++
     if (u.task) { if (u.task.order.id < 0) this.targets.delete(u.task.p); u.task.claim = 0; u.task = null }
     u.reason = undefined; u.wait = 0
     if (!u.motion && u.state !== 'incapacitated' && u.state !== 'falling') u.state = 'idle'
@@ -456,6 +461,7 @@ export class WorkerSystem {
         if (destinations.length === units.length) break formation
       }
       if (destinations.length < units.length) throw new Error('not enough safe formation destinations')
+      this.goalsVersion++
       units.forEach((u, i) => { this.clearOrder(u); if (u.state !== 'incapacitated') { u.available = true; u.goal = destinations[i]!; u.allowDig = c.allowDig === true; u.buildBlock = c.buildBlock ?? 0; u.state = u.motion ? 'walking' : 'planning'; u.retry = 0; u.revision = -1 } })
       // Units that would each plan a long route share one reverse field from all their destinations.
       const members = units.filter(u => u.state !== 'incapacitated' && !u.motion && this.routable(u) && this.estimate(u, [u.goal!]) > HIER_MIN)
@@ -879,7 +885,7 @@ export class WorkerSystem {
       if (!this.port.layout.inBounds(...pos) || !this.safePose(pos)) continue
       const p = this.port.layout.voxelIndex(...pos), owner = this.occupied.get(p)
       if (taken.has(p) || owner !== undefined && owner !== u.id) continue
-      u.goal = p; this.dirty.add(u.id)
+      u.goal = p; this.goalsVersion++; this.dirty.add(u.id)
       return true
     }
     return false
@@ -1034,7 +1040,7 @@ export class WorkerSystem {
         if (this.position(u) === u.goal) {
           const [x, y, z] = this.port.layout.voxelCoords(u.goal)
           if (u.x !== x * 256 + 128 || u.y !== y * 256 || u.z !== z * 256 + 128) { this.beginMotion(u, u.goal, u.cursor); continue }
-          this.port.emit('unitArrived', { id: u.id }); u.goal = null; u.state = 'idle'; this.dirty.add(u.id)
+          this.port.emit('unitArrived', { id: u.id }); u.goal = null; this.goalsVersion++; u.state = 'idle'; this.dirty.add(u.id)
         }
         else if (this.time >= u.retry) { this.plan(u, [u.goal]); u.state = 'planning' }
       }
@@ -1249,10 +1255,11 @@ export class WorkerSystem {
       if (to === undefined || pr.t < (this.untilAt(u, pr.cursor - 1) ?? -1)) { if (!this.claim(u, pr.t + 1, this.body(...start))) return this.stand(u, pr); pr.t++; continue }
       const ticks = this.stepTicks(start, to), [tx, , tz] = L.voxelCoords(to), from = pr.t
       if (L.voxelCoords(to)[1] * 256 === start[1]) {
-        const area = new Set(walkSweep(L, start, [tx * 256 + 128, start[1], tz * 256 + 128]))
+        const axis = this.axisStep(start, to)
+        const area = axis >= 0 ? null : new Set(walkSweep(L, start, [tx * 256 + 128, start[1], tz * 256 + 128]))
         for (let e = 0; e < ticks; e++) {
-          const a = this.motionPose(to, e, ticks, start), b = this.motionPose(to, e + 1, ticks, start)
-          if (!this.claim(u, from + e + 1, walkSweep(L, a, b).filter(p => area.has(p)))) { this.table.releaseFrom(u.id, from + 1); return this.stand(u, pr) }
+          const cells = area ? walkSweep(L, this.motionPose(to, e, ticks, start), this.motionPose(to, e + 1, ticks, start)).filter(p => area.has(p)) : this.stepCellsAt(start, to, axis, e)
+          if (!this.claim(u, from + e + 1, cells)) { this.table.releaseFrom(u.id, from + 1); return this.stand(u, pr) }
         }
       } else {
         const cells = this.verticalCells(to, ticks, start)
@@ -1260,6 +1267,28 @@ export class WorkerSystem {
       }
       pr.t = from + ticks; pr.pose = this.motionPose(to, ticks, ticks, start); pr.cursor++
     }
+  }
+  /**
+   * The direction of a one-block flat step from the center of a cell to a planar neighbour's center, with room above
+   * for the body; -1 otherwise.
+   */
+  private axisStep(start: readonly [number, number, number], to: number): number {
+    if ((start[0] & 255) !== 128 || (start[2] & 255) !== 128 || (start[1] & 255) !== 0 || (start[1] >> 8) + 1 >= this.port.layout.size[1]) return -1
+    return this.stepDir(this.port.layout.voxelIndex(start[0] >> 8, start[1] >> 8, start[2] >> 8), to)
+  }
+  /**
+   * The cells walkSweep gives (in its order) for tick e of a centered one-block step in direction d, clipped to the
+   * step's own sweep. The sweep is the same up to translation for every such step, so its index deltas are kept.
+   */
+  private stepCellsAt(start: [number, number, number], to: number, d: number, e: number): number[] {
+    const L = this.port.layout, a = L.voxelIndex(start[0] >> 8, start[1] >> 8, start[2] >> 8)
+    let deltas = this.stepPatterns.get(d * 4 + e)
+    if (!deltas) {
+      const [tx, , tz] = L.voxelCoords(to), area = new Set(walkSweep(L, start, [tx * 256 + 128, start[1], tz * 256 + 128]))
+      const cells = walkSweep(L, this.motionPose(to, e, 4, start), this.motionPose(to, e + 1, 4, start)).filter(p => area.has(p))
+      deltas = cells.map(p => p - a); this.stepPatterns.set(d * 4 + e, deltas)
+    }
+    return deltas.map(dl => a + dl)
   }
   /**
    * After a conflict the unit will wait where its projection stopped: it reserves standing there for as long as that is
@@ -1380,15 +1409,18 @@ export class WorkerSystem {
     this.table.releaseFrom(o.id, T + 1); this.table.releaseHold(o.id); o.projection = null
     if (!this.moving(u)) {
       this.cut(u)
-      const untils = Array.from({ length: Math.max(1, u.cursor) }, (_, i) => this.untilAt(u, i) ?? -1)
-      untils[Math.max(0, u.cursor - 1)] = Math.max(untils[Math.max(0, u.cursor - 1)]!, T + PREEMPT_DELAY)
+      const n = Math.max(1, u.cursor), old = u.schedule?.path === u.path ? u.schedule.untils : null, untils = new Array<number>(n)
+      for (let i = 0; i < n; i++) untils[i] = old?.[i] ?? -1
+      untils[n - 1] = Math.max(untils[n - 1]!, T + PREEMPT_DELAY)
       u.schedule = { path: u.path, untils }
     }
     u.projection = null; this.project(u)
     o.conflict = { t: T + 1, owner: u.id }
-    // o looks for a refuge off u's remaining route that it can reach ahead of u and hold until the window's end.
-    const route = this.routeAndGoals(u, o)
-    this.startRepair(o, p => !route.has(p))
+    // o looks for a refuge off u's remaining route that it can reach ahead of u and hold until the window's end (the
+    // search runs within this call, so the destinations are read live).
+    const tail = new Set<number>(), here = this.position(u)
+    for (let i = Math.max(0, u.cursor - 1); i < u.path.length; i++) tail.add(u.path[i]!)
+    this.startRepair(o, p => p !== here && !tail.has(p) && !this.otherGoal(p, o))
     const r = o.repair
     const used = r ? r.step(Math.min(cap, r.remaining)) : 0
     if (r?.status === 'found') {
@@ -1409,16 +1441,27 @@ export class WorkerSystem {
     }
     return undefined
   }
+  /** Units' destinations and how many units have each; rebuilt when any destination changed. Derived, not hashed. */
+  private goalCount(): Map<number, number> {
+    if (this.goalIndex?.version !== this.goalsVersion) {
+      const count = new Map<number, number>()
+      for (const u of this.units.values()) if (u.goal !== null) count.set(u.goal, (count.get(u.goal) ?? 0) + 1)
+      this.goalIndex = { version: this.goalsVersion, count }
+    }
+    return this.goalIndex.count
+  }
+  /** Whether p is the destination of a unit other than o. */
+  private otherGoal(p: number, o: Unit): boolean { return (this.goalCount().get(p) ?? 0) > (o.goal === p ? 1 : 0) }
   /** Every other unit's destination: poses a unit must not end a plan or a make-way walk on. */
   private goalsBut(o: Unit): Set<number> {
-    const out = new Set<number>()
-    for (const other of this.units.values()) if (other !== o && other.goal !== null) out.add(other.goal)
+    const count = this.goalCount(), out = new Set(count.keys())
+    if (o.goal !== null && count.get(o.goal) === 1) out.delete(o.goal)
     return out
   }
   /** Poses a unit making way for u must not end on: u's pose and remaining route, and every other unit's destination. */
   private routeAndGoals(u: Unit, o: Unit): Set<number> {
     const out = this.goalsBut(o)
-    for (const p of u.path.slice(Math.max(0, u.cursor - 1))) out.add(p)
+    for (let i = Math.max(0, u.cursor - 1); i < u.path.length; i++) out.add(u.path[i]!)
     out.add(this.position(u))
     return out
   }
