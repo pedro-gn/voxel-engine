@@ -182,6 +182,20 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     until(sim, () => [...sim.workers!.units.values()].every(u => u.goal === null), 3000)
     expect(routes.n).toBe(0)
   })
+  it('a routed unit moved off its path onto another level carries on from where it stands instead of blocking', () => {
+    // A one-block ridge along z = 21 of every chunk, beside the straight line the route takes at z = 20.
+    const sim = makeWide(256, ctx => { for (let x = 0; x < 32; x++) ctx.set(x, 4, 21, 1) }); spawn(sim, [10, 4, 20])
+    const u = sim.workers!.units.get(1)!, L = sim.layout, routes = countRoutes(sim)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [220, 4, 20] })
+    until(sim, () => u.route?.search.status === 'found' && u.path[u.cursor] !== undefined && (u.x >> 8) > 40, 2000)
+    // As if pushed off its step: on top of the ridge, off the path and one level up.
+    u.motion = null; u.x = (u.x >> 8) * 256 + 128; u.y = 5 * 256; u.z = 21 * 256 + 128
+    const reasons = new Set<string>()
+    for (let i = 0; i < 3000 && u.goal !== null; i++) { sim.step(); if (u.reason) reasons.add(u.reason) }
+    expect(reasons.has('target-changed')).toBe(false)
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 220 * 256 + 128, z256: 20 * 256 + 128 })
+    expect(routes.n).toBe(1)
+  })
   it('edits in regions ahead of a walking group are recovered locally: no unit plans a route of its own, all arrive', () => {
     const sim = makeWide(256)
     for (let i = 0; i < 8; i++) spawn(sim, [4 + (i % 4) * 2, 4, 100 + Math.floor(i / 4) * 2])

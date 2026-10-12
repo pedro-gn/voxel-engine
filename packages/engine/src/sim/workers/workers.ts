@@ -750,9 +750,21 @@ export class WorkerSystem {
     })
   }
   private beginPathMotion(u: Unit): boolean {
+    const L = this.port.layout, y = u.y >> 8, to = u.path[u.cursor]!, back = u.path[u.cursor - 1]
+    // Traffic can stop a step between nodes, off the path: the unit walks straight to the next node, or back onto the
+    // node it stepped from or toward (that line is the stopped step's own), and waits for bodies in the way like any
+    // step instead of failing the neighbour check.
+    const here = this.position(u)
+    if (back !== undefined && here !== back) {
+      for (const [p, cursor] of [[to, u.cursor + 1], [back, u.cursor]] as const) {
+        const [x, ty, z] = L.voxelCoords(p), cells = walkSweep(L, [u.x, u.y, u.z], [x * 256 + 128, u.y, z * 256 + 128])
+        if (ty === y && this.walkable(u, cells, y)) return this.beginMotion(u, p, cursor, cells)
+      }
+      // Neither in reach (another level): a route carries on from where the unit stands.
+      if (u.route && !DIRS.some((_, d) => this.nav.neighbor(here, d) === to)) { this.reseat(u, u.route, here); return false }
+    }
     // A blocked next step needs traffic arbitration, not repeated long visibility probes; a repair plan goes node by node.
-    if (u.wait || u.cursor < this.scheduled(u)) return this.beginMotion(u, u.path[u.cursor]!)
-    const L = this.port.layout, y = u.y >> 8
+    if (u.wait || u.cursor < this.scheduled(u)) return this.beginMotion(u, to)
     let end = u.cursor
     while (end < u.path.length && end < u.cursor + WALK_LOOKAHEAD && L.voxelCoords(u.path[end]!)[1] === y) end++
     // Bound both lookahead and probes; never smooth across stairs or engineering edits.
@@ -775,7 +787,11 @@ export class WorkerSystem {
     let cells: number[], area: Set<number> | null = null
     if (flat) {
       const sweep = visibleCells ?? walkSweep(this.port.layout, start, [tx * 256 + 128, u.y, tz * 256 + 128])
-      if (!visibleCells && !this.walkable(u, sweep, y)) { this.block(u, 'unsafe'); return false }
+      if (!visibleCells && !this.walkable(u, sweep, y)) {
+        // Stopped off-center (traffic cut a step short), the body sweeps a neighbour cell: re-center first, then step.
+        if (from !== to && ((u.x & 255) !== 128 || (u.z & 255) !== 128)) return this.beginMotion(u, from, u.cursor)
+        this.block(u, 'unsafe'); return false
+      }
       const valid = new Set(sweep); area = valid
       cells = walkSweep(this.port.layout, start, this.motionPose(to, 1, ticks, start)).filter(p => valid.has(p))
     } else cells = this.verticalCells(to, ticks, start)
@@ -896,7 +912,8 @@ export class WorkerSystem {
         if (u.state === 'falling' || !u.motion && !this.hasSupport(u)) { this.fall(u); continue }
         if (!u.motion && !this.nav.stand(...this.pose(u)) && this.hasSupport(u)) {
           const from = this.position(u)
-          for (let d = 0; d < 4; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p)) break }
+          // A step off the path: the cursor stays, and the path resumes from wherever the unit then stands.
+          for (let d = 0; d < 4; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p, u.cursor)) break }
           continue
         }
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
