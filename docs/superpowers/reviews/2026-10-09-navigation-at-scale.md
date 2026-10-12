@@ -54,9 +54,32 @@ workers p95 9.9 ms. Root causes:
 User-approved amendment (70b7063): background region prebuild with spare budget, store cap up to 64 MiB, first action
 gated on a warm world (cold recorded).
 
-**Routing** (R1–R4): TBD.
+**Routing** (R1–R4, then the single-agent finish).
+- R1 f49d375: refinement appends only while the path still ends where the route left off, so a repair or sidestep
+  that replaced the path no longer causes `target-changed` jumps.
+- R2 b903361, 82ee460: local recovery on the route's own costs (`nextHop` prices the way on from any pose; a changed
+  tile is rebuilt on the refinement budget); a full replan only for a loop or more than 16 recoveries. `RouteSearch`
+  node cap 65,536. 913c501: a reseat (traffic or an edit moved the unit) restarts that history.
+- R3 9b6fac0: one group field per start cluster; starts covered by the first closed exit they reach; a field capped
+  by its node limit still serves the starts it settled. 7db5026: group fields weight their heuristic by 2 (routes keep
+  1.25), after a group quality sample met the gate.
+- R4 fe8b796: background region prebuild with the operations a tick leaves unused (rings around units, then every tile
+  by index); store cap 64 MiB; the prebuild stops at 90%. c3d73a8: `prebuildStatus()` for warm-ups; half-built regions
+  are kept and finished by the next reader or the prebuild.
+- Landmarks (user decision, option b) 8a4f358, 9058c58: an ALT bound from eight edge tiles over the region graph,
+  computed by the prebuild once every tile is built, and retired by any solid edit until recomputed.
+- Portal lanes 7e6e1a7: exits keep their run of crossings; a unit crosses at the first one it reaches.
+- c53b4f2: a traffic detour (a flat search around nearby bodies) that ran out of poses was reported unreachable, which
+  gave false `no-access` verdicts. It now ends limited, and the unit waits on traffic.
 
-**Traffic** (T1–T3): TBD.
+**Traffic** (T1–T3).
+- T1 bfa67f6: keep-right lanes in passages exactly two wide; queues wait behind leaders going the same way; aimless
+  units give way. The 20 v 20 and 30 v 30 corridor tests pass. 5cc726a: pending repairs share the budget fairly (by
+  rotation) and lapse after 4 ticks.
+- Integration: 7ac9314 repairs take half the budget only while navigation queries wait; d2cc6f6 refuge plans leave the
+  route at once (a cheaper way to a space-time state replaces the queued one).
+- T2 (500 against 500 through the gates) and T3 (workers' share): see Measurements. walkSweep is cheaper with identical
+  results (833844e, 6a86cb4).
 
 **Bench** (B1): phases of 6,600 ticks (ideal walks reach ~5,200 ticks on the sand detour, plus the 60 s grace); every
 phase warms the region store before its orders (ticks until the engine's prebuild reports done); `--cold` measures the
