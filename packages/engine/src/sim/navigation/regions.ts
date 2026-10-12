@@ -290,7 +290,10 @@ export class RegionStore {
   readonly maxBytes: number
   private readonly regions = new Map<number, Region>()
   private total = 0
-  constructor(nav: NavigationSystem, maxBytes = 64 * 1024 * 1024) { this.nav = nav; this.maxBytes = maxBytes }
+  /** Tiles that had a record since the store was cleared, and their count: the prebuild's progress, not simulation state. */
+  private readonly once: Uint8Array
+  built = 0
+  constructor(nav: NavigationSystem, maxBytes = 64 * 1024 * 1024) { this.nav = nav; this.maxBytes = maxBytes; this.once = new Uint8Array(nav.revisions.length) }
   get bytes(): number { return this.total }
   get size(): number { return this.regions.size }
   get(index: number): Region | undefined {
@@ -304,10 +307,11 @@ export class RegionStore {
     const old = this.regions.get(region.index)
     if (old) { this.regions.delete(region.index); this.total -= old.bytes }
     this.regions.set(region.index, region); this.total += region.bytes
+    if (!this.once[region.index]) { this.once[region.index] = 1; this.built++ }
     while (this.total > this.maxBytes && this.regions.size > 1) {
       const [index, r] = this.regions.entries().next().value!
       this.regions.delete(index); this.total -= r.bytes
     }
   }
-  clear(): void { this.regions.clear(); this.total = 0 }
+  clear(): void { this.regions.clear(); this.total = 0; this.once.fill(0); this.built = 0 }
 }

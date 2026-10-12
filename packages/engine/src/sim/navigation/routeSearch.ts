@@ -20,9 +20,6 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
   return h === Infinity ? 0 : h
 }
 
-/** Readers stepping each shared build; a build its last reader leaves unfinished is dropped from `nav.building`. */
-const builders = new WeakMap<RegionBuild, number>()
-
 /**
  * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision, and
  * a region whose tile changed after it was first read (or pinned) goes into `changed`; the search keeps using the
@@ -53,7 +50,7 @@ export class RegionReader {
     if (r) return this.adopt(r)
     let job = this.nav.building.get(index)
     if (!job) { job = new RegionBuild(this.nav, index); this.nav.building.set(index, job) }
-    this.job = job; builders.set(job, (builders.get(job) ?? 0) + 1)
+    this.job = job
     return undefined
   }
   private adopt(r: Region): Region {
@@ -72,15 +69,8 @@ export class RegionReader {
     }
     return used
   }
-  /** Leaves the pending build; when no reader is left on an unfinished one, nobody resumes it, so it goes. */
-  drop(): void {
-    const job = this.job
-    if (!job) return
-    this.job = null
-    const users = builders.get(job)! - 1
-    builders.set(job, users)
-    if (!users && !job.done && this.nav.building.get(job.index) === job) this.nav.building.delete(job.index)
-  }
+  /** Leaves the pending build: it stays shared in `nav.building`, where the next reader or the prebuild finishes it. */
+  drop(): void { this.job = null }
   mixState(mix: (n: number) => void): void {
     mix(this.seen.size); for (const [ti, rev] of this.seen) { mix(ti); mix(rev) }
     mix(this.job ? 1 : 0); this.job?.mixState(mix)

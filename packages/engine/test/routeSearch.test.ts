@@ -204,7 +204,7 @@ it('cancel keeps a settled status and cancels only a pending search', () => {
   pending.step(5); pending.cancel()
   expect(pending.status).toBe('cancelled')
 })
-it('a cancelled search frees a shared build only when it was its last reader', () => {
+it('a cancelled search leaves a shared build for the next reader, which finishes it', () => {
   const { nav, layout } = fixture(64), store = nav.regions
   const a = new RouteSearch(nav, store, layout.voxelIndex(5, 4, 5), [layout.voxelIndex(60, 4, 60)])
   const b = new RouteSearch(nav, store, layout.voxelIndex(6, 4, 5), [layout.voxelIndex(60, 4, 60)])
@@ -212,8 +212,8 @@ it('a cancelled search frees a shared build only when it was its last reader', (
   expect(nav.building.size).toBe(1)
   const job = [...nav.building.values()][0]!
   a.cancel(); expect(nav.building.get(job.index)).toBe(job)
-  b.cancel(); expect(nav.building.size).toBe(0)
-  // A new search starts the tile over and finishes it.
+  b.cancel(); expect(nav.building.get(job.index)).toBe(job)
+  // A new search resumes the half-built tile instead of starting it over.
   const c = route(nav, store, layout.voxelIndex(5, 4, 5), [layout.voxelIndex(60, 4, 60)])
-  expect(c.status).toBe('found'); expect(nav.building.size).toBe(0)
+  expect(c.status).toBe('found'); expect(nav.building.size).toBe(0); expect(store.get(job.index)).toBe(job.result())
 })

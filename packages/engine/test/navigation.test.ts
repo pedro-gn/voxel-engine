@@ -218,3 +218,38 @@ it('prebuild rebuilds a tile an edit invalidated and stops short of the store ca
   expect(puts).toBe(settled)
   expect(capped.regions.size).toBeLessThan(capped.revisions.length)
 })
+it('reports prebuild progress: every tile built once, or stopped by the store cap', () => {
+  const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
+  const tiles = nav.revisions.length
+  expect(nav.prebuildStatus()).toEqual({ built: 0, ground: tiles, queued: tiles, bytes: 0, capBytes: 64 * 1024 * 1024, done: false })
+  nav.prebuild(4096, [])
+  const partway = nav.prebuildStatus()
+  expect(partway.built).toBeGreaterThan(0); expect(partway.built + partway.queued).toBe(tiles); expect(partway.done).toBe(false)
+  while (!nav.prebuildStatus().done) nav.prebuild(4096, [])
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, ground: tiles, queued: 0, bytes: nav.regions.bytes, done: true })
+  // An edit leaves the world warm: its tile is rebuilt in the background, but every tile was built once.
+  nav.invalidate(40, 4, 40)
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, done: true })
+  // A store too small for the world: done once the prebuild stops short of the cap, with tiles never built.
+  const capped = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 }, 16384, 512, 40_000)
+  for (let i = 0; i < 200 && !capped.prebuildStatus().done; i++) capped.prebuild(4096, [])
+  const s = capped.prebuildStatus()
+  expect(s.done).toBe(true); expect(s.built).toBeLessThan(s.ground); expect(s.capBytes).toBe(40_000)
+})
+it('finishes builds that queries or refinement left unfinished before anything else, so none lingers half built', () => {
+  const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
+  const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
+  // A route search starts building its start tile, then is cancelled: the half-built job stays shared, not wasted.
+  const route = nav.route(layout.voxelIndex(100, 4, 100), [layout.voxelIndex(10, 4, 10)]), t = nav.tileOf(100, 4, 100)
+  route.step(8); route.cancel()
+  expect(nav.building.has(t)).toBe(true)
+  // A refinement build on another tile, left after one slice.
+  const u = nav.tileOf(70, 4, 20)
+  expect(nav.regionNow(u, 8).region).toBeUndefined()
+  // The prebuild's cursor starts at tile 0 with no anchors, yet both jobs are finished first.
+  const put = nav.regions.put.bind(nav.regions), order: number[] = []
+  nav.regions.put = r => { order.push(r.index); put(r) }
+  while (nav.building.size) nav.prebuild(256, [])
+  expect(order.slice(0, 2)).toEqual([t, u])
+})

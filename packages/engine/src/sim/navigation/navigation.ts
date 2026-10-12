@@ -195,8 +195,14 @@ export class NavigationSystem {
   prebuild(cap: number, anchors: readonly number[]): number {
     let used = 0
     const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
-    if (pre.idle === this.revision) return 0
-    while (used < cap && this.regions.bytes < this.regions.maxBytes * PREBUILD_FILL) {
+    // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built.
+    for (const index of this.building.keys()) {
+      if (used >= cap || this.full) break
+      const { region, used: spent } = this.regionNow(index, cap - used)
+      used += spent
+      if (!region) break
+    }
+    while (pre.idle !== this.revision && used < cap && !this.full) {
       let tile = -1
       if (pre.phase === 0) {
         // Ring r has 8r columns (1 for r = 0), each on three levels.
@@ -232,9 +238,21 @@ export class NavigationSystem {
       if (pre.phase === 0) pre.k++; else pre.tile++
     }
     // A store too full to take more leaves prebuild nothing to do either.
-    if (this.regions.bytes >= this.regions.maxBytes * PREBUILD_FILL) this.prebuilt = true
+    if (this.full) this.prebuilt = true
     this.visited += used
     return used
+  }
+  /** Whether the region store is too full for the prebuild to go on. */
+  private get full(): boolean { return this.regions.bytes >= this.regions.maxBytes * PREBUILD_FILL }
+  /**
+   * Prebuild progress, for warm-ups: `built` tiles have had a record since the last reset, of `ground` (every tile of the
+   * world needs one; an empty tile shares a 64-byte record), `queued` never had one. Done once every tile was built, or
+   * once the store is too full for the prebuild to go on (then built < ground). Edits later rebuild in the background
+   * and leave the world warm.
+   */
+  prebuildStatus(): { built: number; ground: number; queued: number; bytes: number; capBytes: number; done: boolean } {
+    const ground = this.revisions.length, built = this.regions.built
+    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, done: built === ground || this.full }
   }
   /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
   route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {
