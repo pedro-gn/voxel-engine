@@ -14,7 +14,8 @@ layer for groups was attempted. See [Round-3 options](#round-3-options).
 - Data, all in `../research/`:
   - baseline (pre-5b, quiet, 2026-10-12): `2026-10-09-crowd-baseline.json`
   - round-2 gate runs, worse of two, cold mass, path quality (with the group sample): `2026-10-12-crowd-round2-gate.json`
-  - living A/B vs `main`: `2026-10-12-crowd-round2-living-ab.json`
+  - living A/B vs `main`: `2026-10-12-crowd-round2-living-ab.json` (at 9e3c7b4)
+  - after the park fixes (dea8a1f): living A/B and one mass sanity run, `2026-10-12-crowd-round2-park.json`
 
 ## What was delivered
 
@@ -185,11 +186,26 @@ not committed): idle 2.94 / 2.96, work 4.13 / 5.29, dam 5.89 / 7.00, collapse 6.
 recomputes after flips spend every tick's leftover budget and explain the idle gap and much of dam and collapse; the
 rest (work) is the per-unit traffic work added in round 1.
 
+**After the park fixes** (dea8a1f: background work only while units exist or a query is pending; landmark restarts
+wait 200 ticks of unchanged geometry and flips), AB, BA, AB again, p50 ms:
+
+| Phase | `main` d63ffe1 | branch dea8a1f | median delta |
+|---|---|---|---|
+| idle | 2.77, 2.79, 2.87 | 3.06, 3.10, 3.09 | +0.30 ✗ |
+| work | 3.13, 3.16, 3.30 | 4.26, 4.30, 4.41 | +1.15 ✗ |
+| dam | 5.46, 5.43, 5.78 | 6.77, 6.80, 7.05 | +1.34 ✗ |
+| collapse | 5.83, 5.84, 6.17 | 6.89, 6.94, 6.97 | +1.10 ✗ |
+
+About a third of the gap closed; the branch is still slower than `main` in every phase. The living scene has units,
+so the region prebuild still rescans after every change there, and the round-1 traffic work remains. A mass sanity run
+at dea8a1f matches the gate pass (workers p95 17.1 ms, first action p95 103 ticks, arrival within ideal + 60 s 7.3%,
+no false unreachable).
+
 ## Verification
 
 - `npm run typecheck`: clean.
-- `npm test` at 5043938 (code as measured, plus data): engine 1,083 passed + 2 expected fail; sandbox 174; terrain 200;
-  terrain-editor 124.
+- `npm test` at dea8a1f: engine 1,087 passed + 2 expected fail; sandbox 174; terrain 200; terrain-editor 124 (at
+  5043938, the measured code: engine 1,083 + 2).
 - E2E: **not run in round 2** (user's decision); the last e2e runs were round 1's.
 - Determinism: speed-ups were checked hash-identical (walkSweep equivalence test; traffic's merge on three scenarios,
   hashes every 100 ticks).
@@ -209,12 +225,14 @@ rest (work) is the per-unit traffic work added in round 1.
 ## Open items
 
 - §7 targets: all CPU, first-action, arrival and bottleneck gates, and the living benchmark (see above).
-- I2 (reviewer): any solid edit anywhere retires every landmark table and restarts all eight whole-world searches; in
-  work and churn the tables are almost never current. Needs local repair or recompute.
+- I2 (reviewer): any solid edit anywhere retires every landmark table; since dea8a1f a recompute starts only after 200
+  ticks without edits, so constant edits no longer restart all eight whole-world searches, but in work and churn the
+  tables are almost never current. Needs local repair or recompute.
 - Flip retirements: new tiles whose sand first flips retire the tables mid-phase (16% current). Marking tiles with sand
   near water as relaxed up front, or recomputing only the affected landmarks, would keep them current.
-- The background prebuild never rests while random ticks keep changing tiles: it rescans every tile at one operation
-  each and recomputes landmarks, using the whole leftover budget (living regression).
+- With units present, the region prebuild rescans every tile at one operation each after any change and uses the
+  whole leftover budget for it (part of the living regression; since dea8a1f it rests with no unit and no query).
+- Reviewer M-3 / M-4 (final review): not addressed in round 2, recorded here for round 3.
 - searchCap stays 8,192: the per-unit traffic work, not the search budget, dominates the share.
 - Scatter and churn: one route search per unit queues 1,000 searches behind one budget.
 
