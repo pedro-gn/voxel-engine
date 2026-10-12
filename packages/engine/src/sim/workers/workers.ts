@@ -1180,10 +1180,14 @@ export class WorkerSystem {
     if (r.finished && !u.segment && u.path[u.cursor] === undefined) { this.dropRoute(u); return false }
     return u.path[u.cursor] === undefined
   }
-  /** Carries the route on from `here`: the path still to walk is dropped and refinement starts again from the unit's pose. */
+  /**
+   * Carries the route on from `here`: the path still to walk is dropped and refinement starts again from the unit's pose.
+   * Traffic or an edit brought this, not the route's own costs, so the recoveries so far show no loop: they restart (a
+   * unit pushed back into a changed region it had left recovers there again instead of planning a new route).
+   */
   private reseat(u: Unit, r: Route, here: number): void {
     u.segment?.cancel(); u.segment = null; r.target = null; r.finished = false
-    u.path = [here]; u.cursor = 1; r.last = here; r.segs = []
+    u.path = [here]; u.cursor = 1; r.last = here; r.segs = []; r.recovered = []; r.hop = -1
   }
   /** A tile's record at its current revision: the search's own, the store's, or built on the refinement budget (undefined until done). */
   private regionAt(s: RouteSearch | GroupField, index: number): Region | undefined {
