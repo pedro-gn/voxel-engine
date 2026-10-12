@@ -1423,7 +1423,8 @@ export class WorkerSystem {
         const near = this.idleNeighbour(u, o)
         if (near) { this.makeWay(near, u); continue }
       }
-      if (!u.repair) this.startRepair(u)
+      // Settling the right of way re-projects both units, which may clear the conflict: nothing is left to repair then.
+      if (!u.repair && u.conflict) this.startRepair(u)
     }
     // Repairs left pending share the rest, starting from a unit that rotates with the tick; one pending for
     // REPAIR_TICKS is dropped, so no unit waits behind a search that starves.

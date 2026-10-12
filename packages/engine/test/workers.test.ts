@@ -1164,6 +1164,20 @@ describe('traffic scenarios', { timeout: 60_000 }, () => {
     expect([...lanes]).toEqual([6])
     expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 28 * 256 + 128, z256: 5 * 256 + 128 })
   })
+  it('a unit whose conflict went away while the right of way was settled starts no repair', () => {
+    // Head-on in a one-wide corridor: once they conflict, preemption fails both ways and re-projects both units, which
+    // can leave the unit with no conflict at all (as at 1,000 units on the crowd world).
+    type U = { id: number; conflict: { t: number; owner: number } | null; motion: { flat: boolean } | null; wait: number; stuck: number; repair: unknown; repairAfter: number }
+    const sim = headOn(false), w = sim.workers! as unknown as { units: Map<number, U>; time: number; priority(u: U): number; cooperate(cap: number): number; preempt(a: U, b: U, cap: number): { ok: boolean; used: number } }
+    const [u, o] = [w.units.get(1)!, w.units.get(2)!]
+    for (let i = 0; i < 400 && !(u.motion?.flat && u.wait === 0 && o.motion); i++) sim.step()
+    // u walks, outranks o and has been stuck long enough to take o's right of way; taking it fails both ways.
+    u.conflict = { t: w.time + 1, owner: o.id }; u.stuck = 40; u.repair = null; u.repairAfter = 0
+    w.priority = v => v === u ? 200 : 100
+    w.preempt = (a, b) => { a.conflict = null; b.conflict = null; return { ok: false, used: 0 } }
+    expect(() => w.cooperate(4096)).not.toThrow()
+    expect(u.repair).toBeNull()
+  })
   it('repairs get half of the budget left while navigation queries wait, and all of it otherwise', () => {
     const { sim, targets } = twoWide(false), w = sim.workers! as unknown as { cooperate(cap: number): number; nav: { pending: number } }
     const cooperate = w.cooperate.bind(w), seen = { waiting: 0, idle: 0 }
