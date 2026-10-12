@@ -44,9 +44,6 @@ export class GroupField {
   private expanding = -1
   private source = 0
   private debt = 0
-  private validation: Iterator<[number, number]> | null = null
-  private validateRevision = 0
-  private validationProgress = 0
   constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 32768, weight = ROUTE_WEIGHT) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     const L = nav.port.layout
@@ -166,13 +163,12 @@ export class GroupField {
     let used = 0
     while (used < cap && this.status === 'pending') {
       if (this.debt) { const pay = Math.min(this.debt, cap - used); this.debt -= pay; used += pay; continue }
-      if (this.reader.stale) { this.status = 'stale'; break }
       if (this.reader.job) { used += this.reader.build(cap - used); continue }
       used++
       if (this.phase === 'seed') { this.seed(); continue }
       if (this.phase === 'validate') { this.validate(); continue }
       if (this.expanding >= 0) { this.expand(); continue }
-      if (this.settled === this.starts.length || !this.heap.size) { this.phase = 'validate'; this.validateRevision = this.nav.revision; continue }
+      if (this.settled === this.starts.length || !this.heap.size) { this.phase = 'validate'; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
       if (this.closed.has(key)) continue
       if (key >= this.startBase) { if (f === this.d.get(key)) { this.closed.add(key); this.settled++ }; continue }
@@ -218,18 +214,19 @@ export class GroupField {
     }
     this.expanding = -1
   }
+  /**
+   * Stale only when a goal or start region changed since it was read: every unit depends on those. A change elsewhere
+   * leaves distances that are at worst slightly off, and each unit re-checks a region's revision before it walks it.
+   */
   private validate(): void {
-    this.validation ??= this.reader.seen.entries()
-    const next = this.validation.next()
-    if (!next.done) { this.validationProgress++; if (this.nav.revisions[next.value[0]] !== next.value[1]) this.status = 'stale'; return }
-    if (this.validateRevision !== this.nav.revision) { this.validateRevision = this.nav.revision; this.validation = null; this.validationProgress = 0; return }
-    this.status = 'found'
+    const pinned = [...this.goalRegions.keys(), ...this.startRegions.keys()]
+    this.debt += pinned.length
+    this.status = pinned.some(t => this.reader.moved(t)) ? 'stale' : 'found'
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
     mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); numbers(this.goals); numbers(this.starts); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
     mix(this.spent); mix(this.debt); mix(this.settled); mix(this.seedCursor); mix(this.seedSource); mix(this.seededStarts ? 1 : 0); mix(this.expanding); mix(this.source)
-    mix(this.validateRevision); mix(this.validation ? this.validationProgress : -1)
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.d.size); for (const [k, d] of this.d) { mix(k); mix(d) }
     numbers(this.closed)

@@ -62,6 +62,39 @@ it('ends stale when a region it read changes before it finishes', () => {
   while (s.status === 'pending') s.step(4096)
   expect(s.status).toBe('stale')
 })
+/** Bumps one tile's revision only: the centre of a 16³ tile keeps invalidateBox's halo inside it. */
+function bumpTile(nav: NavigationSystem, index: number) {
+  const [sx, , sz] = nav.port.layout.size, tx = sx >> 4, tz = sz >> 4
+  nav.invalidate((index % tx) * 16 + 8, Math.floor(index / (tx * tz)) * 16 + 8, (Math.floor(index / tx) % tz) * 16 + 8)
+}
+it('a change in a region it explored off the route it found leaves the route found', () => {
+  // A wall at x=64 with its gap near z=120: the search explores toward the wall before it goes around.
+  const { nav, layout, solid } = fixture(128)
+  for (let z = 0; z < 112; z++) for (let y = 4; y < 8; y++) solid.add(layout.voxelIndex(64, y, z))
+  const start = layout.voxelIndex(2, 4, 64), goal = layout.voxelIndex(125, 4, 64)
+  const probe = route(nav, new RegionStore(nav), start, [goal])
+  const used = new Set([nav.tileOfPose(start), nav.tileOfPose(goal)])
+  for (const k of probe.keys) { const [r, e] = [Math.floor((k - 1) / 4096), (k - 1) % 4096]; used.add(r); used.add(probe.region(r)!.exits[e]!.target) }
+  const off = [...probe.seen.keys()].find(i => !used.has(i))
+  expect(off).toBeDefined()
+  const s = new RouteSearch(nav, new RegionStore(nav), start, [goal])
+  while (s.status === 'pending' && !s.seen.has(off!)) s.step(64)
+  bumpTile(nav, off!)
+  while (s.status === 'pending') s.step(4096)
+  expect(s.status).toBe('found'); expect(s.cost).toBe(probe.cost)
+})
+it('an unreachable verdict still ends stale when any region it explored changes', () => {
+  const { nav, layout, solid } = fixture(128)
+  for (let x = 98; x <= 102; x++) for (let z = 98; z <= 102; z++) if (x === 98 || x === 102 || z === 98 || z === 102) for (let y = 4; y < 8; y++) solid.add(layout.voxelIndex(x, y, z))
+  const start = layout.voxelIndex(5, 4, 5), goal = layout.voxelIndex(100, 4, 100)
+  const s = new RouteSearch(nav, new RegionStore(nav), start, [goal])
+  const far = nav.tileOfPose(layout.voxelIndex(40, 4, 40))
+  while (s.status === 'pending' && !s.seen.has(far)) s.step(64)
+  expect(s.seen.has(far)).toBe(true)
+  bumpTile(nav, far)
+  while (s.status === 'pending') s.step(4096)
+  expect(s.status).toBe('stale')
+})
 it('excluded exits are not used, and an exhausted search that skipped one is limited', () => {
   const { nav, layout, solid } = fixture(64), store = new RegionStore(nav)
   const a = route(nav, store, layout.voxelIndex(2, 4, 8), [layout.voxelIndex(60, 4, 8)])

@@ -24,8 +24,9 @@ export function routeHeuristic(goals: readonly (readonly [number, number, number
 const builders = new WeakMap<RegionBuild, number>()
 
 /**
- * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision,
- * so a change before the search finishes ends it stale; a region is kept by reference for the search's lifetime.
+ * Regions read by an abstract search, built on demand into the shared store. Each read records the tile revision, and
+ * a region whose tile changed after it was first read (or pinned) goes into `changed`; the search keeps using the
+ * record it read, by reference, and decides at the end which changes matter (see each search's validation).
  * A build in progress is shared by every query that needs its tile: whoever steps it pays, in query order.
  */
 export class RegionReader {
@@ -33,15 +34,20 @@ export class RegionReader {
   readonly store: RegionStore
   readonly seen = new Map<number, number>()
   readonly regions = new Map<number, Region>()
+  /** Tiles that changed after this reader first read or pinned them. */
+  readonly changed = new Set<number>()
   job: RegionBuild | null = null
-  stale = false
   constructor(nav: NavigationSystem, store: RegionStore) { this.nav = nav; this.store = store }
-  /** Records a tile's revision before anything is read from it, so an edit there before it is read ends the search stale. */
+  /** Records a tile's revision before anything is read from it, so an edit there before it is read counts as a change. */
   pin(index: number): void { if (!this.seen.has(index)) this.seen.set(index, this.nav.revisions[index]!) }
+  /** Whether a tile this reader saw changed since: recorded on a later read, or found now. */
+  moved(index: number): boolean { const read = this.seen.get(index); return this.changed.has(index) || read !== undefined && read !== this.nav.revisions[index] }
+  /** Whether any tile this reader saw changed since. */
+  anyMoved(): boolean { if (this.changed.size) return true; for (const [ti, rev] of this.seen) if (this.nav.revisions[ti] !== rev) return true; return false }
   /** The region, or undefined while a build for it runs (step the job, then ask again). */
   need(index: number): Region | undefined {
     const known = this.regions.get(index)
-    if (known) { if (known.epoch !== this.nav.revisions[index]) this.stale = true; return known }
+    if (known) { if (known.epoch !== this.nav.revisions[index]) this.changed.add(index); return known }
     if (this.job?.index === index) return undefined
     const r = this.store.get(index)
     if (r) return this.adopt(r)
@@ -52,7 +58,7 @@ export class RegionReader {
   }
   private adopt(r: Region): Region {
     const read = this.seen.get(r.index)
-    if (read !== undefined && read !== r.epoch) this.stale = true
+    if (read !== undefined && read !== r.epoch) this.changed.add(r.index)
     this.seen.set(r.index, r.epoch); this.regions.set(r.index, r); return r
   }
   /** Steps the pending build; returns operations used. */
@@ -77,7 +83,8 @@ export class RegionReader {
   }
   mixState(mix: (n: number) => void): void {
     mix(this.seen.size); for (const [ti, rev] of this.seen) { mix(ti); mix(rev) }
-    mix(this.job ? 1 : 0); this.job?.mixState(mix); mix(this.stale ? 1 : 0)
+    mix(this.job ? 1 : 0); this.job?.mixState(mix)
+    const changed = [...this.changed].sort((a, b) => a - b); mix(changed.length); for (const ti of changed) mix(ti)
   }
 }
 
@@ -117,9 +124,8 @@ export class RouteSearch {
   private debt = 0
   /** Whether an exclusion skipped an exit: an exhausted search then proves nothing. */
   private cut = false
-  private validation: Iterator<[number, number]> | null = null
-  private validateRevision = 0
-  private validationProgress = 0
+  /** After reconstruction: the tiles a found route depends on (its start, then each crossing's two regions). */
+  private critical: number[] = []
   constructor(nav: NavigationSystem, store: RegionStore, start: number, goals: readonly number[], options?: RouteOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.start = start; this.goals = goals
     this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 8192; this.weight = options?.weight ?? ROUTE_WEIGHT
@@ -161,14 +167,13 @@ export class RouteSearch {
     let used = 0
     while (used < cap && this.status === 'pending') {
       if (this.debt) { const pay = Math.min(this.debt, cap - used); this.debt -= pay; used += pay; continue }
-      if (this.reader.stale) { this.status = 'stale'; break }
       if (this.reader.job) { used += this.reader.build(cap - used); continue }
       if (this.phase === 'start') { used += this.begin(); continue }
-      if (this.phase === 'validate') { used++; this.validate(); continue }
+      if (this.phase === 'validate') { used += Math.min(cap - used, this.validate()); continue }
       if (this.expanding >= 0) { used += this.expand(cap - used); continue }
       used++
       if (this.bestParent >= 0 && this.bestGoal <= this.heap.peekF()) { this.reconstruct(); continue }
-      if (!this.heap.size) { this.phase = 'validate'; this.validateRevision = this.nav.revision; continue }
+      if (!this.heap.size) { this.phase = 'validate'; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
       if (this.closed.has(key) || f !== this.g.get(key)! + this.h(this.exitOf(key).to) * this.weight) continue
       this.closed.add(key); this.expanding = key; this.relax = 0
@@ -196,7 +201,9 @@ export class RouteSearch {
   private exitOf(key: number) { const [r, e] = splitKey(key); return this.reader.regions.get(r)!.exits[e]! }
   private begin(): number {
     const L = this.nav.port.layout, index = this.nav.tileOfPose(this.start), r = this.need(index)
-    if (!r || this.reader.stale) return 0
+    if (!r) return 0
+    // The start's own tile changed since the request: whatever it reads now proves nothing about the unit's pose.
+    if (this.reader.moved(index)) { this.status = 'stale'; return 1 }
     const slot = slotOf(r, this.start, L), P = r.poses.length
     // The start stood when asked and its tile is unchanged, so it stands on a block that falls: no proof either way.
     if (slot < 0) { this.status = 'limited'; return 1 }
@@ -251,22 +258,28 @@ export class RouteSearch {
       if (!moved) break
     }
     this.goal = r.poses[slot]!; this.cost = this.bestGoal
+    this.critical = [this.nav.tileOfPose(this.start)]
+    for (const k of keys) this.critical.push(splitKey(k)[0], this.exitOf(k).target)
     this.debt += keys.length + steps
-    this.phase = 'validate'; this.validateRevision = this.nav.revision
+    this.phase = 'validate'
   }
-  private validate(): void {
-    this.validation ??= this.reader.seen.entries()
-    const next = this.validation.next()
-    if (!next.done) { this.validationProgress++; if (this.nav.revisions[next.value[0]] !== next.value[1]) this.status = 'stale'; return }
-    if (this.validateRevision !== this.nav.revision) { this.validateRevision = this.nav.revision; this.validation = null; this.validationProgress = 0; return }
-    this.status = this.goal >= 0 ? 'found' : this.cut ? 'limited' : 'unreachable'
+  /**
+   * A found route is stale only when a region it crosses changed since it was read: a change elsewhere could at most
+   * have offered a cheaper route, and refinement re-checks each region before the unit walks it. An exhausted search
+   * proves nothing about the terrain unless every region it read is unchanged. Returns the operations used.
+   */
+  private validate(): number {
+    const found = this.goal >= 0
+    if (found ? this.critical.some(t => this.reader.moved(t)) : this.reader.anyMoved()) this.status = 'stale'
+    else this.status = found ? 'found' : this.cut ? 'limited' : 'unreachable'
+    return Math.max(1, found ? this.critical.length : this.reader.seen.size)
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
     mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); mix(this.start); numbers(this.goals); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
     numbers([...(this.exclude ?? [])].sort((a, b) => a - b))
     mix(this.cost); mix(this.spent); mix(this.debt); mix(this.cut ? 1 : 0); mix(this.expanding); mix(this.relax)
-    mix(this.bestGoal === Infinity ? -1 : this.bestGoal); mix(this.bestParent); mix(this.validateRevision); mix(this.validation ? this.validationProgress : -1)
+    mix(this.bestGoal === Infinity ? -1 : this.bestGoal); mix(this.bestParent); numbers(this.critical)
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.g.size); for (const [k, g] of this.g) { mix(k); mix(g); mix(this.parent.get(k)!) }
     numbers(this.closed); numbers(this.keys); mix(this.goal)

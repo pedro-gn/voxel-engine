@@ -77,6 +77,20 @@ it('ends limited, never unreachable, when its node cap cuts it, and stale when a
   settle(h)
   expect(h.status).toBe('stale')
 })
+it('a change in a region it explored away from its goals and starts leaves the field found', () => {
+  const { nav, layout } = fixture(128)
+  const goals = [layout.voxelIndex(120, 4, 64)], starts = [layout.voxelIndex(4, 4, 64)]
+  const first = new GroupField(nav, new RegionStore(nav), goals, starts); settle(first)
+  const pinned = new Set([...goals, ...starts].map(p => nav.tileOfPose(p)))
+  const off = [...first.seen.keys()].find(i => !pinned.has(i))
+  expect(off).toBeDefined()
+  const g = new GroupField(nav, new RegionStore(nav), goals, starts)
+  while (g.status === 'pending' && !g.seen.has(off!)) g.step(64)
+  const [sx, , sz] = layout.size, tx = sx >> 4, tz = sz >> 4
+  nav.invalidate((off! % tx) * 16 + 8, Math.floor(off! / (tx * tz)) * 16 + 8, (Math.floor(off! / tx) % tz) * 16 + 8)
+  settle(g)
+  expect(g.status).toBe('found'); expect(g.next(starts[0]!)!.cost).toBe(first.next(starts[0]!)!.cost)
+})
 it('mixes its state', () => {
   const { nav, layout } = fixture(64), store = new RegionStore(nav)
   const a = new GroupField(nav, store, [layout.voxelIndex(60, 4, 8)], [layout.voxelIndex(2, 4, 8)])
