@@ -222,15 +222,19 @@ it('reports prebuild progress: every tile built once, or stopped by the store ca
   const layout = new Layout([128, 32, 128]), registry = new BlockRegistry([{ name: 'stone' }])
   const nav = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 })
   const tiles = nav.revisions.length
-  expect(nav.prebuildStatus()).toEqual({ built: 0, ground: tiles, queued: tiles, bytes: 0, capBytes: 64 * 1024 * 1024, done: false })
+  expect(nav.prebuildStatus()).toEqual({ built: 0, ground: tiles, queued: tiles, bytes: 0, capBytes: 64 * 1024 * 1024, landmarks: false, done: false })
   nav.prebuild(4096, [])
   const partway = nav.prebuildStatus()
   expect(partway.built).toBeGreaterThan(0); expect(partway.built + partway.queued).toBe(tiles); expect(partway.done).toBe(false)
   while (!nav.prebuildStatus().done) nav.prebuild(4096, [])
-  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, ground: tiles, queued: 0, bytes: nav.regions.bytes, done: true })
-  // An edit leaves the world warm: its tile is rebuilt in the background, but every tile was built once.
-  nav.invalidate(40, 4, 40)
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, ground: tiles, queued: 0, bytes: nav.regions.bytes, landmarks: true, done: true })
+  // A change of the falls rule leaves the world warm: its tile is rebuilt in the background, every tile was built once.
+  nav.invalidate(40, 4, 40, false)
   expect(nav.prebuildStatus()).toMatchObject({ built: tiles, done: true })
+  // A solid edit retires the landmark tables until the prebuild has computed them again.
+  nav.invalidate(40, 4, 40)
+  expect(nav.prebuildStatus()).toMatchObject({ built: tiles, landmarks: false, done: false })
+  while (!nav.prebuildStatus().done) nav.prebuild(4096, [])
   // A store too small for the world: done once the prebuild stops short of the cap, with tiles never built.
   const capped = new NavigationSystem({ layout, registry, get: (x, y) => y < 4 ? 1 : 0 }, 16384, 512, 40_000)
   for (let i = 0; i < 200 && !capped.prebuildStatus().done; i++) capped.prebuild(4096, [])

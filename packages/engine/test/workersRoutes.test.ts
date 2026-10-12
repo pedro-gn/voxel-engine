@@ -127,8 +127,8 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(sim.workers!.units.get(1)!.route?.search).toBeInstanceOf(RouteSearch)
     until(sim, () => sim.workers!.view(1)?.state === 'blocked', 400)
     expect(sim.workers!.view(1)?.reason).toBe('no-access')
-    // Spare operations prebuild the world first; once it is all built they rest too.
-    until(sim, () => sim.workers!.nav.prebuilt, 2000)
+    // Spare operations prebuild the world and its landmark tables first; once all is built they rest too.
+    until(sim, () => sim.workers!.nav.prebuilt && sim.workers!.nav.prebuildStatus().done, 3000)
     const before = routes.n
     let visited = 0
     for (let i = 0; i < 100; i++) visited += sim.step().workers!.stats.visited

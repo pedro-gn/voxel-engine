@@ -222,7 +222,7 @@ export class WorkerSystem {
   afterWrite(x: number, y: number, z: number, old: number, value: number): void {
     const R = this.port.registry, a = voxelId(old), b = voxelId(value)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
-    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z); this.worldRevision++; this.revision++ }
+    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
   invalidateAll(): void {

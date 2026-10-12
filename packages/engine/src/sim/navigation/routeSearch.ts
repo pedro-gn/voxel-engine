@@ -1,8 +1,9 @@
 import { edgeCost, type NavigationSystem, type PathResult, type PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { RegionBuild, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
+import { NO_COST, type LandmarkTables } from './landmarks.ts'
 
-export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 65536 */; weight?: number /* default ROUTE_WEIGHT */ }
+export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 65536 */; weight?: number /* default ROUTE_WEIGHT */; landmarks?: LandmarkTables | null /* default: the navigation's current tables */ }
 /**
  * Heuristic weight of route and group searches. Rough surfaces tie A* across whole rectangles of regions (every step
  * costs about its Manhattan share), so an exact search builds ten times the regions; 1.25 bounds the abstract cost at
@@ -89,6 +90,9 @@ export class RouteSearch {
   private readonly exclude?: ReadonlySet<number>
   private readonly maxNodes: number
   private readonly weight: number
+  /** Landmark tables, and per landmark the most any goal costs to reach it (NO_COST: unused), known once the goals' regions are read. */
+  private readonly alt: LandmarkTables | null
+  private ups: number[] | null = null
   status: PathStatus = 'pending'
   cost = 0
   spent = 0
@@ -121,6 +125,7 @@ export class RouteSearch {
   constructor(nav: NavigationSystem, store: RegionStore, start: number, goals: readonly number[], options?: RouteOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.start = start; this.goals = goals
     this.exclude = options?.exclude; this.maxNodes = options?.maxNodes ?? 65536; this.weight = options?.weight ?? ROUTE_WEIGHT
+    this.alt = options?.landmarks === undefined ? nav.landmarks.current() : options.landmarks
     const L = nav.port.layout
     this.goalCoords = goals.map(p => L.voxelCoords(p))
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
@@ -141,7 +146,20 @@ export class RouteSearch {
   result(): PathResult { return { status: this.status, path: this.exits, cost: this.cost } }
   /** Cost to the goal along the found route from the `from` pose of exit `key`, or Infinity off the route. */
   toGo(key: number): number { return this.rest.get(key) ?? Infinity }
-  private h(p: number): number { const [x, y, z] = this.nav.port.layout.voxelCoords(p); return routeHeuristic(this.goalCoords, x, y, z) }
+  /**
+   * The flat bound, or the landmarks' when higher (ALT): from `p` landmark k costs at least the cheapest exit of p's
+   * tile, and from any goal at most ups[k], so reaching a goal costs at least the difference.
+   */
+  private h(p: number): number {
+    const [x, y, z] = this.nav.port.layout.voxelCoords(p)
+    let h = routeHeuristic(this.goalCoords, x, y, z)
+    const alt = this.alt, ups = this.ups
+    if (alt && ups) {
+      const tile = this.nav.tileOfPose(p)
+      for (let k = 0; k < ups.length; k++) { const up = ups[k]!, lo = up === NO_COST ? NO_COST : alt.low(k, tile); if (lo !== NO_COST) h = Math.max(h, lo - up) }
+    }
+    return h
+  }
   /** The region with its goal field computed, or undefined while it is being built. */
   private need(index: number): Region | undefined {
     const r = this.reader.need(index)
@@ -196,6 +214,20 @@ export class RouteSearch {
   private begin(): number {
     const L = this.nav.port.layout, index = this.nav.tileOfPose(this.start), r = this.need(index)
     if (!r) return 0
+    if (this.alt && !this.ups) {
+      // Each goal's cost to each landmark, at most: through its cheapest exit whose cost the tables know.
+      for (const g of this.goalRegions.keys()) if (!this.need(g)) return 0
+      const ups = Array.from({ length: this.alt.count }, () => 0)
+      for (const [g, list] of this.goalRegions) {
+        const gr = this.reader.regions.get(g)!
+        for (const p of list) {
+          const slot = slotOf(gr, p, L)
+          for (let k = 0; k < ups.length; k++) { const c = this.alt.high(k, gr, slot); ups[k] = c === NO_COST || ups[k] === NO_COST ? NO_COST : Math.max(ups[k]!, c) }
+          this.debt += ups.length * gr.exits.length
+        }
+      }
+      this.ups = ups
+    }
     // The start's own tile changed since the request: whatever it reads now proves nothing about the unit's pose.
     if (this.reader.moved(index)) { this.status = 'stale'; return 1 }
     const slot = slotOf(r, this.start, L), P = r.poses.length
@@ -273,6 +305,7 @@ export class RouteSearch {
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
     mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); mix(this.start); numbers(this.goals); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
+    mix(this.alt ? this.alt.geometry : -1); numbers(this.ups ?? [])
     numbers([...(this.exclude ?? [])].sort((a, b) => a - b))
     mix(this.cost); mix(this.spent); mix(this.debt); mix(this.cut ? 1 : 0); mix(this.expanding); mix(this.relax)
     mix(this.bestGoal === Infinity ? -1 : this.bestGoal); mix(this.bestParent); numbers(this.critical)

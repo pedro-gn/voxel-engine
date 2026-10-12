@@ -47,11 +47,15 @@ function standing(nav: NavigationSystem, layout: Layout, rng: Pcg32): number {
   }
 }
 
-it('routes agree with exact flat A* on reachability, and routed pairs stay near its cost, on fuzzed terrain', { timeout: 120_000 }, () => {
+// Plain: the flat heuristic on a cold store. Landmarks: a world warmed by the prebuild, with ALT tables.
+for (const landmarks of [false, true]) it(`routes agree with exact flat A* on reachability, and routed pairs stay near its cost, on fuzzed terrain (${landmarks ? 'landmarks' : 'plain'})`, { timeout: 120_000 }, () => {
   const ratios: number[] = []
   let unreachable = 0, groups = 0
   for (let seed = 1; seed <= WORLDS; seed++) {
-    const { layout, rng, port } = world(seed), nav = new NavigationSystem(port, 1 << 20), store = new RegionStore(nav)
+    const { layout, rng, port } = world(seed), nav = new NavigationSystem(port, 1 << 20)
+    if (landmarks) while (!nav.prebuildStatus().done) nav.prebuild(1 << 16, [])
+    const store = landmarks ? nav.regions : new RegionStore(nav)
+    expect(nav.landmarks.current() !== null).toBe(landmarks)
     const pairs = Array.from({ length: PAIRS }, () => [standing(nav, layout, rng), standing(nav, layout, rng)] as const)
     for (const [i, [start, goal]] of pairs.entries()) {
       const flat = nav.request(start, [goal])
@@ -80,7 +84,7 @@ it('routes agree with exact flat A* on reachability, and routed pairs stay near 
     }
   }
   const mean = ratios.reduce((a, b) => a + b, 0) / ratios.length, sorted = [...ratios].sort((a, b) => a - b)
-  console.log(`route fuzz: ${ratios.length} routed found, ${unreachable} unreachable, ${groups} group starts; cost ratio mean ${mean.toFixed(4)} p95 ${sorted[Math.floor(sorted.length * 0.95)]!.toFixed(4)} max ${sorted.at(-1)!.toFixed(4)}`)
+  console.log(`route fuzz (${landmarks ? 'landmarks' : 'plain'}): ${ratios.length} routed found, ${unreachable} unreachable, ${groups} group starts; cost ratio mean ${mean.toFixed(4)} p95 ${sorted[Math.floor(sorted.length * 0.95)]!.toFixed(4)} max ${sorted.at(-1)!.toFixed(4)}`)
   expect(unreachable).toBeGreaterThan(0)
   expect(mean).toBeLessThanOrEqual(1.10)
   expect(sorted[Math.floor(sorted.length * 0.95)]!).toBeLessThanOrEqual(1.25)

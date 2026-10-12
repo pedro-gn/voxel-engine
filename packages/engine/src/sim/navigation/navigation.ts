@@ -4,6 +4,7 @@ import { voxelId } from '../../world/voxel.ts'
 import { RegionBuild, RegionStore, type Region } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
 import { GroupField } from './groupField.ts'
+import { Landmarks } from './landmarks.ts'
 
 /** `uniform`: the voxel filling the whole chunk at (x, y, z) when the chunk is uniform, so region builds skip tiles nothing stands in. */
 export interface NavigationPort { layout: Layout; registry: BlockRegistry; get(x: number, y: number, z: number): number; safe?(x: number, y: number, z: number): boolean; hazard?(x: number, y: number, z: number): boolean; uniform?(x: number, y: number, z: number): number | undefined }
@@ -35,6 +36,8 @@ export class NavigationSystem {
   readonly port: NavigationPort
   readonly revisions: Uint32Array
   revision = 0
+  /** Bumped by every change of solid geometry (not by the falls rule alone): landmark tables are valid for one count. */
+  geometry = 0
   visited = 0
   private readonly tiles = new Map<number, Tile>()
   private readonly tx: number
@@ -44,6 +47,8 @@ export class NavigationSystem {
   readonly regions: RegionStore
   /** Region builds in progress by tile, shared by the queries that need them. */
   readonly building = new Map<number, RegionBuild>()
+  /** Landmark tables (ALT heuristic) for route and group searches, computed by the prebuild. */
+  readonly landmarks = new Landmarks(this)
   /**
    * Background prebuild cursor: phase 0 walks rings around the anchors (ring, anchor, k), phase 1 every tile by index
    * (tile); `built` counts tiles built this pass, and a pass that built none sets `prebuilt`.
@@ -85,9 +90,11 @@ export class NavigationSystem {
   }
   tileOf(x: number, y: number, z: number): number { return (x >> 4) + (z >> 4) * this.tx + (y >> 4) * this.tx * this.tz }
   tileOfPose(p: number): number { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.tileOf(r - z * this.sx, y, z) }
-  invalidate(x: number, y: number, z: number): void { this.invalidateBox(x, y, z, x, y, z) }
+  /** `solid`: whether solid geometry changed, not only whether a block falls (that retires the landmark tables). */
+  invalidate(x: number, y: number, z: number, solid = true): void { this.invalidateBox(x, y, z, x, y, z, solid) }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
-  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void {
+  invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true): void {
+    if (solid) this.geometry++
     const [sx, sy, sz] = this.port.layout.size
     for (let yy = Math.max(0, (y0 - 2) >> 4); yy <= Math.min((sy >> 4) - 1, (y1 + 3) >> 4); yy++)
       for (let zz = Math.max(0, (z0 - 1) >> 4); zz <= Math.min((sz >> 4) - 1, (z1 + 1) >> 4); zz++)
@@ -97,6 +104,7 @@ export class NavigationSystem {
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
+    this.geometry++; this.landmarks.reset()
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -190,7 +198,8 @@ export class NavigationSystem {
    * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
    * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
    * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
-   * pass that built nothing until a tile changes. Returns the operations used, at most `cap`.
+   * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes.
+   * Returns the operations used, at most `cap`.
    */
   prebuild(cap: number, anchors: readonly number[]): number {
     let used = 0
@@ -202,6 +211,7 @@ export class NavigationSystem {
       used += spent
       if (!region) break
     }
+    if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used)
     while (pre.idle !== this.revision && used < cap && !this.full) {
       let tile = -1
       if (pre.phase === 0) {
@@ -247,12 +257,12 @@ export class NavigationSystem {
   /**
    * Prebuild progress, for warm-ups: `built` tiles have had a record since the last reset, of `ground` (every tile of the
    * world needs one; an empty tile shares a 64-byte record), `queued` never had one. Done once every tile was built, or
-   * once the store is too full for the prebuild to go on (then built < ground). Edits later rebuild in the background
-   * and leave the world warm.
+   * once the store is too full for the prebuild to go on (then built < ground); with every tile built, the landmark
+   * tables must be current too. Edits later rebuild in the background and leave the regions warm.
    */
-  prebuildStatus(): { built: number; ground: number; queued: number; bytes: number; capBytes: number; done: boolean } {
-    const ground = this.revisions.length, built = this.regions.built
-    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, done: built === ground || this.full }
+  prebuildStatus(): { built: number; ground: number; queued: number; bytes: number; capBytes: number; landmarks: boolean; done: boolean } {
+    const ground = this.revisions.length, built = this.regions.built, landmarks = this.landmarks.current() !== null
+    return { built, ground, queued: ground - built, bytes: this.regions.bytes, capBytes: this.regions.maxBytes, landmarks, done: built === ground && landmarks || this.full }
   }
   /** A hierarchical route over region exits; `seen` is keyed by region index, which is the tile index. */
   route(start: number, goals: readonly number[], options?: RouteOptions): RouteSearch {
@@ -284,10 +294,11 @@ export class NavigationSystem {
     }
   }
   mixState(mix: (n: number) => void): void {
-    mix(this.revision); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
+    mix(this.revision); mix(this.geometry); mix(this.cursor); mix(this.maxNodes); mix(this.revisions.length); for (const r of this.revisions) mix(r)
     mix(this.requests.length)
     for (const s of this.requests) { mix(s instanceof PathSearch ? 0 : s instanceof RouteSearch ? 1 : 2); s.mixState(mix) }
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
+    this.landmarks.mixState(mix)
     const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
   }
 }

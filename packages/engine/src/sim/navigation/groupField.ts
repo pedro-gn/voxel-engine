@@ -3,6 +3,7 @@ import type { NavigationSystem, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { SOURCES, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
 import { ROUTE_WEIGHT, RegionReader } from './routeSearch.ts'
+import { NO_COST, type LandmarkTables } from './landmarks.ts'
 
 const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled']
 type Phase = 'seed' | 'search' | 'validate'
@@ -45,8 +46,12 @@ export function startClusters(starts: readonly number[], layout: Layout, reach =
  * closed; units read their own best exit at next() time, so starts are not search nodes and cost one operation each
  * when covered. The heuristic is the flat one from the nearest box of starts (one per start tile), so the search grows
  * toward the group instead of in every direction. Source tiles are read only when their mask says they may step into
- * the expanded region.
+ * the expanded region. With landmark tables (ALT) the heuristic is also the bound they give from the starts' cheapest
+ * cost to a landmark, less the exit's own cost to it.
+ *
+ * `exhaust`: no starts, and the search runs until nothing is left to expand (the landmark tables are made this way).
  */
+export interface GroupOptions { landmarks?: LandmarkTables | null; exhaust?: boolean }
 export class GroupField {
   private readonly nav: NavigationSystem
   private readonly reader: RegionReader
@@ -54,6 +59,10 @@ export class GroupField {
   private readonly starts: readonly number[]
   private readonly maxNodes: number
   private readonly weight: number
+  private readonly exhaust: boolean
+  /** Landmark tables, and per landmark the starts' lowest cost to it (NO_COST: the landmark is not used). */
+  private readonly alt: LandmarkTables | null
+  private readonly los: number[] = []
   private readonly goalRegions = new Map<number, number[]>()
   /** Start indices by region, and per start region the box of its starts (min x, z, max x, y, z) for the heuristic. */
   private readonly startRegions = new Map<number, number[]>()
@@ -80,8 +89,16 @@ export class GroupField {
   private expanding = -1
   private source = 0
   private debt = 0
-  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = ROUTE_WEIGHT) {
+  constructor(nav: NavigationSystem, store: RegionStore, goals: readonly number[], starts: readonly number[], maxNodes = 65536, weight = ROUTE_WEIGHT, options?: GroupOptions) {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
+    this.exhaust = options?.exhaust ?? false
+    this.alt = starts.length ? options?.landmarks === undefined ? nav.landmarks.current() : options.landmarks : null
+    if (this.alt) for (let k = 0; k < this.alt.count; k++) {
+      // A start whose tile reaches no landmark k bounds nothing: that landmark is left out for the whole field.
+      let lo = Infinity
+      for (const s of starts) { const c = this.alt.low(k, nav.tileOfPose(s)); if (c === NO_COST) { lo = NO_COST; break } lo = Math.min(lo, c) }
+      this.los.push(lo)
+    }
     const L = nav.port.layout
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
     const boxes = new Map<number, number[]>()
@@ -91,7 +108,7 @@ export class GroupField {
       if (!box) boxes.set(r, [x, z, x, y, z])
       else { box[0] = Math.min(box[0]!, x); box[1] = Math.min(box[1]!, z); box[2] = Math.max(box[2]!, x); box[3] = Math.max(box[3]!, y); box[4] = Math.max(box[4]!, z) }
     })
-    this.boxes = [...boxes.values()]; this.hCost = this.boxes.length >> 4
+    this.boxes = [...boxes.values()]; this.hCost = (this.boxes.length >> 4) + (this.alt ? 1 : 0); this.debt += this.alt ? this.alt.count * starts.length : 0
     for (const [r, list] of this.startRegions) this.open.set(r, [...list])
     for (const r of this.goalRegions.keys()) this.reader.pin(r)
     for (const r of this.startRegions.keys()) this.reader.pin(r)
@@ -104,7 +121,7 @@ export class GroupField {
       estimate = Math.min(estimate, (Math.max(0, g0[0]! - x, x - g1[0]!) + Math.max(0, g0[2]! - z, z - g1[2]!)) * 4 + Math.max(0, g0[1]! - y) * 2)
     }
     this.estimate = estimate === Infinity ? 0 : estimate
-    if (!goals.length || !starts.length) this.status = 'found'
+    if (!goals.length || !starts.length && !this.exhaust) this.status = 'found'
   }
   get seen(): Map<number, number> { return this.reader.seen }
   /** The region record this field read for a tile (whatever its epoch now), so exit keys keep their meaning. */
@@ -116,6 +133,8 @@ export class GroupField {
   }
   /** Cancels a pending field; a settled one keeps its status, so callers can read it after their last unit leaves. */
   cancel(): void { if (this.status !== 'pending') return; this.status = 'cancelled'; this.reader.drop() }
+  /** Every exit cost found so far, by key. */
+  costs(): IterableIterator<[number, number]> { return this.d.entries() }
   /** Cost to the goals from exit `key` (1 + region*4096 + e), or Infinity when unknown or unreachable. */
   distance(key: number): number { return this.d.get(key) ?? Infinity }
   /** The same cost, as a corridor: from the exit's `from` pose to the nearest goal. */
@@ -137,8 +156,12 @@ export class GroupField {
     }
     return best
   }
-  /** Flat lower bound of the cost from the nearest start box to `p`; consistent, as a minimum of consistent bounds. */
-  private h(p: number): number {
+  /**
+   * Lower bound of the cost from the nearest start to `p`, the `from` pose of exit `key`: the flat bound from the
+   * nearest start box (consistent, as a minimum of consistent bounds), or the landmarks' when higher: a start costs at
+   * least los[k] to landmark k, and from `p` the exit costs at most its table cost, so reaching `p` costs the difference.
+   */
+  private h(p: number, key: number): number {
     this.debt += this.hCost
     const [x, y, z] = this.nav.port.layout.voxelCoords(p)
     let h = Infinity
@@ -146,7 +169,16 @@ export class GroupField {
       const dx = Math.max(0, x0! - x, x - x1!), dz = Math.max(0, z0! - z, z - z1!)
       h = Math.min(h, (dx + dz) * 4 + Math.max(0, y - y1!) * 2)
     }
-    return h === Infinity ? 0 : h
+    if (h === Infinity) h = 0
+    const alt = this.alt
+    if (alt) {
+      const [index, e] = splitKey(key), r = this.reader.regions.get(index)!
+      for (let k = 0; k < alt.count; k++) {
+        const lo = this.los[k]!, up = lo === NO_COST ? NO_COST : alt.exit(k, r, e)
+        if (up !== NO_COST) h = Math.max(h, lo - up)
+      }
+    }
+    return h
   }
   /** The region with its goal field and exit index, or undefined while it is being built. */
   private need(index: number): Region | undefined {
@@ -175,7 +207,7 @@ export class GroupField {
     if (old !== undefined && old <= d) return
     if (old === undefined && this.d.size >= this.maxNodes) { this.status = 'limited'; return }
     this.d.set(key, d)
-    const h = this.h(at) * this.weight; this.heap.push(key, d + h, h)
+    const h = this.h(at, key) * this.weight; this.heap.push(key, d + h, h)
   }
   /**
    * Covers the open starts of region `index` that reach `field` (an exit index, or a goal field over the region's
@@ -213,11 +245,11 @@ export class GroupField {
       if (this.phase === 'seed') { this.seed(); continue }
       if (this.phase === 'validate') { this.validate(); continue }
       if (this.expanding >= 0) { this.expand(); continue }
-      if (this.covered === this.starts.length || !this.heap.size || this.covered && this.heap.peekF() > this.farthest * FAR + FAR_SLACK) { this.phase = 'validate'; continue }
+      if (!this.exhaust && this.covered === this.starts.length || !this.heap.size || this.covered && this.heap.peekF() > this.farthest * FAR + FAR_SLACK) { this.phase = 'validate'; continue }
       const f = this.heap.peekF(), key = this.heap.pop()
       if (this.closed.has(key)) continue
       const [region, e] = splitKey(key), r = this.reader.regions.get(region)!, at = r.exits[e]!.from
-      if (f !== this.d.get(key)! + this.h(at) * this.weight) continue
+      if (f !== this.d.get(key)! + this.h(at, key) * this.weight) continue
       this.closed.add(key); this.expanding = key; this.source = 0
       this.cover(r, e, this.d.get(key)!)
     }
@@ -263,6 +295,7 @@ export class GroupField {
   mixState(mix: (n: number) => void): void {
     const numbers = (values: Iterable<number>) => { const a = [...values]; mix(a.length); for (const n of a) mix(n) }
     mix(STATUSES.indexOf(this.status)); mix(PHASES.indexOf(this.phase)); numbers(this.goals); numbers(this.starts); mix(this.maxNodes); mix(Math.round(this.weight * 1024))
+    mix(this.exhaust ? 1 : 0); mix(this.alt ? this.alt.geometry : -1); numbers(this.los)
     mix(this.spent); mix(this.debt); mix(this.covered); mix(this.farthest); mix(this.seedCursor); mix(this.seedSource); mix(this.expanding); mix(this.source)
     this.reader.mixState(mix); this.heap.mixState(mix)
     mix(this.d.size); for (const [k, d] of this.d) { mix(k); mix(d) }
