@@ -93,12 +93,6 @@ export class GroupField {
     this.nav = nav; this.reader = new RegionReader(nav, store); this.goals = goals; this.starts = starts; this.maxNodes = maxNodes; this.weight = weight
     this.exhaust = options?.exhaust ?? false
     this.alt = starts.length ? options?.landmarks === undefined ? nav.landmarks.current() : options.landmarks : null
-    if (this.alt) for (let k = 0; k < this.alt.count; k++) {
-      // A start whose tile reaches no landmark k bounds nothing: that landmark is left out for the whole field.
-      let lo = Infinity
-      for (const s of starts) { const c = this.alt.low(k, nav.tileOfPose(s)); if (c === NO_COST) { lo = NO_COST; break } lo = Math.min(lo, c) }
-      this.los.push(lo)
-    }
     const L = nav.port.layout
     for (const p of goals) { const r = nav.tileOfPose(p), list = this.goalRegions.get(r); if (list) list.push(p); else this.goalRegions.set(r, [p]) }
     const boxes = new Map<number, number[]>()
@@ -108,7 +102,13 @@ export class GroupField {
       if (!box) boxes.set(r, [x, z, x, y, z])
       else { box[0] = Math.min(box[0]!, x); box[1] = Math.min(box[1]!, z); box[2] = Math.max(box[2]!, x); box[3] = Math.max(box[3]!, y); box[4] = Math.max(box[4]!, z) }
     })
-    this.boxes = [...boxes.values()]; this.hCost = (this.boxes.length >> 4) + (this.alt ? 1 : 0); this.debt += this.alt ? this.alt.count * starts.length : 0
+    this.boxes = [...boxes.values()]; this.hCost = (this.boxes.length >> 4) + (this.alt ? 1 : 0)
+    if (this.alt) for (let k = 0; k < this.alt.count; k++) {
+      // A start tile that reaches no landmark k bounds nothing: that landmark is left out for the whole field.
+      let lo = Infinity
+      for (const t of this.startRegions.keys()) { const c = this.alt.low(k, t); if (c === NO_COST) { lo = NO_COST; break } lo = Math.min(lo, c) }
+      this.los.push(lo); this.debt += this.startRegions.size
+    }
     for (const [r, list] of this.startRegions) this.open.set(r, [...list])
     for (const r of this.goalRegions.keys()) this.reader.pin(r)
     for (const r of this.startRegions.keys()) this.reader.pin(r)
