@@ -40,6 +40,8 @@ const PROFILE = flag('profile') ?? 'legacy'
 if (!['legacy', 'typical', 'stress'].includes(PROFILE)) throw new Error(`unknown profile ${PROFILE}`)
 /** No units: the tick cost of the world alone (water, random ticks, each phase's terrain). */
 const WORLD_ONLY = flag('world-only') !== undefined
+/** World-only warm-up ticks: the typical profile's prebuild warm-up took 7,854–7,976 ticks on 2026-10-13. */
+const WORLD_WARM = Number(flag('world-warm') ?? 7900)
 const UNITS = WORLD_ONLY ? 0 : Number(flag('units') ?? (PROFILE === 'typical' ? 100 : 1000))
 const TICKS = Number(flag('ticks') ?? (PROFILE === 'stress' ? 21000 : 6600)), ONLY = flag('phase'), COLD = flag('cold') !== undefined
 const WARM_CAP = Number(flag('warm-cap') ?? 20000)
@@ -387,6 +389,9 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
  */
 function warmUp(orders: Command[]) {
   const a = performance.now(), before = regions().count
+  // With no units the engine never prebuilds, so world-only runs tick as long as a typical warm-up instead: the timed
+  // window then starts at the same point of the world's water and random ticks as the runs it is compared with.
+  if (WORLD_ONLY) { for (let i = 0; i < WORLD_WARM; i++) check('warm-up'); return { mode: 'world-only', ticks: WORLD_WARM, ms: Math.round(performance.now() - a) } }
   if (WARMUP === 'prebuild') {
     let ticks = 0, s = prebuildStatus()!
     while (!s.done && ticks < WARM_CAP) { check('warm-up'); ticks++; s = prebuildStatus()! }

@@ -197,3 +197,12 @@ it('after the first pass the prebuild visits only the tiles an edit touched', ()
   nav.prebuild(1 << 20, [])
   expect(nav.prebuildChecks).toBe(0)
 })
+it('a spring or a liquid other than water in the feet cell is not a region pose, as the live policy refuses it', () => {
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'water', liquid: true }, { name: 'spring', liquid: true, source: 'water' }, { name: 'lava', liquid: true }])
+  const at = new Map<number, number>()
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => y < 4 ? 1 : at.get(layout.voxelIndex(x, y, z)) ?? 0 })
+  at.set(layout.voxelIndex(20, 4, 20), 2); at.set(layout.voxelIndex(21, 4, 20), 3); at.set(layout.voxelIndex(22, 4, 20), 4)
+  expect(nav.regionStand(20, 4, 20)).toBe(true) // wading in water
+  expect(nav.regionStand(21, 4, 20)).toBe(false) // a spring
+  expect(nav.regionStand(22, 4, 20)).toBe(false) // another liquid
+})

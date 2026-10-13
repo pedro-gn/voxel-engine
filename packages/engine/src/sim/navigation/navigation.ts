@@ -1,5 +1,5 @@
 import type { Layout } from '../../world/layout.ts'
-import type { BlockRegistry } from '../../blocks/registry.ts'
+import { waterGroupOf, type BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
 import { RegionBuild, RegionStore, type Region } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
@@ -75,6 +75,8 @@ export class NavigationSystem {
   private last: Tile | null = null
   readonly maxNodes: number
   readonly cacheLimit: number
+  /** The simulated water's block id (0 without one): units wade in it; any other liquid or a spring in the feet cell is no pose. */
+  private readonly waterGroup: number
   /** World x size and x × z plane, to decode pose indices without allocating. */
   readonly sx: number
   readonly plane: number
@@ -87,7 +89,7 @@ export class NavigationSystem {
     if (port.layout.voxelCount > 0x80000000) throw new RangeError('navigation needs voxel indices to fit positive int32')
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
-    this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
+    this.port = port; this.waterGroup = waterGroupOf(port.registry); this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
     this.inQueue = new Uint8Array(this.revisions.length)
     this.regions = new RegionStore(this, storeBytes)
@@ -109,8 +111,8 @@ export class NavigationSystem {
    */
   invalidate(x: number, y: number, z: number, solid = true, falls = !solid): void { this.invalidateBox(x, y, z, x, y, z, solid, falls) }
   /**
-   * Liquid appeared in or left voxel (x, y, z): the pose below it (y - 1) changed its head-cell rule, and the pose at y
-   * its feet. Like a falls flip, it marks the tiles flippy (landmark tables then read those poses as standable, so they
+   * Liquid appeared in, left or changed kind in voxel (x, y, z): the pose below it (y - 1) changed its head-cell rule,
+   * and the pose at y its feet rule (a spring or another liquid). Like a falls flip, it marks the tiles flippy (landmark tables then read those poses as standable, so they
    * stay a lower bound) and bumps their revisions; it is no change of solid geometry.
    */
   invalidateLiquid(x: number, y: number, z: number): void { this.invalidateBox(x, Math.max(0, y - 1), z, x, y, z, false, true) }
@@ -158,13 +160,15 @@ export class NavigationSystem {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
   /**
-   * A pose of the region layer: it stands, not on a block that falls, and not with liquid in the head cell. The live
-   * policy always rejects both (units wade through water up to one block, never with the head under), so the region layer
-   * drops them as geometry; flat searches still stand there (to search out of sand or deep water).
+   * A pose of the region layer: it stands, not on a block that falls, not with liquid in the head cell, and not with a
+   * spring or a liquid other than water in the feet cell. The live policy always rejects all three (units wade through
+   * water up to one block, never with the head under), so the region layer drops them as geometry; flat searches still
+   * stand there (to search out of sand or deep water).
    */
   regionStand(x: number, y: number, z: number): boolean {
-    const R = this.port.registry
+    const R = this.port.registry, feet = voxelId(this.port.get(x, y, z))
     return this.stand(x, y, z) && (y === 0 || R.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+      && !(R.liquid[feet] === 1 && (R.liquidGroup[feet] !== this.waterGroup || R.source[feet] === 1))
       && (y + 1 >= this.port.layout.size[1] || R.liquid[voxelId(this.port.get(x, y + 1, z))] !== 1)
   }
   allowed(p: number): boolean {
