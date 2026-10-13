@@ -383,6 +383,8 @@ export class Simulation {
     const sections: { name: SectionName; bytes: Uint8Array }[] = [
       { name: 'scheduler', bytes: pack(this.schedulerState()) },
       { name: 'water', bytes: pack(this.water.snapshot()) },
+      { name: 'gravity', bytes: pack(this.gravity.saveState()) },
+      { name: 'collapse', bytes: pack(this.collapse.snapshot()) },
     ]
     return { tick: this.tick, paused: this.isPaused, revisions: revs.slice(), regions, sections, ms: performance.now() - t0 }
   }
@@ -410,6 +412,10 @@ export class Simulation {
     }
     const water = section('water')
     if (water) this.water.restore(water)
+    const gravity = section('gravity')
+    if (gravity) this.gravity.restoreState(gravity)
+    const collapse = section('collapse')
+    if (collapse) this.collapse.restore(collapse)
     this.store.regionRevisions.fill(0)
     return chunks
   }

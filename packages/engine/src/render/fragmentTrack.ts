@@ -28,7 +28,7 @@ export class FragmentTrack {
     if (!data) return
     this.newest = tick
     this.clock.arrive(tick, now)
-    for (const birth of data.born) this.bodies.set(birth.id, { birth, samples: [{ tick: tick - 1, offset: 0 }], sourcePending: true, landing: null, rush: null })
+    for (const birth of data.born) this.bodies.set(birth.id, { birth, samples: [{ tick: tick - 1, offset: birth.offset256 ?? 0 }], sourcePending: true, landing: null, rush: null })
     for (let i = 0; i < data.poses.length; i += 3) {
       const b = this.bodies.get(data.poses[i]!)
       if (b) b.samples.push({ tick, offset: data.poses[i + 1]! })

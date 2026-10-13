@@ -44,3 +44,11 @@ it('holds the source until every spanning chunk is ready and retains debris thro
   for (let now = 600; now < 1100; now += 50) track.frame(now, () => 12)
   expect(track.size).toBe(0)
 })
+it('a fragment re-announced after a load starts where it was, with nothing to wait for', () => {
+  const clock = new SimClock(50), track = new FragmentTrack(clock)
+  const reborn: FragmentBirth = { ...birth, source: [], offset256: -768 }
+  track.update(40, { born: [reborn], poses: Int32Array.of(1, -800, -32), landed: [] }, 0)
+  expect(track.sourcesReady(() => 0)).toBe(true)
+  track.releaseSources()
+  for (const t of [0, 10, 25, 50, 100]) for (const f of track.frame(t, () => 0)) expect(f.offset).toBeLessThanOrEqual(-3)
+})
