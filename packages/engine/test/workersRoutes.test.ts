@@ -139,16 +139,17 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     // A basin dug dry, two deep and four wide in the middle (x = 101..104), one deep at its rims (x = 100, 105). The unit
     // stands on the deep floor (y = 2) when the water comes: every pose next to it then has water in the head cell.
     cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: 0 })
-    spawn(sim, [102, 2, 10])
+    spawn(sim, [102, 2, 10]); spawn(sim, [103, 2, 12])
+    // Ordered while dry, the two share a group route; the water comes in the next tick, before they are out.
+    cmd(sim, { type: 'unitMove', ids: [1, 2], pos: [160, 4, 10] })
+    expect([...sim.workers!.units.values()].every(u => u.route !== null)).toBe(true)
     const water = 3 | (7 << 12)
-    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water })
-    for (const x of [101, 103, 104]) cmd(sim, { type: 'fillRegion', min: [x, 2, 0], max: [x, 2, 27], voxel: water })
-    cmd(sim, { type: 'fillRegion', min: [102, 2, 0], max: [102, 2, 9], voxel: water }); cmd(sim, { type: 'fillRegion', min: [102, 2, 11], max: [102, 2, 27], voxel: water })
-    const u = sim.workers!.units.get(1)!
-    expect(sim.registry.liquid[sim.store.getVoxel(102, 3, 10) & 0xfff]).toBe(1) // its head is under water
-    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 10] })
-    until(sim, () => u.state === 'idle' && u.goal === null, 4000)
-    expect([u.x >> 8, u.z >> 8]).toEqual([160, 10])
+    sim.submit(0, ++seq, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water }); sim.submit(0, ++seq, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: water })
+    sim.step()
+    const units = [...sim.workers!.units.values()]
+    expect(units.every(u => sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff] === 1)).toBe(true) // heads under water
+    until(sim, () => units.every(u => u.state === 'idle' && u.goal === null), 4000)
+    for (const u of units) expect(Math.abs((u.x >> 8) - 160) + Math.abs((u.z >> 8) - 10)).toBeLessThanOrEqual(4)
   })
   it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
     const sim = makeWide(256, undefined, { searchCap: 8192 })

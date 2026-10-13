@@ -1103,7 +1103,8 @@ export class WorkerSystem {
       }
       // Caught by water over its head: no pose next to it may be safe, so it first wades out to the nearest safe pose.
       if (u.unsafeHere && !u.wadingOut && !u.motion && !u.search && !u.engineering && u.state !== 'working' && u.state !== 'falling' && this.time >= u.retry && this.headUnder(u)) {
-        u.wadingOut = true; u.path = []; u.cursor = 0
+        // Its route would only plan on from here again: drop it, and plan anew once out.
+        this.resetRoute(u); u.wadingOut = true; u.path = []; u.cursor = 0
         u.search = this.nav.request(this.position(u), [], undefined, { allowed: p => this.wadeOut(this.port.layout.voxelCoords(p)), accept: p => this.safePose(this.port.layout.voxelCoords(p)) })
         u.state = 'planning'; u.reason = undefined; u.retry = this.time + 40; this.dirty.add(u.id); continue
       }
