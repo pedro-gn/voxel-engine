@@ -30,6 +30,8 @@ const PREBUILD_FILL = 0.9
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
 /** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
+/** Extra planning cost of a step onto a pose whose feet are in water: wading counts as about three steps, so routes keep to dry land unless going round is much longer. Walking speed is the same. */
+export const WADE_COST = 8
 
 /** Lazy support graph. Geometry only: live occupancy, water and structural safety are checked by the executor. */
 export class NavigationSystem {
@@ -173,6 +175,8 @@ export class NavigationSystem {
       && !(R.liquid[feet] === 1 && (R.liquidGroup[feet] !== this.waterGroup || R.source[feet] === 1))
       && (y + 1 >= this.port.layout.size[1] || R.liquid[voxelId(this.port.get(x, y + 1, z))] !== 1)
   }
+  /** Whether the feet cell of pose p holds liquid: a step onto it costs WADE_COST more. */
+  wet(p: number): boolean { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.port.registry.liquid[voxelId(this.port.get(r - z * this.sx, y, z))] === 1 }
   allowed(p: number): boolean {
     const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0, x = r - z * this.sx
     return (this.port.safe?.(x, y, z) ?? true) && !(this.port.hazard?.(x, y, z) ?? false)
@@ -503,7 +507,7 @@ export class PathSearch {
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
         else if (to >= 0 && this.blocked?.has(to)) this.cut = true
         else if (to >= 0) {
-          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty), id = this.ids.get(to)
+          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
         }

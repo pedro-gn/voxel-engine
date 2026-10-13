@@ -215,6 +215,22 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect(limited).toBe(0)
     expect([u.x >> 8, u.z >> 8]).toEqual([200, 6])
   })
+  it('wading costs more than walking: long and short walks go round a shallow lake when the way round is not much longer', () => {
+    // A one-deep lake (x 100..110, z 0..10) from the world's edge; the way round it is at z >= 11.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) { const wx = cx * 32 + x, wz = cz * 32 + z; if (wx >= 100 && wx <= 110 && wz <= 10) ctx.set(x, 3, z, 3 | (7 << 12)) }
+    })
+    spawn(sim, [60, 4, 5]); spawn(sim, [95, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 5] }); cmd(sim, { type: 'unitMove', ids: [2], pos: [115, 4, 5] })
+    const units = [...sim.workers!.units.values()]
+    let wet = 0
+    for (let i = 0; i < 3000 && units.some(u => u.goal !== null); i++) {
+      sim.step()
+      for (const u of units) if (sim.registry.liquid[sim.store.getVoxel(u.x >> 8, u.y >> 8, u.z >> 8) & 0xfff]) wet++
+    }
+    expect(units.every(u => u.goal === null)).toBe(true)
+    expect(wet).toBe(0)
+  })
   it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
     const sim = makeWide(256, undefined, { searchCap: 8192 })
     for (let i = 0; i < 40; i++) spawn(sim, [4 + (i % 8) * 2, 4, 4 + Math.floor(i / 8) * 2])

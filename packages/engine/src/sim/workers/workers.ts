@@ -1260,8 +1260,8 @@ export class WorkerSystem {
   private routable(u: Unit): boolean { return !u.allowDig && !u.buildBlock && !this.escaping(u) && this.nav.regionStand(...this.pose(u)) }
   private escaping(u: Unit): boolean { const [x, y, z] = this.pose(u); return this.reservations.some(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true)) }
   /** The flat search heuristic from the unit to its nearest goal. */
-  private estimate(u: Unit, goals: readonly number[]): number {
-    const [x, y, z] = this.pose(u)
+  private estimate(u: Unit, goals: readonly number[]): number { return this.estimateFrom(this.pose(u), goals) }
+  private estimateFrom([x, y, z]: Vec3, goals: readonly number[]): number {
     let h = Infinity
     for (const g of goals) { const [gx, gy, gz] = this.port.layout.voxelCoords(g); h = Math.min(h, (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2) }
     return h
@@ -1273,9 +1273,11 @@ export class WorkerSystem {
   private plan(u: Unit, goals: readonly number[], exclude: readonly number[] = []): void {
     this.dropRoute(u)
     // Wading where the region layer has no pose (water up to its head): a long walk first wades, toward the goals, to the
-    // nearest pose the region layer has, and routes from there when it plans again.
+    // nearest pose the region layer has that is nearer the goals than the unit is, and routes from there when it plans
+    // again (a shore behind it may be cut off from the goals by the water it stands in).
     if (goals.length && this.wading(u) && !this.nav.regionStand(...this.pose(u)) && !u.allowDig && !u.buildBlock && this.estimate(u, goals) > HIER_MIN) {
-      u.search = this.request(u, goals, undefined, p => { const c = this.port.layout.voxelCoords(p); return this.nav.regionStand(...c) && this.safePose(c) }); return
+      const here = this.estimate(u, goals)
+      u.search = this.request(u, goals, undefined, p => { const c = this.port.layout.voxelCoords(p); return this.nav.regionStand(...c) && this.safePose(c) && this.estimateFrom(c, goals) < here }); return
     }
     if (!this.routable(u) || !goals.length || this.estimate(u, goals) <= HIER_MIN) { u.search = this.request(u, goals); return }
     u.escape = []; u.search = null

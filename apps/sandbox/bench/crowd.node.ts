@@ -18,7 +18,7 @@
 // Unless --cold, each phase warms the region store before the timed orders (see warmUp).
 import type { Command } from '@elovox/engine'
 import { GroupField } from '@elovox/engine/src/sim/navigation/groupField.ts'
-import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
+import { NavigationSystem, WADE_COST } from '@elovox/engine/src/sim/navigation/navigation.ts'
 import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
 import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
 import { BUILD_WEIGHT, RegionBuild } from '@elovox/engine/src/sim/navigation/regions.ts'
@@ -266,7 +266,8 @@ function exactWalks(starts: Map<number, number>, goals: Map<number, number>, ids
     if (start === undefined || goal === undefined) continue
     const s = nav.request(start, [goal])
     while (s.status === 'pending') nav.step(1 << 16)
-    out.set(id, s.status === 'found' ? s.cost : null)
+    // Its cost in ticks: wading is priced WADE_COST more per step for planning, but walked at the same speed.
+    out.set(id, s.status === 'found' ? s.cost - WADE_COST * s.path.slice(1).filter(p => nav.wet(p)).length : null)
   }
   return out
 }

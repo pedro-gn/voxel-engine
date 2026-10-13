@@ -1,4 +1,4 @@
-import { edgeCost, type NavigationSystem, type PathResult, type PathStatus } from './navigation.ts'
+import { WADE_COST, edgeCost, type NavigationSystem, type PathResult, type PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 import { RegionBuild, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
 import { NO_COST, type LandmarkTables } from './landmarks.ts'
@@ -294,7 +294,7 @@ export class RouteSearch {
       let moved = false
       for (let d = 0; d < 4 && !moved; d++) {
         const t = r.next[slot * 4 + d]!
-        if (t >= 0 && field[t]! + edgeCost(L, r.poses[slot]!, r.poses[t]!) === field[slot]) { slot = t; moved = true }
+        if (t >= 0 && field[t]! + edgeCost(L, r.poses[slot]!, r.poses[t]!) + (r.wet[t] ? WADE_COST : 0) === field[slot]) { slot = t; moved = true }
       }
       steps++
       if (!moved) break

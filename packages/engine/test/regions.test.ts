@@ -123,7 +123,7 @@ it('the column index finds the same slot as a dense cell table, and empty tiles 
     for (let c = 0; c < 256; c++) if (r.cols[c + 1]! - r.cols[c]! > 1) multi++
     // Each exit: 48 bytes plus its crossings, two Int32 per crossing.
     const exits = r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0)
-    expect(r.bytes).toBe(r.poses.byteLength + r.next.byteLength + r.fields.byteLength + exits + 64 + 514 + 2 * r.poses.length)
+    expect(r.bytes).toBe(r.poses.byteLength + r.wet.byteLength + r.next.byteLength + r.fields.byteLength + exits + 64 + 514 + 2 * r.poses.length)
   }
   expect(multi).toBeGreaterThan(0)
   const a = build(nav, nav.tileOf(16, 20, 16)), b = build(nav, nav.tileOf(32, 20, 32))

@@ -1,6 +1,6 @@
 import type { Layout } from '../../world/layout.ts'
 import { voxelId } from '../../world/voxel.ts'
-import { edgeCost, type NavigationSystem } from './navigation.ts'
+import { WADE_COST, edgeCost, type NavigationSystem } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 
 export const UNREACHED = 0xffff
@@ -30,6 +30,8 @@ export interface Region {
   cols: Int16Array
   colSlots: Int16Array
   poses: Int32Array        // slot → world voxel index
+  /** 1 where the pose's feet are in water: a step onto it costs WADE_COST more (0 everywhere in a relaxed record). */
+  wet: Uint8Array
   /** forward edges: 4 per slot, slot of the target inside the region or -1 (edges leaving the region are exits) */
   next: Int16Array
   exits: Exit[]
@@ -48,7 +50,7 @@ export interface Region {
 }
 /** Fixed per-record overhead counted in `bytes`; tiles with no pose share every array and cost only this. */
 const RECORD_BYTES = 64
-const NO_POSES = new Int32Array(0), NO_SLOTS = new Int16Array(0), NO_FIELDS = new Uint16Array(0), NO_COLS = new Int16Array(257), NO_EXITS: Exit[] = Object.freeze([]) as unknown as Exit[]
+const NO_POSES = new Int32Array(0), NO_WET = new Uint8Array(0), NO_SLOTS = new Int16Array(0), NO_FIELDS = new Uint16Array(0), NO_COLS = new Int16Array(257), NO_EXITS: Exit[] = Object.freeze([]) as unknown as Exit[]
 /** Exit keys used by route and group searches: 1 + region * 4096 + exit index. */
 export const exitKey = (region: number, e: number): number => 1 + region * 4096 + e
 export const splitKey = (key: number): [region: number, e: number] => [Math.floor((key - 1) / 4096), (key - 1) % 4096]
@@ -96,6 +98,7 @@ export class RegionBuild {
   private locals = new Int16Array(4096)
   private count = 0
   private poses = new Int32Array(0)
+  private wet = new Uint8Array(0)
   private next = new Int16Array(0)
   private degree = new Int32Array(0)
   private revStart = new Int32Array(0)
@@ -145,7 +148,7 @@ export class RegionBuild {
     const below = uniform!(x, y - 1, z)
     return below !== undefined && !solid[voxelId(below)]
   }
-  private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) }
+  private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) + (this.wet[b] ? WADE_COST : 0) }
   /** Returns charged operations, at most `cap`. */
   step(cap: number): number {
     let used = 0
@@ -165,7 +168,9 @@ export class RegionBuild {
           const P = this.count
           this.poses = new Int32Array(P); this.next = new Int16Array(P * 4).fill(-1); this.degree = new Int32Array(P)
           for (let s = 0; s < P; s++) { const l = this.locals[s]!; this.poses[s] = L.voxelIndex(ox + (l & 15), oy + (l >> 8), oz + ((l >> 4) & 15)) }
-          this.charge(P); this.phase = 'edges'; this.cursor = 0
+          // Landmark tables read relaxed records: no water cost there keeps them a lower bound when water drains.
+          this.wet = new Uint8Array(P); if (!this.relaxed) for (let s = 0; s < P; s++) this.wet[s] = this.nav.wet(this.poses[s]!) ? 1 : 0
+          this.charge(2 * P); this.phase = 'edges'; this.cursor = 0
         }
       } else if (this.phase === 'edges') {
         if (this.cursor === this.count * 4) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
@@ -177,7 +182,7 @@ export class RegionBuild {
         if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * 4 + d] = t; this.degree[t]!++ }; continue }
         const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
         if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; continue }
-        this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
+        this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to) + (!this.relaxed && this.nav.wet(to) ? WADE_COST : 0), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
       } else if (this.phase === 'exits') {
         const cr = this.crossings
         if (this.cursor < cr.length) { this.extend(cr[this.cursor++]!); continue }
@@ -263,9 +268,9 @@ export class RegionBuild {
     if (!this.done) throw new Error('region build is not done')
     if (this.built) return this.built
     const r: Region = this.count
-      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
-      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
-    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
+      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, wet: this.wet, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
+      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, wet: NO_WET, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
+    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.wet.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
     return this.built = r
   }
   mixState(mix: (n: number) => void): void {
@@ -293,7 +298,7 @@ export function reverseField(region: Region, targets: readonly number[], layout:
     const g = heap.peekF(), s = heap.pop()
     if (g !== out[s]) continue
     for (let i = rs[s]!; i < rs[s + 1]!; i++) {
-      const src = rev[i]!, c = Math.min(UNREACHED - 1, g + edgeCost(layout, region.poses[src]!, region.poses[s]!))
+      const src = rev[i]!, c = Math.min(UNREACHED - 1, g + edgeCost(layout, region.poses[src]!, region.poses[s]!) + (region.wet[s] ? WADE_COST : 0))
       if (c < out[src]!) { out[src] = c; heap.push(src, c, 0) }
     }
   }
