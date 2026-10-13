@@ -51,3 +51,15 @@ _Avoid_: Underwater fog (scene fog is untouched), water tint (the water material
 **View distance**:
 The distance from the camera beyond which the world is not drawn; the fog dissolves its last quarter into the sky. Infinity draws the whole world.
 _Avoid_: Render distance, chunk radius, LOD
+
+**Save**:
+A package that lets a world continue where it stopped: a manifest plus content-addressed blobs (save regions and system sections). Faithful, not bit-identical: navigation and in-flight searches are rebuilt on load.
+_Avoid_: Snapshot (the sim's in-memory capture), replay
+
+**Save slot**:
+A name under which the store keeps the newest save, and the one before it so that a write is atomic.
+_Avoid_: File, save file
+
+**Save region**:
+256 × 256 blocks of the world, full height (8 × 8 chunk columns): the unit a save copies and stores. A save copies only regions written since the slot's last save in the same engine session.
+_Avoid_: Region (navigation regions are 16³ tiles; render batch regions are 8 × 8 chunks of meshes)

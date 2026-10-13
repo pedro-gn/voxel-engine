@@ -13,6 +13,7 @@ import { walkSweep } from './walkSweep.ts'
 import { ReservationTable } from './reservations.ts'
 import { SpaceTimeSearch, type SpaceTimePort } from './spaceTime.ts'
 import { NO_CREW_TICKS, effectivePriority, parkChoice, shares } from './frontier.ts'
+import type { WorkersSnapshot } from './snapshot.ts'
 import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
 
 export interface WorkerPort {
@@ -376,6 +377,62 @@ export class WorkerSystem {
     if (!u.motion && u.state !== 'incapacitated' && u.state !== 'falling') u.state = 'idle'
     this.dirty.add(u.id)
   }
+  private newUnit(id: number, x: number, y: number, z: number, tools: Iterable<string>, stock: Map<number, number>): Unit {
+    return { id, x, y, z, facing: 0, state: 'idle', tools: new Set(tools), stock,
+      goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
+      allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time, route: null, segment: null,
+      projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null }
+  }
+  /** Plan deviation 6: durable state only; navigation, searches, reservations, claims and failure histories are rebuilt. */
+  snapshot(): WorkersSnapshot {
+    return {
+      nextUnit: this.nextUnit, nextOrder: this.nextOrder, time: this.time, assignmentCursor: this.assignmentCursor,
+      units: [...this.units.values()].map(u => {
+        // As clearOrder: a flat motion stops where the unit stands (a supported pose); a vertical step goes back to its start.
+        let x = u.x, y = u.y, z = u.z
+        if (u.motion && !u.motion.flat) [x, y, z] = u.motion.start
+        const state: WorkerState = u.state === 'falling' || u.state === 'incapacitated' ? u.state : u.goal === null ? 'idle' : 'planning'
+        return { id: u.id, x, y, z, facing: u.facing, state, vy: u.vy, tools: [...u.tools], stock: [...u.stock], goal: u.goal, available: u.available, allowDig: u.allowDig, buildBlock: u.buildBlock }
+      }),
+      orders: this.orders.map(o => ({
+        id: o.id, kind: o.kind, min: [...o.min] as Vec3, max: [...o.max] as Vec3, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled,
+        ...(o.reason && { reason: o.reason }), cursor: o.cursor, ids: o.ids ? [...o.ids] : null, priority: o.priority,
+        parked: [...o.parked], ringPending: o.ringPending ? [...o.ringPending] : null,
+        rings: o.rings, floor: o.floor, ring: o.ring, progress: o.progress, stalled: o.stalled, idleSince: o.idleSince, noCrewSince: o.noCrewSince,
+      })),
+      tasks: this.tasks.filter(t => t.order.id > 0).map(t => ({ order: t.order.id, i: t.i, expected: t.expected, added: t.added, ...(t.reason && { reason: t.reason }) })),
+      loose: [...this.loose].map(([p, pile]) => [p, [...pile]] as [number, [number, number][]]),
+    }
+  }
+  /** Into an empty system, before the first tick: units plan again where they stand, frontier tasks re-expand. */
+  restore(s: WorkersSnapshot): void {
+    if (this.units.size || this.orders.length || this.loose.size) throw new Error('workers restore needs an empty system')
+    this.nextUnit = s.nextUnit; this.nextOrder = s.nextOrder; this.time = s.time; this.assignmentCursor = s.assignmentCursor
+    for (const o of s.orders) {
+      this.orders.push({ ...o, min: [...o.min] as Vec3, max: [...o.max] as Vec3, ids: o.ids ? new Set(o.ids) : null, parked: [...o.parked], parkedRevision: -1, ringPending: o.ringPending ? Int32Array.from(o.ringPending) : null })
+    }
+    // The frontier comes back as expand() builds it, unclaimed: a build's current ring is already exposed, and putting its
+    // cells back among the parked ones would leave them behind fresh cells of later rings (they never expose first).
+    for (const ts of s.tasks) {
+      const o = this.orders.find(o => o.id === ts.order)
+      if (!o) throw new Error(`restored task names unknown order ${ts.order}`)
+      const pos = this.cell(o, ts.i), p = this.port.layout.voxelIndex(...pos)
+      const t: Task = { order: o, i: ts.i, pos, p, expected: ts.expected, claim: 0, added: ts.added, failures: new Map(), ...(ts.reason && { reason: ts.reason }) }
+      this.targets.add(p); this.tasks.push(t); this.index(t)
+    }
+    for (const v of s.units) {
+      const u = this.newUnit(v.id, v.x, v.y, v.z, v.tools, new Map(v.stock))
+      Object.assign(u, { facing: v.facing, state: v.state, vy: v.vy, goal: v.goal, available: v.available, allowDig: v.allowDig, buildBlock: v.buildBlock })
+      if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error(`restored unit ${u.id} overlaps another unit`)
+      this.units.set(u.id, u); this.dirty.add(u.id)
+    }
+    for (const [p, pile] of s.loose) {
+      this.loose.set(p, new Map(pile))
+      for (const [block, count] of pile) this.dirtyDrops.set(`${p}:${block}`, { pos: this.port.layout.voxelCoords(p), block, count })
+    }
+    this.buildReservationsChanged()
+    this.goalsVersion++
+  }
   command(command: Command): void {
     const c = command as WorkerCommand
     if (c.type === 'unitSpawn') {
@@ -391,10 +448,7 @@ export class WorkerSystem {
           stock.set(item.block, (stock.get(item.block) ?? 0) + item.count)
         }
       }
-      const u: Unit = { id: this.nextUnit, x: c.pos[0] * 256 + 128, y: c.pos[1] * 256, z: c.pos[2] * 256 + 128, facing: 0, state: 'idle', tools: new Set(c.tools), stock,
-        goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
-        allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time, route: null, segment: null,
-        projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null }
+      const u = this.newUnit(this.nextUnit, c.pos[0] * 256 + 128, c.pos[1] * 256, c.pos[2] * 256 + 128, c.tools ?? [], stock)
       if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
       this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return

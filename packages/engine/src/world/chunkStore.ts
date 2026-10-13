@@ -1,6 +1,7 @@
 import { PAGE_BYTES, SLOTS_PER_PAGE, SlotViews, decodeUniform, encodeUniform, impliedLight, type WorldBuffers } from './buffers.ts'
 import { CHUNK_VOLUME, Layout } from './layout.ts'
 import { AIR, FULL_SKY, voxelId } from './voxel.ts'
+import { regionGrid, regionOfChunk } from '../persist/regions.ts'
 
 export class WorldFullError extends Error {
   /** `slots`: slot count in use when allocation failed. */
@@ -32,11 +33,17 @@ export class ChunkStore {
   private readonly quiet = new Set<number>()
   /** Per slot: a cell its last tryCollapse found differing from voxel 0 (0: none known), checked first next time. */
   private witness = new Uint16Array(0)
+  /** Per save region (persist/regions.ts): bumped whenever one of its chunks is opened for writing. Incremental saves copy regions whose count moved. */
+  readonly regionRevisions: Uint32Array
+  private readonly regionOf: Uint16Array
 
   constructor(o: ChunkStoreOptions) {
     this.layout = new Layout(o.buffers.size)
     this.table = new Int32Array(o.buffers.chunkTable)
     this.versions = new Uint32Array(o.buffers.versions)
+    this.regionRevisions = new Uint32Array(regionGrid(this.layout).count)
+    this.regionOf = new Uint16Array(this.layout.chunkCount)
+    for (let ci = 0; ci < this.layout.chunkCount; ci++) this.regionOf[ci] = regionOfChunk(this.layout, ci)
     this.opaque = o.opaque
     this.onNewPage = o.onNewPage
     this.maxPages = o.maxPages ?? 64
@@ -168,6 +175,7 @@ export class ChunkStore {
     if (this.open.has(ci)) return
     Atomics.add(this.versions, ci, 1) // odd: write in progress
     this.open.add(ci)
+    this.regionRevisions[this.regionOf[ci]!]!++
   }
 
   private writable(ci: number, quiet = false): number {

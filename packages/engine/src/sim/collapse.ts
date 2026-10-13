@@ -2,6 +2,9 @@ import type { BlockRegistry } from '../blocks/registry.ts'
 import type { Layout } from '../world/layout.ts'
 import { AIR, voxelId } from '../world/voxel.ts'
 import { GRAVITY_256, MAX_FALL_256 } from './gravity.ts'
+import type { Packed } from '../persist/pack.ts'
+
+interface CollapseJson { nextId: number; dirty: number[]; scanChunk: number | null; scanCell: number; fragments: { id: number; offset256: number; vy256: number; n: number }[] }
 
 export interface CollapseOptions { scanCap?: number; mutationCap?: number; fragmentCells?: number; maxFragments?: number }
 export class FragmentOverlapError extends Error {
@@ -10,7 +13,8 @@ export class FragmentOverlapError extends Error {
 export interface CollapseStats { checks: number; fragments: number; cells: number; visited: number; mutations: number; restarts: number }
 export interface ChunkVersion { chunk: number; version: number }
 /** Positions are original world indices; a fragment only translates vertically. Membership is sent once. */
-export interface FragmentBirth { id: number; positions: Uint32Array; voxels: Uint16Array; source: ChunkVersion[] }
+/** `offset256`: where the fragment already is (a fragment re-announced after a load); absent for a new one, which starts at 0. */
+export interface FragmentBirth { id: number; positions: Uint32Array; voxels: Uint16Array; source: ChunkVersion[]; offset256?: number }
 export interface FragmentLanding { id: number; offset256: number; chunks: ChunkVersion[] }
 export interface CollapseTick { born: FragmentBirth[]; poses: Int32Array; landed: FragmentLanding[] }
 export interface CollapsePort {
@@ -100,6 +104,8 @@ export class CollapseSystem {
   private nextId = 1
   private selfWrite = false
   private born: FragmentBirth[] = []
+  /** Set by restore(): the next step keeps the births it queued for the main thread. */
+  private keepBorn = false
   private landed: FragmentLanding[] = []
   private visited = 0
   private mutations = 0
@@ -180,7 +186,10 @@ export class CollapseSystem {
 
   step(): void {
     this.swept.clear()
-    this.born = []; this.landed = []; this.visited = 0; this.mutations = 0
+    // Births a restore queued are announced by the first publication, even when this step runs before it.
+    if (!this.keepBorn) this.born = []
+    this.keepBorn = false
+    this.landed = []; this.visited = 0; this.mutations = 0
     if (!this.enabled) return
     // Landings and detachments share the mutation allowance. An entire admitted body fits it.
     this.advance()
@@ -278,6 +287,42 @@ export class CollapseSystem {
     return result
   }
 
+  /** Plan deviation 5: an in-progress support search is not kept; its queued positions are seeded again. */
+  snapshot(): Packed {
+    const seeds = new Set<number>(this.seeds.slice(this.seedHead))
+    if (this.search) for (let i = 0; i < this.search.queue.length; i++) seeds.add(this.search.queue.data[i]!)
+    const total = this.fragments.reduce((n, f) => n + f.positions.length, 0)
+    const positions = new Uint32Array(total), voxels = new Uint16Array(total)
+    let at = 0
+    for (const f of this.fragments) { positions.set(f.positions, at); voxels.set(f.voxels, at); at += f.positions.length }
+    const json: CollapseJson = { nextId: this.nextId, dirty: [...this.dirty], scanChunk: this.scanChunk, scanCell: this.scanCell,
+      fragments: this.fragments.map(f => ({ id: f.id, offset256: f.offset256, vy256: f.vy256, n: f.positions.length })) }
+    return { json, arrays: { seeds: Uint32Array.from(seeds), positions, voxels } }
+  }
+
+  /** Fragments in flight come back and are announced again as births with no source chunks (nothing to hide). */
+  restore(p: Packed): void {
+    if (!this.enabled) return
+    const j = p.json as CollapseJson
+    this.nextId = j.nextId
+    // Filling the chunks seeded every member, as generation does; the saved world had checked them, so keep only its seeds.
+    this.seeds = []; this.seedHead = 0; this.seedSet.clear(); this.dirty.clear()
+    for (const s of p.arrays.seeds as Uint32Array) if (!this.seedSet.has(s)) { this.seedSet.add(s); this.seeds.push(s) }
+    for (const ci of j.dirty) this.dirty.add(ci)
+    this.scanChunk = j.scanChunk
+    this.scanCell = j.scanCell
+    const pos = p.arrays.positions as Uint32Array, vox = p.arrays.voxels as Uint16Array
+    let at = 0
+    for (const f of j.fragments) {
+      const positions = pos.slice(at, at + f.n), voxels = vox.slice(at, at + f.n)
+      at += f.n
+      const body: Fragment = { id: f.id, positions, voxels, runs: this.runsOf(positions), offset256: f.offset256, vy256: f.vy256 }
+      this.fragments.push(body); this.index(body)
+      this.born.push({ id: body.id, positions: positions.slice(), voxels: voxels.slice(), source: [], offset256: body.offset256 })
+    }
+    this.keepBorn = this.born.length > 0
+  }
+
   mixState(mix: (v: number) => void): void {
     if (!this.enabled) return
     mix(this.nextId); mix(this.scanCap); mix(this.mutationCap); mix(this.fragmentCells); mix(this.maxFragments)
@@ -323,22 +368,28 @@ export class CollapseSystem {
     return [...chunks].sort((a, b) => a - b).map(chunk => ({ chunk, version: 0 }))
   }
   private detach(positions: Uint32Array): void {
-    const L = this.port.layout, voxels = new Uint16Array(positions.length), set = new Set(positions), runs: Run[] = []
-    const plane = L.size[0] * L.size[2], source = this.chunks(positions)
+    const L = this.port.layout, voxels = new Uint16Array(positions.length)
+    const source = this.chunks(positions)
     this.port.prepare(this.chunks(positions, 0, false).map(v => v.chunk)); this.port.touch(source.map(v => v.chunk))
     for (let i = 0; i < positions.length; i++) { const [x, y, z] = L.voxelCoords(positions[i]!); voxels[i] = this.port.get(x, y, z) }
-    for (const p of positions) {
-      if (set.has(p - plane)) continue
-      const [x, y, z] = L.voxelCoords(p); let height = 1
-      while (set.has(p + height * plane)) height++
-      runs.push({ x, y, z, height })
-    }
+    const runs = this.runsOf(positions)
     this.selfWrite = true
     try { for (const p of positions) { const [x, y, z] = L.voxelCoords(p); this.port.write(x, y, z, AIR) } } finally { this.selfWrite = false }
     const body = { id: this.nextId++, positions, voxels, runs, offset256: 0, vy256: 0 }
     this.fragments.push(body); this.index(body)
     this.mutations += positions.length
     this.born.push({ id: body.id, positions: positions.slice(), voxels: voxels.slice(), source })
+  }
+  /** The vertical runs of a fragment's cells: one per column segment, bottom cell and height. */
+  private runsOf(positions: Uint32Array): Run[] {
+    const L = this.port.layout, set = new Set(positions), plane = L.size[0] * L.size[2], runs: Run[] = []
+    for (const p of positions) {
+      if (set.has(p - plane)) continue
+      const [x, y, z] = L.voxelCoords(p); let height = 1
+      while (set.has(p + height * plane)) height++
+      runs.push({ x, y, z, height })
+    }
+    return runs
   }
   private index(b: Fragment): void {
     for (const r of b.runs) {

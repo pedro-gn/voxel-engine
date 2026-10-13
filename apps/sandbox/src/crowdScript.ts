@@ -2,11 +2,16 @@ import type { Engine } from '@elovox/engine'
 import { submitAll } from './livingScript.ts'
 import { PADS, bottleneckCommands, massMove, padClearCommands, scatterMoves, spawnCrowd, workOrders } from './scenes/crowd.ts'
 
+/** What a save keeps of the crowd script: the scatter count seeds the next scatter's moves. */
+export interface CrowdState { scatters: number }
+
 export type Crowd = {
   readonly units: number
   spawn(): Promise<void>; allEast(): Promise<void>; scatter(): Promise<void>; bottleneck(): Promise<void>; work(): Promise<void>
   /** Live unit ids, from the newest workers publication. */
   ids(): number[]
+  save(): CrowdState
+  restore(s: CrowdState): void
 }
 
 /** The crowd scene's events, the same ones the scale benchmark (bench/crowd.node.ts) drives. */
@@ -31,6 +36,8 @@ export function createCrowd(engine: Engine, units: number): Crowd {
       await submitAll(engine, [massMove(all.slice(0, half), 'east'), massMove(all.slice(half), 'west')])
     },
     async work() { await submitAll(engine, workOrders(stone, planks)) },
+    save: () => ({ scatters }),
+    restore(s) { scatters = s.scatters },
   }
 }
 

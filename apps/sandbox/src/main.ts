@@ -1,4 +1,4 @@
-import { AIR, createEngine, packVoxel } from '@elovox/engine'
+import { AIR, createEngine, openSave, packVoxel, type LoadedSave } from '@elovox/engine'
 import { BLOCKS, DECORATIONS } from './blocks.ts'
 import { spawnCharacter } from './character.ts'
 import { createWorkersView } from './workersView.ts'
@@ -22,11 +22,31 @@ import { randomTickRate } from './rules.ts'
 import { COLLAPSE_SIZE, cutLeftCommands, cutRightCommands, cutTowerCommands, cutNormalCommands, stressCollapseCommands } from './scenes/collapse.ts'
 import { createTerrainPanel } from './terrainPanel.ts'
 import { createFirstPerson } from './firstPerson.ts'
+import { applyCamera, captureCamera, isAppState, type AppState } from './appState.ts'
+import { bootPlan } from './scene.ts'
+import { startAutosave } from './autosave.ts'
+import { createSavePanel } from './savePanel.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
-const sceneParam = params.get('scene')
-const sceneName = sceneParam === 'diorama' || sceneParam === 'terrain' || sceneParam === 'flood' || sceneParam === 'caves' || sceneParam === 'collapse' || sceneParam === 'workers' || sceneParam === 'living' || sceneParam === 'crowd' ? sceneParam : 'world'
+const persistWorker = () => new Worker(new URL('./persist.worker.ts', import.meta.url), { type: 'module' })
+/** Shows why a save could not be loaded, with a way back to the scene; the page stops there. */
+function showLoadError(slot: string, e: unknown): never {
+  const box = document.createElement('div')
+  Object.assign(box.style, { position: 'fixed', inset: '0', display: 'grid', placeItems: 'center', background: '#f6f8f1', color: '#233027', font: '14px/1.5 system-ui, sans-serif', zIndex: '20' })
+  const inner = document.createElement('div'); inner.style.maxWidth = '560px'
+  const h = document.createElement('h2'); h.textContent = `The save "${slot}" could not be loaded`
+  const p = document.createElement('pre'); p.style.whiteSpace = 'pre-wrap'; p.textContent = e instanceof Error ? e.message : String(e)
+  const back = new URLSearchParams(location.search); back.delete('save')
+  const a = document.createElement('a'); a.href = `?${back}`; a.textContent = 'Start the scene fresh'
+  inner.append(h, p, a); box.append(inner); document.body.append(box)
+  throw e
+}
+const saveParam = params.get('save')
+const saved: (LoadedSave & { app: unknown }) | null = saveParam ? await openSave(saveParam, persistWorker).catch((e: unknown) => showLoadError(saveParam, e)) : null
+const savedApp: AppState | null = saved && isAppState(saved.app) ? saved.app : null
+const plan = bootPlan(params, saved)
+const { scene: sceneName, fromSave } = plan
 if (sceneName === 'collapse') HOTBAR.splice(4, 2, 'structural_planks', 'structural_glass')
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
@@ -34,15 +54,17 @@ function worldSide(raw: string | null): number {
   if (!Number.isFinite(v)) return 1024
   return Math.min(1024, Math.max(32, Math.round(v / 32) * 32))
 }
-/** `?scene=terrain&edit` opens the terrain editor on the scene's document. */
-const editing = sceneName === 'terrain' && params.has('edit')
+/** `?scene=terrain&edit` opens the terrain editor on the scene's document (not on a loaded save: it edits the scene file). */
+const editing = sceneName === 'terrain' && params.has('edit') && !fromSave
 const EDIT_HINT = '1–4 mode · Ops: LMB select, drag handles/outline, Shift-drag height, Alt-click remove vertex, Del, Ctrl+D, H · ' +
   'Brushes: LMB paint, Ctrl invert, Shift keep depth, [ ] radius · Ctrl+Z/Y · RMB rotate'
 const n = worldSide(params.get('size'))
 const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
-const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
-const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
+const terrainDoc = sceneName !== 'terrain' ? undefined
+  : fromSave && plan.terrain ? plan.terrain as typeof showcaseDoc
+  : n <= 256 ? e2eDoc : showcaseDoc
+const size: [number, number, number] = saved ? [...saved.manifest.size] : sceneName === 'flood' ? [...FLOOD_SIZE]
   : sceneName === 'workers' ? [...WORKERS_SIZE]
   : sceneName === 'living' ? [...LIVING_SIZE]
   : sceneName === 'crowd' ? [...CROWD_SIZE]
@@ -53,6 +75,7 @@ const size: [number, number, number] = sceneName === 'flood' ? [...FLOOD_SIZE]
   : [n, 128, n]
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 
+// A save can still be refused once the engine sees it (a block this build does not have): show why, as for a bad file.
 const engine = await createEngine({
   canvas,
   size,
@@ -92,14 +115,19 @@ const engine = await createEngine({
   // Every layer of the texture array shares this size; the hand-painted tiles are 512 px, so they
   // render at full resolution (~14 layers ≈ 19 MB with mipmaps).
   tileSize: 512,
-})
+  persistWorker,
+  ...(saved && { restore: saved }),
+}).catch((e: unknown) => saveParam && saved ? showLoadError(saveParam, e) : Promise.reject(e))
+void navigator.storage?.persist?.().catch(() => false) // ask once that the browser keep the saves under storage pressure
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
+// A loaded save brings its own camera (applied once the scene objects exist): skip the scene's preset views.
+const presetCamera = !fromSave
 // ?view=<blocks>: the view distance (Quality.viewDistance), for the 4b checkpoints.
 if (params.has('view')) engine.quality = { viewDistance: Number(params.get('view')) }
 if (sceneName === 'diorama') {
   engine.quality = { decorationRadius: 256 } // the 128-block diorama is viewed from ~150 blocks; the engine default (96) would fade all grass out
-  for (const s of [engine.controls.goal, engine.controls.current]) {
+  if (presetCamera) for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 64; s.target[1] = 30; s.target[2] = 64
     s.distance = 150
     s.pitch = 0.7
@@ -107,28 +135,28 @@ if (sceneName === 'diorama') {
   }
 }
 if (sceneName === 'terrain') {
-  for (const s of [engine.controls.goal, engine.controls.current]) {
+  if (presetCamera) for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = size[0] / 2; s.target[1] = 50; s.target[2] = size[2] / 2
     s.distance = Math.min(400, size[0] * 0.6)
     s.pitch = 0.75
   }
   if (!editing) createTerrainPanel(engine, terrainDoc!)
 }
-if (sceneName === 'flood') {
+if (sceneName === 'flood' && presetCamera) {
   for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 128; s.target[1] = 20; s.target[2] = 128
     s.distance = 320
     s.pitch = 0.8
   }
 }
-if (sceneName === 'caves') {
+if (sceneName === 'caves' && presetCamera) {
   for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 64; s.target[1] = 26; s.target[2] = 64
     s.distance = 200
     s.pitch = 0.8
   }
 }
-if (sceneName === 'collapse') {
+if (sceneName === 'collapse' && presetCamera) {
   for (const s of [engine.controls.goal, engine.controls.current]) {
     s.target[0] = 56; s.target[1] = 12; s.target[2] = 46; s.distance = 140; s.pitch = 0.75; s.yaw = 0.7
   }
@@ -143,13 +171,13 @@ const editor = editing
 // The bean stands at the camera target, facing the camera; V toggles idle / walk.
 engine.controls.apply(engine.camera)
 const [bx, , bz] = engine.controls.current.target
-if (sceneName === 'crowd') crowdCamera(engine)
-if (sceneName === 'workers') {
+if (sceneName === 'crowd' && presetCamera) crowdCamera(engine)
+if (sceneName === 'workers' && presetCamera) {
   for (const s of [engine.controls.goal, engine.controls.current]) { s.target[0] = 44; s.target[1] = 7; s.target[2] = 34; s.distance = 125; s.pitch = .8; s.yaw = .7 }
   engine.controls.apply(engine.camera)
 }
 const bean = unitsScene ? null : await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
-const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers' }) : null
+const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers', spawn: sceneName === 'workers' && !fromSave }) : null
 
 let selected = 0
 const hotbarVoxel = () => { const id = engine.blocks.id(HOTBAR[selected]!); return engine.blocks.liquid[id] ? packVoxel(id, 7) : id }
@@ -218,8 +246,25 @@ if (collapse) {
   document.body.append(bar)
 }
 const living = sceneName === 'living' ? createLiving(engine) : null
-if (living) { living.camera('default'); await living.setup(); createLivingBar(living) }
+if (living && fromSave) living.restore(savedApp?.scripts.living ?? { started: false, breached: false, collapsed: false, groupAtRest: false })
+else if (living) { living.camera('default'); await living.setup() }
+if (living) createLivingBar(living)
 // ?units=N: the crowd's size (the e2e uses 50).
 const crowd = sceneName === 'crowd' ? createCrowd(engine, Number(params.get('units') ?? 1000)) : null
+if (crowd && savedApp?.scripts.crowd) crowd.restore(savedApp.scripts.crowd)
 if (crowd) createCrowdBar(crowd)
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, ready: true } })
+if (savedApp) applyCamera(engine, savedApp.camera, () => fp ? fp.toggle() : engine.setCameraMode('firstPerson'))
+
+/** The sandbox's part of a save: which scene, where the camera is, and how far the scene scripts got. */
+const captureApp = (): AppState => ({
+  scene: sceneName, camera: captureCamera(engine),
+  scripts: { ...(living && { living: living.save() }), ...(crowd && { crowd: crowd.save() }) },
+})
+const save = (slot: string) => engine.save(slot, { app: captureApp(), meta: { scene: sceneName } })
+// ?autosaveMs=: a shorter interval, for the e2e.
+const autosave = startAutosave(save, {
+  intervalMs: Number(params.get('autosaveMs') ?? 300_000), blocked: () => editing,
+  onResult: (slot, _r, e) => { if (e) console.warn(`[sandbox] autosave ${slot} failed:`, e) },
+})
+createSavePanel(engine, { save, autosave, load: (slot) => { location.search = `?save=${encodeURIComponent(slot)}` } })
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, save, autosave, ready: true } })

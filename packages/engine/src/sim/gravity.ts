@@ -1,6 +1,7 @@
 import type { BlockRegistry } from '../blocks/registry.ts'
 import type { Layout } from '../world/layout.ts'
 import { AIR, voxelId } from '../world/voxel.ts'
+import type { Packed } from '../persist/pack.ts'
 
 /** Added to a body's downward speed every tick, in 1/256 block per tick (≈ 1 g at 20 Hz). */
 export const GRAVITY_256 = 24
@@ -126,6 +127,27 @@ export class GravitySystem {
 
   /** Copies of the bodies still falling, for the tick message. */
   snapshot(): FallingBodyState[] { return this.bodies.map((b) => ({ ...b })) }
+
+  /** The falling bodies and pending checks a save keeps (snapshot() is the tick message's copy). */
+  saveState(): Packed {
+    return { json: { nextId: this.nextId, bodies: this.bodies.map(b => ({ ...b })), pending: [...this.pending] }, arrays: {} }
+  }
+
+  restoreState(p: Packed): void {
+    const j = p.json as { nextId: number; bodies: FallingBodyState[]; pending: number[] }
+    this.nextId = j.nextId
+    this.bodies = j.bodies.map(b => ({ ...b }))
+    this.pending.length = 0
+    this.pendingSet.clear()
+    for (const pos of j.pending) { this.pending.push(pos); this.pendingSet.add(pos) }
+    this.columns.clear()
+    for (const b of this.bodies) {
+      const col = b.x + b.z * this.port.layout.size[0]
+      let a = this.columns.get(col)
+      if (!a) { a = []; this.columns.set(col, a) }
+      a.push(b)
+    }
+  }
 
   mixState(mix: (v: number) => void): void {
     mix(this.nextId)

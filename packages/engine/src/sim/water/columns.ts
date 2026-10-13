@@ -417,6 +417,17 @@ export class WaterColumns {
     return credit
   }
 
+  /** The per-column state a save keeps (live arrays: copy them). `falls` is per-step scratch and is not part of it. */
+  state(): { depth: Int32Array; flux: Int32Array; last: Int32Array; cursor: number; stepNo: number } {
+    return { depth: this.depth, flux: this.flux, last: this.last, cursor: this.cursor, stepNo: this.stepNo }
+  }
+
+  restoreState(depth: Int32Array, flux: Int32Array, last: Int32Array, cursor: number, stepNo: number): void {
+    if (depth.length !== this.n || flux.length !== 2 * this.n || last.length !== this.n) throw new Error('water restore: column count differs from the world')
+    this.depth.set(depth); this.flux.set(flux); this.last.set(last)
+    this.cursor = cursor; this.stepNo = stepNo
+  }
+
   mixState(mix: (v: number) => void): void {
     mix(this.cursor)
     for (let c = 0; c < this.n; c++) {

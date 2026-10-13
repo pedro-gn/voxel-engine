@@ -34,6 +34,16 @@ import { createWorldBuffers } from './world/buffers.ts'
 import { Layout, type WorldSize } from './world/layout.ts'
 import { WorldReader } from './world/reader.ts'
 import { voxelId } from './world/voxel.ts'
+import { ENGINE_VERSION } from './version.ts'
+import { PersistClient } from './persist/client.ts'
+import { FORMAT_VERSION, SaveError, checkBlocks, type Manifest, type ManifestDraft } from './persist/manifest.ts'
+import { pack, unpack } from './persist/pack.ts'
+import type { LoadedSave, WriteResult } from './persist/package.ts'
+import { REGION_FORMAT, regionGrid } from './persist/regions.ts'
+import { SaveQueue } from './persist/saveQueue.ts'
+import { checkSlotName } from './persist/store.ts'
+import type { SlotInfo } from './persist/worker.ts'
+import type { SimSnapshot } from './sim/snapshot.ts'
 
 export interface EngineOptions {
   canvas: HTMLCanvasElement
@@ -78,7 +88,17 @@ export interface EngineOptions {
   threeCull?: boolean
   /** @internal Chunk columns per region batch side; default 8. For the region-size A/B only. */
   regionChunks?: number
+  /** Boot from this save (openSave) instead of generating: size, seed, paused and the terrain document come from it. */
+  restore?: LoadedSave
+  /**
+   * Starts the persistence worker, e.g. `() => new Worker(new URL('./persist.worker.ts', import.meta.url), { type: 'module' })`
+   * running `runPersistWorker` (from '@elovox/engine/persist-worker'). Needed by save() and saves.
+   */
+  persistWorker?: () => Worker
 }
+
+/** What a save cost: compressed bytes of the package, blobs and regions actually written, the sim's stall and the wall time. */
+export interface SaveResult { bytes: number; blobsWritten: number; regionsWritten: number; simStallMs: number; totalMs: number }
 
 export interface EngineEvents {
   workers: WorkerTick
@@ -183,6 +203,19 @@ export interface Engine {
     setPaused(paused: boolean): void
   }
   submit(cmd: Command): number
+  /**
+   * Saves the world to `slot` (spec §5): the sim stops between two ticks to copy what changed since this engine last saved
+   * the slot; compression and writing run in the persistence worker. `app` is the game's own state, given back by
+   * `restored.app`; `meta` labels the slot in lists. Saves run one at a time; calls for a slot already waiting fold into it.
+   */
+  save(slot: string, o?: { app?: unknown; meta?: Record<string, string | number> }): Promise<SaveResult>
+  readonly saves: {
+    list(): Promise<SlotInfo[]>
+    delete(slot: string): Promise<void>
+    estimate(): Promise<{ usage: number; quota: number } | null>
+  }
+  /** The save this engine booted from (its slot, manifest and the game's app state); null after a normal boot. */
+  readonly restored: { slot: string; manifest: Manifest; app: unknown } | null
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
   pickScreen(clientX: number, clientY: number, maxDist?: number): RayHit | null
   setHighlight(pos: readonly [number, number, number] | null): void
@@ -237,9 +270,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     throw new EngineError('not-isolated', 'COOP/COEP headers missing: crossOriginIsolated is false')
   }
 
-  const size: WorldSize = o.size ?? [1024, 128, 1024]
-  const layout = new Layout(size)
   const registry = new BlockRegistry(o.blocks)
+  const restore = o.restore ?? null
+  if (restore) {
+    const bad = checkBlocks(restore.manifest.blocks, registry.defs.map(d => d.name))
+    if (bad.length) throw new EngineError('save', `save "${restore.slot}" cannot be loaded:\n${bad.join('\n')}`)
+  }
+  const size: WorldSize = restore ? restore.manifest.size : o.size ?? [1024, 128, 1024]
+  const seed = restore ? restore.manifest.seed : o.seed
+  const layout = new Layout(size)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const tileSize = checkTileSize(o.tileSize ?? TILE)
   const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
@@ -371,10 +410,17 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   let terrainSeq = 0
   const terrainWaits = new Map<number, { resolve: (v: never) => void; reject: (e: EngineError) => void; columns: number }>()
   /** Stops ticking, meshing and rendering. GPU resources stay until dispose(). */
+  const persist = o.persistWorker ? new PersistClient(o.persistWorker()) : null
+  /** The sim snapshots asked for by save(), by id. */
+  const snapshotWaits = new Map<number, { resolve: (s: SimSnapshot) => void; reject: (e: unknown) => void }>()
+  let snapshotSeq = 0
   const halt = () => {
     if (halted) return
     halted = true
     renderer.setAnimationLoop(null)
+    persist?.terminate()
+    for (const w of snapshotWaits.values()) w.reject(new EngineError('fatal', 'the engine stopped'))
+    snapshotWaits.clear()
     sim.terminate()
     waterWorker?.terminate()
     for (const s of pool) s.worker.terminate()
@@ -503,7 +549,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   }
 
   // ---- sim worker ----
-  let lastTick = 0, lastTickMs = 0, slotsUsed = 0
+  // A restored world starts at its saved tick, before the first tick message arrives.
+  let lastTick = restore ? restore.manifest.tick : 0, lastTickMs = 0, slotsUsed = 0
   let physicsStats: Extract<FromSim, { type: 'tick' }>['physics'] = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
@@ -564,15 +611,33 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       case 'fatal':
         fail(m.slots === undefined ? m.message : `${m.message} (${m.slots} slots in use)`, m.slots)
         break
+      case 'snapshot': {
+        const w = snapshotWaits.get(m.id)
+        snapshotWaits.delete(m.id)
+        if (m.ok) w?.resolve(m.snapshot)
+        else w?.reject(new SaveError('not-ready', m.message))
+        break
+      }
     }
   }
   sim.onerror = (e) => {
     e.preventDefault()
     fail(`sim worker crashed: ${e.message || 'the worker failed to load or crashed'}`)
   }
-  const init: Extract<ToSim, { type: 'init' }> = { type: 'init', buffers, blocks: o.blocks, seed: o.seed, options: o.sim ?? {}, terrain: o.terrain }
+  /** The last full terrain document the generator accepted: a save keeps it for the editor and later regenerations. */
+  let terrainDoc: unknown = restore ? restore.manifest.terrain ?? undefined : o.terrain
+  const init: Extract<ToSim, { type: 'init' }> = { type: 'init', buffers, blocks: o.blocks, seed, options: o.sim ?? {}, terrain: terrainDoc }
   if (genPorts.length > 0) init.genPorts = genPorts
-  sim.postMessage(init, genPorts)
+  const initTransfer: Transferable[] = [...genPorts]
+  // The app state is read before the save's buffers move to the sim.
+  const restoredApp = restore?.sections.app ? unpack(restore.sections.app).json : null
+  if (restore) {
+    const { app: _app, ...sections } = restore.sections
+    init.restore = { tick: restore.manifest.tick, paused: restore.manifest.paused, regions: restore.regions, sections }
+    for (const r of restore.regions) initTransfer.push(r.bytes.buffer)
+    for (const b of Object.values(sections)) initTransfer.push(b!.buffer)
+  }
+  sim.postMessage(init, initTransfer)
 
   // ---- frame loop ----
   const distanceTo = (ci: number) => {
@@ -699,7 +764,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     })
   }
 
-  let physicsPaused = o.sim?.paused === true
+  let physicsPaused = restore ? restore.manifest.paused : o.sim?.paused === true
   const physics = {
     get paused() { return physicsPaused },
     setPaused(paused: boolean) {
@@ -709,12 +774,56 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     },
   }
 
+  // ---- saves ----
+  /** Per slot this engine wrote or booted from: the manifest it knows and the region revisions the next save diffs against. */
+  const baselines = new Map<string, { created: string; revisions: Uint32Array }>()
+  if (restore) baselines.set(restore.slot, { created: restore.manifest.created, revisions: new Uint32Array(regionGrid(layout).count) })
+  const needPersist = (): PersistClient => {
+    if (!persist) throw new EngineError('save', 'saving needs EngineOptions.persistWorker')
+    return persist
+  }
+  const saveQueue = new SaveQueue<{ slot: string; app: unknown; meta: Record<string, string | number> }, SaveResult>(async ({ slot, app, meta }) => {
+    const p = needPersist()
+    if (halted) throw new EngineError('fatal', fatal ?? 'the engine is stopped')
+    checkSlotName(slot)
+    const t0 = performance.now()
+    const prev = await p.request<Manifest | null>({ type: 'manifest', slot })
+    const base = baselines.get(slot)
+    const since = base && prev && prev.created === base.created ? base.revisions : null
+    try {
+      return await saveOnce(p, slot, app, meta, prev, since, t0)
+    } catch (e) {
+      // The slot lost the blobs this incremental save reused (deleted meanwhile): copy every region instead.
+      if (since && e instanceof SaveError && e.code === 'stale') return saveOnce(p, slot, app, meta, null, null, t0)
+      throw e
+    }
+  })
+  const saveOnce = async (p: PersistClient, slot: string, app: unknown, meta: Record<string, string | number>, prev: Manifest | null, since: Uint32Array | null, t0: number): Promise<SaveResult> => {
+    const id = ++snapshotSeq
+    const snap = await new Promise<SimSnapshot>((resolve, reject) => {
+      snapshotWaits.set(id, { resolve, reject })
+      sim.postMessage({ type: 'snapshot', id, since } satisfies ToSim)
+    })
+    const draft: ManifestDraft = {
+      format: 'elovox-save', formatVersion: FORMAT_VERSION, engine: ENGINE_VERSION, created: new Date().toISOString(),
+      seed, size: [size[0], size[1], size[2]], tick: snap.tick, paused: snap.paused,
+      blocks: registry.defs.map(d => d.name), terrain: terrainDoc ?? null, meta, regionFormat: REGION_FORMAT,
+    }
+    const sections = [...snap.sections, { name: 'app' as const, bytes: pack({ json: app ?? null, arrays: {} }) }]
+    const sent = new Set(snap.regions.map(r => r.r))
+    const reuse = since ? prev!.regions.filter(r => !sent.has(r.r)) : []
+    const transfer = [...snap.regions.map(r => r.bytes.buffer), ...sections.map(s => s.bytes.buffer)]
+    const w = await p.request<WriteResult>({ type: 'write', slot, draft, sections, regions: snap.regions, reuse }, transfer)
+    baselines.set(slot, { created: w.manifest.created, revisions: snap.revisions })
+    return { bytes: w.bytes, blobsWritten: w.blobsWritten, regionsWritten: w.regionsWritten, simStallMs: snap.ms, totalMs: performance.now() - t0 }
+  }
+
   const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
     firstPerson, get cameraMode() { return cameraMode }, setCameraMode, get underwater() { return underwaterFade.amount },
     terrain: {
       get initial() { return initialGen },
-      setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })),
+      setDocument: (doc) => terrainRequest<void>((id) => ({ type: 'setTerrain', id, doc })).then(() => { terrainDoc = doc }),
       patch: (patch) => terrainRequest<void>((id) => ({ type: 'patchTerrain', id, patch })),
       regenerate: (rect) => terrainRequest<{ ms: number; chunks: number }>(
         (id) => ({ type: 'regenerate', id, rect }),
@@ -747,6 +856,13 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       sim.postMessage({ type: 'submit', clientId: CLIENT_ID, seq: s, cmd } satisfies ToSim)
       return s
     },
+    save: (slot, so = {}) => saveQueue.request(slot, { slot, app: so.app, meta: so.meta ?? {} }),
+    saves: {
+      list: async () => needPersist().request<SlotInfo[]>({ type: 'list' }),
+      delete: async (slot) => { await needPersist().request({ type: 'delete', slot }); baselines.delete(slot) },
+      estimate: async () => needPersist().request<{ usage: number; quota: number } | null>({ type: 'estimate' }),
+    },
+    restored: restore ? { slot: restore.slot, manifest: restore.manifest, app: restoredApp } : null,
     raycast: rc,
     collision,
     pickScreen(clientX, clientY, maxDist = PICK_DISTANCE) {

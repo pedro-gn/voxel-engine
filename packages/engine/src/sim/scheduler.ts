@@ -27,6 +27,21 @@ export class Scheduler {
     b.items.push({ pos, seq: this.seq })
   }
 
+  /** Every pending update as [pos, due tick] pairs in drain order (due tick, then insertion), and the sequence counter. */
+  entries(): { pairs: Int32Array; seq: number } {
+    const all = [...this.due].sort((a, b) => a[1].tick - b[1].tick || a[1].seq - b[1].seq)
+    const pairs = new Int32Array(all.length * 2)
+    all.forEach(([pos, d], i) => { pairs[2 * i] = pos; pairs[2 * i + 1] = d.tick })
+    return { pairs, seq: this.seq }
+  }
+
+  /** Replaces the queue with `pairs` (entries() order) and resumes the sequence at `seq`. */
+  restore(pairs: Int32Array, seq: number): void {
+    this.due.clear(); this.buckets.clear(); this.ticks.length = 0; this.seq = 0
+    for (let i = 0; i < pairs.length; i += 2) this.schedule(pairs[i]!, pairs[i + 1]!)
+    this.seq = seq
+  }
+
   drain(tick: number, limit: number): number[] {
     const out: number[] = []
     while (out.length < limit && this.ticks.length > 0 && this.ticks[0]! <= tick) {

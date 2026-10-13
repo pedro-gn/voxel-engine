@@ -11,7 +11,7 @@ const BARRIER_TIMEOUT_MS = 250
 const HOLD_RADIUS = 1.5
 const REASONS: Record<string, string> = { 'no-access': 'Sem acesso', 'missing-material': 'Falta material', 'missing-tool': 'Falta ferramenta', unsafe: 'Passagem perigosa', traffic: 'Passagem ocupada', 'search-limited': 'Limite da busca', 'target-changed': 'Alvo alterado' }
 
-export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElement, { demo = true }: { demo?: boolean } = {}) {
+export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElement, { demo = true, spawn = demo }: { demo?: boolean; spawn?: boolean } = {}) {
   const scene = new Group(); engine.scene.add(scene)
   const selected = new Set<number>(), views = new Map<number, WorkerView>(), timeline = new PoseTimeline(), sampled = new Map<number, { x: number; y: number; z: number; facing: number }>()
   const skins = new Map<number, { root: Object3D; mixer: AnimationMixer; clip: string; heading: number }>()
@@ -175,7 +175,8 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
   }
   const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { selected.clear(); anchor = null; preview.visible = false } }
   canvas.addEventListener('pointerdown', pointerDown); canvas.addEventListener('pointermove', pointerMove); canvas.addEventListener('pointerup', pointerUp); canvas.addEventListener('pointercancel', pointerCancel); window.addEventListener('keydown', key)
-  if (demo) for (let i = 0; i < 8; i++) engine.submit({ type: 'unitSpawn', pos: [12 + (i % 4) * 2, 5, 27 + Math.floor(i / 4) * 3], tools: ['pick'], stock: [{ block: engine.blocks.id('planks'), count: 32 }, { block: engine.blocks.id('stone'), count: 16 }, { block: engine.blocks.id('glass'), count: 16 }, { block: engine.blocks.id('structural_planks'), count: 16 }] })
+  // A loaded save already has its crew: spawn: false.
+  if (spawn) for (let i = 0; i < 8; i++) engine.submit({ type: 'unitSpawn', pos: [12 + (i % 4) * 2, 5, 27 + Math.floor(i / 4) * 3], tools: ['pick'], stock: [{ block: engine.blocks.id('planks'), count: 32 }, { block: engine.blocks.id('stone'), count: 16 }, { block: engine.blocks.id('glass'), count: 16 }, { block: engine.blocks.id('structural_planks'), count: 16 }] })
   return {
     tunnel, bridge, wall, selectAll() { for (const u of views.values()) selected.add(u.id) },
     dispose() { clearInterval(timer); for (const off of callbacks) off(); canvas.removeEventListener('pointerdown', pointerDown); canvas.removeEventListener('pointermove', pointerMove); canvas.removeEventListener('pointerup', pointerUp); canvas.removeEventListener('pointercancel', pointerCancel); window.removeEventListener('keydown', key); panel.remove(); style.remove(); engine.scene.remove(scene); proxyGeo.dispose(); proxyMat.dispose(); outlineGeo.dispose(); outlineMat.dispose(); preview.geometry.dispose(); (preview.material as MeshStandardMaterial).dispose(); for (const s of skins.values()) s.mixer.stopAllAction() },
