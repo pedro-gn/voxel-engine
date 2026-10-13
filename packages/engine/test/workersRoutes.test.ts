@@ -151,6 +151,70 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     until(sim, () => units.every(u => u.state === 'idle' && u.goal === null), 4000)
     for (const u of units) expect(Math.abs((u.x >> 8) - 160) + Math.abs((u.z >> 8) - 10)).toBeLessThanOrEqual(4)
   })
+  it('a unit still wading out whose escape ended under water again escapes again instead of giving up', () => {
+    const sim = makeWide(256)
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: 0 })
+    spawn(sim, [102, 2, 10])
+    const water = 3 | (7 << 12)
+    sim.submit(0, ++seq, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water }); sim.submit(0, ++seq, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: water })
+    sim.step()
+    // The state the crowd world reaches: an escape walked to its end, and the water rose over the unit there again.
+    const u = sim.workers!.units.get(1)! as unknown as { wadingOut: boolean; state: string; goal: number | null; x: number; z: number }
+    u.wadingOut = true
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 10] })
+    ;(sim.workers!.units.get(1)! as unknown as { wadingOut: boolean }).wadingOut = true
+    until(sim, () => u.state === 'idle' && u.goal === null, 4000)
+    expect(Math.abs((u.x >> 8) - 160) + Math.abs((u.z >> 8) - 10)).toBeLessThanOrEqual(4)
+  })
+  it('a unit crossing a lake keeps going when the water rises a little over its head, instead of escaping to an island', () => {
+    // A walled pen (x 94..126, z 0..20, rim two high) holding a one-deep lake (x 100..120) with a shallow island
+    // (x 108..110, z 4..8). The unit starts on the west shore and walks to the east shore across the lake.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx < 94 || wx > 126 || wz > 20) continue
+        if (wx === 94 || wx === 126 || wz === 20) { ctx.set(x, 4, z, 1); ctx.set(x, 5, z, 1); continue }
+        const island = wx >= 108 && wx <= 110 && wz >= 4 && wz <= 8
+        if (wx >= 100 && wx <= 120 && !island) ctx.set(x, 3, z, 3 | (7 << 12))
+      }
+    })
+    spawn(sim, [97, 4, 6])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [123, 4, 6] })
+    const u = sim.workers!.units.get(1)!
+    until(sim, () => (u.x >> 8) >= 103 && (u.y >> 8) === 3, 400)
+    // The water rises by a thin layer over the whole pen: the lake's poses get water in the head cell, a little.
+    cmd(sim, { type: 'fillRegion', min: [95, 4, 0], max: [125, 4, 19], voxel: 3 | (1 << 12) })
+    let noAccess = 0
+    for (let i = 0; i < 3000 && !(u.state === 'idle' && u.goal === null); i++) { sim.step(); if (u.reason === 'no-access') noAccess++ }
+    expect(noAccess).toBe(0)
+    expect([u.x >> 8, u.z >> 8]).toEqual([123, 6])
+  })
+  it('a unit standing in risen water with a far goal wades to the region layer first and routes from there', () => {
+    // A one-deep lake (x 100..120, z 0..20) in a pen open to the east (rim gap at z 5..7); far east, a wall across the world
+    // at x = 180 with a gap only at z >= 230, so a flat search from the lake cannot reach the goal within the node limit.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx === 180 && wz < 230) { for (let y = 4; y < 7; y++) ctx.set(x, y, z, 1); continue }
+        if (wx < 94 || wx > 126 || wz > 20) continue
+        if ((wx === 94 || wx === 126 || wz === 20) && !(wx === 126 && wz >= 5 && wz <= 7)) { ctx.set(x, 4, z, 1); ctx.set(x, 5, z, 1); continue }
+        if (wx >= 100 && wx <= 120) ctx.set(x, 3, z, 3 | (7 << 12))
+      }
+    }, { maxSearchNodes: 4000 })
+    spawn(sim, [97, 4, 6])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [106, 3, 6] })
+    const u = sim.workers!.units.get(1)!
+    until(sim, () => u.state === 'idle' && u.goal === null, 400)
+    // The water rises a little: the unit now stands with its head in water, on a pose the region layer does not have.
+    cmd(sim, { type: 'fillRegion', min: [95, 4, 0], max: [125, 4, 19], voxel: 3 | (1 << 12) })
+    for (let i = 0; i < 20; i++) sim.step()
+    expect(sim.workers!.nav.regionStand(u.x >> 8, u.y >> 8, u.z >> 8)).toBe(false)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [200, 4, 6] })
+    let limited = 0
+    for (let i = 0; i < 6000 && !(u.state === 'idle' && u.goal === null); i++) { sim.step(); if (u.reason === 'search-limited') limited++ }
+    expect(limited).toBe(0)
+    expect([u.x >> 8, u.z >> 8]).toEqual([200, 6])
+  })
   it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
     const sim = makeWide(256, undefined, { searchCap: 8192 })
     for (let i = 0; i < 40; i++) spawn(sim, [4 + (i % 8) * 2, 4, 4 + Math.floor(i / 8) * 2])

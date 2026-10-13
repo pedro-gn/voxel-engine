@@ -25,6 +25,8 @@ export interface WorkerPort {
   safe(x: number, y: number, z: number): boolean
   /** safe() without its head-cell rule: poses a unit caught by water over its head may walk through on its way out. */
   wadeable?(x: number, y: number, z: number): boolean
+  /** Water above the feet of pose (x, y, z), in 1/256 block. */
+  depth?(x: number, y: number, z: number): number
   hazard(x: number, y: number, z: number): boolean
   dynamicBusy(): boolean
   emit(type: string, payload: unknown): void
@@ -137,6 +139,11 @@ const REPAIR_COOLDOWN = 8, STUCK_LIMIT = 160
 const REPAIR_TICKS = 4
 /** How far an idle unit may walk to clear someone's route when no refuge is in reach of one window. */
 const MAKE_WAY_RADIUS = 16
+/**
+ * A unit enters water only with its head dry (safe(), the region layer); once its feet are in water it may carry on through
+ * water up to this deep (1/256 block), so a lake rising a little over the one-block limit does not strand it mid-crossing.
+ */
+const WADE_ON_DEPTH = 384
 /** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
 export const HIER_MIN = 48 * 4
 const SEGMENT_STEPS = 256
@@ -378,12 +385,17 @@ export class WorkerSystem {
   private exitAllowed(p: number, escape: readonly Order[]): boolean { const c = this.port.layout.voxelCoords(p); return this.port.safe(...c) && !this.port.hazard(...c) && !this.reservedPose(...c, escape) }
   /** A pose a unit wading out of water over its head may take: it stands, no hazard, and safe but for water in the head cell. */
   private wadeOut(pos: Vec3): boolean { return this.nav.stand(...pos) && (this.port.wadeable?.(...pos) ?? false) && !this.port.hazard(...pos) }
-  private poseOk(u: Unit, pos: Vec3): boolean { if (u.wadingOut && this.wadeOut(pos)) return true; return u.escape.length ? this.nav.stand(...pos) && this.exitAllowed(this.port.layout.voxelIndex(...pos), u.escape) : this.safePose(pos) }
+  /** Whether the unit's feet are in water: it may then carry on through water up to WADE_ON_DEPTH. */
+  private wading(u: Unit): boolean { return this.port.registry.liquid[voxelId(this.port.get(...this.pose(u)))] === 1 }
+  private wadeOn(pos: Vec3): boolean { return this.wadeOut(pos) && (this.port.depth?.(...pos) ?? Infinity) <= WADE_ON_DEPTH }
+  private poseOk(u: Unit, pos: Vec3): boolean { if (u.wadingOut && this.wadeOut(pos) || this.wading(u) && this.wadeOn(pos)) return true; return u.escape.length ? this.nav.stand(...pos) && this.exitAllowed(this.port.layout.voxelIndex(...pos), u.escape) : this.safePose(pos) }
   /** `also` narrows the live policy for this search (it never admits more). */
   private request(u: Unit, goals: readonly number[], blocked?: ReadonlySet<number>, accept?: (p: number) => boolean, also?: (p: number) => boolean): PathSearch {
     const [x, y, z] = this.pose(u), escape = this.reservations.filter(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true))
     u.escape = escape
-    const policy = escape.length ? (p: number) => this.exitAllowed(p, escape) : also && ((p: number) => this.nav.allowed(p))
+    const policy = escape.length ? (p: number) => this.exitAllowed(p, escape)
+      : this.wading(u) ? (p: number) => this.nav.allowed(p) || this.wadeOn(this.port.layout.voxelCoords(p))
+      : also && ((p: number) => this.nav.allowed(p))
     return this.nav.request(this.position(u), goals, blocked, { ...(policy && { allowed: also ? (p: number) => policy(p) && also(p) : policy }), ...(accept && { accept }) })
   }
   private stockCount(u: Unit): number { let n = 0; for (const q of u.stock.values()) n += q; return n }
@@ -1101,8 +1113,9 @@ export class WorkerSystem {
       if (u.state !== 'idle' && u.state !== 'working' && !this.routine(u)) {
         if (this.deferred.has(u.id) ? !serve.has(u.id) : slots-- <= 0) { deferredNext.set(u.id, this.deferred.get(u.id) ?? this.time); continue }
       }
-      // Caught by water over its head: no pose next to it may be safe, so it first wades out to the nearest safe pose.
-      if (u.unsafeHere && !u.wadingOut && !u.motion && !u.search && !u.engineering && u.state !== 'working' && u.state !== 'falling' && this.time >= u.retry && this.headUnder(u)) {
+      // Caught by water over its head: no pose next to it may be safe, so it first wades out to the nearest safe pose; and
+      // again if the water rose over it where the last escape ended.
+      if (u.unsafeHere && !u.motion && !u.search && !u.engineering && u.path[u.cursor] === undefined && u.state !== 'working' && u.state !== 'falling' && this.time >= u.retry && this.headUnder(u) && (this.port.depth?.(...this.pose(u)) ?? Infinity) > WADE_ON_DEPTH) {
         // Its route would only plan on from here again: drop it, and plan anew once out.
         this.resetRoute(u); u.wadingOut = true; u.path = []; u.cursor = 0
         u.search = this.nav.request(this.position(u), [], undefined, { allowed: p => this.wadeOut(this.port.layout.voxelCoords(p)), accept: p => this.safePose(this.port.layout.voxelCoords(p)) })
@@ -1259,6 +1272,11 @@ export class WorkerSystem {
    */
   private plan(u: Unit, goals: readonly number[], exclude: readonly number[] = []): void {
     this.dropRoute(u)
+    // Wading where the region layer has no pose (water up to its head): a long walk first wades, toward the goals, to the
+    // nearest pose the region layer has, and routes from there when it plans again.
+    if (goals.length && this.wading(u) && !this.nav.regionStand(...this.pose(u)) && !u.allowDig && !u.buildBlock && this.estimate(u, goals) > HIER_MIN) {
+      u.search = this.request(u, goals, undefined, p => { const c = this.port.layout.voxelCoords(p); return this.nav.regionStand(...c) && this.safePose(c) }); return
+    }
     if (!this.routable(u) || !goals.length || this.estimate(u, goals) <= HIER_MIN) { u.search = this.request(u, goals); return }
     u.escape = []; u.search = null
     u.route = this.newRoute(this.nav.route(this.position(u), goals, exclude.length ? { exclude: new Set(exclude) } : undefined), goals, exclude)

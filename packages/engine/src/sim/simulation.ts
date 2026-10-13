@@ -177,6 +177,7 @@ export class Simulation {
           const feet = voxelId(sim.store.getVoxel(x, y, z))
           return !(sim.registry.liquid[feet] && (sim.registry.liquidGroup[feet] !== sim.water.water || sim.registry.source[feet])) && !sim.registry.falls[id] && !(sim.registry.collapses[id] && sim.collapse.checking) && !sim.collapse.overlaps(x, y, z) && !sim.collapse.overlaps(x, y + 1, z)
         },
+        depth: (x, y, z) => sim.water.depthAt(x, y, z),
         hazard: (x, y, z) => sim.gravity.sweptOverlaps(x, y, z) || sim.collapse.sweptOverlaps(x, y, z),
         dynamicBusy: () => sim.water.cols.tiles.awakeCount() > 0 || sim.gravity.count > 0 || sim.collapse.busy,
         emit: (type, payload) => sim.events.push({ tick: sim.tick, type, payload }),
