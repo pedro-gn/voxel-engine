@@ -44,6 +44,18 @@ _Avoid_: Door, waypoint
 The 32 ticks of (cell, tick) pairs a walking unit reserves ahead of itself; a unit standing still holds its cells with no end.
 _Avoid_: Lock, path claim
 
+**Wade**:
+To walk with the feet in water: a unit enters water only with its head cell dry (up to one block deep), and once in it carries on through water up to 1.5 blocks. A step in water is planned as about three steps but walked at the same speed.
+_Avoid_: Swim (units never swim), ford
+
+**Sleeping unit**:
+A unit waiting in a queue behind another unit on its way: it skips its decisions until that unit's cells change, its tile changes, a command arrives or 16 ticks pass, but still runs its safety checks.
+_Avoid_: Idle unit (no order), blocked unit (a plan failed)
+
+**Decision budget**:
+How many units that are not moving, working or idle may take a decision in one tick; the rest wait their turn, longest-waiting first. Units walking on along their path and units waiting for a search or a retry take no slot.
+_Avoid_: Tick budget, search budget (operations for searches)
+
 **Underwater view**:
 The screen effect shown while the camera, in either camera mode, is under the voxel water level: short-range fog, a blue-green tint and a slight wobble.
 _Avoid_: Underwater fog (scene fog is untouched), water tint (the water material's colour)
