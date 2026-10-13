@@ -2,8 +2,8 @@
 
 Branch `feat/persistence`, from main 39d14b6. Spec: [persistence design](../specs/2026-10-13-persistence-design.md).
 Plan: [persistence plan](../plans/2026-10-13-persistence.md). Executed inline, task by task under TDD, followed by one
-fresh whole-branch review (opus) and one fix pass. Closed by the user on 2026-10-13 without the visual checkpoints (listed under open items); the
-benchmark ran after the merge.
+fresh whole-branch review (opus) and one fix pass. Merged on 2026-10-13; the benchmark and the user's visual checkpoints ran after the merge, all
+passing.
 
 ## What shipped
 
@@ -42,6 +42,18 @@ benchmark ran after the merge.
   - save → load → save gives identical sections.
   - Water conservation holds after a load.
   - Units resume and every order completes.
+
+## User checkpoints (2026-10-13, after the merge)
+
+All passed as expected, in the user's browser:
+
+- Living, saved mid-flood after the dam broke, then loaded: the water continued with no jump, the crews resumed, and
+  the used buttons came back disabled.
+- Collapse, saved while the tower's pieces fell, then loaded: the pieces resumed from where they were and landed.
+- First person, saved and loaded: the camera came back in first person at the same spot and heading.
+- Autosave at `?autosaveMs=20000`: `autosave-1` and `autosave-2` alternated, and the checkbox stopped them.
+- `?save=` naming a missing slot: the message and the "Start the scene fresh" link were shown.
+- Panel: delete asks for confirmation, overwriting asks first, and storage use is shown.
 
 ## Measurements (informal, machine not quiet)
 
@@ -88,13 +100,6 @@ Every living save copied all 4 regions (see Open items). The 1024² world is mos
 
 ## Open items
 
-- Not done:
-  - The user checkpoints:
-    - living mid-flood;
-    - mid-collapse;
-    - first person;
-    - the autosave alternating between its two slots;
-    - the incompatible-save message.
 - Deferred minors from the final review:
   - `terrain.patch()` is not folded into the saved document.
   - A unit overlapping another at restore fails the load instead of moving the unit.
