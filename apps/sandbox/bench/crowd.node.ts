@@ -10,7 +10,10 @@
 //   cluster each, every start's field cost against its own exact flat A*),
 // --buildcost [--radius=8] (ns per region-build step by phase, to calibrate BUILD_WEIGHT),
 // --grace=N (arrival allowance past each unit's ideal walk, ticks, default 1200; see measure),
-// --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one).
+// --unreachable-cap=N (no-access verdicts re-checked per phase, default 200; 0 checks every one),
+// --profile=typical|stress (typical: 100 units, 6,600 ticks, the round-3 typical gates in --assert; stress: 1,000 units,
+//   21,000 ticks, tick p95 <= 15 ms and every unit not proven unreachable arrived), --world-only (no units: the tick cost
+//   of the world alone, per phase's terrain).
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 // Unless --cold, each phase warms the region store before the timed orders (see warmUp).
 import type { Command } from '@elovox/engine'
@@ -32,7 +35,13 @@ import {
 } from '../src/scenes/crowd.ts'
 
 const flag = (name: string) => process.argv.find(a => a === `--${name}` || a.startsWith(`--${name}=`))?.split('=')[1] ?? (process.argv.includes(`--${name}`) ? '' : undefined)
-const UNITS = Number(flag('units') ?? 1000), TICKS = Number(flag('ticks') ?? 6600), ONLY = flag('phase'), COLD = flag('cold') !== undefined
+/** typical: 100 units and the typical gates; stress: 1,000 units, a long phase (4× the longest ideal walk) and the stress gates. */
+const PROFILE = flag('profile') ?? 'legacy'
+if (!['legacy', 'typical', 'stress'].includes(PROFILE)) throw new Error(`unknown profile ${PROFILE}`)
+/** No units: the tick cost of the world alone (water, random ticks, each phase's terrain). */
+const WORLD_ONLY = flag('world-only') !== undefined
+const UNITS = WORLD_ONLY ? 0 : Number(flag('units') ?? (PROFILE === 'typical' ? 100 : 1000))
+const TICKS = Number(flag('ticks') ?? (PROFILE === 'stress' ? 21000 : 6600)), ONLY = flag('phase'), COLD = flag('cold') !== undefined
 const WARM_CAP = Number(flag('warm-cap') ?? 20000)
 /** Arrival allowance past a unit's ideal walk, in ticks (default 60 s). */
 const GRACE = Number(flag('grace') ?? 1200)
@@ -272,7 +281,7 @@ const straight = (start: number, goal: number) => {
 function measure(n: number, groups: number[][], each?: (i: number) => void) {
   const moved = groups.flat()
   const from = sim.tick, ms: number[] = [], share: number[] = [], ordered = new Set(moved)
-  const first = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
+  const first = new Map<number, number>(), found = new Map<number, number>(), arrived = new Map<number, number>(), blockedAs = new Map<number, string>(), blocks: Record<string, number> = {}
   const orderIds = new Set<number>(), starts = new Map<number, number>(), ideal = new Map<number, number>(), lines = new Map<number, number>()
   const sampled: number[] = [], allDetours: number[] = [], unreachable: number[] = [], goals = new Map<number, number>(), noAccess = new Set<number>()
   let exactMs = 0
@@ -319,6 +328,12 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
     }
     const wt = last.workers!, poses = wt.poses
     for (let k = 0; k < poses.length; k += 9) if (poses[k + 5] === WALKING && !first.has(poses[k]!)) first.set(poses[k]!, t)
+    // When each ordered unit's route, group field or flat search was found: separates search time from refinement.
+    for (const id of moved) {
+      if (found.has(id)) continue
+      const u = w.units.get(id) as unknown as { route?: { search: { status: string } } | null; search?: { status: string } | null } | undefined
+      if ((u?.route?.search ?? u?.search)?.status === 'found') found.set(id, t)
+    }
     for (const d of wt.details) {
       const key = d.state === 'blocked' ? d.reason ?? 'none' : ''
       if (key && blockedAs.get(d.id) !== key) blocks[key] = (blocks[key] ?? 0) + 1
@@ -349,6 +364,7 @@ function measure(n: number, groups: number[][], each?: (i: number) => void) {
     workersMs: { p50: r3(q(share, .5)), p95: r3(q(share, .95)), p99: r3(q(share, .99)), max: r3(Math.max(...share)) },
     ...(moved.length > 0 && {
       firstActionTicks: { p50: finite(q(latency, .5)), p95: finite(q(latency, .95)), started, ordered: moved.length },
+      searchFoundTicks: { p50: finite(q(moved.map(id => found.get(id) ?? Infinity), .5)), p95: finite(q(moved.map(id => found.get(id) ?? Infinity), .95)) },
       arrived: { pct: +(100 * arrived.size / moved.length).toFixed(1), p50Ticks: finite(q(arrival, .5)), p95Ticks: finite(q(arrival, .95)), allAfterTicks: arrived.size === moved.length ? Math.max(...arrived.values()) : null,
         idealTicks: { p50: q(ideals, .5), p95: q(ideals, .95), max: ideals.length ? Math.max(...ideals) : null, units: ideals.length },
         lateTicks: { p50: finite(q(late, .5)), p95: finite(q(late, .95)) }, withinIdealPlusGrace: { graceTicks: GRACE, pct: +(100 * onTime / moved.length).toFixed(1) },
@@ -395,7 +411,7 @@ results.setup = { spawnFailed: setup.spawnFailed, ...measure(120, []) }
 for (const [name, phase] of Object.entries(PHASES)) {
   if (ONLY !== undefined && name !== ONLY) continue
   const { ids, spawnFailed } = respawn(phase.spawn, phase.before?.() ?? [], phase.stock ? [{ block: planks, count: 64 }, { block: stone, count: 64 }] : [])
-  const orders = phase.orders(ids), warm = COLD ? null : warmUp(orders), atOrder = regions(); submit(orders)
+  const orders = WORLD_ONLY ? [] : phase.orders(ids), warm = COLD ? null : warmUp(orders), atOrder = regions(); submit(orders)
   const groups = orders.flatMap(c => c.type === 'unitMove' ? [(c as unknown as { ids: number[] }).ids] : [])
   churnEdits = 0
   const m = measure(TICKS, groups, phase.each)
@@ -403,25 +419,36 @@ for (const [name, phase] of Object.entries(PHASES)) {
   results[name] = { units: ids.length, spawnFailed, warmUp: warm, regionsAtOrder: atOrder.count, regionBytesAtOrder: atOrder.bytes, regionsAtEnd: atEnd.count, regionBytesAtEnd: atEnd.bytes, ...m, ...(phase.each && { churnEdits }) }
   console.error(`${name} done`)
 }
-console.log(JSON.stringify({ node: process.version, units: UNITS, ticks: TICKS, warm: !COLD, warmup: WARMUP, regionCapBytes: regionCap(), generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
+console.log(JSON.stringify({ node: process.version, profile: PROFILE, worldOnly: WORLD_ONLY, units: UNITS, ticks: TICKS, warm: !COLD, warmup: WARMUP, regionCapBytes: regionCap(), generateMs, searchCap: CROWD_WORKER_OPTIONS.searchCap, results }, null, 2))
 if (flag('assert') !== undefined) {
   // Spec §7 success criteria, per phase: the workers' share and the whole tick, the first action (warm runs only: the
   // cold first action is recorded, not gated) and arrival.
   type M = {
     tickMs: { p95: number | null }; workersMs: { p95: number | null; max: number | null }; firstActionTicks?: { p95: number | null }
-    arrived?: { withinIdealPlusGrace?: { pct: number } }; falseUnreachable?: { count: number; checked: number; suspects: number }
+    arrived?: { pct: number; withinIdealPlusGrace?: { pct: number } }; falseUnreachable?: { count: number; checked: number; suspects: number }
   }
-  const firstLimit = UNITS <= 100 ? 5 : 20, failures: string[] = []
+  const failures: string[] = []
+  // typical: spec §8 typical gates; stress: only the tick and nobody stuck; legacy: the 5b §7 gates.
+  const lim = PROFILE === 'typical' ? { workersP95: 2, workersMax: 8, tickP95: Infinity, first: 5 }
+    : PROFILE === 'stress' ? { workersP95: Infinity, workersMax: Infinity, tickP95: 15, first: Infinity }
+    : { workersP95: 4, workersMax: 12, tickP95: 15, first: UNITS <= 100 ? 5 : 20 }
   const over = (name: string, what: string, value: number | null | undefined, limit: number) => { if (value === null || value === undefined || value > limit) failures.push(`${name}: ${what} ${value ?? 'none'} > ${limit}`) }
   for (const [name, r] of Object.entries(results)) {
     if (name === 'setup') continue
     const m = r as M
-    over(name, 'workers p95 ms', m.workersMs.p95, 4); over(name, 'workers max ms', m.workersMs.max, 12); over(name, 'tick p95 ms', m.tickMs.p95, 15)
-    if (m.firstActionTicks && !COLD) over(name, 'first action p95 ticks', m.firstActionTicks.p95, firstLimit)
+    over(name, 'workers p95 ms', m.workersMs.p95, lim.workersP95); over(name, 'workers max ms', m.workersMs.max, lim.workersMax); over(name, 'tick p95 ms', m.tickMs.p95, lim.tickP95)
+    if (m.firstActionTicks && !COLD) over(name, 'first action p95 ticks', m.firstActionTicks.p95, lim.first)
     // Arrival: within each unit's ideal walk plus the grace (60 s), as the bench measures it; all of them at the bottleneck.
     if (m.arrived) {
-      const need = name === 'bottleneck' ? 100 : 99, pct = m.arrived.withinIdealPlusGrace?.pct
-      if (pct === undefined || pct < need) failures.push(`${name}: arrived within ideal + grace ${pct ?? 'not measured'}% < ${need}%`)
+      if (PROFILE === 'stress') {
+        // Everyone not proven unreachable must have arrived by the end of the long phase.
+        const units = (r as { units: number }).units, unreachable = (m.falseUnreachable?.checked ?? 0) - (m.falseUnreachable?.count ?? 0)
+        const arrived = Math.round(m.arrived.pct * units / 100)
+        if (arrived < units - unreachable) failures.push(`${name}: ${arrived} of ${units} arrived, ${unreachable} proven unreachable`)
+      } else {
+        const need = name === 'bottleneck' ? 100 : 99, pct = m.arrived.withinIdealPlusGrace?.pct
+        if (pct === undefined || pct < need) failures.push(`${name}: arrived within ideal + grace ${pct ?? 'not measured'}% < ${need}%`)
+      }
     }
     // Zero false unreachable, and every no-access verdict re-checked (run with --unreachable-cap=0 if the cap cuts it).
     const fu = m.falseUnreachable
