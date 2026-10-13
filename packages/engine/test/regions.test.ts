@@ -185,3 +185,15 @@ it('a liquid-presence change rebuilds the tiles it touches and marks them flippy
   expect(nav.geometry).toBe(geometry)
   expect(build(nav, t).poses).not.toContain(layout.voxelIndex(21, 4, 20))
 })
+it('after the first pass the prebuild visits only the tiles an edit touched', () => {
+  const { nav, layout, solid } = fixture(256)
+  while (!nav.prebuildStatus().done) nav.prebuild(1 << 20, [])
+  expect(nav.prebuild(1 << 20, [])).toBe(0)
+  solid.add(layout.voxelIndex(40, 4, 40)); nav.invalidate(40, 4, 40)
+  nav.prebuild(1 << 20, [])
+  // The edit's footprint (x 39..41, y 2..7, z 39..41) lies in one tile; a rescan would look at all 512.
+  expect(nav.prebuildChecks).toBeGreaterThan(0)
+  expect(nav.prebuildChecks).toBeLessThanOrEqual(2)
+  nav.prebuild(1 << 20, [])
+  expect(nav.prebuildChecks).toBe(0)
+})

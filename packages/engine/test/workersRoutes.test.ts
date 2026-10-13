@@ -86,10 +86,13 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     const fields = new Set([...sim.workers!.units.values()].map(u => u.route?.search))
     expect(fields.size).toBe(1); expect([...fields][0]).toBeInstanceOf(GroupField)
     until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'walking' || u.state === 'idle'), 60)
-    until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'idle'), 6000)
+    // Every unit arrives (the unitArrived event); arrived units may later make way for others, up to 16 blocks.
+    const arrived = new Set<number>()
+    for (let i = 0; i < 6000 && ![...sim.workers!.units.values()].every(u => u.state === 'idle'); i++) for (const e of sim.step().events) if (e.type === 'unitArrived') arrived.add((e.payload as { id: number }).id)
+    expect(arrived.size).toBe(20)
     const goals = new Set([...sim.workers!.units.values()].map(u => `${u.x >> 8},${u.z >> 8}`))
     expect(goals.size).toBe(20)
-    for (const u of sim.workers!.units.values()) { expect(Math.abs((u.x >> 8) - 200)).toBeLessThanOrEqual(6); expect(Math.abs((u.z >> 8) - 200)).toBeLessThanOrEqual(6) }
+    for (const u of sim.workers!.units.values()) { expect(Math.abs((u.x >> 8) - 200)).toBeLessThanOrEqual(6 + 16); expect(Math.abs((u.z >> 8) - 200)).toBeLessThanOrEqual(6 + 16) }
   })
   it('a group whose straight way crosses head-deep water walks around it and every unit arrives', () => {
     // A basin across x = 100..103, z = 0..27 (from the world's edge), two deep in the middle (x = 101..102) and one deep at its rims, full of
@@ -199,8 +202,8 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
   it('spare operations prebuild the world, nearest the units first, within the budget, and a long move then starts warm', () => {
     const sim = makeWide(256, undefined, { searchCap: 4096 }); spawn(sim, [200, 4, 200])
     const nav = sim.workers!.nav, near = nav.tileOf(200, 4, 200)
-    sim.step()
-    expect(nav.regions.get(near)).toBeDefined()
+    // The unit's own tile is built first; at prebuildCap operations per tick that takes a few ticks.
+    until(sim, () => nav.regions.get(near) !== undefined, 10)
     for (let i = 0; i < 3000 && !nav.prebuilt; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(4096)
     expect(nav.prebuilt).toBe(true)
     expect(nav.regions.size).toBe(nav.revisions.length)
@@ -306,6 +309,12 @@ describe('traffic blocks on group routes', { timeout: 60_000 }, () => {
   })
 })
 describe('background navigation work', { timeout: 60_000 }, () => {
+  it('the prebuild never spends more than prebuildCap in a tick, even after a wide flood', () => {
+    const sim = makeWide(256, undefined, { prebuildCap: 256 }); spawn(sim, [5, 4, 5])
+    for (let i = 0; i < 100; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
+    cmd(sim, { type: 'fillRegion', min: [40, 4, 40], max: [200, 4, 200], voxel: 3 | (7 << 12) })
+    for (let i = 0; i < 200; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
+  })
   it('with no units and no queries, the navigation does no background work', () => {
     const sim = makeWide(128)
     for (let i = 0; i < 50; i++) expect(sim.step().workers!.stats.visited).toBe(0)

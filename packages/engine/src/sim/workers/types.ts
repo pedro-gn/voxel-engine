@@ -6,6 +6,8 @@ export interface WorkerOptions {
   /** Total navigation operations per physics tick, shared fairly between searches. */
   searchCap?: number
   maxSearchNodes?: number
+  /** Most navigation operations the background region prebuild and landmark recompute may spend per tick (default 1024). */
+  prebuildCap?: number
   maxOrders?: number
   /** Fixed number of idle units assigned per tick; when unset, max(16, ceil(idle / assignmentShare)). */
   assignmentCap?: number

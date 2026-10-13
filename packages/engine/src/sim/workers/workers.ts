@@ -205,6 +205,7 @@ export class WorkerSystem {
   private dynamicWasBusy = false
   readonly maxUnits: number
   private readonly searchCap: number
+  private readonly prebuildCap: number
   private readonly assignmentCap: number | undefined
   private readonly assignmentShare: number
   private readonly commitCap: number
@@ -212,10 +213,10 @@ export class WorkerSystem {
   private readonly maxOrders: number
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
-    this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096
+    this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096; this.prebuildCap = options.prebuildCap ?? 1024
     this.assignmentCap = options.assignmentCap; this.assignmentShare = options.assignmentShare ?? 8; this.commitCap = options.commitCap ?? 16
     this.capacity = options.inventoryCapacity ?? 512; this.maxOrders = options.maxOrders ?? 128
-    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
+    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, prebuildCap: this.prebuildCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
       if (!integer(n, 1, 1 << 20)) throw new RangeError(`workers ${name} must be a positive integer <= 1048576`)
     }
     this.nav = new NavigationSystem({ ...port, safe: (x, y, z) => port.safe(x, y, z) && !this.reservedPose(x, y, z) }, options.maxSearchNodes ?? 16384)
@@ -1162,7 +1163,7 @@ export class WorkerSystem {
     if (rest > this.nav.visited && (this.units.size || this.nav.pending)) {
       const anchors = new Set<number>()
       for (const u of this.units.values()) if (u.state !== 'incapacitated') anchors.add(this.nav.tileOfPose(this.position(u)))
-      this.nav.prebuild(rest - this.nav.visited, [...anchors], this.time)
+      this.nav.prebuild(Math.min(rest - this.nav.visited, this.prebuildCap), [...anchors], this.time)
     }
   }
   /** Whether the unit may plan on the region layer: no engineering, no designation to escape, not standing on sand. */

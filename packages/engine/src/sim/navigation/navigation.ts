@@ -64,6 +64,11 @@ export class NavigationSystem {
   prebuilt = false
   /** Prebuild passes completed: after the first one every tile was built once (a warm world). Not simulation state. */
   prebuildPasses = 0
+  /** Tiles changed since the first complete prebuild pass, in the order they changed; `inQueue` marks them. */
+  private readonly changed: number[] = []
+  private readonly inQueue: Uint8Array
+  /** Tiles the last prebuild call looked at (instrumentation; not simulation state). */
+  prebuildChecks = 0
   private cursor = 0
   /** The tile the last edge read: the four edges of a pose skip the map. Always the map's entry for `lastTile`. */
   private lastTile = -1
@@ -84,6 +89,7 @@ export class NavigationSystem {
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
+    this.inQueue = new Uint8Array(this.revisions.length)
     this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
@@ -119,13 +125,14 @@ export class NavigationSystem {
           const t = xx + zz * this.tx + yy * plane
           this.revisions[t]!++
           if (falls && !solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
+          if (!this.inQueue[t]) { this.inQueue[t] = 1; this.changed.push(t) }
         }
     this.revision++; this.pass++
   }
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
-    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset()
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0)
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -220,13 +227,15 @@ export class NavigationSystem {
   /**
    * Builds regions ahead of need with operations the tick left unused, in a fixed order: the tiles within RING columns
    * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
-   * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
+   * every tile by index. After that first complete pass only the tiles changed since (the `changed` queue, oldest first)
+   * are rebuilt: no rings and no rescans. One operation per tile checked, builds charged as usual,
    * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
    * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes;
    * `now` (the tick) lets them wait for edits to settle (see Landmarks). Returns the operations used, at most `cap`.
    */
   prebuild(cap: number, anchors: readonly number[], now?: number): number {
     let used = 0
+    this.prebuildChecks = 0
     const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
     // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built; a store too
     // full to take them drops them instead (a reader still building one keeps its own).
@@ -238,7 +247,19 @@ export class NavigationSystem {
       if (!region) break
     }
     if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used, now)
-    while (pre.idle !== this.revision && used < cap && !this.full) {
+    // After the first complete pass, only tiles that changed since are rebuilt, oldest change first: no rings, no rescans.
+    if (this.prebuildPasses > 0) {
+      while (this.changed.length && used < cap && !this.full) {
+        const tile = this.changed[0]!
+        used++; this.prebuildChecks++
+        if (!this.regions.get(tile)) {
+          const { region, used: spent } = this.regionNow(tile, cap - used)
+          used += spent
+          if (!region) break
+        }
+        this.changed.shift(); this.inQueue[tile] = 0
+      }
+    } else while (pre.idle !== this.revision && used < cap && !this.full) {
       let tile = -1
       if (pre.phase === 0) {
         // Ring r has 8r columns (1 for r = 0), each on three levels.
@@ -265,7 +286,7 @@ export class NavigationSystem {
         tile = pre.tile
       }
       if (tile < 0) { pre.k++; continue }
-      used++
+      used++; this.prebuildChecks++
       if (this.regions.get(tile)) { if (pre.phase === 0) pre.k++; else pre.tile++; continue }
       const { region, used: spent } = this.regionNow(tile, cap - used)
       used += spent
@@ -326,6 +347,7 @@ export class NavigationSystem {
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
     this.landmarks.mixState(mix)
     const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
+    mix(this.changed.length); for (const t of this.changed) mix(t)
   }
 }
 
