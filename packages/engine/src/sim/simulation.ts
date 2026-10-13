@@ -23,6 +23,7 @@ import { WORKER_COMMANDS, type WorkerOptions, type WorkerTick } from './workers/
 import { pack, unpack, type Packed } from '../persist/pack.ts'
 import { decodeRegion, encodeRegion } from '../persist/regions.ts'
 import type { RegionBlob, SectionName, SimRestore, SimSnapshot } from './snapshot.ts'
+import type { WorkersSnapshot } from './workers/snapshot.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -385,6 +386,7 @@ export class Simulation {
       { name: 'water', bytes: pack(this.water.snapshot()) },
       { name: 'gravity', bytes: pack(this.gravity.saveState()) },
       { name: 'collapse', bytes: pack(this.collapse.snapshot()) },
+      ...(this.workers ? [{ name: 'workers' as const, bytes: pack({ json: this.workers.snapshot(), arrays: {} }) }] : []),
     ]
     return { tick: this.tick, paused: this.isPaused, revisions: revs.slice(), regions, sections, ms: performance.now() - t0 }
   }
@@ -416,6 +418,9 @@ export class Simulation {
     if (gravity) this.gravity.restoreState(gravity)
     const collapse = section('collapse')
     if (collapse) this.collapse.restore(collapse)
+    const workers = section('workers')
+    if (workers && !this.workers) throw new Error('the save has worker units but this simulation runs without workers')
+    if (workers) this.workers!.restore(workers.json as WorkersSnapshot)
     this.store.regionRevisions.fill(0)
     return chunks
   }
