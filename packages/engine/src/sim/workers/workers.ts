@@ -123,6 +123,8 @@ const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MA
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
 /** Repairs started per tick, path nodes a repair may rejoin, and ticks without progress per point of aged priority. */
 const MAX_REPAIRS = 8, REPAIR_SPAN = 24, STUCK_STEP = 20
+/** While a unit with nothing to walk waits for its route or group field, repairs get what is left shifted right by this (an eighth). */
+const REPAIR_SHARE_WAITING_SHIFT = 3
 /** Ticks a preempting unit that stands still lets the owner start leaving first; ticks the owner then keeps yielding. */
 const PREEMPT_DELAY = 8, YIELD_TICKS = 200
 /** Ticks before a unit that adopted a repair plan may repair again; ticks stuck before it falls back to detours and traffic blocks. */
@@ -1181,9 +1183,13 @@ export class WorkerSystem {
       }
       if (this.projecting(u)) this.project(u); else this.holdHere(u)
     }
-    // While navigation queries wait, repairs get at most half of what is left, so units still without a path progress.
+    // While a unit with nothing to walk waits for its route or group field (a long move that has not started), repairs get
+    // an eighth of what is left; while only other queries wait (detours, short searches), half; else all of it. A unit
+    // that cannot start is worse off than one whose plan needs a repair; traffic detours keep the half they need.
     const left = Math.max(0, this.searchCap - engineeringWork - this.refineWork)
-    const repairWork = this.cooperate(this.nav.pending ? left >> 1 : left)
+    let starving = false
+    for (const u of this.units.values()) if (u.path[u.cursor] === undefined && !u.motion && u.route?.search.status === 'pending') { starving = true; break }
+    const repairWork = this.cooperate(starving ? left >> REPAIR_SHARE_WAITING_SHIFT : this.nav.pending ? left >> 1 : left)
     this.engineeringVisited = engineeringWork + repairWork
     const rest = Math.max(0, this.searchCap - engineeringWork - this.refineWork - repairWork)
     this.assign(); this.nav.step(rest)

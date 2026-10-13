@@ -134,6 +134,43 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
     for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
   })
+  it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
+    const sim = makeWide(256, undefined, { searchCap: 8192 })
+    for (let i = 0; i < 40; i++) spawn(sim, [4 + (i % 8) * 2, 4, 4 + Math.floor(i / 8) * 2])
+    // Warm: let the prebuild build every tile first, as the bench does.
+    for (let i = 0; i < 4000 && !sim.workers!.nav.prebuildStatus().done; i++) sim.step()
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [200, 4, 200] })
+    const started = new Map<number, number>()
+    for (let t = 1; t <= 60; t++) { sim.step(); for (const u of sim.workers!.units.values()) if (u.state === 'walking' && !started.has(u.id)) started.set(u.id, t) }
+    const ticks = [...started.values()].sort((a, b) => a - b)
+    expect(ticks.length).toBe(40)
+    expect(ticks[Math.floor(ticks.length * 0.95)]).toBeLessThanOrEqual(5)
+  })
+  it('while a unit with nothing to walk waits for its route, repairs get at most an eighth of the budget', () => {
+    // A head-on jam in a two-wide corridor (repairs) next to a far unit planning a long cold route (a pending search).
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      if (cx || cz) return
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
+      for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    }, { searchCap: 1024, sleep: false })
+    for (let x = 3; x <= 12; x++) spawn(sim, [x, 4, 5])
+    for (let x = 19; x <= 28; x++) spawn(sim, [x, 4, 5])
+    const far = spawn(sim, [120, 4, 120])
+    let id = 0
+    for (let x = 3; x <= 12; x++) sim.submit(0, ++seq, { type: 'unitMove', ids: [++id], pos: [x + 16, 4, 6] })
+    for (let x = 19; x <= 28; x++) sim.submit(0, ++seq, { type: 'unitMove', ids: [++id], pos: [x - 16, 4, 6] })
+    sim.step()
+    const w = sim.workers as unknown as { engineeringVisited: number; refineWork: number }, u = sim.workers!.units.get(far)!
+    let starvedTicks = 0, peak = 0
+    for (let t = 0; t < 300; t++) {
+      if (t === 20) cmd(sim, { type: 'unitMove', ids: [far], pos: [250, 4, 250] })
+      sim.step()
+      const pending = u.path[u.cursor] === undefined && !u.motion && u.route?.search.status === 'pending'
+      if (pending) { starvedTicks++; peak = Math.max(peak, w.engineeringVisited) }
+    }
+    expect(starvedTicks).toBeGreaterThan(0)
+    expect(peak).toBeLessThanOrEqual(1024 >> 3)
+  })
   it('a far work task walks a route, claims only its final pose and gets done', () => {
     const sim = makeWide(256); spawn(sim, [5, 4, 5])
     cmd(sim, { type: 'workDig', min: [200, 3, 200], max: [200, 3, 200] })
