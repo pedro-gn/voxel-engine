@@ -549,7 +549,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   }
 
   // ---- sim worker ----
-  let lastTick = 0, lastTickMs = 0, slotsUsed = 0
+  // A restored world starts at its saved tick, before the first tick message arrives.
+  let lastTick = restore ? restore.manifest.tick : 0, lastTickMs = 0, slotsUsed = 0
   let physicsStats: Extract<FromSim, { type: 'tick' }>['physics'] = { waterTiles: 0, waterColumns: 0, waterBodies: 0, waterLayersHidden: 0, jobs: 0, busy: false }
   sim.onmessage = (e: MessageEvent<FromSim>) => {
     const m = e.data
