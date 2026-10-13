@@ -67,7 +67,9 @@ export class OpfsStore implements SaveStore {
   async deleteSlot(slot: string): Promise<void> {
     for (const side of SIDES) try { await this.slots.removeEntry(`${slot}.${side}.json`) } catch { /* absent */ }
   }
-  async hasBlob(hash: string): Promise<boolean> { try { await this.blobs.getFileHandle(hash); return true } catch { return false } }
+  async blobSize(hash: string): Promise<number | null> {
+    try { return (await (await this.blobs.getFileHandle(hash)).getFile()).size } catch { return null }
+  }
   async readBlob(hash: string): Promise<Uint8Array | null> { return this.readFile(this.blobs, hash) }
   async writeBlob(hash: string, bytes: Uint8Array): Promise<void> { await this.writeFile(this.blobs, hash, bytes) }
   async listBlobs(): Promise<string[]> {

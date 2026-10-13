@@ -44,6 +44,21 @@ describe('save package', () => {
     store.failWrites = undefined
     expect((await readSave(store, 'a')).manifest.tick).toBe(7)
   })
+  it('rewrites a blob a failed write left truncated, so the next save of the same data loads', async () => {
+    const store = new MemoryStore()
+    store.failWrites = 'quota'; store.partialWrites = true
+    await expect(writeSave(store, 'a', draft(), sections(), regions(), [])).rejects.toMatchObject({ code: 'quota' })
+    store.failWrites = undefined; store.partialWrites = false
+    await writeSave(store, 'a', draft(), sections(), regions(), [])
+    expect((await readSave(store, 'a')).regions.map(r => r.bytes)).toEqual(regions().map(r => r.bytes))
+  })
+  it('refuses to publish a manifest whose reused regions are gone (deleted while the save ran)', async () => {
+    const store = new MemoryStore()
+    const first = await writeSave(store, 'a', draft(), sections(), regions(), [])
+    await store.deleteSlot('a'); await gcBlobs(store)
+    await expect(writeSave(store, 'a', draft(), sections(), [{ r: 1, bytes: bytes(5000, 3) }], first.manifest.regions.filter(r => r.r === 0))).rejects.toMatchObject({ code: 'stale' })
+    expect(await store.readManifest('a')).toBeNull()
+  })
   it('detects a corrupted or missing blob', async () => {
     const store = new MemoryStore()
     const w = await writeSave(store, 'a', draft(), sections(), regions(), [])

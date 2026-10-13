@@ -51,6 +51,20 @@ test('a save of an unchanged world after a load copies and writes nothing new', 
   expect(again.blobsWritten).toBeLessThanOrEqual(1) // at most the app section (the camera)
 })
 
+test('loading a workers-scene save keeps its crew: the demo spawn does not run again', async ({ page }) => {
+  test.setTimeout(300_000)
+  await page.goto('/?scene=workers'); await ready(page); await clear(page)
+  await page.waitForFunction(() => (window as W).__elovox!.engine.workers?.stats.units === 8, null, { timeout: 60_000 })
+  // Walk the crew off the spawn spots, as a player would, so a second demo spawn would not be refused as an overlap.
+  await page.evaluate(() => { const e = (window as W).__elovox!.engine, p = e.workers!.poses, ids: number[] = []; for (let i = 0; i < p.length; i += 9) ids.push(p[i]!); e.submit({ type: 'unitMove', ids, pos: [28, 5, 40] }) })
+  await page.waitForFunction(() => { const p = (window as W).__elovox!.engine.workers!.poses; for (let i = 0; i < p.length; i += 9) if (p[i + 3]! / 256 < 34) return false; return true }, null, { timeout: 120_000 })
+  await page.evaluate(() => (window as W).__elovox!.save('e2e-workers'))
+  await page.goto('/?save=e2e-workers'); await ready(page)
+  await page.waitForFunction(() => (window as W).__elovox!.engine.workers !== null, null, { timeout: 60_000 })
+  await page.waitForTimeout(2000) // long enough for a spawn command to land
+  expect(await page.evaluate(() => (window as W).__elovox!.engine.workers!.stats.units)).toBe(8)
+})
+
 test('autosave rotates slots on a short interval', async ({ page }) => {
   test.setTimeout(300_000)
   await page.goto('/?scene=flood&autosaveMs=3000'); await ready(page); await clear(page)
@@ -72,5 +86,21 @@ test('a corrupted save is refused with its message', async ({ page }) => {
   })
   await page.goto('/?save=broken')
   await expect(page.getByText(/does not match its hash|is missing from the store/)).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText('Start the scene fresh')).toBeVisible()
+})
+
+test('a save naming a block this build does not have is refused with the mismatch shown', async ({ page }) => {
+  test.setTimeout(300_000)
+  await page.goto('/?scene=flood'); await ready(page); await clear(page)
+  await page.evaluate(() => (window as W).__elovox!.save('blocks'))
+  await page.evaluate(async () => {
+    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('elovox-saves')).getDirectoryHandle('slots')
+    const h = await dir.getFileHandle('blocks.a.json')
+    const m = JSON.parse(await (await h.getFile()).text()) as { blocks: string[] }
+    m.blocks[1] = 'unobtainium'
+    const w = await h.createWritable(); await w.write(JSON.stringify(m)); await w.close()
+  })
+  await page.goto('/?save=blocks')
+  await expect(page.getByText(/block 1 is "unobtainium" in the save/)).toBeVisible({ timeout: 60_000 })
   await expect(page.getByText('Start the scene fresh')).toBeVisible()
 })

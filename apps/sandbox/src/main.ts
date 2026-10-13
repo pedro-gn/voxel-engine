@@ -45,7 +45,8 @@ function showLoadError(slot: string, e: unknown): never {
 const saveParam = params.get('save')
 const saved: (LoadedSave & { app: unknown }) | null = saveParam ? await openSave(saveParam, persistWorker).catch((e: unknown) => showLoadError(saveParam, e)) : null
 const savedApp: AppState | null = saved && isAppState(saved.app) ? saved.app : null
-const { scene: sceneName, fromSave } = bootPlan(params, saved)
+const plan = bootPlan(params, saved)
+const { scene: sceneName, fromSave } = plan
 if (sceneName === 'collapse') HOTBAR.splice(4, 2, 'structural_planks', 'structural_glass')
 /** `?size=` rounded to a multiple of 32 in [32, 1024]; anything unparseable falls back to 1024. */
 function worldSide(raw: string | null): number {
@@ -60,7 +61,9 @@ const EDIT_HINT = '1–4 mode · Ops: LMB select, drag handles/outline, Shift-dr
 const n = worldSide(params.get('size'))
 const seed = Number(params.get('seed') ?? 1234)
 /** The terrain scene loads the 1024² showcase, or the small e2e document when `?size=` is 256 or less. */
-const terrainDoc = sceneName === 'terrain' ? (n <= 256 ? e2eDoc : showcaseDoc) : undefined
+const terrainDoc = sceneName !== 'terrain' ? undefined
+  : fromSave && plan.terrain ? plan.terrain as typeof showcaseDoc
+  : n <= 256 ? e2eDoc : showcaseDoc
 const size: [number, number, number] = saved ? [...saved.manifest.size] : sceneName === 'flood' ? [...FLOOD_SIZE]
   : sceneName === 'workers' ? [...WORKERS_SIZE]
   : sceneName === 'living' ? [...LIVING_SIZE]
@@ -72,6 +75,7 @@ const size: [number, number, number] = saved ? [...saved.manifest.size] : sceneN
   : [n, 128, n]
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 
+// A save can still be refused once the engine sees it (a block this build does not have): show why, as for a bad file.
 const engine = await createEngine({
   canvas,
   size,
@@ -113,7 +117,7 @@ const engine = await createEngine({
   tileSize: 512,
   persistWorker,
   ...(saved && { restore: saved }),
-})
+}).catch((e: unknown) => saveParam && saved ? showLoadError(saveParam, e) : Promise.reject(e))
 void navigator.storage?.persist?.().catch(() => false) // ask once that the browser keep the saves under storage pressure
 
 engine.atmosphere.set(sceneName === 'diorama' ? 'diorama' : 'open')
@@ -173,7 +177,7 @@ if (sceneName === 'workers' && presetCamera) {
   engine.controls.apply(engine.camera)
 }
 const bean = unitsScene ? null : await spawnCharacter(engine, `${import.meta.env.BASE_URL}models/bean.glb`, Math.floor(bx) + 0.5, Math.floor(bz) + 0.5)
-const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers' }) : null
+const workers = unitsScene ? await createWorkersView(engine, canvas, { demo: sceneName === 'workers', spawn: sceneName === 'workers' && !fromSave }) : null
 
 let selected = 0
 const hotbarVoxel = () => { const id = engine.blocks.id(HOTBAR[selected]!); return engine.blocks.liquid[id] ? packVoxel(id, 7) : id }

@@ -206,7 +206,7 @@ export interface Engine {
   /**
    * Saves the world to `slot` (spec §5): the sim stops between two ticks to copy what changed since this engine last saved
    * the slot; compression and writing run in the persistence worker. `app` is the game's own state, given back by
-   * `restored.app`; `meta` labels the slot in lists. Concurrent calls are folded into one more save.
+   * `restored.app`; `meta` labels the slot in lists. Saves run one at a time; calls for a slot already waiting fold into it.
    */
   save(slot: string, o?: { app?: unknown; meta?: Record<string, string | number> }): Promise<SaveResult>
   readonly saves: {
@@ -790,6 +790,15 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const prev = await p.request<Manifest | null>({ type: 'manifest', slot })
     const base = baselines.get(slot)
     const since = base && prev && prev.created === base.created ? base.revisions : null
+    try {
+      return await saveOnce(p, slot, app, meta, prev, since, t0)
+    } catch (e) {
+      // The slot lost the blobs this incremental save reused (deleted meanwhile): copy every region instead.
+      if (since && e instanceof SaveError && e.code === 'stale') return saveOnce(p, slot, app, meta, null, null, t0)
+      throw e
+    }
+  })
+  const saveOnce = async (p: PersistClient, slot: string, app: unknown, meta: Record<string, string | number>, prev: Manifest | null, since: Uint32Array | null, t0: number): Promise<SaveResult> => {
     const id = ++snapshotSeq
     const snap = await new Promise<SimSnapshot>((resolve, reject) => {
       snapshotWaits.set(id, { resolve, reject })
@@ -807,7 +816,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const w = await p.request<WriteResult>({ type: 'write', slot, draft, sections, regions: snap.regions, reuse }, transfer)
     baselines.set(slot, { created: w.manifest.created, revisions: snap.revisions })
     return { bytes: w.bytes, blobsWritten: w.blobsWritten, regionsWritten: w.regionsWritten, simStallMs: snap.ms, totalMs: performance.now() - t0 }
-  })
+  }
 
   const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
@@ -847,7 +856,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       sim.postMessage({ type: 'submit', clientId: CLIENT_ID, seq: s, cmd } satisfies ToSim)
       return s
     },
-    save: (slot, so = {}) => saveQueue.request({ slot, app: so.app, meta: so.meta ?? {} }),
+    save: (slot, so = {}) => saveQueue.request(slot, { slot, app: so.app, meta: so.meta ?? {} }),
     saves: {
       list: async () => needPersist().request<SlotInfo[]>({ type: 'list' }),
       delete: async (slot) => { await needPersist().request({ type: 'delete', slot }); baselines.delete(slot) },

@@ -10,7 +10,8 @@ export interface SaveStore {
   /** Atomic: until it resolves, readManifest returns the previous one. */
   writeManifest(slot: string, m: Manifest): Promise<void>
   deleteSlot(slot: string): Promise<void>
-  hasBlob(hash: string): Promise<boolean>
+  /** The stored size of a blob, or null when there is none: a write that died midway leaves a shorter file under the name. */
+  blobSize(hash: string): Promise<number | null>
   readBlob(hash: string): Promise<Uint8Array | null>
   writeBlob(hash: string, bytes: Uint8Array): Promise<void>
   listBlobs(): Promise<string[]>
@@ -26,6 +27,8 @@ export function checkSlotName(slot: string): void {
 export class MemoryStore implements SaveStore {
   /** Tests: make every write fail with this code. */
   failWrites: SaveErrorCode | undefined
+  /** Tests: a failing blob write leaves the first half of its bytes behind, as a full disk does to a file. */
+  partialWrites = false
   private readonly slots = new Map<string, Manifest[]>()
   private readonly blobs = new Map<string, Uint8Array>()
 
@@ -40,9 +43,13 @@ export class MemoryStore implements SaveStore {
     this.slots.set(slot, l.slice(-2))
   }
   async deleteSlot(slot: string): Promise<void> { this.slots.delete(slot) }
-  async hasBlob(h: string): Promise<boolean> { return this.blobs.has(h) }
+  async blobSize(h: string): Promise<number | null> { return this.blobs.get(h)?.length ?? null }
   async readBlob(h: string): Promise<Uint8Array | null> { const b = this.blobs.get(h); return b ? b.slice() : null }
-  async writeBlob(h: string, b: Uint8Array): Promise<void> { this.fail(); this.blobs.set(h, b.slice()) }
+  async writeBlob(h: string, b: Uint8Array): Promise<void> {
+    if (this.failWrites && this.partialWrites) this.blobs.set(h, b.slice(0, b.length >> 1))
+    this.fail()
+    this.blobs.set(h, b.slice())
+  }
   async listBlobs(): Promise<string[]> { return [...this.blobs.keys()].sort() }
   async deleteBlob(h: string): Promise<void> { this.blobs.delete(h) }
   async estimate(): Promise<{ usage: number; quota: number }> {

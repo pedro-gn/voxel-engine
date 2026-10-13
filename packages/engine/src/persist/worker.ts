@@ -62,7 +62,10 @@ export function runPersistWorker(): void {
     chain = chain.then(async () => {
       try {
         store ??= OpfsStore.open()
-        const { value, transfer } = await handlePersist(await store, msg)
+        const s = await store
+        // Another tab's worker shares the same files: hold the origin-wide lock so writes and gc never interleave across tabs.
+        const locks = (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks
+        const { value, transfer } = locks ? await locks.request('elovox-saves', () => handlePersist(s, msg)) : await handlePersist(s, msg)
         scope.postMessage({ type: 'result', id: msg.id, ok: true, value }, transfer)
       } catch (err) {
         if (!(err instanceof SaveError) || err.code === 'unavailable') store = null // try opening again next time

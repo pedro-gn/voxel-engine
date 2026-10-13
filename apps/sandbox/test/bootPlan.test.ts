@@ -10,10 +10,15 @@ describe('boot plan', () => {
     expect(sceneOf(null)).toBe('world')
   })
   it("the save's scene wins over ?scene", () => {
-    expect(bootPlan(new URLSearchParams('save=a&scene=flood&size=64'), { app: app('living') })).toEqual({ scene: 'living', fromSave: true })
+    expect(bootPlan(new URLSearchParams('save=a&scene=flood&size=64'), { app: app('living') })).toMatchObject({ scene: 'living', fromSave: true })
+  })
+  it("the save's terrain document wins over the one the URL would pick", () => {
+    const doc = { size: [256, 256], ops: [] }
+    expect(bootPlan(new URLSearchParams('save=a'), { app: app('terrain'), manifest: { terrain: doc } }).terrain).toBe(doc)
+    expect(bootPlan(new URLSearchParams('scene=terrain'), null).terrain).toBeUndefined()
   })
   it('a save without sandbox app state, or naming an unknown scene, boots the world scene', () => {
-    expect(bootPlan(new URLSearchParams('save=a'), { app: null })).toEqual({ scene: 'world', fromSave: true })
-    expect(bootPlan(new URLSearchParams('save=a'), { app: app('moon') })).toEqual({ scene: 'world', fromSave: true })
+    expect(bootPlan(new URLSearchParams('save=a'), { app: null })).toMatchObject({ scene: 'world', fromSave: true })
+    expect(bootPlan(new URLSearchParams('save=a'), { app: app('moon') })).toMatchObject({ scene: 'world', fromSave: true })
   })
 })

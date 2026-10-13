@@ -13,7 +13,11 @@ export interface LoadedSave { slot: string; manifest: Manifest; sections: Partia
 async function putBlob(store: SaveStore, raw: Uint8Array, count: { written: number; bytes: number }): Promise<BlobRef> {
   const gz = await gzip(raw), hash = await sha256(gz)
   count.bytes += gz.length
-  if (!(await store.hasBlob(hash))) { await store.writeBlob(hash, gz); count.written++ }
+  // A blob of the right size is the same blob (its name is its hash); a shorter one is what a failed write left behind.
+  if ((await store.blobSize(hash)) !== gz.length) {
+    try { await store.writeBlob(hash, gz) } catch (e) { await store.deleteBlob(hash).catch(() => {}); throw e }
+    count.written++
+  }
   return { hash, bytes: gz.length }
 }
 
@@ -31,7 +35,12 @@ export async function writeSave(store: SaveStore, slot: string, draft: ManifestD
   for (const r of regions) outRegions.set(r.r, { r: r.r, ...(await putBlob(store, r.bytes, count)) })
   const outSections: Manifest['sections'] = []
   for (const s of sections) outSections.push({ name: s.name, version: SECTION_VERSIONS[s.name], ...(await putBlob(store, s.bytes, count)) })
-  for (const r of reuse) if (!regions.some(x => x.r === r.r)) count.bytes += r.bytes
+  for (const r of reuse) {
+    if (regions.some(x => x.r === r.r)) continue
+    // Reused from the slot's previous manifest: still there only if nothing deleted the slot while this save ran.
+    if ((await store.blobSize(r.hash)) !== r.bytes) throw new SaveError('stale', `region ${r.r} of the previous save is gone; save again in full`)
+    count.bytes += r.bytes
+  }
   const prev = await store.readManifest(slot)
   const manifest: Manifest = { ...draft, generation: (prev?.generation ?? 0) + 1, sections: outSections, regions: [...outRegions.values()].sort((a, b) => a.r - b.r) }
   await store.writeManifest(slot, manifest)

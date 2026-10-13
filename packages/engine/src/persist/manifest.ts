@@ -24,7 +24,8 @@ export interface Manifest {
 }
 export type ManifestDraft = Omit<Manifest, 'generation' | 'sections' | 'regions'>
 
-export type SaveErrorCode = 'missing' | 'incompatible' | 'corrupted' | 'quota' | 'unavailable' | 'not-ready' | 'invalid'
+/** `stale`: an incremental save reused blobs that are gone (the slot was deleted meanwhile); save again in full. */
+export type SaveErrorCode = 'missing' | 'incompatible' | 'corrupted' | 'quota' | 'unavailable' | 'not-ready' | 'invalid' | 'stale'
 export class SaveError extends Error {
   readonly code: SaveErrorCode
   constructor(code: SaveErrorCode, message: string) { super(message); this.name = 'SaveError'; this.code = code }
