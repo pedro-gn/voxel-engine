@@ -20,6 +20,9 @@ import type { WaterTick } from './water/publish.ts'
 import { WaterSystem, type WaterOptions } from './water/waterSystem.ts'
 import { WorkerSystem } from './workers/workers.ts'
 import { WORKER_COMMANDS, type WorkerOptions, type WorkerTick } from './workers/types.ts'
+import { pack, unpack, type Packed } from '../persist/pack.ts'
+import { decodeRegion, encodeRegion } from '../persist/regions.ts'
+import type { RegionBlob, SectionName, SimRestore, SimSnapshot } from './snapshot.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -366,6 +369,49 @@ export class Simulation {
     this.events = []
     const collapse = this.collapse.publication(this.store.versions)
     return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions, t) }) }
+  }
+
+  /**
+   * The state a save needs, taken between two ticks (spec §4–5): the regions whose revision differs from `since` (all when
+   * null) and every section. Navigation, light and publication state are not included: restore() rebuilds them.
+   */
+  snapshot(since: Uint32Array | null): SimSnapshot {
+    const t0 = performance.now()
+    const revs = this.store.regionRevisions
+    const regions: RegionBlob[] = []
+    for (let r = 0; r < revs.length; r++) if (!since || since[r] !== revs[r]) regions.push({ r, bytes: encodeRegion(this.store, r) })
+    const sections: { name: SectionName; bytes: Uint8Array }[] = [{ name: 'scheduler', bytes: pack(this.schedulerState()) }]
+    return { tick: this.tick, paused: this.isPaused, revisions: revs.slice(), regions, sections, ms: performance.now() - t0 }
+  }
+
+  /**
+   * Boots this (fresh, configured, never generated) simulation from a save instead of generate(): fills every chunk,
+   * relights, rebuilds water from the voxels, then restores each section over it. Returns every chunk index.
+   */
+  restore(s: SimRestore): number[] {
+    const scratch = new Uint16Array(CHUNK_VOLUME)
+    for (const { r, bytes } of s.regions) decodeRegion(bytes, this.layout, r, (ci, data) => {
+      const vox = typeof data === 'number' ? scratch.fill(data) : data
+      this.store.writeChunkDense(ci, vox)
+      this.collapse.replaceChunk(ci, vox, true)
+    })
+    const chunks = this.finishGenerate()
+    this.tick = s.tick
+    this.isPaused = s.paused
+    const section = (name: SectionName): Packed | null => { const b = s.sections[name]; return b ? unpack(b) : null }
+    const sched = section('scheduler')
+    if (sched) {
+      this.scheduler.restore(sched.arrays.pairs as Int32Array, (sched.json as { seq: number }).seq)
+      this.neighbors = [...(sched.arrays.neighbors as Int32Array)]
+      this.neighborHead = 0
+    }
+    this.store.regionRevisions.fill(0)
+    return chunks
+  }
+
+  private schedulerState(): Packed {
+    const { pairs, seq } = this.scheduler.entries()
+    return { json: { seq }, arrays: { pairs, neighbors: Int32Array.from(this.neighbors.slice(this.neighborHead)) } }
   }
 
   hash(): number {
