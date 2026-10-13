@@ -35,7 +35,9 @@ describe('blob codec', () => {
     const zeros = new Uint8Array(1 << 20)
     const z = await gzip(zeros)
     expect(z.length).toBeLessThan(4096)
-    expect(await gunzip(z)).toEqual(zeros)
+    const back = await gunzip(z)
+    expect(back.length).toBe(zeros.length)
+    expect(back.every(v => v === 0)).toBe(true) // not toEqual: a deep compare of 1M elements takes seconds
   })
   it('sha256 is the hex digest', async () => {
     expect(await sha256(new TextEncoder().encode('abc'))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')

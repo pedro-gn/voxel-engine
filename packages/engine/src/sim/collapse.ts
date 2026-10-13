@@ -305,6 +305,8 @@ export class CollapseSystem {
     if (!this.enabled) return
     const j = p.json as CollapseJson
     this.nextId = j.nextId
+    // Filling the chunks seeded every member, as generation does; the saved world had checked them, so keep only its seeds.
+    this.seeds = []; this.seedHead = 0; this.seedSet.clear(); this.dirty.clear()
     for (const s of p.arrays.seeds as Uint32Array) if (!this.seedSet.has(s)) { this.seedSet.add(s); this.seeds.push(s) }
     for (const ci of j.dirty) this.dirty.add(ci)
     this.scanChunk = j.scanChunk

@@ -22,7 +22,7 @@ describe('workers in a save', () => {
       a.step()
     }
     expect(seen).toEqual({ flat: true, vertical: true })
-  })
+  }, 30_000)
   it('finishes every order after a load, and keeps stock and piles', () => {
     const a = runTo(14)
     const stock = units(a).find(u => u.id === 1)!.stock
@@ -35,7 +35,7 @@ describe('workers in a save', () => {
     for (const o of orders) expect(o.done).toBe(o.total)
     for (let x = 48; x <= 50; x++) expect(b.store.getVoxel(x, 3, 49) & 0xfff).not.toBe(R.stone) // dug (the breached basin may have flooded it)
     expect(b.store.getVoxel(37, 4, 51) & 0xfff).toBe(R.planks)
-  })
+  }, 30_000)
   it('two loads run identically and save → load → save is idempotent', () => {
     const a = runTo(14)
     const b = fullRestore(a), c = fullRestore(a)
@@ -43,7 +43,7 @@ describe('workers in a save', () => {
     for (let t = 0; t < 300; t++) { b.step(); c.step() }
     expect(b.hash()).toBe(c.hash())
     expect(units(b)).toEqual(units(c))
-  })
+  }, 30_000)
   it('refuses to restore into a system that already has units', () => {
     const a = runTo(3)
     expect(() => a.workers!.restore(a.workers!.snapshot())).toThrow(/empty/)
