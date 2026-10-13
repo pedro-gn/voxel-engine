@@ -7,12 +7,17 @@ import { WaterColumns } from './columns.ts'
 import { KIND, MIN_FLOW, SUB, TILE } from './constants.ts'
 import { WaterCycle } from './cycle.ts'
 import { WaterBodies } from './bodies.ts'
-import { WaterEdges } from './edges.ts'
+import { WaterEdges, type TileEdges } from './edges.ts'
+import type { Packed } from '../../persist/pack.ts'
 import { WaterMirror, mirrorRun, quantize } from './mirror.ts'
 import { WaterPublisher, type WaterTick } from './publish.ts'
 import { rebuildSegments, waterKinds } from './rebuild.ts'
 import { resegment, type Seg } from './resegment.ts'
 import { UnderSegments } from './under.ts'
+
+interface WaterJson { steps: number; sea: number; springs: number[]; cursor: number; stepNo: number; needsRebuild: boolean }
+/** Saved lower segment: column, floor, ceil, depth, last, excess. Saved under edge: column a, floor a (−1: top), column b, floor b, flux. */
+const UNDER_FIELDS = 6, EDGE_FIELDS = 5
 
 /** A displaced volume spreads over columns that each take at most this much (1/16 block). */
 const DISPLACE_SHARE = SUB / 16
@@ -463,6 +468,78 @@ export class WaterSystem {
       this.wakeUnsettled(Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(cols.sx, x0 + 33), Math.min(cols.sz, z0 + 33))
     }
     this.expected = this.total()
+  }
+
+  /**
+   * What a rebuild from the voxels cannot recover (plan deviation 4). Lower segments and under edges are named by column and
+   * floor (ceil checked), never by pool index; a body's excess goes to its first member, as dropBody does.
+   */
+  snapshot(): Packed {
+    const cols = this.cols, U = this.under, n = cols.n
+    const bodyExcess = new Map<number, number>()
+    for (const b of this.bodies.list) if (b.members.length) bodyExcess.set(b.members[0]!, b.excess)
+    const under: number[] = []
+    for (let c = 0; c < n; c++) for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
+      under.push(c, U.floor[i]!, U.ceil[i]!, U.depth[i]!, U.last[i]!, U.excess[i]! + (bodyExcess.get(i) ?? 0))
+    }
+    const end = (ref: number): [number, number] => ref < n ? [ref, -1] : [U.col[ref - n]!, U.floor[ref - n]!]
+    const edges: number[] = []
+    for (const E of this.edges.tiles) if (E) for (let e = 0; e < E.count; e++) if (E.flux[e] !== 0) edges.push(...end(E.a[e]!), ...end(E.b[e]!), E.flux[e]!)
+    const s = cols.state()
+    const json: WaterJson = { steps: this.steps, sea: this.cycle.sea, springs: [...this.cycle.springs], cursor: s.cursor, stepNo: s.stepNo, needsRebuild: this.needsRebuild }
+    return { json, arrays: {
+      depth: s.depth.slice(), flux: s.flux.slice(), last: s.last.slice(),
+      awake: cols.tiles.awake.slice(), quiet: cols.tiles.quiet.slice(),
+      under: Int32Array.from(under), edges: Int32Array.from(edges),
+    } }
+  }
+
+  /** Over a fresh rebuild() of the same voxels: puts back the exact water (plan deviation 4). */
+  restore(p: Packed): void {
+    if (this.water === 0) return
+    const j = p.json as WaterJson, a = p.arrays, cols = this.cols, U = this.under
+    if (j.needsRebuild) { this.needsRebuild = true; return }
+    cols.restoreState(a.depth as Int32Array, a.flux as Int32Array, a.last as Int32Array, j.cursor, j.stepNo)
+    const u = a.under as Int32Array
+    for (let k = 0; k < u.length; k += UNDER_FIELDS) {
+      const i = this.lowerAt(u[k]!, u[k + 1]!)
+      if (i < 0 || U.ceil[i] !== u[k + 2]) { this.port.log(`water restore: column ${u[k]} has no lower segment ${u[k + 1]}–${u[k + 2]}; its water is dropped`); continue }
+      U.depth[i] = u[k + 3]!; U.last[i] = u[k + 4]!; U.excess[i] = u[k + 5]!
+    }
+    this.bodies.dropAll()
+    this.bodies.seedFull()
+    this.edges.ensure(cols, U, this.height)
+    const byEnds = new Map<number, { E: TileEdges; e: number }>()
+    for (const E of this.edges.tiles) if (E) for (let e = 0; e < E.count; e++) byEnds.set(E.a[e]! * 4294967296 + E.b[e]!, { E, e })
+    const ed = a.edges as Int32Array
+    for (let k = 0; k < ed.length; k += EDGE_FIELDS) {
+      const ra = this.refAt(ed[k]!, ed[k + 1]!), rb = this.refAt(ed[k + 2]!, ed[k + 3]!)
+      const hit = ra < 0 || rb < 0 ? undefined : byEnds.get(ra * 4294967296 + rb)
+      if (hit) hit.E.flux[hit.e] = ed[k + 4]!
+    }
+    const cy = this.cycle
+    cy.findSea(cols)
+    cy.sea = j.sea
+    cy.springs.clear()
+    for (const s of j.springs) cy.springs.add(s)
+    cols.tiles.awake.set(a.awake as Uint8Array)
+    cols.tiles.quiet.set(a.quiet as Uint8Array)
+    cols.tiles.dirty.fill(1)
+    this.steps = j.steps
+    this.needsRebuild = false
+    this.expected = this.total()
+  }
+
+  private lowerAt(c: number, floor: number): number {
+    for (let i = this.under.first[c]!; i >= 0; i = this.under.next[i]!) if (this.under.floor[i] === floor) return i
+    return -1
+  }
+
+  /** A segment ref from its column and floor (−1: the top segment); −1 when the column has no such segment. */
+  private refAt(c: number, floor: number): number {
+    if (floor < 0) return c
+    const i = this.lowerAt(c, floor)
+    return i < 0 ? -1 : this.under.n + i
   }
 
   mixState(mix: (v: number) => void): void {

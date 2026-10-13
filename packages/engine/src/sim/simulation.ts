@@ -380,7 +380,10 @@ export class Simulation {
     const revs = this.store.regionRevisions
     const regions: RegionBlob[] = []
     for (let r = 0; r < revs.length; r++) if (!since || since[r] !== revs[r]) regions.push({ r, bytes: encodeRegion(this.store, r) })
-    const sections: { name: SectionName; bytes: Uint8Array }[] = [{ name: 'scheduler', bytes: pack(this.schedulerState()) }]
+    const sections: { name: SectionName; bytes: Uint8Array }[] = [
+      { name: 'scheduler', bytes: pack(this.schedulerState()) },
+      { name: 'water', bytes: pack(this.water.snapshot()) },
+    ]
     return { tick: this.tick, paused: this.isPaused, revisions: revs.slice(), regions, sections, ms: performance.now() - t0 }
   }
 
@@ -405,6 +408,8 @@ export class Simulation {
       this.neighbors = [...(sched.arrays.neighbors as Int32Array)]
       this.neighborHead = 0
     }
+    const water = section('water')
+    if (water) this.water.restore(water)
     this.store.regionRevisions.fill(0)
     return chunks
   }
