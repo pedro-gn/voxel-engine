@@ -2,8 +2,8 @@
 
 Branch `feat/persistence`, from main 39d14b6. Spec: [persistence design](../specs/2026-10-13-persistence-design.md).
 Plan: [persistence plan](../plans/2026-10-13-persistence.md). Executed inline, task by task under TDD, followed by one
-fresh whole-branch review (opus) and one fix pass. Closed by the user on 2026-10-13 without the benchmark window and
-without the visual checkpoints (both listed under open items).
+fresh whole-branch review (opus) and one fix pass. Closed by the user on 2026-10-13 without the visual checkpoints (listed under open items); the
+benchmark ran after the merge.
 
 ## What shipped
 
@@ -51,11 +51,22 @@ without the visual checkpoints (both listed under open items).
 | Terrain 256², `?still` | first save | 6.7 ms | 84 KB |
 | Terrain 256², `?still` | second save | 1–2 ms (0 regions, 0 blobs) | — |
 
-The `BENCH_SAVE=1` targets have not been measured:
+`BENCH_SAVE=1`, run twice on 2026-10-13 after the merge, on the user's laptop with other programs running (the user
+judged that acceptable). The table gives the worse of the two runs:
 
-- incremental living stall ≤ 50 ms;
-- full 1024² stall ≤ 250 ms;
-- 1024² load no slower than generation.
+| Metric | Target | Measured | |
+|---|---|---|---|
+| Living 512², sim stall per save (10 saves, 10 s apart, crews working) | ≤ 50 ms | p50 18.0, p95 20.6, first 24.6 ms | ✓ |
+| Living 512², save wall time p95 (snapshot + gzip + hash + OPFS) | — | 326 ms | |
+| Living 512², compressed size | recorded | 270–285 KB | |
+| 1024² (crowd world), full save sim stall | ≤ 250 ms | 88 ms | ✓ |
+| 1024², save wall time | — | 1.28 s | |
+| 1024², compressed size | recorded | 962 KB | |
+| 1024², sim restore to `ready` vs generating the same world | ≤ generation | 1,645 vs 2,209 ms (run 2: 1,460 vs 1,971) | ✓ |
+| 1024², page reload to `ready` (fetch, verify, gunzip, restore, first mesh) | — | 3.4–6.5 s | |
+
+Every living save copied all 4 regions (see Open items). The 1024² world is mostly flat pads, so it compresses to under
+1 MB; a heavily built island would be larger.
 
 ## Deviations from the spec
 
@@ -78,7 +89,6 @@ The `BENCH_SAVE=1` targets have not been measured:
 ## Open items
 
 - Not done:
-  - The `BENCH_SAVE` quiet window.
   - The user checkpoints:
     - living mid-flood;
     - mid-collapse;
