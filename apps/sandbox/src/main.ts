@@ -24,6 +24,8 @@ import { createTerrainPanel } from './terrainPanel.ts'
 import { createFirstPerson } from './firstPerson.ts'
 import { applyCamera, captureCamera, isAppState, type AppState } from './appState.ts'
 import { bootPlan } from './scene.ts'
+import { startAutosave } from './autosave.ts'
+import { createSavePanel } from './savePanel.ts'
 
 const HOTBAR = ['stone', 'dirt', 'grass', 'sand', 'planks', 'log', 'leaves', 'water', 'torch', 'glass']
 const params = new URLSearchParams(location.search)
@@ -255,4 +257,10 @@ const captureApp = (): AppState => ({
   scripts: { ...(living && { living: living.save() }), ...(crowd && { crowd: crowd.save() }) },
 })
 const save = (slot: string) => engine.save(slot, { app: captureApp(), meta: { scene: sceneName } })
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, save, ready: true } })
+// ?autosaveMs=: a shorter interval, for the e2e.
+const autosave = startAutosave(save, {
+  intervalMs: Number(params.get('autosaveMs') ?? 300_000), blocked: () => editing,
+  onResult: (slot, _r, e) => { if (e) console.warn(`[sandbox] autosave ${slot} failed:`, e) },
+})
+createSavePanel(engine, { save, autosave, load: (slot) => { location.search = `?save=${encodeURIComponent(slot)}` } })
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, save, autosave, ready: true } })
