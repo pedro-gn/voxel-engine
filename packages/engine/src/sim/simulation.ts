@@ -171,6 +171,12 @@ export class Simulation {
           const head = y + 1 >= sim.layout.size[1] ? 0 : voxelId(sim.store.getVoxel(x, y + 1, z))
           return !(sim.registry.liquid[feet] && (sim.registry.liquidGroup[feet] !== sim.water.water || sim.registry.source[feet])) && !sim.registry.liquid[head] && !sim.registry.falls[id] && !(sim.registry.collapses[id] && sim.collapse.checking) && !sim.collapse.overlaps(x, y, z) && !sim.collapse.overlaps(x, y + 1, z)
         },
+        wadeable(x, y, z) {
+          // safe() without its head-cell rule: what a unit caught by rising water may walk through on its way out.
+          const id = y === 0 ? 0 : voxelId(sim.store.getVoxel(x, y - 1, z))
+          const feet = voxelId(sim.store.getVoxel(x, y, z))
+          return !(sim.registry.liquid[feet] && (sim.registry.liquidGroup[feet] !== sim.water.water || sim.registry.source[feet])) && !sim.registry.falls[id] && !(sim.registry.collapses[id] && sim.collapse.checking) && !sim.collapse.overlaps(x, y, z) && !sim.collapse.overlaps(x, y + 1, z)
+        },
         hazard: (x, y, z) => sim.gravity.sweptOverlaps(x, y, z) || sim.collapse.sweptOverlaps(x, y, z),
         dynamicBusy: () => sim.water.cols.tiles.awakeCount() > 0 || sim.gravity.count > 0 || sim.collapse.busy,
         emit: (type, payload) => sim.events.push({ tick: sim.tick, type, payload }),

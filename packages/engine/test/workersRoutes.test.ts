@@ -134,6 +134,22 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
     for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
   })
+  it('a unit caught by water rising over its head wades out to dry ground and carries on to its goal', () => {
+    const sim = makeWide(256)
+    // A basin dug dry, two deep and four wide in the middle (x = 101..104), one deep at its rims (x = 100, 105). The unit
+    // stands on the deep floor (y = 2) when the water comes: every pose next to it then has water in the head cell.
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: 0 })
+    spawn(sim, [102, 2, 10])
+    const water = 3 | (7 << 12)
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water })
+    for (const x of [101, 103, 104]) cmd(sim, { type: 'fillRegion', min: [x, 2, 0], max: [x, 2, 27], voxel: water })
+    cmd(sim, { type: 'fillRegion', min: [102, 2, 0], max: [102, 2, 9], voxel: water }); cmd(sim, { type: 'fillRegion', min: [102, 2, 11], max: [102, 2, 27], voxel: water })
+    const u = sim.workers!.units.get(1)!
+    expect(sim.registry.liquid[sim.store.getVoxel(102, 3, 10) & 0xfff]).toBe(1) // its head is under water
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 10] })
+    until(sim, () => u.state === 'idle' && u.goal === null, 4000)
+    expect([u.x >> 8, u.z >> 8]).toEqual([160, 10])
+  })
   it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
     const sim = makeWide(256, undefined, { searchCap: 8192 })
     for (let i = 0; i < 40; i++) spawn(sim, [4 + (i % 8) * 2, 4, 4 + Math.floor(i / 8) * 2])

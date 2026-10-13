@@ -23,6 +23,8 @@ export interface WorkerPort {
   /** Allocation/preflight first; resource callback immediately after the grid write, before physics hooks. */
   edit(pos: Vec3, expected: number, value: number, commit: () => void): boolean
   safe(x: number, y: number, z: number): boolean
+  /** safe() without its head-cell rule: poses a unit caught by water over its head may walk through on its way out. */
+  wadeable?(x: number, y: number, z: number): boolean
   hazard(x: number, y: number, z: number): boolean
   dynamicBusy(): boolean
   emit(type: string, payload: unknown): void
@@ -78,6 +80,8 @@ interface Unit {
   exposed: number
   /** Whether the stationary pose is one the unit may not stay on; refreshed with the stationary validation. */
   unsafeHere: boolean
+  /** Caught by water over its head: it walks out through poses it may wade, until it stands on a safe one. */
+  wadingOut: boolean
   /** Consecutive stale searches; each one doubles the wait before the next attempt. */
   stale: number
   /** The tick of the last move or work progress; a task claim lapses LEASE_TICKS after it. */
@@ -372,7 +376,9 @@ export class WorkerSystem {
   private safePose(pos: Vec3): boolean { return this.nav.stand(...pos) && this.nav.allowed(this.port.layout.voxelIndex(...pos)) }
   /** Safety that lets a unit cross the designations it started inside, and only those, on its way out. */
   private exitAllowed(p: number, escape: readonly Order[]): boolean { const c = this.port.layout.voxelCoords(p); return this.port.safe(...c) && !this.port.hazard(...c) && !this.reservedPose(...c, escape) }
-  private poseOk(u: Unit, pos: Vec3): boolean { return u.escape.length ? this.nav.stand(...pos) && this.exitAllowed(this.port.layout.voxelIndex(...pos), u.escape) : this.safePose(pos) }
+  /** A pose a unit wading out of water over its head may take: it stands, no hazard, and safe but for water in the head cell. */
+  private wadeOut(pos: Vec3): boolean { return this.nav.stand(...pos) && (this.port.wadeable?.(...pos) ?? false) && !this.port.hazard(...pos) }
+  private poseOk(u: Unit, pos: Vec3): boolean { if (u.wadingOut && this.wadeOut(pos)) return true; return u.escape.length ? this.nav.stand(...pos) && this.exitAllowed(this.port.layout.voxelIndex(...pos), u.escape) : this.safePose(pos) }
   /** `also` narrows the live policy for this search (it never admits more). */
   private request(u: Unit, goals: readonly number[], blocked?: ReadonlySet<number>, accept?: (p: number) => boolean, also?: (p: number) => boolean): PathSearch {
     const [x, y, z] = this.pose(u), escape = this.reservations.filter(o => this.reservedBy(o, x, y, z, false) || this.reservedBy(o, x, y + 1, z, true))
@@ -399,7 +405,7 @@ export class WorkerSystem {
   private newUnit(id: number, x: number, y: number, z: number, tools: Iterable<string>, stock: Map<number, number>): Unit {
     return { id, x, y, z, facing: 0, state: 'idle', tools: new Set(tools), stock,
       goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
-      allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, stale: 0, progressAt: this.time, route: null, segment: null,
+      allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, wadingOut: false, stale: 0, progressAt: this.time, route: null, segment: null,
       projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null }
   }
   /** Plan deviation 6: durable state only; navigation, searches, reservations, claims and failure histories are rebuilt. */
@@ -1054,7 +1060,7 @@ export class WorkerSystem {
           continue
         }
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
-        if (!u.motion) u.unsafeHere = !this.safePose(this.pose(u))
+        if (!u.motion) { u.unsafeHere = !this.safePose(this.pose(u)); if (!u.unsafeHere && u.wadingOut) { u.wadingOut = false; this.dirty.add(u.id) } }
       }
       // A claim lapses when its unit neither moves nor works for LEASE_TICKS; a waiting flat step stops where it stands.
       if (u.task && u.state !== 'falling' && (!u.motion || u.motion.flat) && this.time - u.progressAt >= LEASE_TICKS) {
@@ -1094,6 +1100,12 @@ export class WorkerSystem {
       // Idle units with nothing to do and working units are cheap and exempt; anyone else takes a decision slot.
       if (u.state !== 'idle' && u.state !== 'working' && !this.routine(u)) {
         if (this.deferred.has(u.id) ? !serve.has(u.id) : slots-- <= 0) { deferredNext.set(u.id, this.deferred.get(u.id) ?? this.time); continue }
+      }
+      // Caught by water over its head: no pose next to it may be safe, so it first wades out to the nearest safe pose.
+      if (u.unsafeHere && !u.wadingOut && !u.motion && !u.search && !u.engineering && u.state !== 'working' && u.state !== 'falling' && this.time >= u.retry && this.headUnder(u)) {
+        u.wadingOut = true; u.path = []; u.cursor = 0
+        u.search = this.nav.request(this.position(u), [], undefined, { allowed: p => this.wadeOut(this.port.layout.voxelCoords(p)), accept: p => this.safePose(this.port.layout.voxelCoords(p)) })
+        u.state = 'planning'; u.reason = undefined; u.retry = this.time + 40; this.dirty.add(u.id); continue
       }
       if (u.state === 'blocked') {
         // A blocked unit cannot replan before its retry, so it keeps reporting why it is blocked until then.
@@ -1219,6 +1231,8 @@ export class WorkerSystem {
       this.nav.prebuild(this.nav.warmed ? Math.min(rest - this.nav.visited, this.prebuildCap) : rest - this.nav.visited, [...anchors], this.time)
     }
   }
+  /** Whether liquid fills the cell at the unit's head. */
+  private headUnder(u: Unit): boolean { const [x, y, z] = this.pose(u); return y + 1 < this.port.layout.size[1] && this.port.registry.liquid[voxelId(this.port.get(x, y + 1, z))] === 1 }
   /**
    * A unit whose turn is routine takes no decision slot: it waits for its retry or its search, or walks on along a path it
    * has (holding it back would stutter its walk).
@@ -1924,7 +1938,7 @@ export class WorkerSystem {
     mix(this.units.size)
     for (const u of this.units.values()) {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
-      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
+      mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.wadingOut ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)
       for (const [b, n] of u.stock) { mix(b); mix(n) }
