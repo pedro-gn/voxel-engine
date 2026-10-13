@@ -159,3 +159,29 @@ it('an exit keeps its whole run of crossings, each with where it lands', () => {
   }
   expect(x.from).toBe(x.crossings[8]); expect(x.to).toBe(x.crossings[9])
 })
+
+function wetFixture(side = 64) {
+  const layout = new Layout([side, 32, side]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'water', liquid: true }])
+  const solid = new Set<number>(), water = new Set<number>()
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => { const p = layout.voxelIndex(x, y, z); return y < 4 || solid.has(p) ? 1 : water.has(p) ? 2 : 0 } })
+  return { nav, layout, solid, water }
+}
+it('a pose whose head cell holds liquid is not a region pose; a wadeable one is', () => {
+  const { nav, layout, water } = wetFixture()
+  // Feet-deep water at (20, 4, 20): wadeable. Head-deep at (21, 4, 20): water at y = 5 too.
+  water.add(layout.voxelIndex(20, 4, 20)); water.add(layout.voxelIndex(21, 4, 20)); water.add(layout.voxelIndex(21, 5, 20))
+  expect(nav.regionStand(20, 4, 20)).toBe(true)
+  expect(nav.regionStand(21, 4, 20)).toBe(false)
+  const r = build(nav, nav.tileOf(21, 4, 20))
+  expect(r.poses).toContain(layout.voxelIndex(20, 4, 20))
+  expect(r.poses).not.toContain(layout.voxelIndex(21, 4, 20))
+})
+it('a liquid-presence change rebuilds the tiles it touches and marks them flippy, without a geometry bump', () => {
+  const { nav, layout, water } = wetFixture()
+  const t = nav.tileOf(21, 4, 20), before = nav.revisions[t]!, geometry = nav.geometry
+  water.add(layout.voxelIndex(21, 5, 20)); nav.invalidateLiquid(21, 5, 20)
+  expect(nav.revisions[t]).toBeGreaterThan(before)
+  expect(nav.flippy[t]).toBe(1)
+  expect(nav.geometry).toBe(geometry)
+  expect(build(nav, t).poses).not.toContain(layout.voxelIndex(21, 4, 20))
+})

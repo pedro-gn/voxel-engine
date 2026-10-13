@@ -102,6 +102,12 @@ export class NavigationSystem {
    * neither.
    */
   invalidate(x: number, y: number, z: number, solid = true, falls = !solid): void { this.invalidateBox(x, y, z, x, y, z, solid, falls) }
+  /**
+   * Liquid appeared in or left voxel (x, y, z): the pose below it (y - 1) changed its head-cell rule, and the pose at y
+   * its feet. Like a falls flip, it marks the tiles flippy (landmark tables then read those poses as standable, so they
+   * stay a lower bound) and bumps their revisions; it is no change of solid geometry.
+   */
+  invalidateLiquid(x: number, y: number, z: number): void { this.invalidateBox(x, Math.max(0, y - 1), z, x, y, z, false, true) }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
   invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true, falls = !solid): void {
     if (solid) this.geometry++
@@ -145,11 +151,14 @@ export class NavigationSystem {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
   /**
-   * A pose of the region layer: it stands, and not on a block that falls. The live policy always rejects poses on
-   * falling blocks, so the region layer drops them as geometry; flat searches still stand there (to search out of sand).
+   * A pose of the region layer: it stands, not on a block that falls, and not with liquid in the head cell. The live
+   * policy always rejects both (units wade through water up to one block, never with the head under), so the region layer
+   * drops them as geometry; flat searches still stand there (to search out of sand or deep water).
    */
   regionStand(x: number, y: number, z: number): boolean {
-    return this.stand(x, y, z) && (y === 0 || this.port.registry.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+    const R = this.port.registry
+    return this.stand(x, y, z) && (y === 0 || R.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+      && (y + 1 >= this.port.layout.size[1] || R.liquid[voxelId(this.port.get(x, y + 1, z))] !== 1)
   }
   allowed(p: number): boolean {
     const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0, x = r - z * this.sx

@@ -232,6 +232,8 @@ export class WorkerSystem {
   get busy(): boolean { return this.nav.pending > 0 || [...this.units.values()].some(u => u.state === 'walking' || u.state === 'working' || u.state === 'falling' || u.state === 'planning') || this.orders.some(o => !o.cancelled && o.cursor < o.total) }
   afterWrite(x: number, y: number, z: number, old: number, value: number): void {
     const R = this.port.registry, a = voxelId(old), b = voxelId(value)
+    // Liquid entering or leaving a cell moves the head-cell rule of the pose below: the region layer reads it as geometry.
+    if (R.liquid[a] !== R.liquid[b] && !R.solid[a] && !R.solid[b]) this.nav.invalidateLiquid(x, y, z)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
     if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++

@@ -10,9 +10,9 @@ import { RouteSearch } from '../src/sim/navigation/routeSearch.ts'
 
 const blocks = [{ name: 'stone' }, { name: 'planks' }, { name: 'water', liquid: true }, { name: 'sand', falls: true }, { name: 'beam', collapses: true }]
 /** A side × 32 × side floor at y = 4, with the navigation budget of the scale target. */
-function makeWide(side: number, extra?: (ctx: GeneratorContext) => void, options: WorkerOptions = {}) {
+function makeWide(side: number, extra?: (ctx: GeneratorContext, cx: number, cz: number) => void, options: WorkerOptions = {}) {
   const sim = new Simulation({ buffers: createWorldBuffers([side, 32, side]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { searchCap: 32768, materials: { stone: { digTicks: 4, buildTicks: 3 }, planks: { digTicks: 2, buildTicks: 3 } }, ...options } })
-  sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); extra?.(ctx) } })
+  sim.generate({ generateColumn(ctx, cx, cz) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); extra?.(ctx, cx, cz) } })
   return sim
 }
 let seq = 0
@@ -90,6 +90,46 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     const goals = new Set([...sim.workers!.units.values()].map(u => `${u.x >> 8},${u.z >> 8}`))
     expect(goals.size).toBe(20)
     for (const u of sim.workers!.units.values()) { expect(Math.abs((u.x >> 8) - 200)).toBeLessThanOrEqual(6); expect(Math.abs((u.z >> 8) - 200)).toBeLessThanOrEqual(6) }
+  })
+  it('a group whose straight way crosses head-deep water walks around it and every unit arrives', () => {
+    // A basin across x = 100..103, z = 0..27 (from the world's edge), two deep in the middle (x = 101..102) and one deep at its rims, full of
+    // water to the floor's top: crossing it means a pose with water in the head cell. Dry, it would be crossable
+    // (drop 1, drop 1, climb 1, climb 1). The way around is at z >= 28.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx < 100 || wx > 103 || wz > 27) continue
+        const water = 3 | (7 << 12)
+        ctx.set(x, 3, z, water)
+        if (wx === 101 || wx === 102) ctx.set(x, 2, z, water)
+      }
+    })
+    for (let i = 0; i < 10; i++) spawn(sim, [60 + (i % 5) * 2, 4, 6 + Math.floor(i / 5) * 2])
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [160, 4, 10] })
+    for (let i = 0; i < 4000 && [...sim.workers!.units.values()].some(u => u.state !== 'idle'); i++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) expect(sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff], `unit ${u.id} head under water`).toBe(0)
+    }
+    expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
+  })
+  it('water that floods a basin across a route already planned is walked around', () => {
+    const sim = makeWide(256)
+    // The same basin as above, dug dry: x = 100 and 103 one deep, x = 101..102 two deep, z = 0..27.
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [103, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [102, 2, 27], voxel: 0 })
+    for (let i = 0; i < 10; i++) spawn(sim, [60 + (i % 5) * 2, 4, 6 + Math.floor(i / 5) * 2])
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [160, 4, 10] })
+    // The dry basin is on the way: let everyone set off, then flood it before anyone reaches it.
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'walking' || (u.x >> 8) > 70), 400)
+    expect([...sim.workers!.units.values()].every(u => (u.x >> 8) < 95)).toBe(true)
+    const water = 3 | (7 << 12)
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [103, 3, 27], voxel: water }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [102, 2, 27], voxel: water })
+    for (let i = 0; i < 4000 && [...sim.workers!.units.values()].some(u => u.state !== 'idle'); i++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) expect(sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff], `unit ${u.id} head under water`).toBe(0)
+    }
+    expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
   })
   it('a far work task walks a route, claims only its final pose and gets done', () => {
     const sim = makeWide(256); spawn(sim, [5, 4, 5])
