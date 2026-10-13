@@ -164,6 +164,10 @@ export class WorkerSystem {
   /** Units queued behind another unit, asleep until it moves, their tile changes or a deadline passes. */
   private readonly sleepers = new Sleepers()
   private readonly sleepEnabled: boolean
+  /** Units that are not moving, working or idle that take decisions per tick; the rest wait, oldest first. */
+  private readonly decisionCap: number
+  /** Units deferred by the decision budget, with the tick each was first deferred. */
+  private deferred = new Map<number, number>()
   private orders: Order[] = []
   /** Failure history of parked tasks by voxel, so a task returning to the frontier is not retried from scratch. */
   private parkedFailures = new Map<number, { reason: WorkBlockReason | undefined; failures: Map<number, TaskFailure> }>()
@@ -219,10 +223,10 @@ export class WorkerSystem {
   private readonly maxOrders: number
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
-    this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096; this.prebuildCap = options.prebuildCap ?? 1024; this.sleepEnabled = options.sleep !== false
+    this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096; this.prebuildCap = options.prebuildCap ?? 1024; this.sleepEnabled = options.sleep !== false; this.decisionCap = options.decisionCap ?? 256
     this.assignmentCap = options.assignmentCap; this.assignmentShare = options.assignmentShare ?? 8; this.commitCap = options.commitCap ?? 16
     this.capacity = options.inventoryCapacity ?? 512; this.maxOrders = options.maxOrders ?? 128
-    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, prebuildCap: this.prebuildCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
+    for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, prebuildCap: this.prebuildCap, decisionCap: this.decisionCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
       if (!integer(n, 1, 1 << 20)) throw new RangeError(`workers ${name} must be a positive integer <= 1048576`)
     }
     this.nav = new NavigationSystem({ ...port, safe: (x, y, z) => port.safe(x, y, z) && !this.reservedPose(x, y, z) }, options.maxSearchNodes ?? 16384)
@@ -419,7 +423,7 @@ export class WorkerSystem {
   }
   /** Into an empty system, before the first tick: units plan again where they stand, frontier tasks re-expand. */
   restore(s: WorkersSnapshot): void {
-    this.sleepers.wakeAll()
+    this.sleepers.wakeAll(); this.deferred.clear()
     if (this.units.size || this.orders.length || this.loose.size) throw new Error('workers restore needs an empty system')
     this.nextUnit = s.nextUnit; this.nextOrder = s.nextOrder; this.time = s.time; this.assignmentCursor = s.assignmentCursor
     for (const o of s.orders) {
@@ -554,7 +558,7 @@ export class WorkerSystem {
         for (const u of group) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
       }
     } else if (c.type === 'unitCancel') for (const u of units) { this.clearOrder(u); u.available = false }
-    else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
+    else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); this.deferred.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
     this.revision++
   }
   private cancelOrder(o: Order): void {
@@ -1030,6 +1034,10 @@ export class WorkerSystem {
     // No unit sleeps through changing physics: its stationary checks must run.
     if (dynamic || wasDynamic) this.sleepers.wakeAll()
     this.time++; this.table.advance(this.time); this.expand(); this.sleepers.expire(this.time)
+    // FIFO decision budget: units deferred longest go first, then the others in id order while slots are left.
+    const waiting = [...this.deferred].sort((a, b) => a[1] - b[1] || a[0] - b[0]), serve = new Set(waiting.slice(0, this.decisionCap).map(e => e[0]))
+    let slots = this.decisionCap - serve.size
+    const deferredNext = new Map<number, number>()
     for (const u of this.units.values()) {
       if (u.state === 'incapacitated') continue
       if (this.sleepers.dozing(u.id, this.time)) continue
@@ -1078,6 +1086,10 @@ export class WorkerSystem {
         m.elapsed++; [u.x, u.y, u.z] = this.motionPose(m.to, m.elapsed, m.ticks, m.start); u.progressAt = this.time
         if (m.elapsed === m.ticks) { u.motion = null; u.cursor = m.cursor; this.reserve(u, this.body(u.x, u.y, u.z)); u.state = u.goal === null && !u.task ? 'idle' : 'planning'; this.dirty.add(u.id) }
         if (u.motion) continue
+      }
+      // Idle units with nothing to do and working units are cheap and exempt; anyone else takes a decision slot.
+      if (u.state !== 'idle' && u.state !== 'working') {
+        if (this.deferred.has(u.id) ? !serve.has(u.id) : slots-- <= 0) { deferredNext.set(u.id, this.deferred.get(u.id) ?? this.time); continue }
       }
       if (u.state === 'blocked') {
         // A blocked unit cannot replan before its retry, so it keeps reporting why it is blocked until then.
@@ -1164,6 +1176,7 @@ export class WorkerSystem {
       // Nothing left to do (a failed or discarded escape, a sidestep without a goal): become assignable again.
       if (u.goal === null && !u.task && !u.search && !u.route && !u.motion && !u.engineering && !u.actions[u.actionCursor] && u.path[u.cursor] === undefined && u.state !== 'idle') { u.state = 'idle'; this.dirty.add(u.id) }
     }
+    this.deferred = deferredNext
     for (const u of this.units.values()) {
       if (u.state === 'incapacitated') continue
       const target = u.task ? u.task.p : u.goal ?? -1
@@ -1871,7 +1884,7 @@ export class WorkerSystem {
     const barriers = this.barriers.map(({ unit, pos }) => ({ unit, pos, chunks: this.port.layout.chunksAround(...pos).map(chunk => ({ chunk, version: versions?.[chunk] ?? 0 })) })); this.barriers = []
     const drops = [...this.dirtyDrops.values()]; this.dirtyDrops.clear()
     return { tick, poses, details, barriers, drops, orders: this.orders.map(o => ({ id: o.id, kind: o.kind, min: o.min, max: o.max, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled, ...(o.reason && { reason: o.reason }), effectivePriority: this.effective(o) })),
-      stats: { units: this.units.size, sleeping: this.sleepers.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited + this.refineWork, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles, regionBytes: this.nav.regions.bytes, regions: this.nav.regions.size } }
+      stats: { units: this.units.size, sleeping: this.sleepers.size, deferred: this.deferred.size, orders: this.orders.filter(o => !o.cancelled && o.done < o.total).length, tasks: this.tasks.length, searches: this.nav.pending + [...this.units.values()].filter(u => u.engineering !== null).length, visited: this.nav.visited + this.engineeringVisited + this.refineWork, mutations: this.mutations, navBytes: this.nav.bytes, cacheTiles: this.nav.cacheTiles, regionBytes: this.nav.regions.bytes, regions: this.nav.regions.size } }
   }
   mixState(mix: (n: number) => void): void {
     const reason = (r: WorkBlockReason | undefined) => mix(r === undefined ? -1 : ['no-access', 'missing-material', 'missing-tool', 'unsafe', 'traffic', 'search-limited', 'target-changed'].indexOf(r))
@@ -1929,6 +1942,7 @@ export class WorkerSystem {
     mix(this.loose.size); for (const [p, pile] of this.loose) { mix(p); mix(pile.size); for (const [b, n] of pile) { mix(b); mix(n) } }
     this.table.mixState(mix)
     this.sleepers.mixState(mix)
+    mix(this.deferred.size); for (const [id, t] of [...this.deferred].sort((a, b) => a[0] - b[0])) { mix(id); mix(t) }
     this.nav.mixState(mix)
   }
 }

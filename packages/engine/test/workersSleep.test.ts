@@ -97,3 +97,27 @@ describe('sleeping units', { timeout: 60_000 }, () => {
     expect(settled(b)).toBe(true)
   })
 })
+
+describe('decision budget', { timeout: 60_000 }, () => {
+  it('defers deciding units past decisionCap, oldest first, and still starts everyone', () => {
+    const sim = make(undefined, { decisionCap: 4 }, 128)
+    for (let i = 0; i < 20; i++) spawn(sim, [4 + (i % 5) * 2, 4, 4 + Math.floor(i / 5) * 2])
+    const ids = [...sim.workers!.units.keys()]
+    sim.submit(0, ++seq, { type: 'unitMove', ids: ids.filter(id => id % 2), pos: [100, 4, 100] })
+    sim.submit(0, ++seq, { type: 'unitMove', ids: ids.filter(id => id % 2 === 0), pos: [100, 4, 20] })
+    const first = new Map<number, number>()
+    let most = 0
+    for (let t = 0; t < 200; t++) {
+      most = Math.max(most, sim.step().workers!.stats.deferred)
+      for (const u of sim.workers!.units.values()) if (u.state === 'walking' && !first.has(u.id)) first.set(u.id, t)
+    }
+    expect(most).toBeGreaterThan(0)
+    expect(first.size).toBe(20)
+  })
+  it('with the default cap, 100 units never defer', () => {
+    const sim = make(undefined, {}, 128)
+    for (let i = 0; i < 100; i++) spawn(sim, [4 + (i % 10) * 2, 4, 4 + Math.floor(i / 10) * 2])
+    sim.submit(0, ++seq, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [100, 4, 100] })
+    for (let t = 0; t < 100; t++) expect(sim.step().workers!.stats.deferred).toBe(0)
+  })
+})

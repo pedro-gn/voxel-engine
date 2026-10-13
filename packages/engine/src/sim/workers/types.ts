@@ -10,6 +10,8 @@ export interface WorkerOptions {
   prebuildCap?: number
   /** Units queued behind another unit sleep until it moves (default true). False keeps every unit awake (A/B, tests). */
   sleep?: boolean
+  /** Units that are not moving, working or idle that take decisions per tick (default 256); the rest wait, oldest first. */
+  decisionCap?: number
   maxOrders?: number
   /** Fixed number of idle units assigned per tick; when unset, max(16, ceil(idle / assignmentShare)). */
   assignmentCap?: number
@@ -33,7 +35,7 @@ export interface WorkOrderView {
   /** Priority plus aging while the order waits without progress; it orders expansion, parking and assignment. */
   effectivePriority: number
 }
-export interface WorkerStats { units: number; sleeping: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number; regionBytes: number; regions: number }
+export interface WorkerStats { units: number; sleeping: number; deferred: number; orders: number; tasks: number; searches: number; visited: number; mutations: number; navBytes: number; cacheTiles: number; regionBytes: number; regions: number }
 export interface WorkerBarrier {
   /** The unit that made the edit, and the edited voxel. */
   unit: number; pos: Vec3
