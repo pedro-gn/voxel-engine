@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
+import { NavigationSystem, WATER_SETTLE } from '../src/sim/navigation/navigation.ts'
 import { BUILD_WEIGHT, RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField, slotOf, localOf } from '../src/sim/navigation/regions.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
@@ -176,11 +176,17 @@ it('a pose whose head cell holds liquid is not a region pose; a wadeable one is'
   expect(r.poses).toContain(layout.voxelIndex(20, 4, 20))
   expect(r.poses).not.toContain(layout.voxelIndex(21, 4, 20))
 })
-it('a liquid-presence change rebuilds the tiles it touches and marks them flippy, without a geometry bump', () => {
+it('liquid changes reach the region layer once a tile has had them for WATER_SETTLE ticks, in one bump, flippy, without a geometry bump', () => {
   const { nav, layout, water } = wetFixture()
   const t = nav.tileOf(21, 4, 20), before = nav.revisions[t]!, geometry = nav.geometry
-  water.add(layout.voxelIndex(21, 5, 20)); nav.invalidateLiquid(21, 5, 20)
-  expect(nav.revisions[t]).toBeGreaterThan(before)
+  water.add(layout.voxelIndex(21, 5, 20))
+  // Water flickering at a river's edge: many changes in the window, none applied yet.
+  for (let k = 0; k < WATER_SETTLE; k += 7) { nav.invalidateLiquid(21, 5, 20, k); nav.settleWater(k) }
+  expect(nav.revisions[t]).toBe(before)
+  nav.settleWater(WATER_SETTLE)
+  expect(nav.revisions[t]).toBe(before + 1)
+  nav.settleWater(WATER_SETTLE + 1)
+  expect(nav.revisions[t]).toBe(before + 1)
   expect(nav.flippy[t]).toBe(1)
   expect(nav.geometry).toBe(geometry)
   expect(build(nav, t).poses).not.toContain(layout.voxelIndex(21, 4, 20))

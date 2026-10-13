@@ -257,7 +257,7 @@ export class WorkerSystem {
     const R = this.port.registry, a = voxelId(old), b = voxelId(value)
     // Liquid entering, leaving or changing kind in a cell moves the head-cell rule of the pose below and the feet rule of
     // the pose there: the region layer reads both as geometry.
-    if ((R.liquid[a] || R.liquid[b]) && a !== b && !R.solid[a] && !R.solid[b]) this.nav.invalidateLiquid(x, y, z)
+    if ((R.liquid[a] || R.liquid[b]) && a !== b && !R.solid[a] && !R.solid[b]) this.nav.invalidateLiquid(x, y, z, this.time)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
     if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
@@ -1051,7 +1051,7 @@ export class WorkerSystem {
     // Settling physics may end transient hazards (deep water, structural checks): every failure becomes retryable.
     if (dynamic !== this.dynamicWasBusy) { this.revision++; if (!dynamic) this.policy++; this.dynamicWasBusy = dynamic }
     for (const o of [...this.reservations]) if (!o.stalled && this.time - o.progress >= STALL_TICKS && !this.tasks.some(t => t.order === o && (t.claim || t.reason === 'missing-material' || t.reason === 'missing-tool'))) { o.stalled = true; this.buildReservationsChanged(o) }
-    this.time++; this.table.advance(this.time); this.expand(); this.sleepers.expire(this.time)
+    this.time++; this.table.advance(this.time); this.expand(); this.sleepers.expire(this.time); this.nav.settleWater(this.time)
     // FIFO decision budget: units deferred longest go first, then the others in id order while slots are left.
     const waiting = [...this.deferred].sort((a, b) => a[1] - b[1] || a[0] - b[0]), serve = new Set(waiting.slice(0, this.decisionCap).map(e => e[0]))
     let slots = this.decisionCap - serve.size

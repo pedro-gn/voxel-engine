@@ -3,6 +3,7 @@ import { Simulation } from '../src/sim/simulation.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import type { Command } from '../src/sim/commands.ts'
 import { staleBackoff } from '../src/sim/workers/workers.ts'
+import { WATER_SETTLE } from '../src/sim/navigation/navigation.ts'
 import type { WorkerOptions } from '../src/sim/workers/types.ts'
 import type { GeneratorContext } from '../src/sim/generator.ts'
 
@@ -430,6 +431,7 @@ describe('simulated workers', () => {
     cmd(sim, { type: 'setBlock', pos: [10, 3, 10], voxel: 2 })
     const nav = sim.workers!.nav, t = nav.tileOf(10, 3, 10), before = nav.revisions[t]!
     ;(sim as unknown as { applySet(x: number, y: number, z: number, v: number, notify: boolean): void }).applySet(10, 3, 10, 3, true)
+    for (let i = 0; i <= WATER_SETTLE; i++) sim.step()
     expect(nav.revisions[t]).toBeGreaterThan(before)
   })
   it('wades through water that fills the feet cell but not the head cell', () => {

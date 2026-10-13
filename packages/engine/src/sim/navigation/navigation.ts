@@ -32,6 +32,12 @@ interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: numb
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
 /** Extra planning cost of a step onto a pose whose feet are in water: wading counts as about three steps, so routes keep to dry land unless going round is much longer. Walking speed is the same. */
 export const WADE_COST = 8
+/**
+ * Ticks a tile holds its liquid changes before the region layer sees them, in one revision bump. Water at a river's edge
+ * flickers many times a tick; bumping on each change restarted every build and search over it. Until then the live policy
+ * (and wading on through water up to 1.5 blocks) covers the difference.
+ */
+export const WATER_SETTLE = 200
 
 /** Lazy support graph. Geometry only: live occupancy, water and structural safety are checked by the executor. */
 export class NavigationSystem {
@@ -71,6 +77,9 @@ export class NavigationSystem {
   private readonly inQueue: Uint8Array
   /** Every tile was built and the landmark tables settled once since the last reset: background work is capped from then on. */
   warmed = false
+  /** Per tile, the tick its first unapplied liquid change came (-1: none); `wetPending` lists them in that order. */
+  private readonly wetSince: Int32Array
+  private readonly wetPending: number[] = []
   /** Tiles the last prebuild call looked at (instrumentation; not simulation state). */
   prebuildChecks = 0
   private cursor = 0
@@ -95,7 +104,7 @@ export class NavigationSystem {
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.waterGroup = waterGroupOf(port.registry); this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
-    this.inQueue = new Uint8Array(this.revisions.length)
+    this.inQueue = new Uint8Array(this.revisions.length); this.wetSince = new Int32Array(this.revisions.length).fill(-1)
     this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
@@ -119,7 +128,27 @@ export class NavigationSystem {
    * and the pose at y its feet rule (a spring or another liquid). Like a falls flip, it marks the tiles flippy (landmark tables then read those poses as standable, so they
    * stay a lower bound) and bumps their revisions; it is no change of solid geometry.
    */
-  invalidateLiquid(x: number, y: number, z: number): void { this.invalidateBox(x, Math.max(0, y - 1), z, x, y, z, false, true) }
+  invalidateLiquid(x: number, y: number, z: number, now = 0): void {
+    // The same tiles invalidateBox would bump for (x, y - 1, z)..(x, y, z); they are bumped by settleWater, WATER_SETTLE later.
+    const [sx, sy, sz] = this.port.layout.size, plane = this.tx * this.tz
+    for (let yy = Math.max(0, (Math.max(0, y - 1) - 2) >> 4); yy <= Math.min((sy >> 4) - 1, (y + 3) >> 4); yy++)
+      for (let zz = Math.max(0, (z - 1) >> 4); zz <= Math.min((sz >> 4) - 1, (z + 1) >> 4); zz++)
+        for (let xx = Math.max(0, (x - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x + 1) >> 4); xx++) {
+          const t = xx + zz * this.tx + yy * plane
+          if (this.wetSince[t]! < 0) { this.wetSince[t] = now; this.wetPending.push(t) }
+        }
+  }
+  /** Applies the liquid changes tiles have held for WATER_SETTLE ticks: one revision bump each, marking them flippy. */
+  settleWater(now: number): void {
+    let bumped = false
+    while (this.wetPending.length && now - this.wetSince[this.wetPending[0]!]! >= WATER_SETTLE) {
+      const t = this.wetPending.shift()!
+      this.wetSince[t] = -1; this.revisions[t]!++; bumped = true
+      if (!this.flippy[t]) { this.flippy[t] = 1; this.flips++ }
+      if (!this.inQueue[t]) { this.inQueue[t] = 1; this.changed.push(t) }
+    }
+    if (bumped) { this.revision++; this.pass++ }
+  }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
   invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true, falls = !solid): void {
     if (solid) this.geometry++
@@ -138,7 +167,7 @@ export class NavigationSystem {
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
-    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0); this.warmed = false
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0); this.warmed = false; this.wetPending.length = 0; this.wetSince.fill(-1)
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -359,6 +388,7 @@ export class NavigationSystem {
     this.landmarks.mixState(mix)
     const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
     mix(this.changed.length); for (const t of this.changed) mix(t); mix(this.warmed ? 1 : 0)
+    mix(this.wetPending.length); for (const t of this.wetPending) { mix(t); mix(this.wetSince[t]!) }
   }
 }
 
