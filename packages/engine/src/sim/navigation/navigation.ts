@@ -67,6 +67,8 @@ export class NavigationSystem {
   /** Tiles changed since the first complete prebuild pass, in the order they changed; `inQueue` marks them. */
   private readonly changed: number[] = []
   private readonly inQueue: Uint8Array
+  /** Every tile was built and the landmark tables settled once since the last reset: background work is capped from then on. */
+  warmed = false
   /** Tiles the last prebuild call looked at (instrumentation; not simulation state). */
   prebuildChecks = 0
   private cursor = 0
@@ -134,7 +136,7 @@ export class NavigationSystem {
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
-    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0)
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0); this.warmed = false
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -300,6 +302,7 @@ export class NavigationSystem {
     }
     // A store too full to take more leaves prebuild nothing to do either.
     if (this.full) this.prebuilt = true
+    if (!this.warmed && (this.regions.built === this.revisions.length && this.landmarks.settled() || this.full)) this.warmed = true
     this.visited += used
     return used
   }
@@ -351,7 +354,7 @@ export class NavigationSystem {
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
     this.landmarks.mixState(mix)
     const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
-    mix(this.changed.length); for (const t of this.changed) mix(t)
+    mix(this.changed.length); for (const t of this.changed) mix(t); mix(this.warmed ? 1 : 0)
   }
 }
 

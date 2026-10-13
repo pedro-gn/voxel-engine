@@ -1216,7 +1216,7 @@ export class WorkerSystem {
     if (rest > this.nav.visited && (this.units.size || this.nav.pending)) {
       const anchors = new Set<number>()
       for (const u of this.units.values()) if (u.state !== 'incapacitated') anchors.add(this.nav.tileOfPose(this.position(u)))
-      this.nav.prebuild(Math.min(rest - this.nav.visited, this.prebuildCap), [...anchors], this.time)
+      this.nav.prebuild(this.nav.warmed ? Math.min(rest - this.nav.visited, this.prebuildCap) : rest - this.nav.visited, [...anchors], this.time)
     }
   }
   /**

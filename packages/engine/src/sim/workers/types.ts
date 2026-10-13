@@ -6,7 +6,10 @@ export interface WorkerOptions {
   /** Total navigation operations per physics tick, shared fairly between searches. */
   searchCap?: number
   maxSearchNodes?: number
-  /** Most navigation operations the background region prebuild and landmark recompute may spend per tick (default 1024). */
+  /**
+   * Most navigation operations the background region prebuild and landmark recompute may spend per tick once the world is
+   * warm (every tile built and the landmark tables settled once; default 1024). Warming a cold world uses the whole leftover.
+   */
   prebuildCap?: number
   /** Units queued behind another unit sleep until it moves (default true). False keeps every unit awake (A/B, tests). */
   sleep?: boolean

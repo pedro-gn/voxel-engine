@@ -346,8 +346,10 @@ describe('traffic blocks on group routes', { timeout: 60_000 }, () => {
   })
 })
 describe('background navigation work', { timeout: 60_000 }, () => {
-  it('the prebuild never spends more than prebuildCap in a tick, even after a wide flood', () => {
+  it('a cold world warms on the whole leftover budget; once warm, the prebuild never spends more than prebuildCap in a tick', () => {
     const sim = makeWide(256, undefined, { prebuildCap: 256 }); spawn(sim, [5, 4, 5])
+    // 512 tiles with landmark tables: far more than 256 operations a tick for a few hundred ticks would allow.
+    until(sim, () => sim.workers!.nav.prebuildStatus().done, 600)
     for (let i = 0; i < 100; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
     cmd(sim, { type: 'fillRegion', min: [40, 4, 40], max: [200, 4, 200], voxel: 3 | (7 << 12) })
     for (let i = 0; i < 200; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
