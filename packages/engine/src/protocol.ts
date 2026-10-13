@@ -9,6 +9,7 @@ import type { WaterTick } from './sim/water/publish.ts'
 import type { WorldBuffers } from './world/buffers.ts'
 import type { WorldSize } from './world/layout.ts'
 import type { WorkerOptions, WorkerTick } from './sim/workers/types.ts'
+import type { SimRestore, SimSnapshot } from './sim/snapshot.ts'
 
 export interface SimInitOptions {
   workers?: WorkerOptions
@@ -33,8 +34,9 @@ export type ToSim =
   /**
    * `terrain`: the document handed to the generator's configure() before generation.
    * `genPorts`: one port per generation worker; when present, columns are generated there in parallel.
+   * `restore`: boot from a save instead of generating (the terrain document still configures the generator).
    */
-  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions; terrain?: unknown; genPorts?: MessagePort[] }
+  | { type: 'init'; buffers: WorldBuffers; blocks: BlockDef[]; seed: number; options: SimInitOptions; terrain?: unknown; genPorts?: MessagePort[]; restore?: SimRestore }
   | { type: 'submit'; clientId: number; seq: number; cmd: Command }
   | { type: 'start' }
   | { type: 'stop' }
@@ -50,6 +52,8 @@ export type ToSim =
   | { type: 'genLost'; index: number }
   /** Main thread: the water view starts over (its worker was respawned); the next publish lists every tile. */
   | { type: 'waterResync' }
+  /** A save: the regions whose revision differs from `since` (all when null) and every section, taken between two ticks. */
+  | { type: 'snapshot'; id: number; since: Uint32Array | null }
 
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
@@ -63,6 +67,8 @@ export type FromSim =
   | { type: 'regenerated'; id: number; ok: false; message: string }
   /** `slots` is set when the world ran out of slot pages: the slot count in use at that point. */
   | { type: 'fatal'; message: string; slots?: number }
+  | { type: 'snapshot'; id: number; ok: true; snapshot: SimSnapshot }
+  | { type: 'snapshot'; id: number; ok: false; message: string }
 
 /** World-space ghost voxel: [x, y, z, voxel]. */
 export type Override = readonly [number, number, number, number]

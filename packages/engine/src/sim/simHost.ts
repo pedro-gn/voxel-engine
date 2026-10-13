@@ -47,7 +47,7 @@ export function allColumns(L: Layout): [number, number][] {
 
 /** Owns the Simulation inside the sim worker. Wall-clock time only paces ticks; it never enters world state. */
 export class SimHost {
-  private readonly post: (m: FromSim) => void
+  private readonly post: (m: FromSim, transfer?: Transferable[]) => void
   private readonly modules: SimModules
   private readonly clock: Clock
   private sim: Simulation | null = null
@@ -71,7 +71,7 @@ export class SimHost {
   /** Set once the initial generation is in: a patch before that would invalidate its columns. */
   private ready = false
 
-  constructor(post: (m: FromSim) => void, modules: SimModules, clock: Clock = realClock) {
+  constructor(post: (m: FromSim, transfer?: Transferable[]) => void, modules: SimModules, clock: Clock = realClock) {
     this.post = post
     this.modules = modules
     this.clock = clock
@@ -106,6 +106,20 @@ export class SimHost {
           this.seed = msg.seed
           this.terrain = msg.terrain
           if (msg.terrain !== undefined) this.sim.configure(this.modules.generator, msg.terrain)
+          if (msg.restore) {
+            // Generation workers still get the document, for later regenerations; nothing is generated.
+            if (msg.genPorts && msg.genPorts.length > 0) {
+              this.pool = new GenPool(msg.genPorts as PortLike[])
+              this.pool.onFatal = (message) => this.fail(new Error(`a generation worker refused a patch the sim accepted: ${message}`))
+              this.pool.configure(this.terrain, this.sim.layout.size, this.seed, this.blocks)
+            }
+            const t0 = this.clock.now()
+            const chunks = this.sim.restore(msg.restore)
+            const L = this.sim.layout
+            this.ready = true
+            this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+            return
+          }
           if (msg.genPorts && msg.genPorts.length > 0) {
             this.pool = new GenPool(msg.genPorts as PortLike[])
             this.pool.onFatal = (message) => this.fail(new Error(`a generation worker refused a patch the sim accepted: ${message}`))
@@ -167,6 +181,19 @@ export class SimHost {
       case 'waterResync':
         this.sim?.water.republishAll()
         return
+      case 'snapshot': {
+        // Messages arrive between pumps, so this is always between two ticks; a pooled regeneration lands atomically too.
+        const sim = this.sim
+        if (!sim || !this.ready) { this.post({ type: 'snapshot', id: msg.id, ok: false, message: 'the world is not ready' }); return }
+        try {
+          const snapshot = sim.snapshot(msg.since)
+          const transfer = [...snapshot.regions.map(r => r.bytes.buffer), ...snapshot.sections.map(s => s.bytes.buffer), snapshot.revisions.buffer]
+          this.post({ type: 'snapshot', id: msg.id, ok: true, snapshot }, transfer)
+        } catch (e) {
+          this.post({ type: 'snapshot', id: msg.id, ok: false, message: errorMessage(e) })
+        }
+        return
+      }
       case 'genLost': {
         const pool = this.pool
         if (!pool) return
