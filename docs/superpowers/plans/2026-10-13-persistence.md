@@ -2543,3 +2543,10 @@ git commit -m "docs(persist): CONTEXT terms, ADR 0004, review and measurements"
 ```
 
 Then hand over to superpowers:finishing-a-development-branch (merge is the user's call).
+
+## Results (2026-10-13)
+
+Executed inline, Tasks 1–14 complete; Task 15 closed by the user without the benchmark window and the visual
+checkpoints. Final review (opus) found 1 critical and 3 important issues, plus 2 minors re-graded important; all six were
+fixed test-first (48d60b2). Report, measurements, deviations and open items:
+[2026-10-13 persistence review](../reviews/2026-10-13-persistence.md).
