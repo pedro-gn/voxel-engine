@@ -44,7 +44,11 @@ export interface SystemContext {
   blockLight(x: number, y: number, z: number): number
   /** Water above the bottom of cell (x, y, z), in 1/256 block (0 when dry). */
   waterDepth(x: number, y: number, z: number): number
-  /** True when a worker unit's body, a falling block or a structural fragment is in the cell; false outside the world. */
+  /**
+   * True when a live (not incapacitated) worker unit's body, a falling block or a structural fragment is in the cell; false
+   * outside the world. An incapacitated unit releases its cells, but restoring a save reserves every unit's body again, so
+   * after a load an incapacitated unit's cells read occupied too.
+   */
   occupied(x: number, y: number, z: number): boolean
   /** Writes `value` if the voxel is still `expected` and nothing (unit, falling body, fragment) is in the way. */
   edit(pos: Vec3, expected: number, value: number): boolean

@@ -670,9 +670,10 @@ export class Simulation {
 
   private makeContext(): RuleContext {
     const sim = this
+    const size = Object.freeze([...sim.layout.size] as [number, number, number])
     return {
       get tick() { return sim.tick },
-      size: sim.layout.size,
+      size,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       set: (x, y, z, v) => {
         if (!Number.isInteger(v) || v < 0 || v > 0xffff || voxelId(v) >= sim.registry.count) throw new Error(`invalid voxel ${v}`)

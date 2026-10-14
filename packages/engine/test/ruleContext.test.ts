@@ -5,8 +5,8 @@ import { Simulation } from '../src/sim/simulation.ts'
 import type { GameSystem, SystemContext } from '../src/sim/systems.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 
-const blocks = [{ name: 'stone' }, { name: 'sand', falls: true }, { name: 'log' }, { name: 'leaves' }, { name: 'sapling', solid: false }]
-const B = { air: 0, stone: 1, sand: 2, log: 3, leaves: 4, sapling: 5 } as const
+const blocks = [{ name: 'stone' }, { name: 'sand', falls: true }, { name: 'log' }, { name: 'leaves' }, { name: 'sapling', solid: false }, { name: 'beam', collapses: true }]
+const B = { air: 0, stone: 1, sand: 2, log: 3, leaves: 4, sapling: 5, beam: 6 } as const
 
 /** A world with a stone floor (y < 4), worker units, and a `probe` rule command whose context the test reads back. */
 function make(rules: RulesModule = {}, size: Vec3 = [32, 32, 32], systems: GameSystem[] = []) {
@@ -33,7 +33,12 @@ const OUTSIDE: Vec3[] = [[-1, 4, 5], [32, 4, 5], [32, 4, 4], [0, 4, -1], [0, 4, 
 describe('rule context', () => {
   it('reads the world size', () => {
     const h = make({}, [64, 32, 96])
-    expect(h.inRule(ctx => ctx.size)).toEqual([64, 32, 96])
+    const size = h.inRule(ctx => ctx.size)
+    expect(size).toEqual([64, 32, 96])
+    // a frozen copy: a rule cannot reach (or change) the layout's own array
+    expect(size).not.toBe(h.sim.layout.size)
+    expect(Object.isFrozen(size)).toBe(true)
+    expect(h.inRule(ctx => ctx.size)).toBe(size)
   })
 
   it('sees a unit at its feet and head cells, not beside or above it', () => {
@@ -61,6 +66,43 @@ describe('rule context', () => {
     for (let i = 0; i < 100 && h.sim.gravity.count > 0; i++) h.sim.step()
     expect(h.sim.store.getVoxel(10, 4, 10)).toBe(B.sand)
     expect(column().some(Boolean)).toBe(false)
+  })
+
+  it('sees a structural fragment in its cell during the fall, and nothing once it landed', () => {
+    const h = make()
+    h.cmd({ type: 'setBlock', pos: [10, 20, 10], voxel: B.beam })
+    for (let i = 0; i < 5 && h.sim.collapse.stats().fragments === 0; i++) h.sim.step()
+    expect(h.sim.collapse.stats().fragments).toBe(1)
+    expect(h.sim.gravity.count).toBe(0)
+    const column = () => h.inRule(ctx => Array.from({ length: 32 }, (_, y) => ctx.occupied(10, y, 10)))
+    const ys = column().flatMap((o, y) => (o ? [y] : []))
+    expect(ys.length).toBeGreaterThan(0)
+    expect(ys.length).toBeLessThanOrEqual(2)
+    for (const y of ys) { expect(y).toBeGreaterThanOrEqual(4); expect(y).toBeLessThanOrEqual(20) }
+    expect(h.inRule(ctx => ctx.occupied(11, ys[0]!, 10))).toBe(false)
+    for (let i = 0; i < 200 && h.sim.collapse.busy; i++) h.sim.step()
+    expect(h.sim.store.getVoxel(10, 4, 10)).toBe(B.beam)
+    expect(column().some(Boolean)).toBe(false)
+  })
+
+  it('sees a walking unit in both the cell it leaves and the cell it enters', () => {
+    const h = make()
+    h.cmd({ type: 'unitSpawn', pos: [5, 4, 5] })
+    const unit = h.sim.workers!.units.size
+    h.cmd({ type: 'unitMove', ids: [unit], pos: [12, 4, 5] })
+    // the pose and the occupancy are read together inside the rule: the unit moves within the step that runs it
+    let seen: { leaves: number; cells: boolean[] } | null = null
+    for (let i = 0; i < 100 && !seen; i++) {
+      seen = h.inRule(ctx => {
+        const v = h.sim.workers!.view(unit)!
+        if (v.x256 % 256 === 128 || v.z256 % 256 !== 128) return null
+        const leaves = Math.floor((v.x256 - 128) / 256)
+        return { leaves, cells: [leaves, leaves + 1].flatMap(x => [ctx.occupied(x, 4, 5), ctx.occupied(x, 5, 5)]) }
+      })
+    }
+    expect(seen).not.toBeNull()
+    expect(seen!.leaves).toBeGreaterThanOrEqual(5)
+    expect(seen!.cells).toEqual([true, true, true, true])
   })
 
   it('is false outside the world, even beside units at its edges', () => {
@@ -133,8 +175,13 @@ describe('system context', () => {
     h.cmd({ type: 'setBlock', pos: [10, 20, 10], voxel: B.sand })
     expect(h.sim.gravity.count).toBe(1)
     let column: boolean[] = []
-    script = c => { column = Array.from({ length: 32 }, (_, y) => c.occupied(10, y, 10)) }
+    let body: { y256: number } | undefined
+    script = c => { column = Array.from({ length: 32 }, (_, y) => c.occupied(10, y, 10)); body = h.sim.gravity.snapshot()[0] }
     h.sim.step()
-    expect(column.some(Boolean)).toBe(true)
+    expect(body).toBeDefined()
+    const { y256 } = body!
+    const expected = Array.from({ length: 32 }, (_, y) => y256 < (y + 1) * 256 && y256 + 256 > y * 256)
+    expect(column.flatMap((o, y) => (o ? [y] : []))).toEqual(expected.flatMap((o, y) => (o ? [y] : [])))
+    expect(column.flatMap((o, y) => (o ? [y] : [])).length).toBeGreaterThan(0)
   })
 })
