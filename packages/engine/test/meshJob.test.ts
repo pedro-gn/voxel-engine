@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { MeshJobRunner } from '../src/mesh/meshJob.ts'
-import { FACE, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { CUT_BIT, FACE, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { unpackInstance } from '../src/render/decorations/extract.ts'
+import { CHUNK_VOLUME } from '../src/world/layout.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
 import { ID, testRegistry } from './helpers.ts'
 import { meshTables } from './meshHelpers.ts'
+import { decoratedMeshTables } from './meshFixtures.ts'
 
-function setup(sharePages = true) {
+function setup(sharePages = true, tables = meshTables(), size: [number, number, number] = [64, 64, 64]) {
   const reg = testRegistry()
-  const buffers = createWorldBuffers([64, 64, 64])
-  const runner = new MeshJobRunner(buffers, meshTables())
+  const buffers = createWorldBuffers(size)
+  const runner = new MeshJobRunner(buffers, tables)
   const store = new ChunkStore({ buffers, opaque: reg.opaque, onNewPage: (i, p) => { if (sharePages) runner.addPage(i, p) } })
   return { store, runner }
 }
@@ -78,6 +81,38 @@ describe('MeshJobRunner', () => {
     if (r.type !== 'result') return
     expect(r.version).toBe(2)
     expect(r.data.opaque!.indices.length).toBe(36)
+  })
+  it('meshes a cut through uniform stone: the layer above is air, the cut tops are flagged', () => {
+    // The middle chunk of a 3 × 3 × 3 world of uniform stone: trivial (no faces) until the cut crosses it at world y 48.
+    const { store, runner } = setup(true, meshTables(), [96, 96, 96])
+    for (let ci = 0; ci < 27; ci++) store.writeChunkDense(ci, new Uint16Array(CHUNK_VOLUME).fill(ID.stone))
+    store.commit()
+    const mid = store.layout.chunkIndex(1, 1, 1)
+    const plain = runner.run({ id: 30, chunk: mid })
+    expect(plain.type === 'result' && plain.data.opaque).toBeNull()
+    const r = runner.run({ id: 31, chunk: mid, cut: 48 })
+    if (r.type !== 'result') throw new Error('expected a result')
+    expect(r.cut).toBe(48)
+    const v = r.data.opaque!.vertices
+    let tops = 0
+    for (let i = 0; i < v.length; i += 2) {
+      const a = unpackA(v[i]!)
+      expect(a.y).toBeLessThanOrEqual(17) // nothing above the cut layer's top
+      if (a.normal === FACE.PY) { tops++; expect(a.y).toBe(17); expect(v[i]! & CUT_BIT).not.toBe(0); expect(unpackB(v[i + 1]!).sky).toBe(15) }
+    }
+    expect(tops).toBeGreaterThan(0)
+    expect(plain.type === 'result' && 'cut' in plain).toBe(false)
+  })
+  it('keeps grass tufts on an open cut top and none on a covered one', () => {
+    const { store, runner } = setup(true, decoratedMeshTables())
+    store.setVoxel(5, 16, 5, ID.grass)
+    store.setVoxel(8, 16, 8, ID.grass); store.setVoxel(8, 17, 8, ID.stone)
+    store.commit()
+    const r = runner.run({ id: 32, chunk: 0, cut: 16 })
+    if (r.type !== 'result') throw new Error('expected a result')
+    const g = r.data.grass!, at: number[][] = []
+    for (let i = 0; i < g.length; i += 2) { const p = unpackInstance(g[i]!); at.push([p.lx, p.ly, p.lz]) }
+    expect(at).toEqual([[5, 16, 5]])
   })
   it('never reports a trivial result under an odd (mid-write) version', () => {
     const { store, runner } = setup()

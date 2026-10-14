@@ -78,10 +78,12 @@ export type Override = readonly [number, number, number, number]
 export type ToMesh =
   | { type: 'init'; buffers: WorldBuffers; pages: SharedArrayBuffer[]; tables: MeshTables }
   | { type: 'page'; index: number; page: SharedArrayBuffer }
-  | { type: 'job'; id: number; chunk: number; overrides?: Override[] }
+  /** `cut`: world y of the highest visible layer, set only for chunks the layer cut crosses (spec §4). */
+  | { type: 'job'; id: number; chunk: number; overrides?: Override[]; cut?: number }
 
 export type FromMesh =
-  | { type: 'result'; id: number; chunk: number; version: number; data: ChunkMeshData }
+  /** `cut`: the job's cut, echoed so the main thread can drop a result meshed for a cut that moved on. */
+  | { type: 'result'; id: number; chunk: number; version: number; data: ChunkMeshData; cut?: number }
   | { type: 'retry'; id: number; chunk: number }
   | { type: 'error'; id: number; chunk: number; message: string }
 

@@ -2,6 +2,7 @@ import type { MeshTables } from '../../mesh/tables.ts'
 import { valueNoise2 } from '../../sim/generator.ts'
 import { hash32 } from '../../sim/rng.ts'
 import { PAD, padIndex, type ChunkSnapshot } from '../../world/reader.ts'
+import type { CutPlane } from '../../mesh/meshJob.ts'
 import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
 
 export const EDGE = { PX: 1, NX: 2, PZ: 4, NZ: 8 } as const
@@ -44,9 +45,9 @@ export function flowerChanceAt(chance: number, patchScale: number, wx: number, w
   return chance * Math.min(1, Math.max(0, (patch - 0.45) / 0.25))
 }
 
-/** Appends decoration instances for one snapshot. (ox, oy, oz) is the chunk's world origin. */
+/** Appends decoration instances for one snapshot. (ox, oy, oz) is the chunk's world origin. `plane`: a layer cut through it. */
 export function extractDecorations(
-  s: ChunkSnapshot, t: MeshTables, ox: number, oy: number, oz: number, grass: InstanceBuilder, flowers: InstanceBuilder,
+  s: ChunkSnapshot, t: MeshTables, ox: number, oy: number, oz: number, grass: InstanceBuilder, flowers: InstanceBuilder, plane?: CutPlane,
 ): void {
   const d = t.deco
   for (let y = 0; y < 32; y++) for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
@@ -54,6 +55,8 @@ export function extractDecorations(
     const k = d.byBlock[voxelId(s.voxels[pi]!)]!
     if (k === 0) continue
     if (voxelId(s.voxels[pi + UP]!) !== AIR) continue
+    // A cut-layer cell that had anything on it before the cut grows nothing: the cut only opens it to view.
+    if (plane && y + 1 === plane.py && plane.covered[x + 1 + (z + 1) * PAD] !== 0) continue
     const wx = ox + x, wy = oy + y, wz = oz + z
     const dens = d.stateDensity[(k - 1) * 4 + (voxelState(s.voxels[pi]!) & 3)]!
     if (dens < 1 && hash32(DENSITY_SEED, wx, wy, wz) / 4294967296 >= dens) continue

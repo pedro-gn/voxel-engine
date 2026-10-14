@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { meshOpaqueAndCutout } from '../src/mesh/greedy.ts'
+import { applyCut, type CutPlane } from '../src/mesh/meshJob.ts'
 import { QuadBuilder } from '../src/mesh/quadBuilder.ts'
-import { FACE, unpackA } from '../src/mesh/vertexFormat.ts'
-import { padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
+import { CUT_BIT, FACE, unpackA } from '../src/mesh/vertexFormat.ts'
+import { PAD, padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
 import { packLight } from '../src/world/voxel.ts'
 import { ID } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
 
 const tables = meshTables()
-function mesh(s: ChunkSnapshot) {
+function mesh(s: ChunkSnapshot, plane?: CutPlane) {
   const o = new QuadBuilder(), c = new QuadBuilder()
-  meshOpaqueAndCutout(s, tables, o, c, new Int32Array(1024))
+  meshOpaqueAndCutout(s, tables, o, c, new Int32Array(1024), plane)
   return { opaque: o.build(), cutout: c.build(), oq: o.quadCount, cq: c.quadCount }
 }
 
@@ -86,6 +87,42 @@ describe('greedy opaque meshing', () => {
       checked++
     }
     expect(checked).toBe(1) // loop steps 8 words = one quad (first vertex), one +Y quad
+  })
+})
+
+describe('layer cut faces', () => {
+  /** A solid 3 × 3 × 3 stone block at local 10..12, cut through its middle layer (local y 11). */
+  function cutBlock() {
+    const s = emptySnap()
+    for (let x = 10; x < 13; x++) for (let y = 10; y < 13; y++) for (let z = 10; z < 13; z++) put(s, x, y, z, ID.stone)
+    return { s, plane: applyCut(s, 0, 11, tables.opaque) }
+  }
+  /** The +y quads' first vertices, with their cut flag. */
+  function tops(m: ReturnType<typeof mesh>) {
+    const out: { y: number; cut: boolean }[] = []
+    const v = m.opaque?.vertices ?? new Uint32Array()
+    for (let i = 0; i < v.length; i += 8) { const a = unpackA(v[i]!); if (a.normal === FACE.PY) out.push({ y: a.y, cut: (v[i]! & CUT_BIT) !== 0 }) }
+    return out
+  }
+  it('meshes the cut layer as if the world above were air and flags its covered tops', () => {
+    const { s, plane } = cutBlock()
+    expect(plane.py).toBe(12)
+    const t = tops(mesh(s, plane))
+    expect(t).toEqual([{ y: 12, cut: true }]) // one merged 3 × 3 quad at the middle layer's top
+    for (let i = 0; i < s.voxels.length; i++) if (Math.floor(i / (PAD * PAD)) > 12) expect(s.voxels[i]).toBe(ID.air)
+  })
+  it('a column that was open above keeps an unflagged top, merged apart', () => {
+    const { s, plane } = cutBlock()
+    plane.covered[11 + 11 * PAD] = 0 // local (10, 10): padded (11, 11)
+    const t = tops(mesh(s, plane))
+    expect(t.filter(q => !q.cut)).toHaveLength(1)
+    expect(t.filter(q => q.cut).length).toBeGreaterThan(0)
+  })
+  it('without a plane no face is flagged', () => {
+    const s = emptySnap()
+    for (let x = 10; x < 13; x++) for (let y = 10; y < 13; y++) for (let z = 10; z < 13; z++) put(s, x, y, z, ID.stone)
+    const v = mesh(s).opaque!.vertices
+    for (let i = 0; i < v.length; i += 2) expect(v[i]! & CUT_BIT).toBe(0)
   })
 })
 

@@ -44,6 +44,8 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
   const nIdx = a.shiftRight(uint(18)).bitAnd(uint(7))
   const ao = a.shiftRight(uint(21)).bitAnd(uint(3))
   const drop = a.shiftRight(uint(25)).bitAnd(uint(31)).toFloat()
+  /** 1 on a top face created by the layer cut (vertexFormat.ts CUT_BIT), else 0. */
+  const cut = a.shiftRight(uint(30)).bitAnd(uint(1)).toFloat()
   const layerBits = b.bitAnd(uint(4095))
   const layer = layerBits.toFloat()
   const sky = b.shiftRight(uint(12)).bitAnd(uint(15)).toFloat().div(15)
@@ -77,6 +79,7 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
     blk: varying(blk),
     // Liquid vertices carry flags in their ao bits (LIQUID_DEEP), not occlusion: their AO is always 1.
     ao: liquid ? float(1) : varying(aoF),
+    cut: liquid ? float(0) : varying(cut),
     /**
      * The vertex's surface height within its cell (1 = full); 1 for deep water (a LIQUID_DEEP vertex: the same liquid
      * lies below, so a thin top layer still reads as deep) and for non-liquid layers.

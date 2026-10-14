@@ -1,13 +1,31 @@
 import type { FromMesh, Override } from '../protocol.ts'
 import type { WorldBuffers } from '../world/buffers.ts'
 import { PAD, WorldReader, createSnapshot, padIndex, type ChunkSnapshot } from '../world/reader.ts'
-import { voxelId } from '../world/voxel.ts'
+import { AIR, FULL_SKY, voxelId } from '../world/voxel.ts'
 import { Mesher, type ChunkMeshData } from './mesher.ts'
 import type { MeshTables } from './tables.ts'
 
 const EMPTY: ChunkMeshData = { opaque: null, cutout: null, translucent: null, liquid: null, grass: null, flowers: null }
 const OFFS = [1, -1, PAD * PAD, -PAD * PAD, PAD, -PAD] // +x -x +y -y +z -z in padded index space
 const UP = 2
+
+/**
+ * The layer cut through one chunk (spec §4): `py` is the padded y of the cut layer; `covered[px + pz × PAD]` is what lay on
+ * top of each cut-layer cell before the cut: 0 air, 1 an opaque block (its top face is created by the cut), 2 anything else.
+ */
+export interface CutPlane { py: number; covered: Uint8Array }
+
+/** Reads every voxel above world y `cut` as air lit by the open sky, and records what covered each cut-layer cell. */
+export function applyCut(s: ChunkSnapshot, oy: number, cut: number, opaque: Uint8Array): CutPlane {
+  const py = cut - oy + 1
+  const covered = new Uint8Array(PAD * PAD)
+  for (let pz = 0; pz < PAD; pz++) for (let px = 0; px < PAD; px++) {
+    const above = py + 1 < PAD ? s.voxels[padIndex(px, py + 1, pz)]! : AIR
+    covered[px + pz * PAD] = above === AIR ? 0 : opaque[voxelId(above)] ? 1 : 2
+    for (let y = Math.max(py + 1, 0); y < PAD; y++) { const i = padIndex(px, y, pz); s.voxels[i] = AIR; s.light[i] = FULL_SKY }
+  }
+  return { py, covered }
+}
 
 export class MeshJobRunner {
   private readonly reader: WorldReader
@@ -23,10 +41,11 @@ export class MeshJobRunner {
   addPage(index: number, page: SharedArrayBuffer): void { this.reader.addPage(index, page) }
 
   /** Never throws on a failed snapshot: a `retry` result tells the main thread to requeue the job. */
-  run(job: { id: number; chunk: number; overrides?: readonly Override[] }): FromMesh {
+  run(job: { id: number; chunk: number; overrides?: readonly Override[]; cut?: number }): FromMesh {
     const { id, chunk } = job
     const hasOverrides = job.overrides !== undefined && job.overrides.length > 0
-    if (!hasOverrides) {
+    // A cut opens even a uniform chunk: no trivial fast path under it.
+    if (!hasOverrides && job.cut === undefined) {
       // isTrivial reads the table without a seqlock bracket, so only trust it if the version
       // was even before and unchanged after; otherwise fall through to the validated snapshot.
       // The fence keeps isTrivial's plain table loads from completing after the validation load.
@@ -42,7 +61,9 @@ export class MeshJobRunner {
     if (version === null) return { type: 'retry', id, chunk }
     if (hasOverrides) this.applyOverrides(chunk, job.overrides!)
     const [cx, cy, cz] = this.reader.layout.chunkCoords(chunk)
-    return { type: 'result', id, chunk, version, data: this.mesher.mesh(this.snap, this.tables, cx * 32, cy * 32, cz * 32) }
+    const plane = job.cut !== undefined ? applyCut(this.snap, cy * 32, job.cut, this.tables.opaque) : undefined
+    const data = this.mesher.mesh(this.snap, this.tables, cx * 32, cy * 32, cz * 32, plane)
+    return { type: 'result', id, chunk, version, data, ...(job.cut !== undefined && { cut: job.cut }) }
   }
 
   private applyOverrides(chunk: number, overrides: readonly Override[]): void {
