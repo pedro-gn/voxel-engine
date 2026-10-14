@@ -72,6 +72,9 @@ cost if wrong.
   shots behind their env flags, `cut-bench` included), 0 failed, 3.7 min. Note: through the root script npm swallows
   `--workers=1` ("Unknown cli config"), so Playwright ran with its default 6 workers; nothing failed under that load.
   `e2e/sky.spec.ts` alone: passed (13 s).
+- After the fix pass: `npm run typecheck` 0; `npm test` engine 117 files, 1255 passed + 2 expected-fail, other
+  workspaces 174, 200 and 139 passed; e2e run from `apps/sandbox` with `npx playwright test --workers=1` (one worker,
+  as intended): 47 passed, 17 skipped, 0 failed, 7.3 min.
 
 ## Pending for the user
 
