@@ -16,7 +16,8 @@ export interface ChunkVersion { chunk: number; version: number }
 /** `offset256`: where the fragment already is (a fragment re-announced after a load); absent for a new one, which starts at 0. */
 export interface FragmentBirth { id: number; positions: Uint32Array; voxels: Uint16Array; source: ChunkVersion[]; offset256?: number }
 export interface FragmentLanding { id: number; offset256: number; chunks: ChunkVersion[] }
-export interface CollapseTick { born: FragmentBirth[]; poses: Int32Array; landed: FragmentLanding[] }
+/** `removed`: fragments that fell out of a void world this tick (no landing, nothing written). */
+export interface CollapseTick { born: FragmentBirth[]; poses: Int32Array; landed: FragmentLanding[]; removed?: number[] }
 export interface CollapsePort {
   trackSweeps?: boolean
   layout: Layout; registry: BlockRegistry
@@ -107,6 +108,9 @@ export class CollapseSystem {
   /** Set by restore(): the next step keeps the births it queued for the main thread. */
   private keepBorn = false
   private landed: FragmentLanding[] = []
+  private removed: number[] = []
+  /** Void world (spec §3): the bottom of the volume holds nothing up, and fragments fall out through it. */
+  voidFloor = false
   private visited = 0
   private mutations = 0
   private restarts = 0
@@ -189,7 +193,7 @@ export class CollapseSystem {
     // Births a restore queued are announced by the first publication, even when this step runs before it.
     if (!this.keepBorn) this.born = []
     this.keepBorn = false
-    this.landed = []; this.visited = 0; this.mutations = 0
+    this.landed = []; this.removed = []; this.visited = 0; this.mutations = 0
     if (!this.enabled) return
     // Landings and detachments share the mutation allowance. An entire admitted body fits it.
     this.advance()
@@ -229,7 +233,7 @@ export class CollapseSystem {
         while (budget > 0 && job.head < job.queue.length && job.phase === 'search') {
           const p = job.queue.data[job.head++]!, x = p % sx, y = Math.floor(p / plane), z = Math.floor((p % plane) / sx)
           budget--; this.visited++
-          if (y === 0) { job.phase = 'supported'; break }
+          if (y === 0 && !this.voidFloor) { job.phase = 'supported'; break }
           for (let d = 0; d < 6; d++) {
             const nx = x + DX[d]!, ny = y + DY[d]!, nz = z + DZ[d]!
             if (nx < 0 || ny < 0 || nz < 0 || nx >= sx || ny >= L.size[1] || nz >= L.size[2]) continue
@@ -277,13 +281,13 @@ export class CollapseSystem {
   }
 
   publication(versions: Uint32Array): CollapseTick | undefined {
-    if (!this.enabled || (!this.born.length && !this.landed.length && !this.fragments.length)) return undefined
+    if (!this.enabled || (!this.born.length && !this.landed.length && !this.fragments.length && !this.removed.length)) return undefined
     for (const e of this.born) for (const v of e.source) v.version = versions[v.chunk]!
     for (const e of this.landed) for (const v of e.chunks) v.version = versions[v.chunk]!
     const poses = new Int32Array(this.fragments.length * 3)
     this.fragments.forEach((b, i) => { poses[i * 3] = b.id; poses[i * 3 + 1] = b.offset256; poses[i * 3 + 2] = b.vy256 })
-    const result = { born: this.born, landed: this.landed, poses }
-    this.born = []; this.landed = []
+    const result: CollapseTick = { born: this.born, landed: this.landed, poses, ...(this.removed.length > 0 && { removed: this.removed }) }
+    this.born = []; this.landed = []; this.removed = []
     return result
   }
 
@@ -414,7 +418,7 @@ export class CollapseSystem {
       for (const r of b.runs) {
         const from = r.y * 256 + b.offset256, to = r.y * 256 + target
         for (let y = Math.ceil(from / 256) - 1; y >= Math.floor(to / 256); y--) {
-          if (y < 0) { grid = Math.max(grid, -r.y * 256); break }
+          if (y < 0) { if (!this.voidFloor) grid = Math.max(grid, -r.y * 256); break }
           const id = voxelId(this.port.get(r.x, y, r.z))
           if (reg.solid[id] || reg.source[id]) { grid = Math.max(grid, (y + 1 - r.y) * 256); break }
         }
@@ -423,6 +427,10 @@ export class CollapseSystem {
         if (sand !== undefined) dynamic = Math.max(dynamic, sand - r.y * 256)
       }
       target = Math.max(target, grid, dynamic)
+      // Void world: a fragment whose every run is below the bottom of the volume has left the world.
+      if (this.voidFloor && grid === Number.NEGATIVE_INFINITY && b.runs.every(r => (r.y + r.height) * 256 + target <= 0)) {
+        this.recordSweep(b, target); this.unindex(b); this.removed.push(b.id); continue
+      }
       // If an entire landing cannot fit this tick, keep the body at its previous height.
       if (grid >= dynamic && grid >= target && this.mutations + b.positions.length <= this.mutationCap) {
         const offset = grid / 256, chunks = this.chunks(b.positions, offset)

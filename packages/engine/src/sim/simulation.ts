@@ -89,6 +89,7 @@ export class Simulation {
   private readonly commandTypes: { has(type: string): boolean }
   private collapseWrite = false
   private isPaused = false
+  private isVoid = false
   private readonly jobCap: number
 
   private pending: StampedCommand[] = []
@@ -216,6 +217,17 @@ export class Simulation {
     const r = gen.configure?.(doc, { size: this.layout.size, seed: this.seed, id: (name) => this.registry.id(name) })
     const sea = r && typeof r === 'object' ? r.seaLevel : undefined
     this.water.setSeaLevel(Number.isInteger(sea) && (sea as number) > 0 ? (sea as number) : 0)
+    this.setVoid(r !== undefined && r !== null && typeof r === 'object' && r.void === true)
+  }
+
+  /** True when the generator declared a void world (spec §3): the bottom of the volume is a sink. */
+  get voidWorld(): boolean { return this.isVoid }
+  private setVoid(v: boolean): void {
+    this.isVoid = v
+    this.water.cols.drainFloor = v
+    this.gravity.voidFloor = v
+    this.collapse.voidFloor = v
+    this.workers?.setVoid(v)
   }
 
   /** Runs the generator for chunk column (cx, cz) into `column` (32 × 32 × height voxels, cleared to air first). */
@@ -479,6 +491,7 @@ export class Simulation {
       for (let i = 0; i < l32.length; i++) mix(l32[i]!)
     }
     mix(this.isPaused ? 1 : 0)
+    if (this.isVoid) mix(0x766f6964) // only void worlds mix it, so other worlds hash as before
     this.gravity.mixState(mix)
     this.water.mixState(mix)
     this.jobs.mixState(mix)

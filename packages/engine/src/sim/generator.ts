@@ -13,6 +13,8 @@ export interface GeneratorInfo {
 export interface GeneratorConfig {
   /** Water fills y < seaLevel; the pool at seaLevel − 1 is the sea that springs draw from. */
   seaLevel?: number
+  /** The bottom of the volume is open: water, falling blocks, fragments and units leave the world there (spec §3). */
+  void?: boolean
 }
 
 export interface GeneratorContext {

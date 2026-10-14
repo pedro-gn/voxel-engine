@@ -258,6 +258,8 @@ export class WorkerSystem {
       this.dig[id] = m.digTicks ?? 0; this.build[id] = m.buildTicks ?? 0; this.drops[id] = m.drop === undefined ? id : R.id(m.drop); this.tools[id] = m.tool
     }
   }
+  /** Void world (spec §3): the bottom of the volume is no support. Task 7 fills it in. */
+  setVoid(_v: boolean): void {}
   /** This tick's events of controlled units; clears them. */
   takeUnitEvents(): UnitEvent[] { return this.unitEvents.splice(0) }
   /** A new unit owned by a game system; throws if the pose is not safe or the unit limit is reached. */

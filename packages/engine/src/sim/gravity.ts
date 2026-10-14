@@ -37,6 +37,8 @@ export class GravitySystem {
   private nextId = 1
   private readonly port: GravityPort
   private readonly columns = new Map<number, FallingBodyState[]>()
+  /** Void world (spec §3): a body that falls through the bottom of the volume leaves the world instead of landing. */
+  voidFloor = false
 
   constructor(port: GravityPort) { this.port = port }
 
@@ -94,18 +96,19 @@ export class GravitySystem {
         if (limit !== undefined && limit <= b.y256) target = Math.max(target, limit)
         const fragment = this.port.floorAt?.(b.x, b.z, b.y256, target)
         if (fragment !== undefined) target = Math.max(target, fragment)
-        let land = -1
-        for (let k = Math.ceil(b.y256 / 256) - 1; k >= Math.floor(target / 256); k--) {
-          if (k < 0) { land = 0; break }
+        let land = -1, gone = b.y256 < 0
+        for (let k = Math.ceil(b.y256 / 256) - 1; !gone && k >= Math.floor(target / 256); k--) {
+          if (k < 0) { if (this.voidFloor) { gone = true; break } land = 0; break }
           const id = voxelId(this.port.get(b.x, k, b.z))
           // A spring is a landing surface like a solid: a body never overwrites it.
           if (reg.solid[id] === 1 || (reg.liquid[id] === 1 && reg.source[id] === 1)) { land = k + 1; break }
         }
-        if (land < 0 && target < 0) land = 0
+        if (land < 0 && target < 0) { if (this.voidFloor) gone = true; else land = 0 }
         if (this.port.trackSweeps) {
           let a = this.swept.get(col); if (!a) { a = []; this.swept.set(col, a) }
           a.push({ lo: land >= 0 ? land * 256 : target, hi: b.y256 + 256 })
         }
+        if (gone) continue // below the world: no write, no landing
         if (land >= 0) {
           landing = true
           this.port.write(b.x, land, b.z, b.voxel)
@@ -165,7 +168,7 @@ export class GravitySystem {
 
   /** A block falls into air or a flowing liquid; never through the world floor or a spring. */
   private open(x: number, y: number, z: number): boolean {
-    if (y < 0) return false
+    if (y < 0) return this.voidFloor
     const v = this.port.get(x, y, z), id = voxelId(v), reg = this.port.registry
     return v === AIR || (reg.liquid[id] === 1 && reg.source[id] === 0)
   }
