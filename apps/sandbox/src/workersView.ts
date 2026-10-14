@@ -82,6 +82,9 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
     }
     for (const id of views.keys()) if (!alive.has(id)) { views.delete(id); selected.delete(id); shown.delete(id); const s = skins.get(id); if (s) { s.mixer.stopAllAction(); scene.remove(s.root); skins.delete(id) } }
   }))
+  /** The layer cut hides units whose feet are above its plane (the engine hides the world; units are the game's). */
+  // (`view?.`: the unit tests drive this view with a partial engine.)
+  const aboveCut = (y: number) => { const c = engine.view?.cutY ?? null; return c !== null && y > c + 1.01 }
   // Before the camera update, so a camera that follows a unit sees it where this frame draws it.
   callbacks.push(engine.on('preFrame', ({ dt, now }) => {
     for (let i = barriers.length - 1; i >= 0; i--) {
@@ -104,7 +107,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
         if (moving) skin.heading = Math.atan2(dx, dz)
         const turn = Math.atan2(Math.sin(skin.heading - skin.root.rotation.y), Math.cos(skin.heading - skin.root.rotation.y))
         if (!engine.physics.paused) skin.root.rotation.y += turn * (1 - Math.exp(-14 * dt))
-        skin.root.visible = u.state !== 'incapacitated'
+        skin.root.visible = u.state !== 'incapacitated' && !aboveCut(position.y)
         const name = moving || u.state === 'walking' ? 'walk' : 'idle'
         if (skin.clip !== name) {
           const old = gltf.animations.find(c => c.name === skin.clip), clip = gltf.animations.find(c => c.name === name)
@@ -113,7 +116,7 @@ export async function createWorkersView(engine: Engine, canvas: HTMLCanvasElemen
           skin.clip = name
         }
         skin.mixer.update(engine.physics.paused ? 0 : dt)
-      } else if (u.state !== 'incapacitated') {
+      } else if (u.state !== 'incapacitated' && !aboveCut(position.y)) {
         position.y += .825; matrix.compose(position, quat, scale); proxies.setMatrixAt(pi, matrix); proxies.setColorAt(pi, color.set(selected.has(u.id) ? '#fff091' : '#d9b455')); proxyIds[pi++] = u.id; position.y -= .825
       }
       if (selected.has(u.id)) { position.y += .025; matrix.compose(position, quat, scale); rings.setMatrixAt(ri++, matrix) }

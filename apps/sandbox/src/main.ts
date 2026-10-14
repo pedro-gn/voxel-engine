@@ -21,6 +21,8 @@ import showcaseDoc from './terrain/showcase.terrain.json'
 import { randomTickRate } from './rules.ts'
 import { COLLAPSE_SIZE, cutLeftCommands, cutRightCommands, cutTowerCommands, cutNormalCommands, stressCollapseCommands } from './scenes/collapse.ts'
 import { createTerrainPanel } from './terrainPanel.ts'
+import { SKY_CENTRE, SKY_SIZE, SKY_WORKER_OPTIONS } from './scenes/sky.ts'
+import { createSkyPanel } from './skyPanel.ts'
 import { createFirstPerson } from './firstPerson.ts'
 import { applyCamera, captureCamera, isAppState, type AppState } from './appState.ts'
 import { bootPlan } from './scene.ts'
@@ -71,9 +73,15 @@ const size: [number, number, number] = saved ? [...saved.manifest.size] : sceneN
   : sceneName === 'collapse' ? [...COLLAPSE_SIZE]
   : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
+  : sceneName === 'sky' ? [...SKY_SIZE]
   : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
   : [n, 128, n]
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
+/** The worker-unit options of the scenes that have units. */
+function sceneWorkers() {
+  return sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS }
+    : sceneName === 'crowd' ? { workers: CROWD_WORKER_OPTIONS } : sceneName === 'sky' ? { workers: SKY_WORKER_OPTIONS } : {}
+}
 
 // A save can still be refused once the engine sees it (a block this build does not have): show why, as for a bad file.
 const engine = await createEngine({
@@ -92,16 +100,22 @@ const engine = await createEngine({
       ? () => new Worker(new URL('./flood.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'caves'
       ? () => new Worker(new URL('./caves.worker.ts', import.meta.url), { type: 'module' })
+    : sceneName === 'sky'
+      ? () => new Worker(new URL('./sky.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'terrain' || sceneName === 'living' || sceneName === 'crowd'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
   terrain: sceneName === 'flood' ? { scene: 'flood' } : sceneName === 'caves' ? { scene: 'caves' }
-    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : sceneName === 'living' ? livingDoc : sceneName === 'crowd' ? crowdDoc : terrainDoc,
+    : sceneName === 'collapse' ? { scene: 'collapse', stress: params.has('stress') } : sceneName === 'living' ? livingDoc : sceneName === 'crowd' ? crowdDoc
+    // The sky generator declares a void world from configure(), which runs only when a document is given.
+    : sceneName === 'sky' ? {} : terrainDoc,
   genWorker: terrainDoc || sceneName === 'living' || sceneName === 'crowd' ? () => new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' }) : undefined,
   // ?still: the world stays exactly as generated (no physics, no random ticks), for the regenerate e2e.
   sim: params.has('still')
-    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : sceneName === 'crowd' ? { workers: CROWD_WORKER_OPTIONS } : {}) }
-    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...(sceneName === 'workers' ? { workers: WORKER_OPTIONS } : sceneName === 'living' ? { workers: LIVING_WORKER_OPTIONS } : sceneName === 'crowd' ? { workers: CROWD_WORKER_OPTIONS } : {}) },
+    ? { randomTicksPerChunk: 0, debugFluids: params.has('debugFluids'), paused: true, ...sceneWorkers() }
+    : { randomTicksPerChunk: randomTickRate(size[0], size[2]), debugFluids: params.has('debugFluids'), ...sceneWorkers() },
+  // The sky scene's management camera: its home view (Home resets to it) and limits.
+  ...(sceneName === 'sky' && { camera: { yaw: 0.7, pitch: 0.7, distance: 230, minPitch: 0.35, maxPitch: 1.35, maxDistance: 420 } }),
   forceWebGL: params.has('webgl'),
   gpuTiming: params.has('gpu'),
   // ?nobatch: one mesh per chunk layer instead of region batches (the before/after of perf candidate #3).
@@ -161,7 +175,10 @@ if (sceneName === 'collapse' && presetCamera) {
     s.target[0] = 56; s.target[1] = 12; s.target[2] = 46; s.distance = 140; s.pitch = 0.75; s.yaw = 0.7
   }
 }
-const unitsScene = sceneName === 'workers' || sceneName === 'living' || sceneName === 'crowd'
+if (sceneName === 'sky' && presetCamera) {
+  for (const s of [engine.controls.goal, engine.controls.current]) { s.target[0] = SKY_CENTRE; s.target[1] = 50; s.target[2] = SKY_CENTRE }
+}
+const unitsScene = sceneName === 'workers' || sceneName === 'living' || sceneName === 'crowd' || sceneName === 'sky'
 createControls(engine, { collapsed: editing || unitsScene })
 if (unitsScene) Object.assign(document.getElementById('controls')!.style, { top: 'auto', right: 'auto', bottom: '12px', left: '12px' })
 const editor = editing
@@ -253,6 +270,7 @@ if (living) createLivingBar(living)
 const crowd = sceneName === 'crowd' ? createCrowd(engine, Number(params.get('units') ?? 1000)) : null
 if (crowd && savedApp?.scripts.crowd) crowd.restore(savedApp.scripts.crowd)
 if (crowd) createCrowdBar(crowd)
+const sky = sceneName === 'sky' ? createSkyPanel(engine) : null
 if (savedApp) applyCamera(engine, savedApp.camera, () => fp ? fp.toggle() : engine.setCameraMode('firstPerson'))
 
 /** The sandbox's part of a save: which scene, where the camera is, and how far the scene scripts got. */
@@ -267,4 +285,4 @@ const autosave = startAutosave(save, {
   onResult: (slot, _r, e) => { if (e) console.warn(`[sandbox] autosave ${slot} failed:`, e) },
 })
 createSavePanel(engine, { save, autosave, load: (slot) => { location.search = `?save=${encodeURIComponent(slot)}` } })
-Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, fp, save, autosave, ready: true } })
+Object.assign(window, { __elovox: { engine, bean, editor, flood, caves, collapse, workers, living, crowd, sky, fp, save, autosave, ready: true } })
