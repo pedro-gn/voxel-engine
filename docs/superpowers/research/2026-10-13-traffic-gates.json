@@ -1345,5 +1345,165 @@
    "gate": true
   }
  },
- "conditions": "2026-10-13, Node v24.5.0, 100 units on the 1024² crowd world, 6,600 timed ticks per phase after the prebuild warm-up, worse of two runs; quiet machine checked before each batch"
+ "conditions": "2026-10-13, Node v24.5.0, 100 units on the 1024² crowd world, 6,600 timed ticks per phase after the prebuild warm-up, worse of two runs; quiet machine checked before each batch",
+ "living": {
+  "note": "livingAb.node.mjs, 5 interleaved pairs, median of per-pair p50 differences (ms); a = branch ff22985",
+  "vsD63ffe1": {
+   "idle": {
+    "a": [
+     3.84,
+     3.415,
+     3.44,
+     3.819,
+     3.383
+    ],
+    "b": [
+     3.124,
+     3.04,
+     3.164,
+     2.905,
+     3.627
+    ],
+    "medianA": 3.44,
+    "medianB": 3.124,
+    "medianDelta": 0.375
+   },
+   "work": {
+    "a": [
+     5.016,
+     5.307,
+     5.029,
+     5.548,
+     5.534
+    ],
+    "b": [
+     3.45,
+     3.556,
+     3.79,
+     3.494,
+     4.828
+    ],
+    "medianA": 5.307,
+    "medianB": 3.556,
+    "medianDelta": 1.566
+   },
+   "dam": {
+    "a": [
+     9.161,
+     8.315,
+     8.263,
+     8.353,
+     8.132
+    ],
+    "b": [
+     6.194,
+     5.812,
+     6.116,
+     6.179,
+     6.133
+    ],
+    "medianA": 8.315,
+    "medianB": 6.133,
+    "medianDelta": 2.174
+   },
+   "collapse": {
+    "a": [
+     10.061,
+     8.49,
+     8.834,
+     8.781,
+     8.823
+    ],
+    "b": [
+     7.96,
+     6.691,
+     6.791,
+     6.624,
+     6.899
+    ],
+    "medianA": 8.823,
+    "medianB": 6.791,
+    "medianDelta": 2.043
+   }
+  },
+  "vsMain9163239": {
+   "idle": {
+    "a": [
+     4.064,
+     3.686,
+     4.474,
+     3.79,
+     3.901
+    ],
+    "b": [
+     3.442,
+     3.99,
+     4.173,
+     3.827,
+     4.194
+    ],
+    "medianA": 3.901,
+    "medianB": 3.99,
+    "medianDelta": -0.037
+   },
+   "work": {
+    "a": [
+     4.99,
+     5.434,
+     6.588,
+     5.616,
+     5.333
+    ],
+    "b": [
+     5.609,
+     5.337,
+     6.173,
+     5.394,
+     6.164
+    ],
+    "medianA": 5.434,
+    "medianB": 5.609,
+    "medianDelta": 0.097
+   },
+   "dam": {
+    "a": [
+     10.054,
+     8.778,
+     9.823,
+     8.743,
+     8.388
+    ],
+    "b": [
+     7.94,
+     8.803,
+     9.204,
+     8.574,
+     8.533
+    ],
+    "medianA": 8.778,
+    "medianB": 8.574,
+    "medianDelta": 0.169
+   },
+   "collapse": {
+    "a": [
+     10.235,
+     9.764,
+     9.31,
+     9.368,
+     9.496
+    ],
+    "b": [
+     8.784,
+     9.007,
+     8.7,
+     9.011,
+     8.629
+    ],
+    "medianA": 9.496,
+    "medianB": 8.784,
+    "medianDelta": 0.757
+   }
+  }
+ },
+ "stress": "not run (user decision, 2026-10-13)"
 }
