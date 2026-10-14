@@ -4,11 +4,13 @@ import { regionGrid } from './regions.ts'
 import { checkSlotName, type SaveStore } from './store.ts'
 import { SECTION_VERSIONS, type RegionBlob, type SectionName } from '../sim/snapshot.ts'
 import { Layout } from '../world/layout.ts'
+import type { SystemSection } from '../sim/systems.ts'
 
-export interface SectionInput { name: SectionName | 'app'; bytes: Uint8Array }
+/** `version`: a game system section's own version; engine sections take theirs from SECTION_VERSIONS. */
+export interface SectionInput { name: SectionName | 'app' | SystemSection; version?: number; bytes: Uint8Array }
 export interface WriteResult { bytes: number; blobsWritten: number; regionsWritten: number; manifest: Manifest }
 /** A save read back and verified: raw (decompressed) section and region bytes. */
-export interface LoadedSave { slot: string; manifest: Manifest; sections: Partial<Record<SectionName | 'app', Uint8Array>>; regions: RegionBlob[] }
+export interface LoadedSave { slot: string; manifest: Manifest; sections: Partial<Record<SectionName | 'app' | SystemSection, Uint8Array>>; regions: RegionBlob[] }
 
 async function putBlob(store: SaveStore, raw: Uint8Array, count: { written: number; bytes: number }): Promise<BlobRef> {
   const gz = await gzip(raw), hash = await sha256(gz)
@@ -34,7 +36,7 @@ export async function writeSave(store: SaveStore, slot: string, draft: ManifestD
   for (let r = 0; r < total; r++) if (!outRegions.has(r) && !regions.some(x => x.r === r)) throw new SaveError('invalid', `the save is missing region ${r} of ${total}`)
   for (const r of regions) outRegions.set(r.r, { r: r.r, ...(await putBlob(store, r.bytes, count)) })
   const outSections: Manifest['sections'] = []
-  for (const s of sections) outSections.push({ name: s.name, version: SECTION_VERSIONS[s.name], ...(await putBlob(store, s.bytes, count)) })
+  for (const s of sections) outSections.push({ name: s.name, version: s.version ?? SECTION_VERSIONS[s.name as SectionName | 'app'], ...(await putBlob(store, s.bytes, count)) })
   for (const r of reuse) {
     if (regions.some(x => x.r === r.r)) continue
     // Reused from the slot's previous manifest: still there only if nothing deleted the slot while this save ran.

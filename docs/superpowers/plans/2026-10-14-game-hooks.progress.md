@@ -23,3 +23,4 @@ Ledger kept in the repo (committed with each task) at the user's request instead
 - Task 1: Ruling: step 5's RED was "simulation ignores systems" rather than "cannot resolve systems.ts" (test file and module were written in one go) — the 10 failing assertions showed the same missing behaviour — cost if wrong: none.
 - Task 1: Ruling: `SystemContext.edit` also refuses an invalid voxel value (`invalid voxel N`, like `RuleContext.set`) — the plan passed it unchecked to `applySet` — cost if wrong: a system that relied on writing garbage voxels gets an exception (programming error anyway).
 - Task 1: Ruling: `waterDepth` doc says "water above the bottom of the cell" (what `WaterSystem.depthAt` returns: immersion above the feet, can exceed 256) instead of "water in the cell" — cost if wrong: doc wording only.
+- Task 1: complete (commit c658716; tests: vitest systems/rng/simulation/commands → 4 files, 47 passed; root typecheck 0)

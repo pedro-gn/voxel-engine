@@ -409,12 +409,13 @@ export class Simulation {
     const revs = this.store.regionRevisions
     const regions: RegionBlob[] = []
     for (let r = 0; r < revs.length; r++) if (!since || since[r] !== revs[r]) regions.push({ r, bytes: encodeRegion(this.store, r) })
-    const sections: { name: SectionName; bytes: Uint8Array }[] = [
+    const sections: SimSnapshot['sections'] = [
       { name: 'scheduler', bytes: pack(this.schedulerState()) },
       { name: 'water', bytes: pack(this.water.snapshot()) },
       { name: 'gravity', bytes: pack(this.gravity.saveState()) },
       { name: 'collapse', bytes: pack(this.collapse.snapshot()) },
       ...(this.workers ? [{ name: 'workers' as const, bytes: pack({ json: this.workers.snapshot(), arrays: {} }) }] : []),
+      ...(this.systems?.snapshot() ?? []),
     ]
     return { tick: this.tick, paused: this.isPaused, revisions: revs.slice(), regions, sections, ms: performance.now() - t0 }
   }
@@ -449,6 +450,8 @@ export class Simulation {
     const workers = section('workers')
     if (workers && !this.workers) throw new Error('the save has worker units but this simulation runs without workers')
     if (workers) this.workers!.restore(workers.json as WorkersSnapshot)
+    // Game systems: refused (fatal at boot) when a system section is missing, unknown or of another version (plan D2).
+    this.systems?.restore(s.sections)
     this.store.regionRevisions.fill(0)
     return chunks
   }
