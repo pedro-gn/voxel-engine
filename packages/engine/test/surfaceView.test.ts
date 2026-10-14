@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   ARC_COLUMNS, ARC_GAP, ARC_REACH, ARC_SEGMENTS, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX,
-  JOIN, SINK, flareMargin, arcPoint, backPoint, bodyClears, bodyThickness, cornerHeights, curtainAt, exitSpeed, layArc, layBody,
+  JOIN, LIFT, SINK, flareMargin, arcPoint, backPoint, bodyClears, bodyThickness, cornerHeights, curtainAt, exitSpeed, layArc, layBody,
   flareAmount, flareCode, flareOpen, fluxOf, layLip, level, lipCode, lipOf, localOf, quantizeFlow, shows, splashCode, splashHalf, splashHalfOf,
   splashOf, splashSlopeOf,
 } from '../src/render/water/surfaceMesh.ts'
@@ -991,7 +991,7 @@ function fromScratch(view: SurfaceView, floor: Int16Array): string[] {
 
 /**
  * The ground (blocks) a curtain must clear over column (ax, az) of the surfaces `s`: Infinity outside the world; its level when
- * it is not drawn; else its floor, but no higher than its drawn corners `ca`, `cb` (the drawn surface may dip under the floor).
+ * it is not drawn; else its floor, but no higher than its drawn corners `ca`, `cb` (a drawn surface stays LIFT above its floor, so this is its floor).
  */
 function groundAt(view: SurfaceView, floor: Int16Array, s: Int32Array, ax: number, az: number, ca: number, cb: number): number {
   const { sx, sz } = view
@@ -1162,4 +1162,58 @@ describe('curtain brinks', () => {
     }
     expect(reduced).toBeGreaterThan(50) // the search is exercised, not only the full depth
   })
+})
+
+describe('SurfaceView, brinks', () => {
+  it('a shallow brink over a one-block step stays above its bed to the edge, and the surface ramps over the step without a gap', () => {
+    // The sky stream's settled profile, rows z 4–6: a terrace on floor 6 (x 3–10, depth 96 → 32: the brink 1/8 block deep) and
+    // the next one a block lower (floor 5, x 11–18, 109 → 32). The drop (6.125 → 5.426) is under JOIN: no curtain, shared corners.
+    const up = [96, 96, 88, 76, 65, 54, 43, 32], down = [109, 99, 86, 76, 67, 53, 42, 32]
+    const s = scene(32, 32, (x) => (x <= 10 ? 6 : 5), (x, z) => {
+      if (z < 4 || z > 6) return 0
+      return x >= 3 && x <= 10 ? up[x - 3]! : x >= 11 && x <= 18 ? down[x - 11]! : 0
+    })
+    s.publish()
+    expect(s.view.column(0)!.curtains.count).toBe(0)
+    for (let z = 4; z <= 6; z++) {
+      const brink = at(s.view, 10, z, 'hCur'), lower = at(s.view, 11, z, 'hCur')
+      for (const h of brink) expect(h, `brink (10, ${z}) ${brink}`).toBeGreaterThanOrEqual(6 + LIFT)
+      // No crack: the brink's +x corners are the lower column's −x corners.
+      expect([brink[1], brink[2]]).toEqual([lower[0], lower[3]])
+    }
+    // Inside the stream the brink's +x edge is lifted just over its bed (its −x edge, shared with x 9 at 43 deep, is as before:
+    // (43 + 32) / 2), and the lower column ramps down from there.
+    expect(at(s.view, 10, 5, 'hCur')).toEqual([6 + 37.5 / 256, 6 + LIFT, 6 + LIFT, 6 + 37.5 / 256])
+    // The lower column's far (+x) corners are as before: shared with x 12, both on floor 5 (109, 99 deep).
+    const lower = at(s.view, 11, 5, 'hCur')
+    expect([lower[1], lower[2]]).toEqual([5 + 104 / 256, 5 + 104 / 256])
+    expect(cracks(s.view, s.cols.floor)).toEqual([])
+  })
+
+  it('keeps every drawn corner above its own floor and joined neighbours\' shared corners equal, on random terraces', () => {
+    let seed = 7
+    const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32 }
+    let stepped = 0 // drawn neighbours on different floors within JOIN: the case the clamp is for
+    for (let n = 0; n < 12; n++) {
+      const S = 32, fl = Array.from({ length: S * S }, () => Math.floor(rand() * 9))
+      const depth = () => Array.from({ length: S * S }, () => (rand() < 0.25 ? 0 : Math.floor(rand() * 2 * SUB)))
+      const d0 = depth(), d1 = depth()
+      const s = scene(S, S, (x, z) => fl[x + z * S]!, (x, z) => d0[x + z * S]!)
+      s.publish()
+      s.set((x, z) => fl[x + z * S]!, (x, z) => d1[x + z * S]!)
+      s.publish() // prev and cur differ
+      const { view, cols } = s, floor = cols.floor
+      for (let z = 0; z < S; z++) for (let x = 0; x < S; x++) {
+        const c = x + z * S
+        for (const [step, field] of [[view.prev, 'hPrev'], [view.cur, 'hCur']] as const) {
+          if (!shows(step[c]!, floor[c]!)) continue
+          for (const h of at(view, x, z, field)) expect(h, `field ${n} (${x}, ${z}) ${field} floor ${floor[c]}`).toBeGreaterThanOrEqual(floor[c]! + LIFT)
+          if (field === 'hCur' && x + 1 < S && shows(step[c + 1]!, floor[c + 1]!) && floor[c + 1] !== floor[c] && Math.abs(step[c + 1]! - step[c]!) <= JOIN) stepped++
+        }
+      }
+      expect(cracks(view, floor), `field ${n}`).toEqual([])
+      expect(fromScratch(view, floor), `field ${n}`).toEqual([])
+    }
+    expect(stepped).toBeGreaterThan(100)
+  }, 30_000)
 })

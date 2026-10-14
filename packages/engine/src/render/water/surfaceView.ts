@@ -140,9 +140,12 @@ export class SurfaceView {
   private readonly data: (ColumnData | undefined)[][]
   /** Per tile: the epoch of the apply that changed its slots. */
   private readonly slotChanged: Uint16Array
-  /** The layered path's scratch: a slot's 3 × 3 (current and previous step) and one vertex's shares. */
+  /** The layered path's scratch: a slot's 3 × 3 (current and previous step)… */
   private readonly pC = new Int32Array(9)
   private readonly pP = new Int32Array(9)
+  /** …its floors (the same for both steps)… */
+  private readonly pF = new Int16Array(9)
+  /** …and one vertex's shares. */
   private readonly vtmp = new Float32Array(4)
   private readonly src: SlotSource
   private readonly light: (x: number, y: number, z: number) => number
@@ -170,6 +173,8 @@ export class SurfaceView {
   /** The region being refreshed: effective values (see `effective`) of its columns and a one-column halo… */
   private readonly eP = new Int32Array(HALO * HALO)
   private readonly eC = new Int32Array(HALO * HALO)
+  /** …their floors (the same for both steps: the floor array is current; any value outside the world)… */
+  private readonly fH = new Int16Array(HALO * HALO)
   /** …its vertices' heights (4 per vertex, see vertexShares) and smoothness (bit 0 previous step, bit 1 current). */
   private readonly vPrev = new Float32Array(VERTICES * VERTICES * 4)
   private readonly vCur = new Float32Array(VERTICES * VERTICES * 4)
@@ -564,13 +569,14 @@ export class SurfaceView {
     const za = tz > 0 && this.tileChanged[tile - tw] !== e ? z0 - 1 : z0
     const zb = tz + 1 < th && this.tileChanged[tile + tw] !== e ? z0 + TILE + 1 : z0 + TILE
     const sx = this.sx, sz = this.sz, hw = xb - xa + 2, vw = xb - xa + 1
-    const eP = this.eP, eC = this.eC, vP = this.vPrev, vC = this.vCur, smooth = this.smooth
+    const eP = this.eP, eC = this.eC, fH = this.fH, vP = this.vPrev, vC = this.vCur, smooth = this.smooth
     const aligned = this.aligned(tx, tz, e)
-    // Effective values of the region's columns and a one-column halo around them.
+    // Effective values and floors of the region's columns and a one-column halo around them.
     let h = 0
     for (let z = za - 1; z <= zb; z++) for (let x = xa - 1; x <= xb; x++, h++) {
       if (x < 0 || z < 0 || x >= sx || z >= sz) { eP[h] = OUTSIDE; eC[h] = OUTSIDE; continue }
       const c = x + z * sx, f = this.floor[c]!
+      fH[h] = f
       if (!aligned) eP[h] = effective(this.prev[c]!, f)
       eC[h] = effective(this.cur[c]!, f)
     }
@@ -578,7 +584,7 @@ export class SurfaceView {
     let vi = 0
     for (let k = 0; k <= zb - za; k++) for (let i = 0; i < vw; i++, vi++) {
       const a = i + k * hw, b = a + hw
-      smooth[vi] = (shares(eC, a, b, vC, vi * 4) ? 2 : 0) | (!aligned && shares(eP, a, b, vP, vi * 4) ? 1 : 0)
+      smooth[vi] = (shares(eC, fH, a, b, vC, vi * 4) ? 2 : 0) | (!aligned && shares(eP, fH, a, b, vP, vi * 4) ? 1 : 0)
     }
     const g = this.reg
     g.xa = xa; g.xb = xb; g.za = za; g.zb = zb; g.hw = hw; g.vw = vw; g.aligned = aligned
@@ -659,8 +665,8 @@ export class SurfaceView {
    */
   private refreshSlot(x: number, z: number, r: number): void {
     const sx = this.sx, c = x + z * sx, cc = (x >> 5) + (z >> 5) * this.cx, src = this.src, key = r * this.ccCount + cc
-    const pv = src.value(c, r, false), fl = src.floor(c, r), pC = this.pC, pP = this.pP
-    patch(src, x, z, r, true, pC)
+    const pv = src.value(c, r, false), fl = src.floor(c, r), pC = this.pC, pP = this.pP, pF = this.pF
+    patch(src, x, z, r, true, pC, pF)
     patch(src, x, z, r, false, pP)
     const ec = pC[4]!, was = shows(pv, fl), drawn = was || ec >= 0
     const lx = x & 31, lz = z & 31, i = lx + lz * 32, o = i * 4
@@ -680,8 +686,8 @@ export class SurfaceView {
     const s2 = hp[o + 2]! + (hc[o + 2]! - hp[o + 2]!) * a, s3 = hp[o + 3]! + (hc[o + 3]! - hp[o + 3]!) * a
     let smoothP = true, smoothC = true
     for (let k = 0; k < 4; k++) {
-      smoothP = patchCorner(pP, k, hp, o, this.vtmp) && smoothP
-      smoothC = patchCorner(pC, k, hc, o, this.vtmp) && smoothC
+      smoothP = patchCorner(pP, pF, k, hp, o, this.vtmp) && smoothP
+      smoothC = patchCorner(pC, pF, k, hc, o, this.vtmp) && smoothC
     }
     if (onScreen) { hp[o] = s0; hp[o + 1] = s1; hp[o + 2] = s2; hp[o + 3] = s3 }
     const prevBits = smoothP ? 0 : edgeBits(pP, 4, 3)
@@ -1077,9 +1083,9 @@ function settleCurtains(cs: Curtains): boolean {
   return moving
 }
 
-/** vertexShares for the vertex whose columns are halo cells a, a + 1, b, b + 1 of the effective values e. */
-function shares(e: Int32Array, a: number, b: number, out: Float32Array, o: number): boolean {
-  return vertexShares(e[a]!, e[a + 1]!, e[b]!, e[b + 1]!, out, o)
+/** vertexShares for the vertex whose columns are halo cells a, a + 1, b, b + 1 of the effective values e and floors f. */
+function shares(e: Int32Array, f: Int16Array, a: number, b: number, out: Float32Array, o: number): boolean {
+  return vertexShares(e[a]!, e[a + 1]!, e[b]!, e[b + 1]!, out, o, f[a]!, f[a + 1]!, f[b]!, f[b + 1]!)
 }
 
 /**
@@ -1096,10 +1102,10 @@ function edgeBits(e: Int32Array, h: number, hw: number): number {
 /** Vertex k (0–3: (−x,−z) (+x,−z) (+x,+z) (−x,+z)) of a 3 × 3 patch: its 2 × 2 block (e0, e1, e2, e3 for vertexShares) and the centre's quadrant. */
 const BLOCKS: readonly (readonly number[])[] = [[0, 1, 3, 4, 3], [1, 2, 4, 5, 2], [4, 5, 7, 8, 0], [3, 4, 6, 7, 1]]
 
-/** Corner k of the patch's centre into out[o + k]; whether that vertex is smooth. */
-function patchCorner(e: Int32Array, k: number, out: Float32Array, o: number, tmp: Float32Array): boolean {
-  const b = BLOCKS[k]!
-  const smooth = vertexShares(e[b[0]!]!, e[b[1]!]!, e[b[2]!]!, e[b[3]!]!, tmp, 0)
+/** Corner k of the patch's centre (effective values e, floors f) into out[o + k]; whether that vertex is smooth. */
+function patchCorner(e: Int32Array, f: Int16Array, k: number, out: Float32Array, o: number, tmp: Float32Array): boolean {
+  const b = BLOCKS[k]!, q0 = b[0]!, q1 = b[1]!, q2 = b[2]!, q3 = b[3]!
+  const smooth = vertexShares(e[q0]!, e[q1]!, e[q2]!, e[q3]!, tmp, 0, f[q0]!, f[q1]!, f[q2]!, f[q3]!)
   out[o + k] = tmp[b[4]!]!
   return smooth
 }

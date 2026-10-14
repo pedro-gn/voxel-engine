@@ -36,7 +36,10 @@ function bridgedView() {
 }
 
 describe('the layered refresh path', () => {
-  it('draws exactly what the fast path draws on a world with no layers (differential, random changes)', () => {
+  // Floors 2–4 and depths up to 3 blocks: steps with shallow brinks, where a drawn column's share is raised to its bed.
+  for (const allSlots of [false, true]) it(allSlots
+    ? 'draws through each column\'s 3 × 3 of slots (refreshSlot) exactly what the fast path draws on a world with no layers (differential)'
+    : 'draws exactly what the fast path draws on a world with no layers (differential, random changes)', () => {
     const S = 64, b = createWaterBuffers([S, 32, S])
     const cols = new WaterColumns(S, S, new Int16Array(b.floor))
     let seed = 11
@@ -45,6 +48,7 @@ describe('the layered refresh path', () => {
     const pub = new WaterPublisher(b)
     const fast = new SurfaceView([S, 32, S], b, () => 15), slow = new SurfaceView([S, 32, S], b, () => 15)
     slow.forceLayered = true
+    slow.forceSlots = allSlots
     const T = S / 16
     for (let tick = 0; tick < 30; tick++) {
       const changed = new Set<number>()
