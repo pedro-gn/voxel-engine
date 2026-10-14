@@ -1,6 +1,6 @@
 import { pack, unpack } from '../persist/pack.ts'
 import type { Layout } from '../world/layout.ts'
-import type { Command, Vec3 } from './commands.ts'
+import type { Command, CustomCommand, Vec3 } from './commands.ts'
 import { Pcg32, hash32 } from './rng.ts'
 import type { UnitEvent, WorkerView } from './workers/types.ts'
 import { WorldFullError } from '../world/chunkStore.ts'
@@ -52,8 +52,8 @@ export interface GameSystem<State = unknown, Pub = unknown> {
   restore?(ctx: SystemContext, state: State): void
   /** Once per tick, after the units step (not while physics is paused). */
   tick(ctx: SystemContext): void
-  /** A command whose type starts with `name:`; throw an Error to refuse it. */
-  command?(ctx: SystemContext, cmd: Command): void
+  /** A command whose type starts with `name:` (never an engine command, so its fields read directly); throw an Error to refuse it. */
+  command?(ctx: SystemContext, cmd: CustomCommand): void
   /** JSON-serializable state for the save (plan deviation D1). */
   snapshot(): State
   /** Posted to the main thread with this tick; undefined posts nothing. */
@@ -123,7 +123,7 @@ export class SystemRunner {
   command(cmd: Command): void {
     const e = this.entry(cmd.type)!
     if (!e.sys.command) throw new Error(`system ${e.sys.name} takes no commands`)
-    e.sys.command(e.ctx, cmd)
+    e.sys.command(e.ctx, cmd as CustomCommand)
   }
 
   snapshot(): { name: SystemSection; version: number; bytes: Uint8Array }[] {

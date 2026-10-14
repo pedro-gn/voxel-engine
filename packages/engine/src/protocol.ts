@@ -10,6 +10,7 @@ import type { WorldBuffers } from './world/buffers.ts'
 import type { WorldSize } from './world/layout.ts'
 import type { WorkerOptions, WorkerTick } from './sim/workers/types.ts'
 import type { SimRestore, SimSnapshot } from './sim/snapshot.ts'
+import type { SystemPublication } from './sim/systems.ts'
 
 export interface SimInitOptions {
   workers?: WorkerOptions
@@ -59,7 +60,7 @@ export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
   | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
-  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; slotsUsed: number; tickMs: number }
+  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; systems?: SystemPublication[]; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
   | { type: 'terrain'; id: number; ok: false; message: string }

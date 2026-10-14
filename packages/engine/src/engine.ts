@@ -114,6 +114,8 @@ export interface EngineEvents {
   fatal: { message: string; slots?: number }
   /** A regeneration finished: wall time from request to the new voxels being in the world, and chunk columns rebuilt. */
   generated: { ms: number; columns: number }
+  /** A game system's publication (spec §2); the engine never interprets the payload. */
+  system: { name: string; tick: number; payload: unknown }
 }
 
 export interface EngineStats {
@@ -584,6 +586,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         if (m.workers) { latestWorkers = m.workers; events.emit('workers', m.workers) }
         for (const a of m.acks) events.emit('ack', a)
         for (const ev of m.events) events.emit('event', ev)
+        if (m.systems) for (const p of m.systems) events.emit('system', { name: p.name, tick: m.tick, payload: p.payload })
         events.emit('tick', { tick: m.tick, tickMs: m.tickMs })
         break
       case 'terrain': {

@@ -8,8 +8,10 @@ import { GenPool, type PortLike } from './genPool.ts'
 import type { RulesModule } from './rules.ts'
 import { Simulation } from './simulation.ts'
 import { FragmentOverlapError } from './collapse.ts'
+import type { GameSystem } from './systems.ts'
 
-export interface SimModules { rules?: RulesModule; generator: GeneratorModule }
+/** A game's sim-side modules: block rules, the generator and its game systems (spec §2, ticked in list order). */
+export interface SimModules { rules?: RulesModule; generator: GeneratorModule; systems?: readonly GameSystem[] }
 export interface Clock {
   now(): number
   setTimeout(fn: () => void, ms: number): unknown
@@ -93,6 +95,7 @@ export class SimHost {
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
             collapse: msg.options.collapse,
             workers: msg.options.workers,
+            systems: this.modules.systems,
             // only defined keys: an undefined one would override WaterSystem's default
             water: {
               debug: msg.options.debugFluids === true,
