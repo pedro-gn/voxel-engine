@@ -657,6 +657,7 @@ export class Simulation {
       skyLight: (x, y, z) => skyLight(sim.store.getLight(x, y, z)),
       blockLight: (x, y, z) => blockLight(sim.store.getLight(x, y, z)),
       waterDepth: (x, y, z) => sim.water.depthAt(x, y, z),
+      takeWater: (x, y, z, amount) => sim.water.take(x, y, z, amount),
       occupied: (x, y, z) => sim.occupied(x, y, z),
       edit: (pos, expected, value) => {
         if (!sim.layout.inBounds(...pos)) throw new RangeError(`edit outside the world: [${pos.join(', ')}]`)

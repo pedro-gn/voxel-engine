@@ -134,6 +134,28 @@ export class WaterSystem {
     for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (y >= U.floor[i]! && y < U.ceil[i]!) return Math.max(0, U.surface(i) - y * SUB)
     return y >= this.cols.floor[c]! ? Math.max(0, this.cols.floor[c]! * SUB + this.cols.depth[c]! - y * SUB) : 0
   }
+  /**
+   * Removes up to `amount` (Q8) of the water above the bottom of cell (x, y, z), from the segment depthAt reads (a lower
+   * segment holding y, else the top segment when y is at or above its floor), and returns what it removed: 0 when dry, out of
+   * bounds, `amount` ≤ 0, or while a rebuild is pending (the voxels would bring the water back). The expected total drops by
+   * the same amount; the tiles around wake and the mirror follows at the next flush. A body holding the segment drops and
+   * regroups at the next step (as an edit's does), so a sealed body levels again too.
+   */
+  take(x: number, y: number, z: number, amount: number): number {
+    if (!(amount > 0) || this.needsRebuild) return 0
+    const got = Math.min(Math.floor(amount), this.depthAt(x, y, z))
+    if (got <= 0) return 0
+    const cols = this.cols, U = this.under, c = x + z * cols.sx
+    let i = U.first[c]!
+    while (i >= 0 && !(y >= U.floor[i]! && y < U.ceil[i]!)) i = U.next[i]!
+    if (i >= 0) {
+      if (U.body[i]! >= 0) this.bodies.dropBody(U.body[i]!)
+      U.depth[i] = U.depth[i]! - got
+    } else cols.depth[c] = cols.depth[c]! - got
+    this.expected -= got
+    cols.tiles.wakeAround(x, z)
+    return got
+  }
   get seaLevel(): number { return this.cycle.seaLevel }
   get sea(): number { return this.cycle.sea }
   get stepCount(): number { return this.steps }
