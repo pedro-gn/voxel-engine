@@ -1,6 +1,5 @@
 import type { Command } from '@elovox/engine'
-import { defineGenerator } from '@elovox/engine/sim-worker'
-import { AIR, packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { defineGenerator, AIR, packVoxel } from '@elovox/engine/sim-worker'
 
 /** A test bed for 3d (multi-layer water): every layered case in one 128 × 64 × 128 world, closed until a hook opens it. */
 export const CAVES_SIZE = [128, 64, 128] as const

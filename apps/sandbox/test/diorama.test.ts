@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fbm2 } from '@elovox/engine/src/sim/generator.ts'
+import { fbm2 } from '@elovox/engine/testing'
 import { DIORAMA_SIZE, HIGH, LOW, dioramaColumn } from '../src/scenes/diorama.ts'
 
 const noise = (x: number, z: number) => fbm2(1234, x, z, 3)

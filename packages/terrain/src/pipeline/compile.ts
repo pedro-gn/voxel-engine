@@ -1,4 +1,4 @@
-import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { packVoxel } from '@elovox/engine/sim-worker'
 import { compileBiome, compileBiomeRule, type CompiledBiome } from '../biomes/biomes.ts'
 import type { TerrainDoc } from '../doc/types.ts'
 import { compileLayers, type BiomeLayer, type DensityLayer, type HeightLayer } from '../layers/layers.ts'

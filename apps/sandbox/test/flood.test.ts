@@ -1,7 +1,4 @@
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
-import { MIN_FLOW } from '@elovox/engine/src/sim/water/constants.ts'
-import { SUB } from '@elovox/engine/src/world/waterBuffers.ts'
+import { Simulation, createWorldBuffers, MIN_FLOW, SUB } from '@elovox/engine/testing'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'

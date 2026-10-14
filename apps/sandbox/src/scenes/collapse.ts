@@ -1,6 +1,5 @@
 import type { Command } from '@elovox/engine'
-import { defineGenerator } from '@elovox/engine/sim-worker'
-import { AIR } from '@elovox/engine/src/world/voxel.ts'
+import { defineGenerator, AIR } from '@elovox/engine/sim-worker'
 
 export const COLLAPSE_SIZE = [128, 64, 128] as const
 let stress = false

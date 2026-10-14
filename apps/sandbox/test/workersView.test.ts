@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BoxGeometry, Group, InstancedMesh, Mesh, MeshStandardMaterial, PerspectiveCamera } from 'three/webgpu'
 import { WORKER_STATES, type Engine, type WorkerBarrier, type WorkerTick, type WorkerView } from '@elovox/engine'
-import { Layout } from '@elovox/engine/src/world/layout.ts'
+import { Layout } from '@elovox/engine/testing'
 import { createWorkersView } from '../src/workersView.ts'
 import { DELAY_MS } from '../src/poseTimeline.ts'
 

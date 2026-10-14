@@ -1,6 +1,5 @@
 import type { Command, Vec3, WorkerOptions } from '@elovox/engine'
-import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
-import { AIR } from '@elovox/engine/src/world/voxel.ts'
+import { Pcg32, AIR } from '@elovox/engine/sim-worker'
 import { WORKER_OPTIONS } from './workers.ts'
 
 /** The navigation-at-scale scene (5b): 1,000 units on a 1024² world with five flat pads. */

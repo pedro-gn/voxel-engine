@@ -1,9 +1,8 @@
 // Node bench of the living scene's simulation: tick p50/p95/max per phase, no rendering.
 // Run: node --experimental-strip-types apps/sandbox/bench/living.node.ts
 // Profile: node --experimental-strip-types --cpu-prof --cpu-prof-dir=test-results apps/sandbox/bench/living.node.ts
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
-import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
+import { packVoxel } from '@elovox/engine/sim-worker'
 import { terrainGenerator } from '@elovox/terrain'
 import { readFileSync } from 'node:fs'
 import { BLOCKS } from '../src/blocks.ts'

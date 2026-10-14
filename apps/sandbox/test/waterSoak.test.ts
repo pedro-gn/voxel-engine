@@ -1,5 +1,4 @@
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
 import { terrainGenerator } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'

@@ -14,15 +14,8 @@
 // Every phase respawns its units on known pads, so a phase measures the same thing alone or after the others.
 // Unless --cold, each phase warms the region store before the timed orders (see warmUp).
 import type { Command } from '@elovox/engine'
-import { GroupField } from '@elovox/engine/src/sim/navigation/groupField.ts'
-import { NavigationSystem } from '@elovox/engine/src/sim/navigation/navigation.ts'
-import { RouteSearch } from '@elovox/engine/src/sim/navigation/routeSearch.ts'
-import { Pcg32 } from '@elovox/engine/src/sim/rng.ts'
-import { BUILD_WEIGHT, RegionBuild } from '@elovox/engine/src/sim/navigation/regions.ts'
-import { Simulation, type TickResult } from '@elovox/engine/src/sim/simulation.ts'
-import { WORKER_STATES } from '@elovox/engine/src/sim/workers/types.ts'
-import { HIER_MIN } from '@elovox/engine/src/sim/workers/workers.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { GroupField, NavigationSystem, RouteSearch, BUILD_WEIGHT, RegionBuild, Simulation, type TickResult, WORKER_STATES, HIER_MIN, createWorldBuffers } from '@elovox/engine/testing'
+import { Pcg32 } from '@elovox/engine/sim-worker'
 import { terrainGenerator } from '@elovox/terrain'
 import { readFileSync } from 'node:fs'
 import { BLOCKS } from '../src/blocks.ts'

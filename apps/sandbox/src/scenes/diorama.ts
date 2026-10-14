@@ -1,5 +1,4 @@
-import { defineGenerator } from '@elovox/engine/sim-worker'
-import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { defineGenerator, packVoxel } from '@elovox/engine/sim-worker'
 
 export type DioramaBlock = 'stone' | 'dirt' | 'grass' | 'sand' | 'water' | 'log' | 'leaves' | 'rock'
 export const DIORAMA_SIZE = [128, 64, 128] as const
