@@ -123,6 +123,22 @@ describe('local moves off the route take only steps they can take back', () => {
     expect(s.status).toBe('found'); expect(s.plan!.rejoin).toBe(6)
   })
 
+  it('a repair may leave the route by a one-way step when it rejoins the route after it', () => {
+    // Two lanes (z 0 and z 1) with a one-way drop from x 3 to x 4 in both; a still unit holds (4, 0) and (5, 0), on the
+    // route. The side lane passes it: down the drop beside the route, then back onto the route and on to its end at x 7.
+    const W = 8, idx = (x: number, z: number) => x + z * W
+    const port: SpaceTimePort = {
+      neighbor: (p, d) => { const x = p % W + [1, -1, 0, 0][d]!, z = Math.floor(p / W) + [0, 0, 1, -1][d]!; return x < 0 || x >= W || z < 0 || z > 1 || p % W === 4 && x === 3 ? -1 : idx(x, z) },
+      allowed: () => true, cellsOf: p => [p], stepCells: (a, b) => [a, b], ticksOf: () => 4, coords: p => [p % W, 0, Math.floor(p / W)],
+    }
+    const table = new ReservationTable(32)
+    table.hold(2, [idx(4, 0), idx(5, 0)])
+    const s = run(new SpaceTimeSearch(port, table, 1, idx(2, 0), 0, [3, 4, 5, 6, 7].map(x => idx(x, 0))))
+    expect(s.status).toBe('found')
+    expect(s.plan!.rejoin).toBe(4)
+    expect(s.plan!.steps.some(st => st.pose === idx(4, 1))).toBe(true)
+  })
+
   it('a reversible flat search goes round a pit instead of dropping into it', () => {
     // Ground solid up to y 5 (feet 6) but a pit x 11–13 × z 9–11 open down to y 3 (its floor, feet 4, is two below).
     const layout = new Layout([32, 32, 32]), registry = new BlockRegistry([{ name: 'stone' }])
