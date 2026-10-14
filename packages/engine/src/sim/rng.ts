@@ -33,6 +33,10 @@ export class Pcg32 {
 
   next(): number { return this.nextU32() / 4294967296 }
 
+  /** The 64-bit state as [hi, lo], for a save. */
+  state(): [number, number] { return [this.hi, this.lo] }
+  setState(s: readonly [number, number]): void { this.hi = s[0] >>> 0; this.lo = s[1] >>> 0 }
+
   nextInt(n: number): number { return Math.floor(this.next() * n) }
 
   /** state = state · MUL + INC (mod 2^64). */

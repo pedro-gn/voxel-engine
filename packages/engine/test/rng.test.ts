@@ -74,3 +74,14 @@ describe('hash32', () => {
     expect(hash32(-5)).toBeGreaterThanOrEqual(0)
   })
 })
+
+describe('Pcg32 state', () => {
+  it('saves and restores its state', () => {
+    const a = new Pcg32(42)
+    a.nextU32(); a.nextU32()
+    const s = a.state()
+    const b = new Pcg32(7)
+    b.setState(s)
+    for (let i = 0; i < 5; i++) expect(b.nextU32()).toBe(a.nextU32())
+  })
+})

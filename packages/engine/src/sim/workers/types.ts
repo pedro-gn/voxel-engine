@@ -26,6 +26,16 @@ export interface WorkerOptions {
 }
 export type WorkerState = 'idle' | 'planning' | 'walking' | 'working' | 'blocked' | 'falling' | 'incapacitated'
 export type WorkBlockReason = 'no-access' | 'missing-material' | 'missing-tool' | 'unsafe' | 'traffic' | 'search-limited' | 'target-changed'
+/** What a game system asked one controlled unit to do (one at a time; a new intent replaces the old). */
+export type Intent = { kind: 'goTo'; pos: Vec3 } | { kind: 'dig'; pos: Vec3 } | { kind: 'build'; pos: Vec3; voxel: number }
+/** What happened to a controlled unit this tick (game systems read these after the units step). */
+export type UnitEvent =
+  | { unit: number; type: 'arrived' }
+  | { unit: number; type: 'dug'; pos: Vec3; voxel: number }
+  | { unit: number; type: 'built'; pos: Vec3; voxel: number }
+  | { unit: number; type: 'failed'; reason: WorkBlockReason }
+  | { unit: number; type: 'fell'; height: number }
+  | { unit: number; type: 'died'; cause: 'void' }
 export interface WorkerView {
   available: boolean
   id: number; x256: number; y256: number; z256: number; facing: number; state: WorkerState

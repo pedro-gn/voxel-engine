@@ -5,7 +5,7 @@ import { CHUNK_VOLUME, type Layout } from '../world/layout.ts'
 import { AIR, blockLight, skyLight, voxelId, voxelState, withState } from '../world/voxel.ts'
 import {
   compareStamped, validateCommand,
-  type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand,
+  type Ack, type Command, type FillRegionCommand, type SetBlockCommand, type StampedCommand, type Vec3,
 } from './commands.ts'
 import { diffMask, forNeighbours } from './chunkDiff.ts'
 import { makeColumnContext, type GeneratorModule } from './generator.ts'
@@ -24,6 +24,7 @@ import { pack, unpack, type Packed } from '../persist/pack.ts'
 import { decodeRegion, encodeRegion } from '../persist/regions.ts'
 import type { RegionBlob, SectionName, SimRestore, SimSnapshot } from './snapshot.ts'
 import type { WorkersSnapshot } from './workers/snapshot.ts'
+import { SystemRunner, type GameSystem, type SystemContext, type SystemPublication, type SystemUnits } from './systems.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -44,6 +45,8 @@ export interface SimulationOptions {
   commandLogLimit?: number
   onNewPage?: (index: number, page: SharedArrayBuffer) => void
   log?: (message: string) => void
+  /** Game systems, ticked in this order after the worker units (spec §2). */
+  systems?: readonly GameSystem[]
 }
 
 export interface SimEvent { tick: number; type: string; payload?: unknown }
@@ -59,6 +62,8 @@ export interface TickResult {
   physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }
   /** The heightfield tiles published this tick (null: none changed); the main thread reads them from shared memory. */
   water: WaterTick | null
+  /** Game system publications of this tick, in system order; absent when none published. */
+  systems?: SystemPublication[]
 }
 
 const DX = [1, -1, 0, 0, 0, 0]
@@ -79,6 +84,9 @@ export class Simulation {
   readonly gravity: GravitySystem
   readonly collapse: CollapseSystem
   readonly workers?: WorkerSystem
+  readonly systems: SystemRunner | null
+  /** Command types a submit may name: rule handlers, worker commands and `name:` commands of the game systems. */
+  private readonly commandTypes: { has(type: string): boolean }
   private collapseWrite = false
   private isPaused = false
   private readonly jobCap: number
@@ -156,13 +164,7 @@ export class Simulation {
       for (const name of WORKER_COMMANDS) { if (this.customTypes.has(name)) throw new Error(`reserved worker command ${name}`); this.customTypes.add(name) }
       this.workers = new WorkerSystem({
         layout: this.layout, registry: this.registry, get: (x, y, z) => sim.store.getVoxel(x, y, z),
-        edit(pos, expected, value, commit) {
-          if (sim.store.getVoxel(...pos) !== expected || sim.collapse.overlaps(...pos) || sim.registry.solid[voxelId(value)] && (sim.workers!.overlaps(...pos) || sim.gravity.occupies(...pos))) return false
-          sim.store.prepareChunks([sim.layout.chunkOf(...pos)])
-          // Neighbours whose mesh the edit changes move their version too, so the view's barrier waits for their new mesh.
-          sim.store.touchChunks(sim.layout.chunksAround(...pos))
-          sim.applySet(...pos, value, true, commit); return true
-        },
+        edit: (pos, expected, value, commit) => sim.editIf(pos, expected, value, commit),
         safe(x, y, z) {
           const id = y === 0 ? 0 : voxelId(sim.store.getVoxel(x, y - 1, z))
           const feet = voxelId(sim.store.getVoxel(x, y, z))
@@ -185,6 +187,18 @@ export class Simulation {
       }, o.workers)
     }
     this.ctx = this.makeContext()
+    this.systems = o.systems?.length ? new SystemRunner(o.systems, o.seed, this.customTypes, (rng, runner) => this.makeSystemContext(rng, runner)) : null
+    const custom = this.customTypes, systems = this.systems
+    this.commandTypes = { has: (t) => custom.has(t) || (systems?.owns(t) ?? false) }
+  }
+
+  /** A conditional world write: refused when the voxel changed or a unit, falling body or fragment is in the way. */
+  private editIf(pos: Vec3, expected: number, value: number, commit?: () => void): boolean {
+    if (this.store.getVoxel(...pos) !== expected || this.collapse.overlaps(...pos) || this.registry.solid[voxelId(value)] && (this.workers?.overlaps(...pos) || this.gravity.occupies(...pos))) return false
+    this.store.prepareChunks([this.layout.chunkOf(...pos)])
+    // Neighbours whose mesh the edit changes move their version too, so the view's barrier waits for their new mesh.
+    this.store.touchChunks(this.layout.chunksAround(...pos))
+    this.applySet(...pos, value, true, commit); return true
   }
 
   get pendingWork(): number { return this.neighbors.length - this.neighborHead + this.scheduler.size }
@@ -313,9 +327,11 @@ export class Simulation {
     const t = this.tick
     this.gravity.landed = []
     const acks: Ack[] = []
+    let publications: SystemPublication[] = []
     let dirtyChunks: number[] = []
     try {
       this.rng.reseed(hash32(this.seed, t))
+      this.systems?.start()
       // 1. commands
       const cmds = this.pending.sort(compareStamped)
       this.pending = []
@@ -323,7 +339,7 @@ export class Simulation {
         // Commands arrive from postMessage, so the value may not be an object at all.
         const err = typeof c.cmd !== 'object' || c.cmd === null
           ? 'command must be an object'
-          : validateCommand(c.cmd, this.layout, this.registry.count, this.customTypes)
+          : validateCommand(c.cmd, this.layout, this.registry.count, this.commandTypes)
         if (err) { acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: err }); continue }
         // Log before applying: a handler that writes and then throws has still changed the world,
         // and replaying the log re-runs the same handler to the same partial effect.
@@ -363,6 +379,8 @@ export class Simulation {
       }
       // 4. light
       if (!this.isPaused) this.workers?.afterPhysics()
+      // Game systems see this tick's unit results; what they ask of units acts in the next tick's unit step (spec §2).
+      if (!this.isPaused && this.systems) publications = this.systems.tick(this.workers?.takeUnitEvents() ?? [])
       this.light.propagate()
       // 5. the water mirror follows the heightfield every tick, paused or not, so edits made while paused show
       this.physics('water mirror', () => { this.water.flush() })
@@ -379,7 +397,7 @@ export class Simulation {
     const events = this.events
     this.events = []
     const collapse = this.collapse.publication(this.store.versions)
-    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions, t) }) }
+    return { tick: t, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed, physics, water: this.water.published, ...(collapse && { collapse }), ...(this.workers && { workers: this.workers.publication(this.store.versions, t) }), ...(publications.length > 0 && { systems: publications }) }
   }
 
   /**
@@ -460,6 +478,7 @@ export class Simulation {
     this.jobs.mixState(mix)
     this.collapse.mixState(mix)
     this.workers?.mixState(mix)
+    this.systems?.mixState(mix)
     return h >>> 0
   }
 
@@ -475,6 +494,7 @@ export class Simulation {
   }
 
   private applyCommand(cmd: Command): void {
+    if (this.systems?.owns(cmd.type)) { this.systems.command(cmd); return }
     if (WORKER_COMMANDS.has(cmd.type) && this.workers) { this.workers.command(cmd); return }
     if (cmd.type === 'setBlock') {
       const c = cmd as SetBlockCommand
@@ -584,6 +604,41 @@ export class Simulation {
   private appendLog(c: StampedCommand): void {
     this.commandLog.push(c)
     if (this.commandLog.length > this.logTrimAt) this.commandLog.splice(0, this.commandLog.length - this.logLimit)
+  }
+
+  private makeSystemContext(rng: Pcg32, runner: SystemRunner): SystemContext {
+    const sim = this
+    const noUnits = () => { throw new Error('this simulation runs without worker units') }
+    const units: SystemUnits = sim.workers ? {
+      get events() { return runner.events },
+      spawn: (pos) => sim.workers!.spawnControlled(pos),
+      despawn: (id) => sim.workers!.despawnControlled(id),
+      goTo: (id, pos) => sim.workers!.goTo(id, pos),
+      dig: (id, pos) => sim.workers!.work(id, 'dig', pos),
+      build: (id, pos, voxel) => sim.workers!.work(id, 'build', pos, voxel),
+      stop: (id) => sim.workers!.stop(id),
+      view: (id) => sim.workers!.view(id),
+    } : { events: [], spawn: noUnits, despawn: noUnits, goTo: noUnits, dig: noUnits, build: noUnits, stop: noUnits, view: noUnits }
+    return {
+      get tick() { return sim.tick },
+      layout: sim.layout,
+      random: () => rng.next(),
+      id: (name) => sim.registry.id(name),
+      get: (x, y, z) => sim.store.getVoxel(x, y, z),
+      isSolid: (v) => sim.registry.solid[voxelId(v)] === 1,
+      isLiquid: (v) => sim.registry.liquid[voxelId(v)] === 1,
+      falls: (v) => sim.registry.falls[voxelId(v)] === 1,
+      skyLight: (x, y, z) => skyLight(sim.store.getLight(x, y, z)),
+      blockLight: (x, y, z) => blockLight(sim.store.getLight(x, y, z)),
+      waterDepth: (x, y, z) => sim.water.depthAt(x, y, z),
+      edit: (pos, expected, value) => {
+        if (!sim.layout.inBounds(...pos)) throw new RangeError(`edit outside the world: [${pos.join(', ')}]`)
+        if (!Number.isInteger(value) || value < 0 || value > 0xffff || voxelId(value) >= sim.registry.count) throw new Error(`invalid voxel ${value}`)
+        return sim.editIf(pos, expected, value)
+      },
+      emit: (type, payload) => { sim.events.push(payload === undefined ? { tick: sim.tick, type } : { tick: sim.tick, type, payload }) },
+      units,
+    }
   }
 
   private makeContext(): RuleContext {

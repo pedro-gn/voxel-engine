@@ -15,7 +15,7 @@ import { SLEEP_TICKS, Sleepers } from './sleepers.ts'
 import { SpaceTimeSearch, type SpaceTimePort } from './spaceTime.ts'
 import { NO_CREW_TICKS, effectivePriority, parkChoice, shares } from './frontier.ts'
 import type { WorkersSnapshot } from './snapshot.ts'
-import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView } from './types.ts'
+import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView, type UnitEvent } from './types.ts'
 
 export interface WorkerPort {
   layout: Layout; registry: BlockRegistry
@@ -224,6 +224,8 @@ export class WorkerSystem {
   private groups = new Map<GroupField, { id: number; users: number }>()
   private nextGroup = 1
   private dynamicWasBusy = false
+  /** This tick's events of controlled units (game systems read them after the units step). */
+  private readonly unitEvents: UnitEvent[] = []
   readonly maxUnits: number
   private readonly searchCap: number
   private readonly prebuildCap: number
@@ -251,6 +253,13 @@ export class WorkerSystem {
       this.dig[id] = m.digTicks ?? 0; this.build[id] = m.buildTicks ?? 0; this.drops[id] = m.drop === undefined ? id : R.id(m.drop); this.tools[id] = m.tool
     }
   }
+  /** This tick's events of controlled units; clears them. */
+  takeUnitEvents(): UnitEvent[] { return this.unitEvents.splice(0) }
+  spawnControlled(_pos: Vec3): number { throw new Error('not implemented') }
+  despawnControlled(_id: number): void { throw new Error('not implemented') }
+  goTo(_id: number, _pos: Vec3): void { throw new Error('not implemented') }
+  work(_id: number, _kind: 'dig' | 'build', _pos: Vec3, _voxel = 0): void { throw new Error('not implemented') }
+  stop(_id: number): void { throw new Error('not implemented') }
   get busy(): boolean { return this.nav.pending > 0 || [...this.units.values()].some(u => u.state === 'walking' || u.state === 'working' || u.state === 'falling' || u.state === 'planning') || this.orders.some(o => !o.cancelled && o.cursor < o.total) }
   afterWrite(x: number, y: number, z: number, old: number, value: number): void {
     this.sleepers.wakeTile(this.nav.tileOf(x, y, z))
