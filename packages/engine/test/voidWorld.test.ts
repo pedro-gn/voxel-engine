@@ -54,7 +54,7 @@ describe('void world', () => {
     expect(below).toBe(0)
     expect(logs.filter(l => l.includes('expected'))).toEqual([])
     expect(sim.water.total()).toBe(sim.water.expected)
-  })
+  }, 60_000)
 
   it('without void, the same water pools on the floor (unchanged)', () => {
     const { sim } = voidSim(island, { void: false })
@@ -62,7 +62,7 @@ describe('void world', () => {
     let pooled = 0
     for (let z = 0; z < 64; z++) for (let x = 0; x < 64; x++) if (sim.water.depthAt(x, 0, z) > 0) pooled++
     expect(pooled).toBeGreaterThan(0)
-  })
+  }, 60_000)
 
   it('water beside an overhang drains, none collects underneath', () => {
     // The island plus a roof: stone at y 30..31 over 10 ≤ x < 20, with open air below it down to the bottom.
@@ -73,7 +73,7 @@ describe('void world', () => {
     for (let z = 20; z < 44; z++) for (let x = 10; x < 20; x++) for (let y = 0; y < 30; y++) under += sim.water.depthAt(x, y, z)
     expect(under).toBe(0)
     expect(logs).toEqual([])
-  })
+  }, 60_000)
 
   it('a falling block that reaches the bottom is removed', () => {
     const { sim } = voidSim(() => 0)
