@@ -1,0 +1,1509 @@
+{
+ "generated": "2026-10-13T23:50:59.231Z",
+ "sets": {
+  "baseline-typical(f9817cb)": {
+   "profile": "typical",
+   "units": 100,
+   "ticks": 6600,
+   "node": "v24.5.0",
+   "phases": {
+    "bottleneck": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 9.796,
+        "p95": 14.113,
+        "p99": 16.279,
+        "max": 26.831
+       },
+       "workersMs": {
+        "p50": 3.163,
+        "p95": 6.083,
+        "p99": 7.634,
+        "max": 20.133
+       },
+       "firstActionTicks": {
+        "p50": 62,
+        "p95": 64,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 61,
+        "p95": 61
+       },
+       "arrivedPct": 50,
+       "withinIdealPlusGracePct": 50,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 465,
+        "unsafe": 295
+       },
+       "warmUpTicks": 7842,
+       "landmarksCurrentPct": 13.3
+      },
+      {
+       "tickMs": {
+        "p50": 7.567,
+        "p95": 11.351,
+        "p99": 13.775,
+        "max": 24.965
+       },
+       "workersMs": {
+        "p50": 2.536,
+        "p95": 4.528,
+        "p99": 6.207,
+        "max": 19.383
+       },
+       "firstActionTicks": {
+        "p50": 62,
+        "p95": 64,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 61,
+        "p95": 61
+       },
+       "arrivedPct": 50,
+       "withinIdealPlusGracePct": 50,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 465,
+        "unsafe": 295
+       },
+       "warmUpTicks": 7842,
+       "landmarksCurrentPct": 13.3
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 9.796,
+       "p95": 14.113,
+       "p99": 16.279,
+       "max": 26.831
+      },
+      "workersMs": {
+       "p50": 3.163,
+       "p95": 6.083,
+       "p99": 7.634,
+       "max": 20.133
+      },
+      "firstActionTicks": {
+       "p50": 62,
+       "p95": 64,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 61,
+       "p95": 61
+      },
+      "arrivedPct": 50,
+      "withinIdealPlusGracePct": 50,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "traffic": 465,
+       "unsafe": 295
+      },
+      "warmUpTicks": 7842,
+      "landmarksCurrentPct": 13.3
+     }
+    },
+    "churn": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 6.995,
+        "p95": 10.595,
+        "p99": 13.163,
+        "max": 29.78
+       },
+       "workersMs": {
+        "p50": 1.714,
+        "p95": 3.88,
+        "p99": 5.557,
+        "max": 22.462
+       },
+       "firstActionTicks": {
+        "p50": 20,
+        "p95": 55,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 19,
+        "p95": 54
+       },
+       "arrivedPct": 99,
+       "withinIdealPlusGracePct": 99,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "unsafe": 121,
+        "traffic": 11
+       },
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 0.5
+      },
+      {
+       "tickMs": {
+        "p50": 6.63,
+        "p95": 10.57,
+        "p99": 13.514,
+        "max": 30.046
+       },
+       "workersMs": {
+        "p50": 1.628,
+        "p95": 3.973,
+        "p99": 5.605,
+        "max": 21.778
+       },
+       "firstActionTicks": {
+        "p50": 20,
+        "p95": 55,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 19,
+        "p95": 54
+       },
+       "arrivedPct": 99,
+       "withinIdealPlusGracePct": 99,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "unsafe": 121,
+        "traffic": 11
+       },
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 0.5
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 6.995,
+       "p95": 10.595,
+       "p99": 13.514,
+       "max": 30.046
+      },
+      "workersMs": {
+       "p50": 1.714,
+       "p95": 3.973,
+       "p99": 5.605,
+       "max": 22.462
+      },
+      "firstActionTicks": {
+       "p50": 20,
+       "p95": 55,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 19,
+       "p95": 54
+      },
+      "arrivedPct": 99,
+      "withinIdealPlusGracePct": 99,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "unsafe": 121,
+       "traffic": 11
+      },
+      "warmUpTicks": 7854,
+      "landmarksCurrentPct": 0.5
+     }
+    },
+    "mass": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 7.486,
+        "p95": 11.46,
+        "p99": 13.895,
+        "max": 31.657
+       },
+       "workersMs": {
+        "p50": 2.327,
+        "p95": 4.483,
+        "p99": 6.161,
+        "max": 24.004
+       },
+       "firstActionTicks": {
+        "p50": 43,
+        "p95": 44,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 42,
+        "p95": 42
+       },
+       "arrivedPct": 50,
+       "withinIdealPlusGracePct": 50,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 472,
+        "unsafe": 326
+       },
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 13.1
+      },
+      {
+       "tickMs": {
+        "p50": 7.461,
+        "p95": 11.353,
+        "p99": 13.409,
+        "max": 31.115
+       },
+       "workersMs": {
+        "p50": 2.338,
+        "p95": 4.466,
+        "p99": 5.943,
+        "max": 23.67
+       },
+       "firstActionTicks": {
+        "p50": 43,
+        "p95": 44,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 42,
+        "p95": 42
+       },
+       "arrivedPct": 50,
+       "withinIdealPlusGracePct": 50,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 472,
+        "unsafe": 326
+       },
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 13.1
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 7.486,
+       "p95": 11.46,
+       "p99": 13.895,
+       "max": 31.657
+      },
+      "workersMs": {
+       "p50": 2.338,
+       "p95": 4.483,
+       "p99": 6.161,
+       "max": 24.004
+      },
+      "firstActionTicks": {
+       "p50": 43,
+       "p95": 44,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 42,
+       "p95": 42
+      },
+      "arrivedPct": 50,
+      "withinIdealPlusGracePct": 50,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "traffic": 472,
+       "unsafe": 326
+      },
+      "warmUpTicks": 7854,
+      "landmarksCurrentPct": 13.1
+     }
+    },
+    "scatter": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 6.768,
+        "p95": 10.536,
+        "p99": 12.825,
+        "max": 32.548
+       },
+       "workersMs": {
+        "p50": 1.616,
+        "p95": 3.784,
+        "p99": 5.273,
+        "max": 24.101
+       },
+       "firstActionTicks": {
+        "p50": 8,
+        "p95": 17,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 7,
+        "p95": 12
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {},
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 13.1
+      },
+      {
+       "tickMs": {
+        "p50": 6.708,
+        "p95": 10.76,
+        "p99": 12.899,
+        "max": 28.332
+       },
+       "workersMs": {
+        "p50": 1.576,
+        "p95": 3.952,
+        "p99": 5.596,
+        "max": 21.545
+       },
+       "firstActionTicks": {
+        "p50": 8,
+        "p95": 17,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 7,
+        "p95": 12
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {},
+       "warmUpTicks": 7854,
+       "landmarksCurrentPct": 13.1
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 6.768,
+       "p95": 10.76,
+       "p99": 12.899,
+       "max": 32.548
+      },
+      "workersMs": {
+       "p50": 1.616,
+       "p95": 3.952,
+       "p99": 5.596,
+       "max": 24.101
+      },
+      "firstActionTicks": {
+       "p50": 8,
+       "p95": 17,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 7,
+       "p95": 12
+      },
+      "arrivedPct": 100,
+      "withinIdealPlusGracePct": 100,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {},
+      "warmUpTicks": 7854,
+      "landmarksCurrentPct": 13.1
+     }
+    },
+    "work": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 7.077,
+        "p95": 11.172,
+        "p99": 13.634,
+        "max": 29.526
+       },
+       "workersMs": {
+        "p50": 2.025,
+        "p95": 4.007,
+        "p99": 5.859,
+        "max": 23.28
+       },
+       "work": {
+        "orders": 20,
+        "done": 541,
+        "total": 1472,
+        "allDoneAfterTicks": null
+       },
+       "blocks": {},
+       "warmUpTicks": 7853,
+       "landmarksCurrentPct": 2
+      },
+      {
+       "tickMs": {
+        "p50": 6.893,
+        "p95": 10.538,
+        "p99": 12.749,
+        "max": 32.49
+       },
+       "workersMs": {
+        "p50": 1.936,
+        "p95": 3.706,
+        "p99": 5.28,
+        "max": 25.226
+       },
+       "work": {
+        "orders": 20,
+        "done": 541,
+        "total": 1472,
+        "allDoneAfterTicks": null
+       },
+       "blocks": {},
+       "warmUpTicks": 7853,
+       "landmarksCurrentPct": 2
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 7.077,
+       "p95": 11.172,
+       "p99": 13.634,
+       "max": 32.49
+      },
+      "workersMs": {
+       "p50": 2.025,
+       "p95": 4.007,
+       "p99": 5.859,
+       "max": 25.226
+      },
+      "work": {
+       "orders": 20,
+       "done": 541,
+       "total": 1472,
+       "allDoneAfterTicks": null
+      },
+      "blocks": {},
+      "warmUpTicks": 7853,
+      "landmarksCurrentPct": 2
+     }
+    }
+   }
+  },
+  "world-only": {
+   "profile": "legacy",
+   "units": 0,
+   "ticks": 2000,
+   "node": "v24.5.0",
+   "phases": {
+    "bottleneck": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 4.61,
+        "p95": 6.465,
+        "p99": 8.111,
+        "max": 13.257
+       },
+       "workersMs": {
+        "p50": 0.009,
+        "p95": 0.017,
+        "p99": 0.026,
+        "max": 0.496
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      },
+      {
+       "tickMs": {
+        "p50": 4.454,
+        "p95": 6.799,
+        "p99": 8.358,
+        "max": 10.648
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.016,
+        "p99": 0.026,
+        "max": 0.355
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 4.61,
+       "p95": 6.799,
+       "p99": 8.358,
+       "max": 13.257
+      },
+      "workersMs": {
+       "p50": 0.009,
+       "p95": 0.017,
+       "p99": 0.026,
+       "max": 0.496
+      },
+      "blocks": {},
+      "warmUpTicks": 7900,
+      "landmarksCurrentPct": 0
+     }
+    },
+    "churn": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 4.429,
+        "p95": 6.421,
+        "p99": 7.674,
+        "max": 10.194
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.016,
+        "p99": 0.025,
+        "max": 0.514
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      },
+      {
+       "tickMs": {
+        "p50": 4.462,
+        "p95": 6.766,
+        "p99": 7.662,
+        "max": 9.568
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.017,
+        "p99": 0.025,
+        "max": 0.317
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 4.462,
+       "p95": 6.766,
+       "p99": 7.674,
+       "max": 10.194
+      },
+      "workersMs": {
+       "p50": 0.008,
+       "p95": 0.017,
+       "p99": 0.025,
+       "max": 0.514
+      },
+      "blocks": {},
+      "warmUpTicks": 7900,
+      "landmarksCurrentPct": 0
+     }
+    },
+    "mass": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 4.471,
+        "p95": 6.943,
+        "p99": 7.685,
+        "max": 9.751
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.017,
+        "p99": 0.024,
+        "max": 1.565
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      },
+      {
+       "tickMs": {
+        "p50": 4.482,
+        "p95": 6.213,
+        "p99": 7.33,
+        "max": 9.706
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.016,
+        "p99": 0.023,
+        "max": 0.338
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 4.482,
+       "p95": 6.943,
+       "p99": 7.685,
+       "max": 9.751
+      },
+      "workersMs": {
+       "p50": 0.008,
+       "p95": 0.017,
+       "p99": 0.024,
+       "max": 1.565
+      },
+      "blocks": {},
+      "warmUpTicks": 7900,
+      "landmarksCurrentPct": 0
+     }
+    },
+    "scatter": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 4.452,
+        "p95": 6.824,
+        "p99": 8.539,
+        "max": 19.032
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.018,
+        "p99": 0.03,
+        "max": 1.606
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      },
+      {
+       "tickMs": {
+        "p50": 4.5,
+        "p95": 6.262,
+        "p99": 7.465,
+        "max": 9.998
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.017,
+        "p99": 0.025,
+        "max": 0.059
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 4.5,
+       "p95": 6.824,
+       "p99": 8.539,
+       "max": 19.032
+      },
+      "workersMs": {
+       "p50": 0.008,
+       "p95": 0.018,
+       "p99": 0.03,
+       "max": 1.606
+      },
+      "blocks": {},
+      "warmUpTicks": 7900,
+      "landmarksCurrentPct": 0
+     }
+    },
+    "work": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 4.439,
+        "p95": 5.931,
+        "p99": 7.293,
+        "max": 9.565
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.014,
+        "p99": 0.022,
+        "max": 0.402
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      },
+      {
+       "tickMs": {
+        "p50": 4.432,
+        "p95": 6.387,
+        "p99": 7.39,
+        "max": 9.056
+       },
+       "workersMs": {
+        "p50": 0.008,
+        "p95": 0.016,
+        "p99": 0.023,
+        "max": 0.084
+       },
+       "blocks": {},
+       "warmUpTicks": 7900,
+       "landmarksCurrentPct": 0
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 4.439,
+       "p95": 6.387,
+       "p99": 7.39,
+       "max": 9.565
+      },
+      "workersMs": {
+       "p50": 0.008,
+       "p95": 0.016,
+       "p99": 0.023,
+       "max": 0.402
+      },
+      "blocks": {},
+      "warmUpTicks": 7900,
+      "landmarksCurrentPct": 0
+     }
+    }
+   }
+  },
+  "typical(ff22985)": {
+   "profile": "typical",
+   "units": 100,
+   "ticks": 6600,
+   "node": "v24.5.0",
+   "phases": {
+    "bottleneck": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 7.996,
+        "p95": 12.407,
+        "p99": 15.059,
+        "max": 30.928
+       },
+       "workersMs": {
+        "p50": 2.203,
+        "p95": 4.368,
+        "p99": 5.978,
+        "max": 17.668
+       },
+       "firstActionTicks": {
+        "p50": 70,
+        "p95": 71,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 69,
+        "p95": 69
+       },
+       "arrivedPct": 45,
+       "withinIdealPlusGracePct": 41,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 898,
+        "unsafe": 94
+       },
+       "warmUpTicks": 9494,
+       "landmarksCurrentPct": 19.6
+      },
+      {
+       "tickMs": {
+        "p50": 8.549,
+        "p95": 13.946,
+        "p99": 18.741,
+        "max": 41.336
+       },
+       "workersMs": {
+        "p50": 2.353,
+        "p95": 4.843,
+        "p99": 6.823,
+        "max": 19.447
+       },
+       "firstActionTicks": {
+        "p50": 70,
+        "p95": 71,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 69,
+        "p95": 69
+       },
+       "arrivedPct": 45,
+       "withinIdealPlusGracePct": 41,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 898,
+        "unsafe": 94
+       },
+       "warmUpTicks": 9494,
+       "landmarksCurrentPct": 19.6
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 8.549,
+       "p95": 13.946,
+       "p99": 18.741,
+       "max": 41.336
+      },
+      "workersMs": {
+       "p50": 2.353,
+       "p95": 4.843,
+       "p99": 6.823,
+       "max": 19.447
+      },
+      "firstActionTicks": {
+       "p50": 70,
+       "p95": 71,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 69,
+       "p95": 69
+      },
+      "arrivedPct": 45,
+      "withinIdealPlusGracePct": 41,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "traffic": 898,
+       "unsafe": 94
+      },
+      "warmUpTicks": 9494,
+      "landmarksCurrentPct": 19.6
+     }
+    },
+    "churn": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 6.917,
+        "p95": 12.074,
+        "p99": 15.083,
+        "max": 37.451
+       },
+       "workersMs": {
+        "p50": 0.922,
+        "p95": 4.319,
+        "p99": 6.169,
+        "max": 17.215
+       },
+       "firstActionTicks": {
+        "p50": 17,
+        "p95": 47,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 16,
+        "p95": 46
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "unsafe": 16,
+        "traffic": 1
+       },
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 0.5
+      },
+      {
+       "tickMs": {
+        "p50": 8.011,
+        "p95": 14.953,
+        "p99": 19.306,
+        "max": 52.136
+       },
+       "workersMs": {
+        "p50": 1.209,
+        "p95": 5.275,
+        "p99": 7.603,
+        "max": 26.04
+       },
+       "firstActionTicks": {
+        "p50": 17,
+        "p95": 47,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 16,
+        "p95": 46
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "unsafe": 16,
+        "traffic": 1
+       },
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 0.5
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 8.011,
+       "p95": 14.953,
+       "p99": 19.306,
+       "max": 52.136
+      },
+      "workersMs": {
+       "p50": 1.209,
+       "p95": 5.275,
+       "p99": 7.603,
+       "max": 26.04
+      },
+      "firstActionTicks": {
+       "p50": 17,
+       "p95": 47,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 16,
+       "p95": 46
+      },
+      "arrivedPct": 100,
+      "withinIdealPlusGracePct": 100,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "unsafe": 16,
+       "traffic": 1
+      },
+      "warmUpTicks": 9507,
+      "landmarksCurrentPct": 0.5
+     }
+    },
+    "mass": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 7.921,
+        "p95": 13.784,
+        "p99": 19.816,
+        "max": 61.781
+       },
+       "workersMs": {
+        "p50": 1.569,
+        "p95": 5.26,
+        "p99": 7.742,
+        "max": 44.231
+       },
+       "firstActionTicks": {
+        "p50": 43,
+        "p95": 44,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 42,
+        "p95": 42
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 32
+       },
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 19.4
+      },
+      {
+       "tickMs": {
+        "p50": 7.608,
+        "p95": 12.814,
+        "p99": 17.168,
+        "max": 40.939
+       },
+       "workersMs": {
+        "p50": 1.393,
+        "p95": 4.9,
+        "p99": 7.123,
+        "max": 22.125
+       },
+       "firstActionTicks": {
+        "p50": 43,
+        "p95": 44,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 42,
+        "p95": 42
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {
+        "traffic": 32
+       },
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 19.4
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 7.921,
+       "p95": 13.784,
+       "p99": 19.816,
+       "max": 61.781
+      },
+      "workersMs": {
+       "p50": 1.569,
+       "p95": 5.26,
+       "p99": 7.742,
+       "max": 44.231
+      },
+      "firstActionTicks": {
+       "p50": 43,
+       "p95": 44,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 42,
+       "p95": 42
+      },
+      "arrivedPct": 100,
+      "withinIdealPlusGracePct": 100,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {
+       "traffic": 32
+      },
+      "warmUpTicks": 9507,
+      "landmarksCurrentPct": 19.4
+     }
+    },
+    "scatter": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 6.437,
+        "p95": 10.192,
+        "p99": 12.521,
+        "max": 30.848
+       },
+       "workersMs": {
+        "p50": 0.666,
+        "p95": 3.344,
+        "p99": 5.094,
+        "max": 20.645
+       },
+       "firstActionTicks": {
+        "p50": 8,
+        "p95": 13,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 7,
+        "p95": 10
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {},
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 19.4
+      },
+      {
+       "tickMs": {
+        "p50": 6.701,
+        "p95": 11.407,
+        "p99": 14.447,
+        "max": 30.099
+       },
+       "workersMs": {
+        "p50": 0.653,
+        "p95": 3.698,
+        "p99": 5.414,
+        "max": 19.635
+       },
+       "firstActionTicks": {
+        "p50": 8,
+        "p95": 13,
+        "started": 100,
+        "ordered": 100
+       },
+       "searchFoundTicks": {
+        "p50": 7,
+        "p95": 10
+       },
+       "arrivedPct": 100,
+       "withinIdealPlusGracePct": 100,
+       "falseUnreachable": {
+        "count": 0,
+        "checked": 0
+       },
+       "blocks": {},
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 19.4
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 6.701,
+       "p95": 11.407,
+       "p99": 14.447,
+       "max": 30.848
+      },
+      "workersMs": {
+       "p50": 0.666,
+       "p95": 3.698,
+       "p99": 5.414,
+       "max": 20.645
+      },
+      "firstActionTicks": {
+       "p50": 8,
+       "p95": 13,
+       "started": 100,
+       "ordered": 100
+      },
+      "searchFoundTicks": {
+       "p50": 7,
+       "p95": 10
+      },
+      "arrivedPct": 100,
+      "withinIdealPlusGracePct": 100,
+      "falseUnreachable": {
+       "count": 0,
+       "checked": 0
+      },
+      "blocks": {},
+      "warmUpTicks": 9507,
+      "landmarksCurrentPct": 19.4
+     }
+    },
+    "work": {
+     "runs": [
+      {
+       "tickMs": {
+        "p50": 7.474,
+        "p95": 11.648,
+        "p99": 15.372,
+        "max": 37.999
+       },
+       "workersMs": {
+        "p50": 1.662,
+        "p95": 3.907,
+        "p99": 6.041,
+        "max": 28.968
+       },
+       "work": {
+        "orders": 20,
+        "done": 552,
+        "total": 1472,
+        "allDoneAfterTicks": null
+       },
+       "blocks": {},
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 2
+      },
+      {
+       "tickMs": {
+        "p50": 8.144,
+        "p95": 12.947,
+        "p99": 16.128,
+        "max": 37.053
+       },
+       "workersMs": {
+        "p50": 1.896,
+        "p95": 4.259,
+        "p99": 6.226,
+        "max": 28.514
+       },
+       "work": {
+        "orders": 20,
+        "done": 552,
+        "total": 1472,
+        "allDoneAfterTicks": null
+       },
+       "blocks": {},
+       "warmUpTicks": 9507,
+       "landmarksCurrentPct": 2
+      }
+     ],
+     "worse": {
+      "tickMs": {
+       "p50": 8.144,
+       "p95": 12.947,
+       "p99": 16.128,
+       "max": 37.999
+      },
+      "workersMs": {
+       "p50": 1.896,
+       "p95": 4.259,
+       "p99": 6.226,
+       "max": 28.968
+      },
+      "work": {
+       "orders": 20,
+       "done": 552,
+       "total": 1472,
+       "allDoneAfterTicks": null
+      },
+      "blocks": {},
+      "warmUpTicks": 9507,
+      "landmarksCurrentPct": 2
+     }
+    }
+   }
+  }
+ },
+ "quality": {
+  "commit": "0d0005f",
+  "pairs": 500,
+  "agree": 500,
+  "costRatio": {
+   "mean": 1.04,
+   "p50": 1.035,
+   "p95": 1.09,
+   "max": 1.159
+  },
+  "gate": true,
+  "group": {
+   "starts": 500,
+   "agree": 500,
+   "costRatio": {
+    "mean": 1.056,
+    "p50": 1.044,
+    "p95": 1.23,
+    "max": 1.244
+   },
+   "gate": true
+  }
+ },
+ "conditions": "2026-10-13, Node v24.5.0, 100 units on the 1024² crowd world, 6,600 timed ticks per phase after the prebuild warm-up, worse of two runs; quiet machine checked before each batch",
+ "living": {
+  "note": "livingAb.node.mjs, 5 interleaved pairs, median of per-pair p50 differences (ms); a = branch ff22985",
+  "vsD63ffe1": {
+   "idle": {
+    "a": [
+     3.84,
+     3.415,
+     3.44,
+     3.819,
+     3.383
+    ],
+    "b": [
+     3.124,
+     3.04,
+     3.164,
+     2.905,
+     3.627
+    ],
+    "medianA": 3.44,
+    "medianB": 3.124,
+    "medianDelta": 0.375
+   },
+   "work": {
+    "a": [
+     5.016,
+     5.307,
+     5.029,
+     5.548,
+     5.534
+    ],
+    "b": [
+     3.45,
+     3.556,
+     3.79,
+     3.494,
+     4.828
+    ],
+    "medianA": 5.307,
+    "medianB": 3.556,
+    "medianDelta": 1.566
+   },
+   "dam": {
+    "a": [
+     9.161,
+     8.315,
+     8.263,
+     8.353,
+     8.132
+    ],
+    "b": [
+     6.194,
+     5.812,
+     6.116,
+     6.179,
+     6.133
+    ],
+    "medianA": 8.315,
+    "medianB": 6.133,
+    "medianDelta": 2.174
+   },
+   "collapse": {
+    "a": [
+     10.061,
+     8.49,
+     8.834,
+     8.781,
+     8.823
+    ],
+    "b": [
+     7.96,
+     6.691,
+     6.791,
+     6.624,
+     6.899
+    ],
+    "medianA": 8.823,
+    "medianB": 6.791,
+    "medianDelta": 2.043
+   }
+  },
+  "vsMain9163239": {
+   "idle": {
+    "a": [
+     4.064,
+     3.686,
+     4.474,
+     3.79,
+     3.901
+    ],
+    "b": [
+     3.442,
+     3.99,
+     4.173,
+     3.827,
+     4.194
+    ],
+    "medianA": 3.901,
+    "medianB": 3.99,
+    "medianDelta": -0.037
+   },
+   "work": {
+    "a": [
+     4.99,
+     5.434,
+     6.588,
+     5.616,
+     5.333
+    ],
+    "b": [
+     5.609,
+     5.337,
+     6.173,
+     5.394,
+     6.164
+    ],
+    "medianA": 5.434,
+    "medianB": 5.609,
+    "medianDelta": 0.097
+   },
+   "dam": {
+    "a": [
+     10.054,
+     8.778,
+     9.823,
+     8.743,
+     8.388
+    ],
+    "b": [
+     7.94,
+     8.803,
+     9.204,
+     8.574,
+     8.533
+    ],
+    "medianA": 8.778,
+    "medianB": 8.574,
+    "medianDelta": 0.169
+   },
+   "collapse": {
+    "a": [
+     10.235,
+     9.764,
+     9.31,
+     9.368,
+     9.496
+    ],
+    "b": [
+     8.784,
+     9.007,
+     8.7,
+     9.011,
+     8.629
+    ],
+    "medianA": 9.496,
+    "medianB": 8.784,
+    "medianDelta": 0.757
+   }
+  }
+ },
+ "stress": "not run (user decision, 2026-10-13)"
+}

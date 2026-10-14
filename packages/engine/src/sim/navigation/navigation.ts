@@ -1,5 +1,5 @@
 import type { Layout } from '../../world/layout.ts'
-import type { BlockRegistry } from '../../blocks/registry.ts'
+import { waterGroupOf, type BlockRegistry } from '../../blocks/registry.ts'
 import { voxelId } from '../../world/voxel.ts'
 import { RegionBuild, RegionStore, type Region } from './regions.ts'
 import { RouteSearch, type RouteOptions } from './routeSearch.ts'
@@ -30,6 +30,14 @@ const PREBUILD_FILL = 0.9
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
 /** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
+/** Extra planning cost of a step onto a pose whose feet are in water: wading counts as about three steps, so routes keep to dry land unless going round is much longer. Walking speed is the same. */
+export const WADE_COST = 8
+/**
+ * Ticks a tile holds its liquid changes before the region layer sees them, in one revision bump. Water at a river's edge
+ * flickers many times a tick; bumping on each change restarted every build and search over it. Until then the live policy
+ * (and wading on through water up to 1.5 blocks) covers the difference.
+ */
+export const WATER_SETTLE = 200
 
 /** Lazy support graph. Geometry only: live occupancy, water and structural safety are checked by the executor. */
 export class NavigationSystem {
@@ -64,12 +72,24 @@ export class NavigationSystem {
   prebuilt = false
   /** Prebuild passes completed: after the first one every tile was built once (a warm world). Not simulation state. */
   prebuildPasses = 0
+  /** Tiles changed since the first complete prebuild pass, in the order they changed; `inQueue` marks them. */
+  private readonly changed: number[] = []
+  private readonly inQueue: Uint8Array
+  /** Every tile was built and the landmark tables settled once since the last reset: background work is capped from then on. */
+  warmed = false
+  /** Per tile, the tick its first unapplied liquid change came (-1: none); `wetPending` lists them in that order. */
+  private readonly wetSince: Int32Array
+  private readonly wetPending: number[] = []
+  /** Tiles the last prebuild call looked at (instrumentation; not simulation state). */
+  prebuildChecks = 0
   private cursor = 0
   /** The tile the last edge read: the four edges of a pose skip the map. Always the map's entry for `lastTile`. */
   private lastTile = -1
   private last: Tile | null = null
   readonly maxNodes: number
   readonly cacheLimit: number
+  /** The simulated water's block id (0 without one): units wade in it; any other liquid or a spring in the feet cell is no pose. */
+  private readonly waterGroup: number
   /** World x size and x × z plane, to decode pose indices without allocating. */
   readonly sx: number
   readonly plane: number
@@ -82,8 +102,9 @@ export class NavigationSystem {
     if (port.layout.voxelCount > 0x80000000) throw new RangeError('navigation needs voxel indices to fit positive int32')
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
-    this.port = port; this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
+    this.port = port; this.waterGroup = waterGroupOf(port.registry); this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
+    this.inQueue = new Uint8Array(this.revisions.length); this.wetSince = new Int32Array(this.revisions.length).fill(-1)
     this.regions = new RegionStore(this, storeBytes)
   }
   get pending(): number { let n = 0; for (const s of this.requests) if (s.status === 'pending') n++; return n }
@@ -102,6 +123,32 @@ export class NavigationSystem {
    * neither.
    */
   invalidate(x: number, y: number, z: number, solid = true, falls = !solid): void { this.invalidateBox(x, y, z, x, y, z, solid, falls) }
+  /**
+   * Liquid appeared in, left or changed kind in voxel (x, y, z): the pose below it (y - 1) changed its head-cell rule,
+   * and the pose at y its feet rule (a spring or another liquid). Like a falls flip, it marks the tiles flippy (landmark tables then read those poses as standable, so they
+   * stay a lower bound) and bumps their revisions; it is no change of solid geometry.
+   */
+  invalidateLiquid(x: number, y: number, z: number, now = 0): void {
+    // The same tiles invalidateBox would bump for (x, y - 1, z)..(x, y, z); they are bumped by settleWater, WATER_SETTLE later.
+    const [sx, sy, sz] = this.port.layout.size, plane = this.tx * this.tz
+    for (let yy = Math.max(0, (Math.max(0, y - 1) - 2) >> 4); yy <= Math.min((sy >> 4) - 1, (y + 3) >> 4); yy++)
+      for (let zz = Math.max(0, (z - 1) >> 4); zz <= Math.min((sz >> 4) - 1, (z + 1) >> 4); zz++)
+        for (let xx = Math.max(0, (x - 1) >> 4); xx <= Math.min((sx >> 4) - 1, (x + 1) >> 4); xx++) {
+          const t = xx + zz * this.tx + yy * plane
+          if (this.wetSince[t]! < 0) { this.wetSince[t] = now; this.wetPending.push(t) }
+        }
+  }
+  /** Applies the liquid changes tiles have held for WATER_SETTLE ticks: one revision bump each, marking them flippy. */
+  settleWater(now: number): void {
+    let bumped = false
+    while (this.wetPending.length && now - this.wetSince[this.wetPending[0]!]! >= WATER_SETTLE) {
+      const t = this.wetPending.shift()!
+      this.wetSince[t] = -1; this.revisions[t]!++; bumped = true
+      if (!this.flippy[t]) { this.flippy[t] = 1; this.flips++ }
+      if (!this.inQueue[t]) { this.inQueue[t] = 1; this.changed.push(t) }
+    }
+    if (bumped) { this.revision++; this.pass++ }
+  }
   /** Edges of a pose read x±1, z±1 and y-3..y+2, so a voxel change reaches only poses in that reverse footprint. */
   invalidateBox(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, solid = true, falls = !solid): void {
     if (solid) this.geometry++
@@ -113,13 +160,14 @@ export class NavigationSystem {
           const t = xx + zz * this.tx + yy * plane
           this.revisions[t]!++
           if (falls && !solid && !flippy[t]) { flippy[t] = 1; this.flips++ }
+          if (!this.inQueue[t]) { this.inQueue[t] = 1; this.changed.push(t) }
         }
     this.revision++; this.pass++
   }
   reset(): void {
     this.tiles.clear(); this.lastTile = -1; this.last = null; this.regions.clear(); this.building.clear(); this.revisions.fill(0); this.revision++; this.pass++; for (const s of this.requests) s.cancel(); this.requests = []
     Object.assign(this.pre, { phase: 0, ring: 0, anchor: 0, k: 0, tile: 0, built: 0, idle: -1 }); this.prebuilt = false; this.prebuildPasses = 0
-    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset()
+    this.geometry++; this.flippy.fill(0); this.flips++; this.landmarks.reset(); this.changed.length = 0; this.inQueue.fill(0); this.warmed = false; this.wetPending.length = 0; this.wetSince.fill(-1)
   }
   /**
    * Changes to allowed poses invalidate queries without discarding the geometry graph; a box limits it to searches that
@@ -145,12 +193,19 @@ export class NavigationSystem {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
   /**
-   * A pose of the region layer: it stands, and not on a block that falls. The live policy always rejects poses on
-   * falling blocks, so the region layer drops them as geometry; flat searches still stand there (to search out of sand).
+   * A pose of the region layer: it stands, not on a block that falls, not with liquid in the head cell, and not with a
+   * spring or a liquid other than water in the feet cell. The live policy always rejects all three (units wade through
+   * water up to one block, never with the head under), so the region layer drops them as geometry; flat searches still
+   * stand there (to search out of sand or deep water).
    */
   regionStand(x: number, y: number, z: number): boolean {
-    return this.stand(x, y, z) && (y === 0 || this.port.registry.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+    const R = this.port.registry, feet = voxelId(this.port.get(x, y, z))
+    return this.stand(x, y, z) && (y === 0 || R.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+      && !(R.liquid[feet] === 1 && (R.liquidGroup[feet] !== this.waterGroup || R.source[feet] === 1))
+      && (y + 1 >= this.port.layout.size[1] || R.liquid[voxelId(this.port.get(x, y + 1, z))] !== 1)
   }
+  /** Whether the feet cell of pose p holds liquid: a step onto it costs WADE_COST more. */
+  wet(p: number): boolean { const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0; return this.port.registry.liquid[voxelId(this.port.get(r - z * this.sx, y, z))] === 1 }
   allowed(p: number): boolean {
     const y = (p / this.plane) | 0, r = p - y * this.plane, z = (r / this.sx) | 0, x = r - z * this.sx
     return (this.port.safe?.(x, y, z) ?? true) && !(this.port.hazard?.(x, y, z) ?? false)
@@ -211,13 +266,15 @@ export class NavigationSystem {
   /**
    * Builds regions ahead of need with operations the tick left unused, in a fixed order: the tiles within RING columns
    * of each anchor (a unit's tile; ring by ring, anchors in order, each on its level and the ones above and below), then
-   * every tile by index, then again, so edits are rebuilt too. One operation per tile checked, builds charged as usual,
+   * every tile by index. After that first complete pass only the tiles changed since (the `changed` queue, oldest first)
+   * are rebuilt: no rings and no rescans. One operation per tile checked, builds charged as usual,
    * a build in progress resumed first; nothing while the store is fuller than PREBUILD_FILL of its cap, nor after a
    * pass that built nothing until a tile changes. Once every tile was built, landmark tables go before the passes;
    * `now` (the tick) lets them wait for edits to settle (see Landmarks). Returns the operations used, at most `cap`.
    */
   prebuild(cap: number, anchors: readonly number[], now?: number): number {
     let used = 0
+    this.prebuildChecks = 0
     const pre = this.pre, tx = this.tx, tz = this.tz, ty = this.revisions.length / (tx * tz)
     // Builds that queries or refinement left unfinished go first, oldest first, so none lingers half built; a store too
     // full to take them drops them instead (a reader still building one keeps its own).
@@ -229,7 +286,19 @@ export class NavigationSystem {
       if (!region) break
     }
     if (used < cap && !this.full && this.regions.built === this.revisions.length) used += this.landmarks.step(cap - used, now)
-    while (pre.idle !== this.revision && used < cap && !this.full) {
+    // After the first complete pass, only tiles that changed since are rebuilt, oldest change first: no rings, no rescans.
+    if (this.prebuildPasses > 0) {
+      while (this.changed.length && used < cap && !this.full) {
+        const tile = this.changed[0]!
+        used++; this.prebuildChecks++
+        if (!this.regions.get(tile)) {
+          const { region, used: spent } = this.regionNow(tile, cap - used)
+          used += spent
+          if (!region) break
+        }
+        this.changed.shift(); this.inQueue[tile] = 0
+      }
+    } else while (pre.idle !== this.revision && used < cap && !this.full) {
       let tile = -1
       if (pre.phase === 0) {
         // Ring r has 8r columns (1 for r = 0), each on three levels.
@@ -256,7 +325,7 @@ export class NavigationSystem {
         tile = pre.tile
       }
       if (tile < 0) { pre.k++; continue }
-      used++
+      used++; this.prebuildChecks++
       if (this.regions.get(tile)) { if (pre.phase === 0) pre.k++; else pre.tile++; continue }
       const { region, used: spent } = this.regionNow(tile, cap - used)
       used += spent
@@ -266,6 +335,7 @@ export class NavigationSystem {
     }
     // A store too full to take more leaves prebuild nothing to do either.
     if (this.full) this.prebuilt = true
+    if (!this.warmed && (this.regions.built === this.revisions.length && this.landmarks.settled() || this.full)) this.warmed = true
     this.visited += used
     return used
   }
@@ -317,6 +387,8 @@ export class NavigationSystem {
     mix(this.building.size); for (const [index, job] of this.building) { mix(index); job.mixState(mix) }
     this.landmarks.mixState(mix)
     const pre = this.pre; mix(pre.phase); mix(pre.ring); mix(pre.anchor); mix(pre.k); mix(pre.tile); mix(pre.built); mix(pre.idle); mix(this.prebuilt ? 1 : 0)
+    mix(this.changed.length); for (const t of this.changed) mix(t); mix(this.warmed ? 1 : 0)
+    mix(this.wetPending.length); for (const t of this.wetPending) { mix(t); mix(this.wetSince[t]!) }
   }
 }
 
@@ -465,7 +537,7 @@ export class PathSearch {
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
         else if (to >= 0 && this.blocked?.has(to)) this.cut = true
         else if (to >= 0) {
-          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty), id = this.ids.get(to)
+          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
         }

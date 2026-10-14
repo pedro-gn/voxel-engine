@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { NavigationSystem } from '../src/sim/navigation/navigation.ts'
+import { NavigationSystem, WATER_SETTLE } from '../src/sim/navigation/navigation.ts'
 import { BUILD_WEIGHT, RegionBuild, RegionStore, UNREACHED, exitCosts, reverseField, slotOf, localOf } from '../src/sim/navigation/regions.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { Layout } from '../src/world/layout.ts'
@@ -123,7 +123,7 @@ it('the column index finds the same slot as a dense cell table, and empty tiles 
     for (let c = 0; c < 256; c++) if (r.cols[c + 1]! - r.cols[c]! > 1) multi++
     // Each exit: 48 bytes plus its crossings, two Int32 per crossing.
     const exits = r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0)
-    expect(r.bytes).toBe(r.poses.byteLength + r.next.byteLength + r.fields.byteLength + exits + 64 + 514 + 2 * r.poses.length)
+    expect(r.bytes).toBe(r.poses.byteLength + r.wet.byteLength + r.next.byteLength + r.fields.byteLength + exits + 64 + 514 + 2 * r.poses.length)
   }
   expect(multi).toBeGreaterThan(0)
   const a = build(nav, nav.tileOf(16, 20, 16)), b = build(nav, nav.tileOf(32, 20, 32))
@@ -158,4 +158,57 @@ it('an exit keeps its whole run of crossings, each with where it lands', () => {
     expect([fx, fy, tx, ty, tz]).toEqual([31, 4, 32, 4, fz])
   }
   expect(x.from).toBe(x.crossings[8]); expect(x.to).toBe(x.crossings[9])
+})
+
+function wetFixture(side = 64) {
+  const layout = new Layout([side, 32, side]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'water', liquid: true }])
+  const solid = new Set<number>(), water = new Set<number>()
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => { const p = layout.voxelIndex(x, y, z); return y < 4 || solid.has(p) ? 1 : water.has(p) ? 2 : 0 } })
+  return { nav, layout, solid, water }
+}
+it('a pose whose head cell holds liquid is not a region pose; a wadeable one is', () => {
+  const { nav, layout, water } = wetFixture()
+  // Feet-deep water at (20, 4, 20): wadeable. Head-deep at (21, 4, 20): water at y = 5 too.
+  water.add(layout.voxelIndex(20, 4, 20)); water.add(layout.voxelIndex(21, 4, 20)); water.add(layout.voxelIndex(21, 5, 20))
+  expect(nav.regionStand(20, 4, 20)).toBe(true)
+  expect(nav.regionStand(21, 4, 20)).toBe(false)
+  const r = build(nav, nav.tileOf(21, 4, 20))
+  expect(r.poses).toContain(layout.voxelIndex(20, 4, 20))
+  expect(r.poses).not.toContain(layout.voxelIndex(21, 4, 20))
+})
+it('liquid changes reach the region layer once a tile has had them for WATER_SETTLE ticks, in one bump, flippy, without a geometry bump', () => {
+  const { nav, layout, water } = wetFixture()
+  const t = nav.tileOf(21, 4, 20), before = nav.revisions[t]!, geometry = nav.geometry
+  water.add(layout.voxelIndex(21, 5, 20))
+  // Water flickering at a river's edge: many changes in the window, none applied yet.
+  for (let k = 0; k < WATER_SETTLE; k += 7) { nav.invalidateLiquid(21, 5, 20, k); nav.settleWater(k) }
+  expect(nav.revisions[t]).toBe(before)
+  nav.settleWater(WATER_SETTLE)
+  expect(nav.revisions[t]).toBe(before + 1)
+  nav.settleWater(WATER_SETTLE + 1)
+  expect(nav.revisions[t]).toBe(before + 1)
+  expect(nav.flippy[t]).toBe(1)
+  expect(nav.geometry).toBe(geometry)
+  expect(build(nav, t).poses).not.toContain(layout.voxelIndex(21, 4, 20))
+})
+it('after the first pass the prebuild visits only the tiles an edit touched', () => {
+  const { nav, layout, solid } = fixture(256)
+  while (!nav.prebuildStatus().done) nav.prebuild(1 << 20, [])
+  expect(nav.prebuild(1 << 20, [])).toBe(0)
+  solid.add(layout.voxelIndex(40, 4, 40)); nav.invalidate(40, 4, 40)
+  nav.prebuild(1 << 20, [])
+  // The edit's footprint (x 39..41, y 2..7, z 39..41) lies in one tile; a rescan would look at all 512.
+  expect(nav.prebuildChecks).toBeGreaterThan(0)
+  expect(nav.prebuildChecks).toBeLessThanOrEqual(2)
+  nav.prebuild(1 << 20, [])
+  expect(nav.prebuildChecks).toBe(0)
+})
+it('a spring or a liquid other than water in the feet cell is not a region pose, as the live policy refuses it', () => {
+  const layout = new Layout([64, 32, 64]), registry = new BlockRegistry([{ name: 'stone' }, { name: 'water', liquid: true }, { name: 'spring', liquid: true, source: 'water' }, { name: 'lava', liquid: true }])
+  const at = new Map<number, number>()
+  const nav = new NavigationSystem({ layout, registry, get: (x, y, z) => y < 4 ? 1 : at.get(layout.voxelIndex(x, y, z)) ?? 0 })
+  at.set(layout.voxelIndex(20, 4, 20), 2); at.set(layout.voxelIndex(21, 4, 20), 3); at.set(layout.voxelIndex(22, 4, 20), 4)
+  expect(nav.regionStand(20, 4, 20)).toBe(true) // wading in water
+  expect(nav.regionStand(21, 4, 20)).toBe(false) // a spring
+  expect(nav.regionStand(22, 4, 20)).toBe(false) // another liquid
 })

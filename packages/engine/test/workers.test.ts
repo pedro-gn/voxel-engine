@@ -3,6 +3,7 @@ import { Simulation } from '../src/sim/simulation.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import type { Command } from '../src/sim/commands.ts'
 import { staleBackoff } from '../src/sim/workers/workers.ts'
+import { WATER_SETTLE } from '../src/sim/navigation/navigation.ts'
 import type { WorkerOptions } from '../src/sim/workers/types.ts'
 import type { GeneratorContext } from '../src/sim/generator.ts'
 
@@ -417,6 +418,38 @@ describe('simulated workers', () => {
     expect(sim.water.depthAt(8, 4, 5)).toBeGreaterThan(128); expect(sim.water.depthAt(8, 7, 5)).toBe(0)
     sim.submit(0, ++seq, { type: 'unitSpawn', pos: [8, 4, 5] }); expect(sim.step().acks[0]?.ok).toBe(false)
     spawn(sim, [8, 7, 5]); expect(sim.workers!.view(1)?.y256).toBe(7 * 256)
+  })
+  it('a regenerated chunk whose liquid changed counts as a geometry change for the region layer', () => {
+    const sim = make(), dry = new Uint16Array(32768), wet = new Uint16Array(32768)
+    wet[5] = 3 // water, nothing else changed
+    expect(sim.workers!.geometryChanged(dry, wet)).toBe(true)
+  })
+  it('swapping water for a spring in a cell invalidates the region layer there', () => {
+    const sim = new Simulation({ buffers: createWorldBuffers([32, 32, 32]), blocks: [{ name: 'stone' }, { name: 'water', liquid: true }, { name: 'spring', liquid: true, source: 'water' }], seed: 1, randomTicksPerChunk: 0, workers: {} })
+    sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1) } })
+    // A one-cell pit in the floor holds the water, so nothing flows and nothing else invalidates the tile.
+    cmd(sim, { type: 'setBlock', pos: [10, 3, 10], voxel: 2 })
+    const nav = sim.workers!.nav, t = nav.tileOf(10, 3, 10), before = nav.revisions[t]!
+    ;(sim as unknown as { applySet(x: number, y: number, z: number, v: number, notify: boolean): void }).applySet(10, 3, 10, 3, true)
+    for (let i = 0; i <= WATER_SETTLE; i++) sim.step()
+    expect(nav.revisions[t]).toBeGreaterThan(before)
+  })
+  it('wades through water that fills the feet cell but not the head cell', () => {
+    // A one-deep trench across the floor (x = 10..12), full of water to the floor's top: the feet cell is water, the head cell dry.
+    const sim = make(ctx => { for (let x = 10; x <= 12; x++) for (let z = 0; z < 32; z++) ctx.set(x, 3, z, 3 | (7 << 12)) })
+    sim.step()
+    expect(sim.water.depthAt(11, 3, 5)).toBeGreaterThan(128)
+    expect(sim.water.depthAt(11, 3, 5)).toBeLessThanOrEqual(256)
+    spawn(sim, [5, 4, 5]); cmd(sim, { type: 'unitMove', ids: [1], pos: [20, 4, 5] })
+    let wet = false
+    for (let i = 0; i < 400 && sim.workers!.view(1)?.state !== 'idle'; i++) { sim.step(); if (sim.workers!.view(1)!.y256 === 3 * 256) wet = true }
+    expect(sim.workers!.view(1)).toMatchObject({ state: 'idle', x256: 20 * 256 + 128 })
+    expect(wet).toBe(true) // it walked through the trench: there is no way around
+  })
+  it('refuses a pose whose head cell is under water', () => {
+    // Water two blocks deep in a pit (x = 10..12, y = 2..3): the pose on its floor has water in the head cell.
+    const sim = make(ctx => { for (let x = 10; x <= 12; x++) for (let z = 0; z < 32; z++) { ctx.set(x, 2, z, 3 | (7 << 12)); ctx.set(x, 3, z, 3 | (7 << 12)) } })
+    sim.submit(0, ++seq, { type: 'unitSpawn', pos: [11, 2, 5] }); expect(sim.step().acks[0]?.ok).toBe(false)
   })
   it('records a falling block sweep and incapacitates the unit it crosses', () => {
     const sim = make(); spawn(sim)

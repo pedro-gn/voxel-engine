@@ -10,9 +10,9 @@ import { RouteSearch } from '../src/sim/navigation/routeSearch.ts'
 
 const blocks = [{ name: 'stone' }, { name: 'planks' }, { name: 'water', liquid: true }, { name: 'sand', falls: true }, { name: 'beam', collapses: true }]
 /** A side × 32 × side floor at y = 4, with the navigation budget of the scale target. */
-function makeWide(side: number, extra?: (ctx: GeneratorContext) => void, options: WorkerOptions = {}) {
+function makeWide(side: number, extra?: (ctx: GeneratorContext, cx: number, cz: number) => void, options: WorkerOptions = {}) {
   const sim = new Simulation({ buffers: createWorldBuffers([side, 32, side]), blocks, seed: 1, randomTicksPerChunk: 0, workers: { searchCap: 32768, materials: { stone: { digTicks: 4, buildTicks: 3 }, planks: { digTicks: 2, buildTicks: 3 } }, ...options } })
-  sim.generate({ generateColumn(ctx) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); extra?.(ctx) } })
+  sim.generate({ generateColumn(ctx, cx, cz) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); extra?.(ctx, cx, cz) } })
   return sim
 }
 let seq = 0
@@ -86,10 +86,187 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
     const fields = new Set([...sim.workers!.units.values()].map(u => u.route?.search))
     expect(fields.size).toBe(1); expect([...fields][0]).toBeInstanceOf(GroupField)
     until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'walking' || u.state === 'idle'), 60)
-    until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'idle'), 6000)
+    // Every unit arrives (the unitArrived event); arrived units may later make way for others, up to 16 blocks.
+    const arrived = new Set<number>()
+    for (let i = 0; i < 6000 && ![...sim.workers!.units.values()].every(u => u.state === 'idle'); i++) for (const e of sim.step().events) if (e.type === 'unitArrived') arrived.add((e.payload as { id: number }).id)
+    expect(arrived.size).toBe(20)
     const goals = new Set([...sim.workers!.units.values()].map(u => `${u.x >> 8},${u.z >> 8}`))
     expect(goals.size).toBe(20)
-    for (const u of sim.workers!.units.values()) { expect(Math.abs((u.x >> 8) - 200)).toBeLessThanOrEqual(6); expect(Math.abs((u.z >> 8) - 200)).toBeLessThanOrEqual(6) }
+    for (const u of sim.workers!.units.values()) { expect(Math.abs((u.x >> 8) - 200)).toBeLessThanOrEqual(6 + 16); expect(Math.abs((u.z >> 8) - 200)).toBeLessThanOrEqual(6 + 16) }
+  })
+  it('a group whose straight way crosses head-deep water walks around it and every unit arrives', () => {
+    // A basin across x = 100..103, z = 0..27 (from the world's edge), two deep in the middle (x = 101..102) and one deep at its rims, full of
+    // water to the floor's top: crossing it means a pose with water in the head cell. Dry, it would be crossable
+    // (drop 1, drop 1, climb 1, climb 1). The way around is at z >= 28.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx < 100 || wx > 103 || wz > 27) continue
+        const water = 3 | (7 << 12)
+        ctx.set(x, 3, z, water)
+        if (wx === 101 || wx === 102) ctx.set(x, 2, z, water)
+      }
+    })
+    for (let i = 0; i < 10; i++) spawn(sim, [60 + (i % 5) * 2, 4, 6 + Math.floor(i / 5) * 2])
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [160, 4, 10] })
+    for (let i = 0; i < 4000 && [...sim.workers!.units.values()].some(u => u.state !== 'idle'); i++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) expect(sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff], `unit ${u.id} head under water`).toBe(0)
+    }
+    expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
+  })
+  it('water that floods a basin across a route already planned is walked around', () => {
+    const sim = makeWide(256)
+    // The same basin as above, dug dry: x = 100 and 103 one deep, x = 101..102 two deep, z = 0..27.
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [103, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [102, 2, 27], voxel: 0 })
+    for (let i = 0; i < 10; i++) spawn(sim, [60 + (i % 5) * 2, 4, 6 + Math.floor(i / 5) * 2])
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [160, 4, 10] })
+    // The dry basin is on the way: let everyone set off, then flood it before anyone reaches it.
+    until(sim, () => [...sim.workers!.units.values()].every(u => u.state === 'walking' || (u.x >> 8) > 70), 400)
+    expect([...sim.workers!.units.values()].every(u => (u.x >> 8) < 95)).toBe(true)
+    const water = 3 | (7 << 12)
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [103, 3, 27], voxel: water }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [102, 2, 27], voxel: water })
+    for (let i = 0; i < 4000 && [...sim.workers!.units.values()].some(u => u.state !== 'idle'); i++) {
+      sim.step()
+      for (const u of sim.workers!.units.values()) expect(sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff], `unit ${u.id} head under water`).toBe(0)
+    }
+    expect([...sim.workers!.units.values()].map(u => u.state)).toEqual(Array(10).fill('idle'))
+    for (const u of sim.workers!.units.values()) expect(Math.abs((u.x >> 8) - 160)).toBeLessThanOrEqual(10) // formation spiral (spacing 2) plus retargeting
+  })
+  it('a unit caught by water rising over its head wades out to dry ground and carries on to its goal', () => {
+    const sim = makeWide(256)
+    // A basin dug dry, two deep and four wide in the middle (x = 101..104), one deep at its rims (x = 100, 105). The unit
+    // stands on the deep floor (y = 2) when the water comes: every pose next to it then has water in the head cell.
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: 0 })
+    spawn(sim, [102, 2, 10]); spawn(sim, [103, 2, 12])
+    // Ordered while dry, the two share a group route; the water comes in the next tick, before they are out.
+    cmd(sim, { type: 'unitMove', ids: [1, 2], pos: [160, 4, 10] })
+    expect([...sim.workers!.units.values()].every(u => u.route !== null)).toBe(true)
+    const water = 3 | (7 << 12)
+    sim.submit(0, ++seq, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water }); sim.submit(0, ++seq, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: water })
+    sim.step()
+    const units = [...sim.workers!.units.values()]
+    expect(units.every(u => sim.registry.liquid[sim.store.getVoxel(u.x >> 8, (u.y >> 8) + 1, u.z >> 8) & 0xfff] === 1)).toBe(true) // heads under water
+    until(sim, () => units.every(u => u.state === 'idle' && u.goal === null), 4000)
+    for (const u of units) expect(Math.abs((u.x >> 8) - 160) + Math.abs((u.z >> 8) - 10)).toBeLessThanOrEqual(4)
+  })
+  it('a unit still wading out whose escape ended under water again escapes again instead of giving up', () => {
+    const sim = makeWide(256)
+    cmd(sim, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: 0 }); cmd(sim, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: 0 })
+    spawn(sim, [102, 2, 10])
+    const water = 3 | (7 << 12)
+    sim.submit(0, ++seq, { type: 'fillRegion', min: [100, 3, 0], max: [105, 3, 27], voxel: water }); sim.submit(0, ++seq, { type: 'fillRegion', min: [101, 2, 0], max: [104, 2, 27], voxel: water })
+    sim.step()
+    // The state the crowd world reaches: an escape walked to its end, and the water rose over the unit there again.
+    const u = sim.workers!.units.get(1)! as unknown as { wadingOut: boolean; state: string; goal: number | null; x: number; z: number }
+    u.wadingOut = true
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 10] })
+    ;(sim.workers!.units.get(1)! as unknown as { wadingOut: boolean }).wadingOut = true
+    until(sim, () => u.state === 'idle' && u.goal === null, 4000)
+    expect(Math.abs((u.x >> 8) - 160) + Math.abs((u.z >> 8) - 10)).toBeLessThanOrEqual(4)
+  })
+  it('a unit crossing a lake keeps going when the water rises a little over its head, instead of escaping to an island', () => {
+    // A walled pen (x 94..126, z 0..20, rim two high) holding a one-deep lake (x 100..120) with a shallow island
+    // (x 108..110, z 4..8). The unit starts on the west shore and walks to the east shore across the lake.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx < 94 || wx > 126 || wz > 20) continue
+        if (wx === 94 || wx === 126 || wz === 20) { ctx.set(x, 4, z, 1); ctx.set(x, 5, z, 1); continue }
+        const island = wx >= 108 && wx <= 110 && wz >= 4 && wz <= 8
+        if (wx >= 100 && wx <= 120 && !island) ctx.set(x, 3, z, 3 | (7 << 12))
+      }
+    })
+    spawn(sim, [97, 4, 6])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [123, 4, 6] })
+    const u = sim.workers!.units.get(1)!
+    until(sim, () => (u.x >> 8) >= 103 && (u.y >> 8) === 3, 400)
+    // The water rises by a thin layer over the whole pen: the lake's poses get water in the head cell, a little.
+    cmd(sim, { type: 'fillRegion', min: [95, 4, 0], max: [125, 4, 19], voxel: 3 | (1 << 12) })
+    let noAccess = 0
+    for (let i = 0; i < 3000 && !(u.state === 'idle' && u.goal === null); i++) { sim.step(); if (u.reason === 'no-access') noAccess++ }
+    expect(noAccess).toBe(0)
+    expect([u.x >> 8, u.z >> 8]).toEqual([123, 6])
+  })
+  it('a unit standing in risen water with a far goal wades to the region layer first and routes from there', () => {
+    // A one-deep lake (x 100..120, z 0..20) in a pen open to the east (rim gap at z 5..7); far east, a wall across the world
+    // at x = 180 with a gap only at z >= 230, so a flat search from the lake cannot reach the goal within the node limit.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) {
+        const wx = cx * 32 + x, wz = cz * 32 + z
+        if (wx === 180 && wz < 230) { for (let y = 4; y < 7; y++) ctx.set(x, y, z, 1); continue }
+        if (wx < 94 || wx > 126 || wz > 20) continue
+        if ((wx === 94 || wx === 126 || wz === 20) && !(wx === 126 && wz >= 5 && wz <= 7)) { ctx.set(x, 4, z, 1); ctx.set(x, 5, z, 1); continue }
+        if (wx >= 100 && wx <= 120) ctx.set(x, 3, z, 3 | (7 << 12))
+      }
+    }, { maxSearchNodes: 4000 })
+    spawn(sim, [97, 4, 6])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [106, 3, 6] })
+    const u = sim.workers!.units.get(1)!
+    until(sim, () => u.state === 'idle' && u.goal === null, 400)
+    // The water rises a little: the unit now stands with its head in water, on a pose the region layer does not have.
+    cmd(sim, { type: 'fillRegion', min: [95, 4, 0], max: [125, 4, 19], voxel: 3 | (1 << 12) })
+    for (let i = 0; i < 20; i++) sim.step()
+    expect(sim.workers!.nav.regionStand(u.x >> 8, u.y >> 8, u.z >> 8)).toBe(false)
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [200, 4, 6] })
+    let limited = 0
+    for (let i = 0; i < 6000 && !(u.state === 'idle' && u.goal === null); i++) { sim.step(); if (u.reason === 'search-limited') limited++ }
+    expect(limited).toBe(0)
+    expect([u.x >> 8, u.z >> 8]).toEqual([200, 6])
+  })
+  it('wading costs more than walking: long and short walks go round a shallow lake when the way round is not much longer', () => {
+    // A one-deep lake (x 100..110, z 0..10) from the world's edge; the way round it is at z >= 11.
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) { const wx = cx * 32 + x, wz = cz * 32 + z; if (wx >= 100 && wx <= 110 && wz <= 10) ctx.set(x, 3, z, 3 | (7 << 12)) }
+    })
+    spawn(sim, [60, 4, 5]); spawn(sim, [95, 4, 5])
+    cmd(sim, { type: 'unitMove', ids: [1], pos: [160, 4, 5] }); cmd(sim, { type: 'unitMove', ids: [2], pos: [115, 4, 5] })
+    const units = [...sim.workers!.units.values()]
+    let wet = 0
+    for (let i = 0; i < 3000 && units.some(u => u.goal !== null); i++) {
+      sim.step()
+      for (const u of units) if (sim.registry.liquid[sim.store.getVoxel(u.x >> 8, u.y >> 8, u.z >> 8) & 0xfff]) wet++
+    }
+    expect(units.every(u => u.goal === null)).toBe(true)
+    expect(wet).toBe(0)
+  })
+  it('a group of 40 packed units starts walking within 5 ticks of a far move order on a warm world', () => {
+    const sim = makeWide(256, undefined, { searchCap: 8192 })
+    for (let i = 0; i < 40; i++) spawn(sim, [4 + (i % 8) * 2, 4, 4 + Math.floor(i / 8) * 2])
+    // Warm: let the prebuild build every tile first, as the bench does.
+    for (let i = 0; i < 4000 && !sim.workers!.nav.prebuildStatus().done; i++) sim.step()
+    cmd(sim, { type: 'unitMove', ids: [...sim.workers!.units.keys()], pos: [200, 4, 200] })
+    const started = new Map<number, number>()
+    for (let t = 1; t <= 60; t++) { sim.step(); for (const u of sim.workers!.units.values()) if (u.state === 'walking' && !started.has(u.id)) started.set(u.id, t) }
+    const ticks = [...started.values()].sort((a, b) => a - b)
+    expect(ticks.length).toBe(40)
+    expect(ticks[Math.floor(ticks.length * 0.95)]).toBeLessThanOrEqual(5)
+  })
+  it('while a unit with nothing to walk waits for its route, repairs get at most an eighth of the budget', () => {
+    // A head-on jam in a two-wide corridor (repairs) next to a far unit planning a long cold route (a pending search).
+    const sim = makeWide(256, (ctx, cx, cz) => {
+      if (cx || cz) return
+      for (let x = 2; x <= 29; x++) for (let y = 4; y < 6; y++) { ctx.set(x, y, 4, 1); ctx.set(x, y, 7, 1) }
+      for (let y = 4; y < 6; y++) for (const z of [5, 6]) { ctx.set(2, y, z, 1); ctx.set(29, y, z, 1) }
+    }, { searchCap: 1024, sleep: false })
+    for (let x = 3; x <= 12; x++) spawn(sim, [x, 4, 5])
+    for (let x = 19; x <= 28; x++) spawn(sim, [x, 4, 5])
+    const far = spawn(sim, [120, 4, 120])
+    let id = 0
+    for (let x = 3; x <= 12; x++) sim.submit(0, ++seq, { type: 'unitMove', ids: [++id], pos: [x + 16, 4, 6] })
+    for (let x = 19; x <= 28; x++) sim.submit(0, ++seq, { type: 'unitMove', ids: [++id], pos: [x - 16, 4, 6] })
+    sim.step()
+    const w = sim.workers as unknown as { engineeringVisited: number; refineWork: number }, u = sim.workers!.units.get(far)!
+    let starvedTicks = 0, peak = 0
+    for (let t = 0; t < 300; t++) {
+      if (t === 20) cmd(sim, { type: 'unitMove', ids: [far], pos: [250, 4, 250] })
+      sim.step()
+      const pending = u.path[u.cursor] === undefined && !u.motion && u.route?.search.status === 'pending'
+      if (pending) { starvedTicks++; peak = Math.max(peak, w.engineeringVisited) }
+    }
+    expect(starvedTicks).toBeGreaterThan(0)
+    expect(peak).toBeLessThanOrEqual(1024 >> 3)
   })
   it('a far work task walks a route, claims only its final pose and gets done', () => {
     const sim = makeWide(256); spawn(sim, [5, 4, 5])
@@ -159,8 +336,8 @@ describe('hierarchical routes', { timeout: 60_000 }, () => {
   it('spare operations prebuild the world, nearest the units first, within the budget, and a long move then starts warm', () => {
     const sim = makeWide(256, undefined, { searchCap: 4096 }); spawn(sim, [200, 4, 200])
     const nav = sim.workers!.nav, near = nav.tileOf(200, 4, 200)
-    sim.step()
-    expect(nav.regions.get(near)).toBeDefined()
+    // The unit's own tile is built first; at prebuildCap operations per tick that takes a few ticks.
+    until(sim, () => nav.regions.get(near) !== undefined, 10)
     for (let i = 0; i < 3000 && !nav.prebuilt; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(4096)
     expect(nav.prebuilt).toBe(true)
     expect(nav.regions.size).toBe(nav.revisions.length)
@@ -266,6 +443,14 @@ describe('traffic blocks on group routes', { timeout: 60_000 }, () => {
   })
 })
 describe('background navigation work', { timeout: 60_000 }, () => {
+  it('a cold world warms on the whole leftover budget; once warm, the prebuild never spends more than prebuildCap in a tick', () => {
+    const sim = makeWide(256, undefined, { prebuildCap: 256 }); spawn(sim, [5, 4, 5])
+    // 512 tiles with landmark tables: far more than 256 operations a tick for a few hundred ticks would allow.
+    until(sim, () => sim.workers!.nav.prebuildStatus().done, 600)
+    for (let i = 0; i < 100; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
+    cmd(sim, { type: 'fillRegion', min: [40, 4, 40], max: [200, 4, 200], voxel: 3 | (7 << 12) })
+    for (let i = 0; i < 200; i++) expect(sim.step().workers!.stats.visited).toBeLessThanOrEqual(256)
+  })
   it('with no units and no queries, the navigation does no background work', () => {
     const sim = makeWide(128)
     for (let i = 0; i < 50; i++) expect(sim.step().workers!.stats.visited).toBe(0)
