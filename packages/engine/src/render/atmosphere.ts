@@ -163,14 +163,14 @@ export interface DayKey { t: number; atmosphere: AtmosphereInput }
 
 /** The default day (first guesses, tuned at the checkpoints): t 0 is midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. The night "sun" is the moon. */
 export const DAY_KEYFRAMES: readonly DayKey[] = deepFreeze([
-  { t: 0.0, atmosphere: { sun: { azimuth: 0, elevation: 40, color: '#9fb4ff', intensity: 0.25 }, ambient: { sky: '#3a4a7a', ground: '#1e1a24', intensity: 0.3 }, sky: { zenith: '#0b1530', horizon: '#26345e', sunGlow: 0.05, clouds: { light: '#4a5680', shade: '#20263f' } }, fog: { color: '#1d2747' }, shadow: { strength: 0.5, tint: '#1a2140' }, grade: { exposure: 0.9 } } },
-  { t: 0.2, atmosphere: { sun: { azimuth: 60, elevation: -8, color: '#9fb4ff', intensity: 0.2 }, ambient: { sky: '#4a5590', ground: '#2a2230', intensity: 0.32 }, sky: { zenith: '#1a2550', horizon: '#6a5a8a', sunGlow: 0.1 }, fog: { color: '#4a4a74' } } },
+  { t: 0.0, atmosphere: { sun: { azimuth: 0, elevation: 40, color: '#d6deef', intensity: 0.8 }, ambient: { sky: '#bcc6de', ground: '#6c6a7a', intensity: 0.72 }, sky: { zenith: '#26345c', horizon: '#56688f', sunGlow: 0.08, clouds: { light: '#8a94b0', shade: '#4a5270' } }, fog: { color: '#4e5d80' }, shadow: { strength: 0.4, tint: '#3a4466' }, grade: { exposure: 1.15, saturation: 0.6, highlights: '#f2f4fa', shadows: '#e8ebf4' } } },
+  { t: 0.2, atmosphere: { sun: { azimuth: 60, elevation: -8, color: '#d6deef', intensity: 0.5 }, ambient: { sky: '#c0c6dc', ground: '#6e6676', intensity: 0.72 }, sky: { zenith: '#323e6a', horizon: '#7e7496', sunGlow: 0.15 }, fog: { color: '#62628a' }, grade: { exposure: 1.1, saturation: 0.7 } } },
   { t: 0.25, atmosphere: { sun: { azimuth: 90, elevation: 2, color: '#ffb27a', intensity: 1.1 }, ambient: { sky: '#d9a6c8', ground: '#5a4050', intensity: 0.5 }, sky: { zenith: '#5a6ab0', horizon: '#ffa98a', sunGlow: 1.2 }, fog: { color: '#f2b0a0' } } },
   { t: 0.32, atmosphere: { sun: { azimuth: 110, elevation: 30, color: '#fff1d6', intensity: 1.5 }, ambient: { sky: '#a8c8ff', ground: '#6b5a45', intensity: 0.65 } } },
   { t: 0.5, atmosphere: { sun: { azimuth: 180, elevation: 62, color: '#fff6e8', intensity: 1.7 }, ambient: { sky: '#a8c8ff', ground: '#6b5a45', intensity: 0.75 }, sky: { zenith: '#2f6fd6', horizon: '#bcd9f2', sunGlow: 0.6 }, fog: { color: '#bcd9f2' } } },
   { t: 0.68, atmosphere: { sun: { azimuth: 250, elevation: 30, color: '#fff1d6', intensity: 1.5 }, ambient: { intensity: 0.65 } } },
   { t: 0.75, atmosphere: { sun: { azimuth: 270, elevation: 2, color: '#ffb27a', intensity: 1.2 }, ambient: { sky: '#d9a6c8', ground: '#5a4050', intensity: 0.5 }, sky: { zenith: '#6a5aa8', horizon: '#ff9fb0', sunGlow: 1.2 }, fog: { color: '#f2a5a8' } } },
-  { t: 0.8, atmosphere: { sun: { azimuth: 300, elevation: -8, color: '#9fb4ff', intensity: 0.2 }, ambient: { sky: '#4a5590', ground: '#2a2230', intensity: 0.32 }, sky: { zenith: '#1a2550', horizon: '#5a4a7a', sunGlow: 0.1 }, fog: { color: '#3a3a64' } } },
+  { t: 0.8, atmosphere: { sun: { azimuth: 300, elevation: -8, color: '#d6deef', intensity: 0.5 }, ambient: { sky: '#c0c6dc', ground: '#6e6676', intensity: 0.72 }, sky: { zenith: '#323e6a', horizon: '#726890', sunGlow: 0.15 }, fog: { color: '#565a86' }, grade: { exposure: 1.1, saturation: 0.7 } } },
 ])
 
 const ease = (t: number) => t * t * (3 - 2 * t)

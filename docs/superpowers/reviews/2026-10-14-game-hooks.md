@@ -121,4 +121,7 @@ cost if wrong.
 - The `voidFloor` and `cutTop` uniforms are module-level (shared by engines in one page, like `waterAlpha`).
 - A full lower segment that belongs to a pressurized body is not drained at the bottom of a void column (left to the
   body's regrouping); the overhang test stays dry, but a sealed tank opened at the bottom has not been tried.
-- The night keyframe is dark in the e2e screenshot; its ambient (0.3) is a first guess for the checkpoint.
+- Night look (checkpoint 3, 2026-10-14): the user found the first night far too dark and asked for a soft, clearly
+  visible, less saturated night with a lighter surface. Night/twilight keys now: ambient 0.72 neutral grey-blue, moon
+  0.8 `#d6deef`, exposure 1.15/1.1, saturation 0.6/0.7. Accepted "for now": the game's art is still being made and the
+  keyframes will be retuned with it.
