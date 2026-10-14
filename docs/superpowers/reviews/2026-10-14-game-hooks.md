@@ -125,3 +125,12 @@ cost if wrong.
   visible, less saturated night with a lighter surface. Night/twilight keys now: ambient 0.72 neutral grey-blue, moon
   0.8 `#d6deef`, exposure 1.15/1.1, saturation 0.6/0.7. Accepted "for now": the game's art is still being made and the
   keyframes will be retuned with it.
+
+## User checkpoints (2026-10-14, `?scene=sky`)
+
+- Waterfall into the void: good. Cut steps, Home camera reset, wander units: good. Night: retuned (see above).
+- Found at checkpoint 1: on the stream's one-block terraces the upper water looks like it ends one column before the
+  step. Probe (headless sim, 3,000 ticks): the simulation has water up to the brink, depth falling 108 → 32 /256 along
+  each 8-block terrace, so the brink column is wet (≥ SHOW_MIN 16) but drawn dry. The surface layout code
+  (`surfaceView.ts`, `surfaceMesh.ts`) is untouched by this branch, so this is a pre-existing 3c water-render issue at
+  shallow brinks, tracked separately.
