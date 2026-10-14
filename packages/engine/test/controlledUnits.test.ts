@@ -99,6 +99,27 @@ describe('controlled units', () => {
     expect(h.events.find(e => e.type === 'fell')).toEqual({ unit: id, type: 'fell', height: 4 })
   })
 
+  it('view() hands out a copy of the intent', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.goTo(id, [20, 4, 20]))
+    const v = h.ctx.units.view(id)!
+    ;(v.intent!.pos as unknown as number[])[0] = 99
+    expect(h.ctx.units.view(id)!.intent).toEqual({ kind: 'goTo', pos: [20, 4, 20] })
+  })
+
+  it('the hash reads where a fall started only while the unit falls', () => {
+    const h = harness((g) => { for (let y = 4; y < 8; y++) g.set(20, y, 20, 1) })
+    const id = h.run(c => c.units.spawn([20, 8, 20]))
+    h.sim.submit(0, ++seq, { type: 'fillRegion', min: [20, 4, 20], max: [20, 7, 20], voxel: 0 }); h.sim.step()
+    h.until(() => h.events.some(e => e.unit === id && e.type === 'fell'))
+    const u = h.sim.workers!.units.get(id) as unknown as { fallFrom: number; state: string }
+    expect(u.state).not.toBe('falling')
+    const before = h.sim.hash()
+    u.fallFrom = 12345 // a landed unit's last fall start is not state a save keeps
+    expect(h.sim.hash()).toBe(before)
+  })
+
   it('despawn removes the unit', () => {
     const h = harness()
     const id = h.run(c => c.units.spawn([5, 4, 5]))

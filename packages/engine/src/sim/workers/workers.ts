@@ -2066,7 +2066,7 @@ export class WorkerSystem {
   }
   view(id: number): WorkerView | undefined {
     const u = this.units.get(id)
-    return u && { id, available: u.available, x256: u.x, y256: u.y, z256: u.z, facing: u.facing, state: u.state, order: u.task?.order.id ?? 0, progress: u.progress, duration: u.duration, ...(u.reason && { reason: u.reason }), stock: [...u.stock].map(([block, count]) => ({ block, count })), ...(u.controlled && { controlled: true, intent: u.intent }) }
+    return u && { id, available: u.available, x256: u.x, y256: u.y, z256: u.z, facing: u.facing, state: u.state, order: u.task?.order.id ?? 0, progress: u.progress, duration: u.duration, ...(u.reason && { reason: u.reason }), stock: [...u.stock].map(([block, count]) => ({ block, count })), ...(u.controlled && { controlled: true, intent: u.intent && { ...u.intent, pos: [u.intent.pos[0], u.intent.pos[1], u.intent.pos[2]] } }) }
   }
   viewDrops(): { pos: Vec3; block: number; count: number }[] { return [...this.loose].flatMap(([p, pile]) => [...pile].map(([block, count]) => ({ pos: this.port.layout.voxelCoords(p), block, count }))) }
   publication(versions?: Uint32Array, tick = 0): WorkerTick {
@@ -2099,7 +2099,8 @@ export class WorkerSystem {
     for (const u of this.units.values()) {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
       // Only controlled units mix these fields, so worlds without them hash as before.
-      if (u.controlled) { mix(1); mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) } }
+      // fallFrom only while falling: a save keeps it only then (UnitSnapshot.fallFrom).
+      if (u.controlled) { mix(1); if (u.state === 'falling') mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) } }
       mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.wadingOut ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)
