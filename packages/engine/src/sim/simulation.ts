@@ -202,6 +202,11 @@ export class Simulation {
     this.applySet(...pos, value, true, commit); return true
   }
 
+  /** A worker unit's body, a falling block or a structural fragment is in the cell (the bodies editIf refuses a solid onto). */
+  private occupied(x: number, y: number, z: number): boolean {
+    return this.layout.inBounds(x, y, z) && ((this.workers?.overlaps(x, y, z) ?? false) || this.gravity.occupies(x, y, z) || this.collapse.overlaps(x, y, z))
+  }
+
   get pendingWork(): number { return this.neighbors.length - this.neighborHead + this.scheduler.size }
 
   /** True while physics (gravity, water, region jobs) is stopped. Rules, random ticks, light and the water mirror still run. */
@@ -652,6 +657,7 @@ export class Simulation {
       skyLight: (x, y, z) => skyLight(sim.store.getLight(x, y, z)),
       blockLight: (x, y, z) => blockLight(sim.store.getLight(x, y, z)),
       waterDepth: (x, y, z) => sim.water.depthAt(x, y, z),
+      occupied: (x, y, z) => sim.occupied(x, y, z),
       edit: (pos, expected, value) => {
         if (!sim.layout.inBounds(...pos)) throw new RangeError(`edit outside the world: [${pos.join(', ')}]`)
         if (!Number.isInteger(value) || value < 0 || value > 0xffff || voxelId(value) >= sim.registry.count) throw new Error(`invalid voxel ${value}`)
@@ -664,13 +670,16 @@ export class Simulation {
 
   private makeContext(): RuleContext {
     const sim = this
+    const size = Object.freeze([...sim.layout.size] as [number, number, number])
     return {
       get tick() { return sim.tick },
+      size,
       get: (x, y, z) => sim.store.getVoxel(x, y, z),
       set: (x, y, z, v) => {
         if (!Number.isInteger(v) || v < 0 || v > 0xffff || voxelId(v) >= sim.registry.count) throw new Error(`invalid voxel ${v}`)
         sim.applySet(x, y, z, v, true)
       },
+      occupied: (x, y, z) => sim.occupied(x, y, z),
       schedule: (x, y, z, delay) => {
         if (!Number.isFinite(delay)) throw new Error(`invalid schedule delay ${delay}`)
         if (!sim.layout.inBounds(x, y, z)) return

@@ -2,8 +2,23 @@ import type { Command } from './commands.ts'
 
 export interface RuleContext {
   readonly tick: number
+  /** The world size in voxels, [x, y, z]: a rule placing a structure keeps every cell inside it. */
+  readonly size: readonly [number, number, number]
   get(x: number, y: number, z: number): number
+  /**
+   * Writes a voxel without checking for units or falling blocks in the way (unlike a game system's `edit`): a solid
+   * written onto a worker unit incapacitates it. It throws (FragmentOverlapError) on a cell a moving structural fragment
+   * occupies, and the cells a rule wrote before that throw stay written. So a rule placing solids where units or bodies may
+   * be checks `occupied` first, for every cell of a multi-cell structure before writing any of them (all or nothing), and
+   * retries later when one is occupied.
+   */
   set(x: number, y: number, z: number, voxel: number): void
+  /**
+   * True when a live (not incapacitated) worker unit's body, a falling block or a structural fragment is in the cell; false
+   * outside the world. An incapacitated unit releases its cells, but restoring a save reserves every unit's body again, so
+   * after a load an incapacitated unit's cells read occupied too.
+   */
+  occupied(x: number, y: number, z: number): boolean
   schedule(x: number, y: number, z: number, delayTicks: number): void
   random(): number
   emit(type: string, payload?: unknown): void
