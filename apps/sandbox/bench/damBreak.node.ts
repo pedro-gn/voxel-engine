@@ -1,8 +1,7 @@
 // The flood scene's dam break on plain Node (Vitest's module transform makes the sim several times slower): sim tick
 // p50/p95/max, the water step and the mirror + publish, and with `settle` the ticks until every tile sleeps and how flat
 // the lake ends. Usage: node bench/damBreak.node.ts [ticks | settle]   (from apps/sandbox; default 3000 ticks)
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
 import { breachCommands, FLOOD_SIZE, floodGenerator, LAKE, stopSpringCommands } from '../src/scenes/flood.ts'

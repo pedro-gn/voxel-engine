@@ -1,8 +1,7 @@
 // Exercise collapse during the real dam break, with exact water accounting on every tick.
 // Run from repo root: node apps/sandbox/bench/collapseWater.node.ts
 import assert from 'node:assert/strict'
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
+import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
 import { BLOCKS } from '../src/blocks.ts'
 import { FLOOD_SIZE, floodGenerator, breachCommands, stopSpringCommands } from '../src/scenes/flood.ts'
 

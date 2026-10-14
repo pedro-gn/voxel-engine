@@ -21,3 +21,5 @@ export type { GeneratorConfig, GeneratorContext, GeneratorInfo, GeneratorModule 
 export type { WaterOptions } from './water/waterSystem.ts'
 export type { FallingBodyState, Landing } from './gravity.ts'
 export { testGenerator } from './testGenerator.ts'
+export { AIR, packVoxel, voxelId, voxelState, withState } from '../world/voxel.ts'
+export { Pcg32 } from './rng.ts'

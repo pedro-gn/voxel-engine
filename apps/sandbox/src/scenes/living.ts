@@ -1,5 +1,5 @@
 import type { Command, Vec3, WorkerOptions, WorkOrderView } from '@elovox/engine'
-import { AIR } from '@elovox/engine/src/world/voxel.ts'
+import { AIR } from '@elovox/engine/sim-worker'
 import { WORKER_OPTIONS } from './workers.ts'
 
 /** The living-world benchmark scene (4a): every system at once on the user's 512² reference world. */

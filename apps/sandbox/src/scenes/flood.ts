@@ -1,6 +1,5 @@
 import type { Command } from '@elovox/engine'
-import { defineGenerator } from '@elovox/engine/sim-worker'
-import { AIR, packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { defineGenerator, AIR, packVoxel } from '@elovox/engine/sim-worker'
 
 /** A test bed for 3a: a dammed lake above a dry valley, a spring-fed river into a small sea, sand on planks in the air. */
 export const FLOOD_SIZE = [256, 64, 256] as const

@@ -10,7 +10,8 @@
     "./sim-worker": "./src/sim/runSimWorker.ts",
     "./gen-worker": "./src/gen/runGenWorker.ts",
     "./persist-worker": "./src/persist/worker.ts",
-    "./src/*": "./src/*"
+    "./testing": "./src/testing/index.ts",
+    "./testing/render": "./src/testing/render.ts"
   },
   "scripts": {
     "test": "vitest run",

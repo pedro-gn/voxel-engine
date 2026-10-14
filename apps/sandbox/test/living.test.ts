@@ -1,6 +1,5 @@
-import { Simulation } from '@elovox/engine/src/sim/simulation.ts'
-import { createWorldBuffers } from '@elovox/engine/src/world/buffers.ts'
-import { AIR, packVoxel, voxelId } from '@elovox/engine/src/world/voxel.ts'
+import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
+import { AIR, packVoxel, voxelId } from '@elovox/engine/sim-worker'
 import type { Command } from '@elovox/engine'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'

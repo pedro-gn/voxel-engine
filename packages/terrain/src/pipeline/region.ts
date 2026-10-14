@@ -1,4 +1,4 @@
-import { packVoxel } from '@elovox/engine/src/world/voxel.ts'
+import { packVoxel } from '@elovox/engine/sim-worker'
 import { surfaceBlock, type SurfaceInput } from '../biomes/biomes.ts'
 import { fillCells, slopeAt } from './cells.ts'
 import type { CompiledTerrain } from './compile.ts'

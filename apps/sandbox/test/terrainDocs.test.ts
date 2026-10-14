@@ -1,4 +1,4 @@
-import { BlockRegistry } from '@elovox/engine/src/blocks/registry.ts'
+import { BlockRegistry } from '@elovox/engine/testing'
 import { BUILTIN_OPS, compileTerrain, generateRegion, validateTerrainDoc, type CompiledTerrain } from '@elovox/terrain'
 import { describe, expect, it } from 'vitest'
 import { BLOCKS } from '../src/blocks.ts'

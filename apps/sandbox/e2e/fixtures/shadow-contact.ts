@@ -1,14 +1,5 @@
 import * as THREE from 'three/webgpu'
-import { ChunkMeshes } from '../../../../packages/engine/src/render/chunkMeshes.ts'
-import { createChunkMaterials } from '../../../../packages/engine/src/render/materials.ts'
-import { createLightUniforms } from '../../../../packages/engine/src/render/voxelLighting.ts'
-import { SunLights } from '../../../../packages/engine/src/render/lighting.ts'
-import { PRESETS, resolveAtmosphere } from '../../../../packages/engine/src/render/atmosphere.ts'
-import { BlockRegistry, defineBlock } from '../../../../packages/engine/src/blocks/registry.ts'
-import { meshTablesFrom } from '../../../../packages/engine/src/mesh/tables.ts'
-import { meshChunk } from '../../../../packages/engine/src/mesh/mesher.ts'
-import { createSnapshot, padIndex } from '../../../../packages/engine/src/world/reader.ts'
-import { Layout } from '../../../../packages/engine/src/world/layout.ts'
+import { ChunkMeshes, createChunkMaterials, createLightUniforms, SunLights, PRESETS, resolveAtmosphere, BlockRegistry, defineBlock, meshTablesFrom, meshChunk, createSnapshot, padIndex, Layout } from '@elovox/engine/testing/render'
 
 /** A white voxel wall joined to a floor: production mesher, packed vertices, materials and sun. */
 export async function renderContact(forceWebGL: boolean, terrace: boolean) {

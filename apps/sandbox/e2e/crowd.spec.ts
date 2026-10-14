@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import type { Engine } from '@elovox/engine'
 import type { Crowd } from '../src/crowdScript.ts'
-import { WORKER_STATES } from '@elovox/engine/src/sim/workers/types.ts'
+import { WORKER_STATES } from '@elovox/engine/testing'
 import { PADS } from '../src/scenes/crowd.ts'
 
 type W = Window & { __elovox?: { engine: Engine; crowd: Crowd | null; ready: boolean } }
