@@ -5,17 +5,27 @@ import { Pcg32, hash32 } from './rng.ts'
 import type { UnitEvent, WorkerView } from './workers/types.ts'
 import { WorldFullError } from '../world/chunkStore.ts'
 
-/** A controlled unit's API inside a system tick. */
+/**
+ * A controlled unit's API inside a system call. `despawn`, `goTo`, `dig`, `build` and `stop` throw for an id that is
+ * unknown, gone (despawned, or died: watch for the `died` event) or not controlled; the methods that take a position throw
+ * for an out-of-bounds one, and `build` for a voxel that is not buildable. Thrown inside `init`, `restore`, `tick` or `publish`
+ * that is fatal to the simulation, inside `command` it only refuses the command. Check `view(id)` first when unsure.
+ */
 export interface SystemUnits {
   /** This tick's events of controlled units. */
   readonly events: readonly UnitEvent[]
   /** A new controlled unit; throws if the pose is not safe or the unit limit is reached. */
   spawn(pos: Vec3): number
   despawn(id: number): void
+  /** Walks to `pos`: `arrived`, or `failed` (an unsafe pose fails at once, as `no-access`). */
   goTo(id: number, pos: Vec3): void
+  /** Digs `pos` from a work pose: `dug { voxel }` (no stock, no pile), or `failed`. */
   dig(id: number, pos: Vec3): void
+  /** Builds `voxel` at `pos` from a work pose, without stock: `built`, or `failed`. */
   build(id: number, pos: Vec3, voxel: number): void
+  /** Ends the intent without an event. */
   stop(id: number): void
+  /** A copy of the unit's state (pose, state, intent, block reason); undefined for an unknown or gone unit. Never throws. */
   view(id: number): WorkerView | undefined
 }
 

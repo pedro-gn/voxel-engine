@@ -83,9 +83,37 @@ cost if wrong.
   low-sun shadows stable; Home camera reset; wander units walk, dig and build without hanging. Tuning knobs:
   `DAY_KEYFRAMES`, `CUT_SHADE`, `VOID_FADE_BLOCKS`.
 
+## Findings of the independent review and the fix pass
+
+1. (blocking, fixed) A save taken before the first tick lost the systems' init forever (init ran at the first step, a
+   restore marks systems started, and `ready` came first). SimHost now runs `systems.start()` right after generating a
+   new world, before `ready` (serial and pooled paths; not on a restore); an init throw stays fatal at boot.
+2. (fixed) A simulation without systems silently accepted a save with `system:*` sections; it now refuses them with
+   the same message as an unknown system section.
+3. (documented) `void` comes from `configure()`, which runs only when a terrain document is given; a later
+   `setDocument` that changes `void` changes the sim's physics but not `engine.voidWorld` or the waterfall fade (set at
+   boot). Documented on `GeneratorConfig.void`; decide it at boot.
+4. (fixed) The layer cut re-marked a stale result's chunk a second time, and `cut(y)` with the current `y` remeshed a
+   whole layer: the stale result is now just dropped (`LayerCut.accepts`; the chunk is already queued again by the
+   `cut()` that made it stale — argued in the ledger) and an unchanged cut remeshes nothing.
+5. (tested) Review Focus 1 and 5: a controlled dig behind a unit that will not move, and a lapsed claim, both end with
+   `failed { traffic }` and no intent; the stale-cut-result drop/requeue is unit-tested over a real `MeshQueue`.
+6. (fixed) `view().intent` returned the internal object; it is a copy now.
+7. (fixed) `fallFrom` was hashed for every controlled unit but saved only mid-fall; it is hashed only while falling.
+8. (open, cosmetic) A fragment that falls out of a void world can vanish a few blocks early: the renderer interpolates
+   one tick behind and removes it when the sim reports it gone.
+9. (documented) The unit API throws for unknown, gone or uncontrolled ids (and out-of-bounds positions); inside `init`,
+   `restore`, `tick` or `publish` that is fatal. Documented on `SystemUnits`.
+10. (open) The deferred minors below.
+
 ## Open items and risks
 
-- The lease-lapse path of a dig intent is covered only through `block()` (same hook as the tested fall), not by its own test.
+- Deferred minors: `workDig`/`workBuild` without `ids` set `available = true` on controlled units (assignment still skips
+  them; only the view's flag is wrong); `SystemRunner.restore` unpacks each section twice; a walk whose goal is taken
+  by a settled unit is retargeted nearby, so `arrived` can come up to 4 blocks from the asked pose; the sky scene's HUD
+  hint lists block-editing keys a units scene ignores.
+- Fragments falling out of a void world can vanish a few blocks early (finding 8).
+- `engine.voidWorld` and the waterfall fade follow the boot document only (finding 3).
 - `threeCull` (the internal pixel-diff reference mode) ignores the cut.
 - The `voidFloor` and `cutTop` uniforms are module-level (shared by engines in one page, like `waterAlpha`).
 - A full lower segment that belongs to a pressurized body is not drained at the bottom of a void column (left to the
