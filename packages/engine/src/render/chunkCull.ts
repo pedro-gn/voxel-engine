@@ -27,20 +27,21 @@ export interface InstanceRecord { active: boolean; visible: boolean; geometryInd
 export interface GeometryRecord { start: number; count: number }
 
 /**
- * The multi-draw list of one batch for one pass: every active, visible chunk whose sphere meets the frustum and whose box
- * is within `range` of `eye`, in instance order (opaque and alpha-tested layers depth-test, so order does not change the
+ * The multi-draw list of one batch for one pass: every active, visible chunk whose sphere meets the frustum, whose box
+ * is within `range` of `eye` and that does not lie wholly at or above `cutTop` (the layer cut's plane), in instance order (opaque and alpha-tested layers depth-test, so order does not change the
  * picture). Geometry ranges are read now, never cached, so remeshes and compaction between passes are always current.
  * `centres` holds each instance's chunk centre (x, y, z); returns the number of draws written.
  */
 export function buildDrawList(
   instances: readonly InstanceRecord[], geometries: readonly GeometryRecord[], centres: Float32Array, planes: Float64Array,
-  eye: Vec3Like, range: number, bytesPerElement: number, starts: Int32Array, counts: Int32Array, indirect: Uint32Array,
+  eye: Vec3Like, range: number, bytesPerElement: number, starts: Int32Array, counts: Int32Array, indirect: Uint32Array, cutTop = Infinity,
 ): number {
   let n = 0
   for (let i = 0; i < instances.length; i++) {
     const inst = instances[i]!
     if (!inst.active || !inst.visible) continue
     const x = centres[i * 3]!, y = centres[i * 3 + 1]!, z = centres[i * 3 + 2]!
+    if (y - 16 >= cutTop) continue // hidden by the layer cut
     if (!sphereInFrustum(planes, x, y, z, CHUNK_SPHERE_RADIUS)) continue
     if (!chunkInRange(eye, range, x, y, z)) continue
     const g = geometries[inst.geometryIndex]!

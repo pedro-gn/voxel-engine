@@ -4,6 +4,7 @@ import type { ChunkMeshData } from '../src/mesh/mesher.ts'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { FACE, packA } from '../src/mesh/vertexFormat.ts'
 import { ChunkMeshes } from '../src/render/chunkMeshes.ts'
+import { LayerCut } from '../src/render/layerCut.ts'
 import type { ChunkMaterials } from '../src/render/materials.ts'
 import { Layout } from '../src/world/layout.ts'
 
@@ -55,6 +56,22 @@ describe('ChunkMeshes', () => {
     cm.apply(2, data(null, quad()))
     cm.remove(2)
     expect(cm.meshCount).toBe(0)
+  })
+  it('hides per-chunk meshes above the layer cut and shows them again when it is cleared, also at Infinity', () => {
+    const cm = setup()
+    const layout = new Layout([64, 64, 64]), cut = new LayerCut(layout)
+    cm.setCut(cut)
+    const low = layout.chunkIndex(0, 0, 0), high = layout.chunkIndex(0, 1, 0)
+    cm.apply(low, data(quad(), null)); cm.apply(high, data(quad(), null))
+    cut.set(20)
+    cm.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(cm.group.getObjectByName(`chunk-${low}-liquid`)!.visible).toBe(true)
+    expect(cm.group.getObjectByName(`chunk-${high}-liquid`)!.visible).toBe(false)
+    cm.apply(layout.chunkIndex(1, 1, 0), data(quad(), null)) // created while hidden
+    expect(cm.group.getObjectByName(`chunk-${layout.chunkIndex(1, 1, 0)}-liquid`)!.visible).toBe(false)
+    cut.set(null)
+    cm.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(cm.group.getObjectByName(`chunk-${high}-liquid`)!.visible).toBe(true)
   })
   it('hides per-chunk meshes beyond the view distance, also ones created later, and shows them again at Infinity', () => {
     const m = () => new THREE.MeshBasicMaterial()

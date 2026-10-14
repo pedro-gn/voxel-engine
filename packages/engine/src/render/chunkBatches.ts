@@ -3,6 +3,7 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import { buildDrawList, frustumPlanes, type GeometryRecord, type InstanceRecord } from './chunkCull.ts'
 import { geometryOf } from './chunkMeshes.ts'
+import type { LayerCut } from './layerCut.ts'
 import { boxInRange, type Vec3Like } from './viewDistance.ts'
 
 /**
@@ -197,6 +198,7 @@ export class ChunkBatches {
   private readonly planes = new Float64Array(24)
   private eye: Vec3Like = { x: 0, y: 0, z: 0 }
   private range = Infinity
+  private cut: LayerCut | null = null
 
   constructor(layout: Layout, material: THREE.Material, name: string, castShadow: boolean, options: ChunkBatchOptions = {}) {
     this.layout = layout
@@ -278,6 +280,9 @@ export class ChunkBatches {
     this.free(this.batches.get(e.region)!, e)
     this.entries.delete(ci)
   }
+
+  /** The layer cut: chunks wholly above it leave the draw list (the engine's cull; `threeCull` ignores it). */
+  setCut(cut: LayerCut | null): void { this.cut = cut }
 
   /** Once per frame before rendering: the viewer and the view distance; resets the per-frame counts and pass guards. */
   beginFrame(eye: Vec3Like, range: number): void {
@@ -376,7 +381,7 @@ export class ChunkBatches {
     this.frustum.setFromProjectionMatrix(this.projView, camera.coordinateSystem, (camera as { reversedDepth?: boolean }).reversedDepth ?? false)
     frustumPlanes(this.frustum, this.planes)
     const n = buildDrawList(b._instanceInfo, b._geometryInfo, batch.centres, this.planes, this.eye, this.range, 4,
-      b._multiDrawStarts, b._multiDrawCounts, b._indirectTexture.image.data as unknown as Uint32Array)
+      b._multiDrawStarts, b._multiDrawCounts, b._indirectTexture.image.data as unknown as Uint32Array, this.cut?.top ?? Infinity)
     b._multiDrawCount = n
     b._multiDrawBytesPerElement = 4 // the batch index is a Uint32Array (newBatch)
     b._indirectTexture.needsUpdate = true

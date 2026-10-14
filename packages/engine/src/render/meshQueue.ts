@@ -1,4 +1,5 @@
-export const PRIORITY = { GHOST: 0, DIRTY: 1, INITIAL: 2 } as const
+/** CUT: a chunk the layer cut moved through; served with ghosts, ahead of every other remesh (spec §4). */
+export const PRIORITY = { GHOST: 0, CUT: 0, DIRTY: 1, INITIAL: 2 } as const
 
 /** Which chunk to mesh next. Pure bookkeeping: no workers, no three.js. */
 export class MeshQueue {

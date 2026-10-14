@@ -25,6 +25,7 @@ import { WaterLink } from './render/water/waterLink.ts'
 import type { ToWater } from './render/water/water.worker.ts'
 import { CostMeter } from './render/costMeter.ts'
 import { MeshQueue, PRIORITY } from './render/meshQueue.ts'
+import { LayerCut } from './render/layerCut.ts'
 import { buildTextureArray } from './render/textureArray.ts'
 import { TILE, checkTextureScale, checkTileSize, layerScales } from './render/tiles.ts'
 import { validateCommand, type Ack, type Command, type FillRegionCommand, type SetBlockCommand } from './sim/commands.ts'
@@ -33,7 +34,7 @@ import type { WorkerStats, WorkerTick } from './sim/workers/types.ts'
 import { createWorldBuffers } from './world/buffers.ts'
 import { Layout, type WorldSize } from './world/layout.ts'
 import { WorldReader } from './world/reader.ts'
-import { voxelId } from './world/voxel.ts'
+import { AIR, voxelId } from './world/voxel.ts'
 import { ENGINE_VERSION } from './version.ts'
 import { PersistClient } from './persist/client.ts'
 import { FORMAT_VERSION, SaveError, checkBlocks, type Manifest, type ManifestDraft } from './persist/manifest.ts'
@@ -220,8 +221,14 @@ export interface Engine {
   }
   /** The save this engine booted from (its slot, manifest and the game's app state); null after a normal boot. */
   readonly restored: { slot: string; manifest: Manifest; app: unknown } | null
+  /** Picking: both ignore what the layer cut hides. */
   raycast(origin: Vec3Like, dir: Vec3Like, maxDist?: number): RayHit | null
   pickScreen(clientX: number, clientY: number, maxDist?: number): RayHit | null
+  /**
+   * The layer cut (spec §4, plan deviation D9): `cut(y)` hides everything above layer `y` (the cut layer's tops are drawn
+   * solid and a little darker); `cut(null)` shows everything. The simulation, light and collision are untouched.
+   */
+  readonly view: { readonly cutY: number | null; cut(y: number | null): void }
   setHighlight(pos: readonly [number, number, number] | null): void
   on<K extends keyof EngineEvents>(type: K, fn: (e: EngineEvents[K]) => void): () => void
   stats(): EngineStats
@@ -379,7 +386,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     get: ghostAwareGet(ghosts, (x, y, z) => reader.get(x, y, z)),
     getLight: (x: number, y: number, z: number) => reader.getLight(x, y, z),
   }
-  const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(world.get, registry.solid, size, x, z) })
+  const layerCut = new LayerCut(layout)
+  /** The world as the layer cut shows it: air above the cut (picking and the orbit's ground follow it). */
+  const cutGet = (x: number, y: number, z: number) => { const c = layerCut.y; return c !== null && y > c ? AIR : world.get(x, y, z) }
+  const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(cutGet, registry.solid, size, x, z) })
   const detachControls = controls.attach(canvas)
   // First person is built once engine.collision exists (public API below); until then only the orbit can be active.
   let cameraMode: CameraMode = 'orbit'
@@ -398,6 +408,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     threeCull: o.threeCull ?? false,
     ...(o.regionChunks !== undefined && { regionChunks: o.regionChunks }),
   })
+  visuals.setCut(layerCut)
 
   // ---- lifecycle ----
   // No await between here and `await ready`, so an early rejection always has a handler.
@@ -658,9 +669,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       const ci = queue.next(distanceTo)
       if (ci < 0) return
       const overrides = ghosts.size > 0 ? ghosts.overridesFor(ci) : []
-      const msg: ToMesh = overrides.length > 0
-        ? { type: 'job', id: ++jobId, chunk: ci, overrides }
-        : { type: 'job', id: ++jobId, chunk: ci }
+      const cut = layerCut.expected(ci)
+      const msg: ToMesh = { type: 'job', id: ++jobId, chunk: ci, ...(overrides.length > 0 && { overrides }), ...(cut !== undefined && { cut }) }
       slot.jobs.push({ id: msg.id, chunk: ci })
       slot.worker.postMessage(msg)
     }
@@ -670,6 +680,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const start = performance.now()
     while (results.length > 0 && performance.now() - start < UPLOAD_BUDGET_MS) {
       const r = results.shift()!
+      // Meshed for a layer cut that has moved on (or for none, or none any more): mesh it again for the current one.
+      if (r.cut !== layerCut.expected(r.chunk)) { markDirty(r.chunk, PRIORITY.CUT); continue }
       if (queue.accept(r.chunk, r.version)) {
         if (fragments.holdsChunk(r.chunk) || stagedSources.has(r.chunk)) stagedSources.set(r.chunk, r.data)
         else visuals.applyMesh(r.chunk, r.data)
@@ -759,7 +771,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     camera.updateProjectionMatrix()
   }
   const pickable = (v: number) => { const id = voxelId(v); return id !== 0 && registry.liquid[id] === 0 }
-  const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(world.get, pickable, size, origin, dir, maxDist)
+  const rc = (origin: Vec3Like, dir: Vec3Like, maxDist = PICK_DISTANCE) => raycast(cutGet, pickable, size, origin, dir, maxDist)
   const raycaster = new THREE.Raycaster()
   const ndc = new THREE.Vector2()
   /** Posts a terrain request and settles with the sim's answer. */
@@ -873,6 +885,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     },
     restored: restore ? { slot: restore.slot, manifest: restore.manifest, app: restoredApp } : null,
     raycast: rc,
+    view: {
+      get cutY() { return layerCut.y },
+      cut(y) { for (const ci of layerCut.set(y)) markDirty(ci, PRIORITY.CUT) },
+    },
     collision,
     pickScreen(clientX, clientY, maxDist = PICK_DISTANCE) {
       const r = canvas.getBoundingClientRect()

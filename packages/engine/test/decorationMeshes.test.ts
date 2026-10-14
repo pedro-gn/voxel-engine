@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
 import { DecorationMeshes, RESELECT_DISTANCE } from '../src/render/decorations/decorationMeshes.ts'
+import { LayerCut } from '../src/render/layerCut.ts'
 import { Layout } from '../src/world/layout.ts'
 
 const layout = new Layout([1024, 64, 1024])
@@ -35,6 +36,17 @@ describe('DecorationMeshes', () => {
     expect(d.cull(at(16, 16), 96, 1e6).draws).toBe(1)
     expect(d.cull(at(16, 16), 40, 1e6).draws).toBe(0)
     expect(d.cull(at(16, 16), 40, 0).draws).toBe(0)
+  })
+  it('draws nothing of chunks wholly above the layer cut, and re-selects when the cut moves', () => {
+    const d = deco(), cut = new LayerCut(layout)
+    d.setCut(cut)
+    d.apply(layout.chunkIndex(0, 0, 0), two, null)
+    d.apply(layout.chunkIndex(0, 1, 0), two, null)
+    expect(d.cull(at(16, 16), 96, 1e6).draws).toBe(2)
+    cut.set(20)
+    expect(d.cull(at(16, 16), 96, 1e6).draws).toBe(1)
+    cut.set(null)
+    expect(d.cull(at(16, 16), 96, 1e6).draws).toBe(2)
   })
   it('removing a shown chunk takes its meshes out of the graph', () => {
     const d = deco()

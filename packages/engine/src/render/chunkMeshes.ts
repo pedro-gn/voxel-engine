@@ -4,6 +4,7 @@ import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches } from './chunkBatches.ts'
 import type { ChunkMaterials } from './materials.ts'
+import type { LayerCut } from './layerCut.ts'
 import { chunkInRange, type Vec3Like } from './viewDistance.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
@@ -44,6 +45,9 @@ export class ChunkMeshes {
   private readonly batches: Partial<Record<Layer, ChunkBatches>> = {}
   private eye: Vec3Like = { x: 0, y: 0, z: 0 }
   private range = Infinity
+  private cut: LayerCut | null = null
+  /** The cut's y at the last visibility pass (undefined: never applied). */
+  private cutY: number | null | undefined = null
 
   constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region }: ChunkMeshesOptions = {}) {
     this.layout = layout
@@ -77,18 +81,28 @@ export class ChunkMeshes {
     return n
   }
 
+  /** The layer cut (spec §4): chunks wholly above it are hidden. */
+  setCut(cut: LayerCut | null): void {
+    this.cut = cut
+    for (const b of Object.values(this.batches)) b.setCut(cut)
+  }
+
   /** Once per frame before rendering (Visuals.frame): the viewer and the view distance. */
   beginFrame(eye: Vec3Like, range: number): void {
     for (const b of Object.values(this.batches)) b.beginFrame(eye, range)
-    const was = this.range
+    const was = this.range, cutWas = this.cutY, cutY = this.cut?.y ?? null
     this.eye = { x: eye.x, y: eye.y, z: eye.z }
     this.range = range
-    if (range === Infinity && was === Infinity) return // the default: every mesh stays visible, nothing to test
+    this.cutY = cutY
+    // The default (no view distance, no cut, neither changed): every mesh stays visible, nothing to test.
+    if (range === Infinity && was === Infinity && cutY === null && cutWas === null) return
     for (const [ci, slots] of this.meshes) {
-      const on = this.inRange(ci)
+      const on = this.shown(ci)
       for (const m of slots) if (m) m.visible = on
     }
   }
+
+  private shown(ci: number): boolean { return this.inRange(ci) && !(this.cut?.hides(ci) ?? false) }
 
   private inRange(ci: number): boolean {
     const [cx, cy, cz] = this.layout.chunkCoords(ci)
@@ -161,7 +175,7 @@ export class ChunkMeshes {
       mesh.matrixAutoUpdate = false
       mesh.updateMatrix()
       mesh.name = `chunk-${ci}-${name}`
-      mesh.visible = this.inRange(ci)
+      mesh.visible = this.shown(ci)
       this.group.add(mesh)
       slots![k] = mesh
     })

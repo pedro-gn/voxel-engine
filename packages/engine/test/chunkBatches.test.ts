@@ -4,6 +4,7 @@ import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { FACE, packA } from '../src/mesh/vertexFormat.ts'
 import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches, PassGuard, REGION } from '../src/render/chunkBatches.ts'
 import { ChunkMeshes } from '../src/render/chunkMeshes.ts'
+import { LayerCut } from '../src/render/layerCut.ts'
 import type { ChunkMaterials } from '../src/render/materials.ts'
 import { Layout } from '../src/world/layout.ts'
 
@@ -239,6 +240,23 @@ describe('ChunkBatches own cull', () => {
     b.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
     expect(far!.visible).toBe(true)
     expect(render(near!, top)).toBe(2)
+  })
+  it('leaves chunks above the layer cut out of the draw list until the cut is cleared, also at Infinity', () => {
+    const b = batches(), cut = new LayerCut(layout)
+    b.setCut(cut)
+    b.set(layout.chunkIndex(0, 0, 0), 0, 0, 0, quads(1))
+    b.set(layout.chunkIndex(0, 1, 0), 0, 1, 0, quads(1))
+    const top = new THREE.PerspectiveCamera(90, 1, 0.1, 3000)
+    top.position.set(16, 300, 16); top.lookAt(16, 0, 16)
+    b.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    const mesh = bm(b)[0]!
+    expect(render(mesh, top)).toBe(2)
+    cut.set(31)
+    b.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(render(mesh, top)).toBe(1)
+    cut.set(null)
+    b.beginFrame({ x: 16, y: 16, z: 16 }, Infinity)
+    expect(render(mesh, top)).toBe(2)
   })
   it('keeps three\'s cull with threeCull', () => {
     const b = new ChunkBatches(layout, new THREE.MeshBasicMaterial(), 'opaque', true, { threeCull: true })

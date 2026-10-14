@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu'
 import { attribute, float, normalLocal, positionLocal, select, texture, varying, vec4 } from 'three/tsl'
 import { cubeLight, type FallingCube } from './fallingTrack.ts'
+import { belowCut } from './layerCut.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
 /** Falling blocks as instanced unit cubes: per instance a min corner and (top, side, bottom layer, packed light). */
@@ -35,6 +36,7 @@ export class FallingCubes {
     const albedo = texture(tex, attribute('uv', 'vec2')).depth(layer.add(0.5).toInt())
     voxelLit(m, { normal: n, sky, blk, ao: float(1), albedo: albedo.rgb }, lights)
     m.colorNode = vec4(albedo.rgb, 1)
+    m.maskNode = belowCut() // the layer cut hides what falls above it (spec §4)
     this.material = m
     this.mesh = new THREE.Mesh(this.geometry, m)
     this.mesh.name = 'elovox-falling'
