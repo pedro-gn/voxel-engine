@@ -178,6 +178,37 @@ describe('controlled units', () => {
     expect(h.ctx.units.view(id)!.intent).toBeNull()
   })
 
+  it('a dig intent whose claim lapses behind a unit that will not move fails with traffic instead of hanging', () => {
+    // A closed one-wide corridor (x 3..19 at z 10, walls 3 high) ending in the stone to dig; an uncontrolled unit stands
+    // idle in the middle and has nowhere to step aside to, so the digger never reaches its work pose (19, 4, 10).
+    const h = harness((g) => {
+      for (let x = 2; x <= 20; x++) for (let y = 4; y < 7; y++) { g.set(x, y, 9, 1); g.set(x, y, 11, 1) }
+      for (let y = 4; y < 7; y++) { g.set(2, y, 10, 1); g.set(20, y, 10, 1) }
+    })
+    h.sim.submit(0, ++seq, { type: 'unitSpawn', pos: [12, 4, 10] }); h.sim.step()
+    const id = h.run(c => c.units.spawn([4, 4, 10]))
+    h.run(c => c.units.dig(id, [20, 4, 10]))
+    h.until(() => h.events.some(e => e.unit === id), 1500)
+    expect(h.events.filter(e => e.unit === id)).toEqual([{ unit: id, type: 'failed', reason: 'traffic' }])
+    expect(h.ctx.units.view(id)!.intent).toBeNull()
+    expect(h.sim.store.getVoxel(20, 4, 10)).toBe(1)
+  })
+
+  it('a dig intent whose task claim lapses (LEASE_TICKS without progress) fails with traffic', () => {
+    // The corridor above ends through the detour search boxed in by bodies (also traffic) a little before the lease would;
+    // this drives the lease branch itself: a claim whose last progress is older than LEASE_TICKS (200) lapses.
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.dig(id, [25, 3, 25]))
+    const u = h.sim.workers!.units.get(id) as unknown as { progressAt: number; motion: unknown; task: unknown }
+    expect(u.task).not.toBeNull()
+    u.progressAt -= 1000
+    expect(u.motion).toBeNull()
+    h.until(() => h.events.some(e => e.unit === id), 5)
+    expect(h.events.filter(e => e.unit === id)).toEqual([{ unit: id, type: 'failed', reason: 'traffic' }])
+    expect(h.ctx.units.view(id)!.intent).toBeNull()
+  })
+
   it('a dig intent survives a save', () => {
     const h = harness()
     const id = h.run(c => c.units.spawn([5, 4, 5]))
