@@ -78,3 +78,4 @@ Ledger kept in the repo (committed with each task) at the user's request instead
 - Final: minor (deferred): `SystemRunner.restore` unpacks each system section twice.
 - Final: minor (deferred): a goTo whose goal is taken by a settled unit is retargeted nearby (existing move-order behaviour), so `arrived` can come up to 4 blocks from the asked pose.
 - Final: minor (deferred): the sky scene's HUD hint still lists the block-editing keys, which a units scene ignores.
+- Task 14: complete (commit b54804d; docs only + the voidWorld test timeouts)
