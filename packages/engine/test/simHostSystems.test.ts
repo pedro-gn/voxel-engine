@@ -4,6 +4,7 @@ import { defineGenerator } from '../src/sim/generator.ts'
 import { SimHost, type Clock } from '../src/sim/simHost.ts'
 import { defineSystem, type GameSystem } from '../src/sim/systems.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
+import { unpack } from '../src/persist/pack.ts'
 import { TEST_BLOCKS } from './helpers.ts'
 
 const empty = defineGenerator({ generateColumn() {} })
@@ -28,6 +29,24 @@ describe('SimHost with systems', () => {
     const last = ticks.at(-1)!
     expect(last.acks).toContainEqual({ clientId: 0, seq: 1, ok: true })
     expect(last.systems).toEqual([{ name: 'echo', payload: 'hi' }])
+  })
+
+  it('a snapshot asked for right after ready, before any tick, holds the initialized system state', () => {
+    let st = { inited: false }
+    const sys = defineSystem<{ inited: boolean }, never>({ name: 'boot', version: 1, init() { st = { inited: true } }, restore(_c, s) { st = s }, tick() {}, snapshot: () => st })
+    const { out, host } = setup([sys as GameSystem])
+    expect(out.some(m => m.type === 'ready')).toBe(true)
+    expect(out.some(m => m.type === 'tick')).toBe(false)
+    host.handle({ type: 'snapshot', id: 1, since: null })
+    const snap = out.find((m): m is Extract<FromSim, { type: 'snapshot'; ok: true }> => m.type === 'snapshot' && m.ok)!
+    const section = snap.snapshot.sections.find(s => s.name === 'system:boot')!
+    expect((unpack(section.bytes).json as { state: unknown }).state).toEqual({ inited: true })
+  })
+
+  it('a throwing init posts fatal at boot, before ready', () => {
+    const { out } = setup([{ name: 'bad', version: 1, init() { throw new Error('no world for me') }, tick() {}, snapshot: () => null }])
+    expect(out.some(m => m.type === 'ready')).toBe(false)
+    expect(out.find(m => m.type === 'fatal')).toMatchObject({ message: expect.stringContaining('system bad init: no world for me') })
   })
 
   it('a throwing system tick posts fatal', () => {

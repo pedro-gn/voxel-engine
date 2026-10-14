@@ -40,6 +40,16 @@ describe('system save sections', () => {
     expect(b.snapshot(null).sections.find(s => s.name === 'system:counter')!.bytes).toEqual(a.snapshot(null).sections.find(s => s.name === 'system:counter')!.bytes)
   })
 
+  it('a snapshot taken after start() but before the first tick keeps what init did', () => {
+    let st = { n: -1 }
+    const sys: GameSystem<{ n: number }> = { name: 'boot', version: 1, init: () => { st = { n: 42 } }, restore: (_c, s) => { st = { ...s } }, tick: () => {}, snapshot: () => st }
+    const a = sim([sys]); a.generate(floor); a.systems!.start()
+    const snap = toRestore(a.snapshot(null))
+    st = { n: -1 }
+    const b = sim([sys]); b.restore(snap); b.step()
+    expect(st).toEqual({ n: 42 })
+  })
+
   it('does not call init after a restore', () => {
     let inits = 0
     const sys: GameSystem = { name: 'x', version: 1, init: () => { inits++ }, tick: () => {}, snapshot: () => 1 }

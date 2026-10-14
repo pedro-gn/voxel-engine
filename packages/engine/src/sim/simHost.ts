@@ -131,6 +131,9 @@ export class SimHost {
           }
           const t0 = this.clock.now()
           const chunks = this.sim.generate(this.modules.generator)
+          // Game systems init on the new world now, not at the first tick: a save asked for right after 'ready' must
+          // hold their state (a restore marks them started). A throw here is fatal at boot.
+          this.sim.systems?.start()
           const L = this.sim.layout
           this.ready = true
           this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
@@ -347,6 +350,7 @@ export class SimHost {
         if (this.sim !== sim) return
         try {
           const chunks = sim.finishGenerate()
+          sim.systems?.start() // as the serial path: init before 'ready'
           this.ready = true
           this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: sim.voidWorld })
         } catch (e) {

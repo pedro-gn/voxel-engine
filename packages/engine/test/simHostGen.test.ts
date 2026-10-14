@@ -17,6 +17,14 @@ describe('SimHost parallel generation', () => {
     expect(parallel.host.simulation!.hash()).toBe(serial.host.simulation!.hash())
   })
 
+  it('inits the game systems before posting ready', async () => {
+    const calls: string[] = []
+    const { out } = makeHost(testGenerator, { genPorts: genPorts(2, testGenerator) }, [{ name: 'boot', version: 1, init: () => { calls.push(`init ${out.some(m => m.type === 'ready')}`) }, tick: () => {}, snapshot: () => null }])
+    await settled(out)
+    expect(out.some(m => m.type === 'ready')).toBe(true)
+    expect(calls).toEqual(['init false'])
+  })
+
   it('configures the workers with the terrain document', async () => {
     const seen: unknown[] = []
     const gen = defineGenerator({ configure(doc) { seen.push(doc) }, generateColumn() {} })

@@ -79,3 +79,7 @@ Ledger kept in the repo (committed with each task) at the user's request instead
 - Final: minor (deferred): a goTo whose goal is taken by a settled unit is retargeted nearby (existing move-order behaviour), so `arrived` can come up to 4 blocks from the asked pose.
 - Final: minor (deferred): the sky scene's HUD hint still lists the block-editing keys, which a units scene ignores.
 - Task 14: complete (commit b54804d; docs only + the voidWorld test timeouts)
+
+## Fix pass (independent review, approved by the user)
+
+- Fix 1: SimHost calls `systems.start()` right after a new world is generated (serial and pooled paths), before posting `ready`, inside the existing try (an init throw is fatal at boot, no `ready`); the restore path is untouched. Tests: systemsSave "a snapshot taken after start() but before the first tick keeps what init did"; simHostSystems "a snapshot asked for right after ready … holds the initialized system state" (RED before the fix) and "a throwing init posts fatal at boot, before ready"; simHostGen "inits the game systems before posting ready" (RED with the pooled line removed).
