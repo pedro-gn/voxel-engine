@@ -12,7 +12,9 @@ function world(cells: Record<string, number>, o: { random?: number[]; dark?: str
   const rnd = [...(o.random ?? [])]
   const ctx = {
     tick: 0,
-    get: (x: number, y: number, z: number) => m.get(`${x},${y},${z}`) ?? 0,
+    size: [256, 128, 256] as const,
+    occupied: () => false,
+    get:(x: number, y: number, z: number) => m.get(`${x},${y},${z}`) ?? 0,
     set: (x: number, y: number, z: number, v: number) => { m.set(`${x},${y},${z}`, v) },
     schedule() {}, emit() {},
     random: () => rnd.shift() ?? 0,
