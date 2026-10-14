@@ -258,8 +258,19 @@ export class WorkerSystem {
       this.dig[id] = m.digTicks ?? 0; this.build[id] = m.buildTicks ?? 0; this.drops[id] = m.drop === undefined ? id : R.id(m.drop); this.tools[id] = m.tool
     }
   }
-  /** Void world (spec §3): the bottom of the volume is no support. Task 7 fills it in. */
-  setVoid(_v: boolean): void {}
+  /** Void world (spec §3): the bottom of the volume is no support, and units below it die. */
+  private voidFloor = false
+  setVoid(v: boolean): void {
+    if (this.voidFloor === v) return
+    this.voidFloor = v; this.nav.voidFloor = v
+    this.invalidateAll()
+  }
+  /** A unit that fell below the world (void worlds): removed, with an engine event and, if controlled, a unit event. */
+  private kill(u: Unit, cause: 'void'): void {
+    if (u.controlled) this.unitEvent({ unit: u.id, type: 'died', cause })
+    this.port.emit('unitDied', { id: u.id, cause })
+    this.removeUnit(u); this.cancelOrphanOrders(); this.revision++
+  }
   /** This tick's events of controlled units; clears them. */
   takeUnitEvents(): UnitEvent[] { return this.unitEvents.splice(0) }
   /** A new unit owned by a game system; throws if the pose is not safe or the unit limit is reached. */
@@ -427,7 +438,7 @@ export class WorkerSystem {
   }
   private volumeFree(cells: number[]): boolean { return cells.every(p => p >= 0 && !this.port.registry.solid[voxelId(this.port.get(...this.port.layout.voxelCoords(p)))] && !this.port.hazard(...this.port.layout.voxelCoords(p))) }
   private hasSupport(u: Pick<Unit, 'x' | 'y' | 'z'>): boolean {
-    if (u.y === 0) return true
+    if (u.y === 0) return !this.voidFloor
     if (u.y & 255) return false
     for (let z = (u.z - 96) >> 8; z <= (u.z + 95) >> 8; z++) for (let x = (u.x - 96) >> 8; x <= (u.x + 95) >> 8; x++) if (this.port.registry.solid[voxelId(this.port.get(x, (u.y >> 8) - 1, z))]) return true
     return false
@@ -823,7 +834,8 @@ export class WorkerSystem {
   }
   private attached(pos: Vec3): boolean {
     const [x, y, z] = pos
-    if (y === 0) return true
+    // The world floor holds a build up, except in a void world (out-of-bounds neighbours read as air).
+    if (y === 0 && !this.voidFloor) return true
     for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
       const id = voxelId(this.port.get(x + dx!, y + dy!, z + dz!))
       if (this.port.registry.solid[id] && !this.port.registry.falls[id]) return true
@@ -1153,14 +1165,17 @@ export class WorkerSystem {
     // A fall loses a dig or build intent's task; a walk lands and plans on toward its goal.
     if (u.controlled && u.intent && u.intent.kind !== 'goTo') this.failIntent(u, 'unsafe')
     u.vy = Math.min(512, u.vy + 24); u.progressAt = this.time
-    const target = Math.max(0, u.y - u.vy)
+    const target = this.voidFloor ? u.y - u.vy : Math.max(0, u.y - u.vy)
     for (let yy = Math.ceil(u.y / 256) - 1; yy >= Math.floor(target / 256); yy--) {
+      if (yy < 0 && this.voidFloor) break
       let floor = yy < 0
-      for (let z = (u.z - 96) >> 8; z <= (u.z + 95) >> 8; z++) for (let x = (u.x - 96) >> 8; x <= (u.x + 95) >> 8; x++) if (this.port.registry.solid[voxelId(this.port.get(x, yy, z))]) floor = true
+      if (!floor) for (let z = (u.z - 96) >> 8; z <= (u.z + 95) >> 8; z++) for (let x = (u.x - 96) >> 8; x <= (u.x + 95) >> 8; x++) if (this.port.registry.solid[voxelId(this.port.get(x, yy, z))]) floor = true
       if (floor) { u.y = (yy + 1) * 256; u.vy = 0; u.state = u.goal === null ? 'idle' : 'planning'; break }
     }
     if (u.state === 'falling') u.y = target
-    if (u.y === 0) { u.vy = 0; u.state = u.goal === null ? 'idle' : 'planning' }
+    // Void world: below the bottom of the volume the unit has left the world.
+    if (this.voidFloor && u.y < 0) { this.kill(u, 'void'); return }
+    if (u.y === 0 && !this.voidFloor) { u.vy = 0; u.state = u.goal === null ? 'idle' : 'planning' }
     if (u.controlled && u.state !== 'falling' && u.fallFrom > u.y) this.unitEvent({ unit: u.id, type: 'fell', height: (u.fallFrom - u.y) / 256 })
     const cells = this.body(u.x, u.y, u.z)
     if (!this.volumeFree(cells) || !this.reserve(u, cells)) this.incapacitate(u)

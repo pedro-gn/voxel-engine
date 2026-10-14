@@ -144,7 +144,8 @@ export class RegionBuild {
     const solid = this.nav.port.registry.solid
     if (solid[voxelId(v)]) return true
     if (y & 16) return true
-    if (y === 0) return false
+    // The world floor holds units up, except in a void world.
+    if (y === 0) return this.nav.voidFloor
     const below = uniform!(x, y - 1, z)
     return below !== undefined && !solid[voxelId(below)]
   }

@@ -189,8 +189,10 @@ export class NavigationSystem {
   clear(x: number, y: number, z: number): boolean {
     return this.port.layout.inBounds(x, y, z) && this.port.registry.solid[voxelId(this.port.get(x, y, z))] === 0
   }
+  /** Void world (spec §3): the bottom of the volume is no support. */
+  voidFloor = false
   stand(x: number, y: number, z: number): boolean {
-    return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 || this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
+    return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 ? !this.voidFloor : this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
   /**
    * A pose of the region layer: it stands, not on a block that falls, not with liquid in the head cell, and not with a
