@@ -3,7 +3,7 @@ export const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
   [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
 ]
 
-/** Word A: x(6) y(6) z(6) normal(3) ao(2) corner(2) drop(5) reserved(2). */
+/** Word A: x(6) y(6) z(6) normal(3) ao(2) corner(2) drop(5) cut(1) reserved(1). */
 export function packA(x: number, y: number, z: number, normal: number, ao: number, corner: number, drop = 0): number {
   return (x | (y << 6) | (z << 12) | (normal << 18) | (ao << 21) | (corner << 23) | (drop << 25)) >>> 0
 }
@@ -12,6 +12,11 @@ export function packA(x: number, y: number, z: number, normal: number, ao: numbe
  * cell below holds the same liquid (deep water: its surface counts as full height for foam).
  */
 export const LIQUID_DEEP = 1
+
+/** Word A bit 30: a top face created by the layer cut (spec §4), drawn a little darker. */
+export const CUT_BIT = 1 << 30
+/** How much of its colour a cut face keeps. */
+export const CUT_SHADE = 0.72
 
 export function unpackA(a: number) {
   return {

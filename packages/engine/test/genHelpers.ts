@@ -1,3 +1,4 @@
+import type { GameSystem } from '../src/sim/systems.ts'
 import { vi } from 'vitest'
 import { GenHost } from '../src/gen/genHost.ts'
 import type { FromSim, ToGen, ToSim } from '../src/protocol.ts'
@@ -23,10 +24,10 @@ export function genPorts(n: number, gen: GeneratorModule): MessagePort[] {
 }
 
 /** A SimHost on a 96 × 64 × 64 world (3 × 2 chunk columns) with a manual clock. */
-export function makeHost(gen: GeneratorModule, init: Partial<Extract<ToSim, { type: 'init' }>> = {}) {
+export function makeHost(gen: GeneratorModule, init: Partial<Extract<ToSim, { type: 'init' }>> = {}, systems?: readonly GameSystem[]) {
   const out: FromSim[] = []
   const clock: Clock = { now: () => 0, setTimeout: () => 0, clearTimeout() {} }
-  const host = new SimHost((m) => out.push(m), { generator: gen }, clock)
+  const host = new SimHost((m) => out.push(m), { generator: gen, ...(systems && { systems }) }, clock)
   host.handle({ type: 'init', buffers: createWorldBuffers([96, 64, 64]), blocks: TEST_BLOCKS, seed: 11, options: {}, ...init })
   return { host, out }
 }

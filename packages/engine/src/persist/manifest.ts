@@ -1,5 +1,6 @@
 import { REGION_FORMAT } from './regions.ts'
 import { SECTION_VERSIONS, type SectionName } from '../sim/snapshot.ts'
+import { SYSTEM_SECTION, type SystemSection } from '../sim/systems.ts'
 
 export const FORMAT_VERSION = 1
 
@@ -19,7 +20,8 @@ export interface Manifest {
   /** Small labels for slot lists (the sandbox puts its scene here). */
   meta: Record<string, string | number>
   regionFormat: number
-  sections: ({ name: SectionName | 'app'; version: number } & BlobRef)[]
+  /** Engine sections, the app's and the game systems' (`system:name`, checked by the game: checkSystemSections). */
+  sections: ({ name: SectionName | 'app' | SystemSection; version: number } & BlobRef)[]
   regions: ({ r: number } & BlobRef)[]
 }
 export type ManifestDraft = Omit<Manifest, 'generation' | 'sections' | 'regions'>
@@ -38,10 +40,25 @@ export function checkManifest(m: Manifest): string[] {
   if (m.formatVersion !== FORMAT_VERSION) out.push(`format v${m.formatVersion}, engine expects v${FORMAT_VERSION}`)
   if (m.regionFormat !== REGION_FORMAT) out.push(`region format v${m.regionFormat}, engine expects v${REGION_FORMAT}`)
   for (const s of m.sections) {
+    if (s.name.startsWith(SYSTEM_SECTION)) continue // the game checks these (checkSystemSections)
     const want = (SECTION_VERSIONS as Record<string, number | undefined>)[s.name]
     if (want === undefined) out.push(`section ${s.name} is unknown to this engine`)
     else if (s.version !== want) out.push(`section ${s.name} v${s.version}, engine expects v${want}`)
   }
+  return out
+}
+
+/** A game's check of its own system sections before booting a save (plan deviation D2). Empty when they match. */
+export function checkSystemSections(m: Manifest, systems: readonly { name: string; version: number }[]): string[] {
+  const saved = new Map(m.sections.filter(s => s.name.startsWith(SYSTEM_SECTION)).map(s => [s.name.slice(SYSTEM_SECTION.length), s.version]))
+  const out: string[] = []
+  for (const s of systems) {
+    const v = saved.get(s.name)
+    if (v === undefined) out.push(`section system:${s.name} is missing`)
+    else if (v !== s.version) out.push(`section system:${s.name} v${v}, game expects v${s.version}`)
+    saved.delete(s.name)
+  }
+  for (const name of saved.keys()) out.push(`section system:${name} is unknown to this game`)
   return out
 }
 

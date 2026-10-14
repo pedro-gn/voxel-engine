@@ -4,11 +4,12 @@ import {
   positionView, positionWorld, select, smoothstep, step, time, uniform, vec2, vec3, vec4, viewportDepthTexture,
 } from 'three/tsl'
 import { sunDirection, sunVisibility, type Atmosphere } from './atmosphere.ts'
+import { belowCut } from './layerCut.ts'
 import { setLinear } from './lighting.ts'
 import type { WaterParams } from './settings.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 import { rippleEffect, tiltedNormal } from './water/ripples.ts'
-import { curtainVertex, surfaceVertex, voxelWaterVertex, type WaterVertex } from './water/waterVertex.ts'
+import { curtainVertex, surfaceVertex, voidFloor, voxelWaterVertex, type WaterVertex } from './water/waterVertex.ts'
 
 type N = ReturnType<typeof float>
 type V2 = THREE.Node<'vec2'>
@@ -51,6 +52,8 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   m.positionNode = v.position
   m.transparent = true
   m.depthWrite = false
+  // Plan deviation D7: water above the layer cut's plane is discarded; a lake cut through shows its bed.
+  m.maskNode = belowCut()
   const wp = positionWorld
   const speed = time.mul(u.waveSpeed)
   const h = (p: V2) => mx_noise_float(vec3(p.mul(u.waveScale).add(vec2(speed, speed.mul(0.6))), time.mul(0.25)))
@@ -111,6 +114,7 @@ function plain(v: WaterVertex, u: WaterUniforms, lights: LightUniforms): VoxelNo
   m.positionNode = v.position
   m.transparent = true
   m.depthWrite = false
+  m.maskNode = belowCut()
   voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: float(1), albedo: u.shallow }, lights)
   m.colorNode = vec4(u.shallow, float(0.8).mul(v.alpha))
   return m
@@ -148,6 +152,9 @@ export class WaterMaterial {
     this.u.waveScale.value = p.waveScale
     this.u.waveSpeed.value = p.waveSpeed
   }
+
+  /** Void world (spec §3): curtains fade out toward the bottom of the volume. */
+  setVoidFloor(v: boolean): void { voidFloor.value = v ? 1 : 0 }
 
   applyAtmosphere(a: Atmosphere): void {
     const [x, y, z] = sunDirection(a.sun.azimuth, a.sun.elevation)

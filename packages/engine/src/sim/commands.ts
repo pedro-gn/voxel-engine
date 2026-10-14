@@ -25,7 +25,7 @@ function checkVoxel(v: unknown, blockCount: number): string | null {
   return null
 }
 
-export function validateCommand(cmd: Command, layout: Layout, blockCount: number, customTypes: ReadonlySet<string>): string | null {
+export function validateCommand(cmd: Command, layout: Layout, blockCount: number, customTypes: { has(type: string): boolean }): string | null {
   if (cmd.type === 'setBlock') {
     const c = cmd as SetBlockCommand
     return checkPos('setBlock', c.pos, layout) ?? checkVoxel(c.voxel, blockCount)

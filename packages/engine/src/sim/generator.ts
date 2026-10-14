@@ -13,6 +13,13 @@ export interface GeneratorInfo {
 export interface GeneratorConfig {
   /** Water fills y < seaLevel; the pool at seaLevel − 1 is the sea that springs draw from. */
   seaLevel?: number
+  /**
+   * The bottom of the volume is open: water, falling blocks, fragments and units leave the world there (spec §3).
+   * configure() runs only when the engine is given a `terrain` document (pass `{}` if the generator needs none), so a
+   * generator that declares a void world needs one. A later `engine.terrain.setDocument` that changes `void` changes the
+   * simulation's physics but not `engine.voidWorld` or the waterfall fade, which are set once at boot: decide it at boot.
+   */
+  void?: boolean
 }
 
 export interface GeneratorContext {

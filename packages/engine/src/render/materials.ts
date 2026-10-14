@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu'
-import { texture, uniformArray, vec4 } from 'three/tsl'
+import { float, mix, texture, uniformArray, vec4 } from 'three/tsl'
+import { CUT_SHADE } from '../mesh/vertexFormat.ts'
 import { chunkVertex } from './chunkVertex.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
@@ -18,14 +19,16 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
     const albedo = texture(tex, v.uv).depth(v.layer.add(0.5).toInt())
-    voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: albedo.rgb }, lights)
+    // Faces created by the layer cut read a little darker than the ground (spec §4). Branch-free (no select()).
+    const rgb = albedo.rgb.mul(mix(float(1), float(CUT_SHADE), v.cut))
+    voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: rgb }, lights)
     if (mode === 'opaque') {
-      m.colorNode = vec4(albedo.rgb, 1)
+      m.colorNode = vec4(rgb, 1)
       // Internal voxel faces are culled. Back-face shadow casting (three's default)
       // leaves light leaks where walls meet the floor; cast the exposed front faces.
       m.shadowSide = THREE.FrontSide
     } else if (mode === 'cutout') {
-      m.colorNode = albedo
+      m.colorNode = vec4(rgb, albedo.a)
       m.alphaTest = 0.5
       m.side = THREE.DoubleSide
     } else {

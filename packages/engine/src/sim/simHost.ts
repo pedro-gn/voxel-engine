@@ -8,8 +8,10 @@ import { GenPool, type PortLike } from './genPool.ts'
 import type { RulesModule } from './rules.ts'
 import { Simulation } from './simulation.ts'
 import { FragmentOverlapError } from './collapse.ts'
+import type { GameSystem } from './systems.ts'
 
-export interface SimModules { rules?: RulesModule; generator: GeneratorModule }
+/** A game's sim-side modules: block rules, the generator and its game systems (spec §2, ticked in list order). */
+export interface SimModules { rules?: RulesModule; generator: GeneratorModule; systems?: readonly GameSystem[] }
 export interface Clock {
   now(): number
   setTimeout(fn: () => void, ms: number): unknown
@@ -93,6 +95,7 @@ export class SimHost {
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
             collapse: msg.options.collapse,
             workers: msg.options.workers,
+            systems: this.modules.systems,
             // only defined keys: an undefined one would override WaterSystem's default
             water: {
               debug: msg.options.debugFluids === true,
@@ -117,7 +120,7 @@ export class SimHost {
             const chunks = this.sim.restore(msg.restore)
             const L = this.sim.layout
             this.ready = true
-            this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+            this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
             return
           }
           if (msg.genPorts && msg.genPorts.length > 0) {
@@ -128,9 +131,12 @@ export class SimHost {
           }
           const t0 = this.clock.now()
           const chunks = this.sim.generate(this.modules.generator)
+          // Game systems init on the new world now, not at the first tick: a save asked for right after 'ready' must
+          // hold their state (a restore marks them started). A throw here is fatal at boot.
+          this.sim.systems?.start()
           const L = this.sim.layout
           this.ready = true
-          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
         } catch (e) {
           this.fail(e)
         }
@@ -344,8 +350,9 @@ export class SimHost {
         if (this.sim !== sim) return
         try {
           const chunks = sim.finishGenerate()
+          sim.systems?.start() // as the serial path: init before 'ready'
           this.ready = true
-          this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+          this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: sim.voidWorld })
         } catch (e) {
           this.fail(e)
         }

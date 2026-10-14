@@ -22,6 +22,7 @@ import { cameraFar, shadowReach } from './viewDistance.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
 import { WaterMaterial } from './water.ts'
+import type { LayerCut } from './layerCut.ts'
 import type { SurfaceSource } from './water/surfaceMirror.ts'
 import { WaterSurface } from './water/waterSurface.ts'
 import { editRipples, ripples, syncRipples, type EditCommand } from './water/ripples.ts'
@@ -117,6 +118,10 @@ export class Visuals {
   }
 
   getWater(): WaterParams { return this.waterParams }
+  /** The layer cut (spec §4): hides chunks and their decorations above it (water, falling blocks and fragments mask by `cutTop`). */
+  setCut(cut: LayerCut | null): void { this.chunks.setCut(cut); this.deco.setCut(cut) }
+  /** Void world (spec §3): waterfalls fade out near the bottom instead of splashing on it. */
+  setVoidFloor(v: boolean): void { this.water.setVoidFloor(v) }
   setWater(input: WaterInput): void {
     this.waterParams = mergeWater(this.waterParams, input)
     this.water.setParams(this.waterParams)

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu'
 import type { Layout } from '../../world/layout.ts'
+import type { LayerCut } from '../layerCut.ts'
 import { selectVisible, type DecorationChunk } from './budget.ts'
 import { flowerArrays, tuftArrays, type DecorationArrays } from './shapes.ts'
 
@@ -34,6 +35,8 @@ export class DecorationMeshes {
   private lastEye: THREE.Vector3 | null = null
   private lastRadius = -1
   private lastMax = -1
+  private cut: LayerCut | null = null
+  private lastCut: number | null = null
   private result = { instances: 0, draws: 0 }
 
   constructor(layout: Layout, materials: { grass: THREE.Material; flowers: THREE.Material }) {
@@ -70,17 +73,22 @@ export class DecorationMeshes {
     this.entries.delete(ci)
   }
 
+  /** The layer cut (spec §4): decorations of chunks wholly above it are not drawn. */
+  setCut(cut: LayerCut | null): void { this.cut = cut; this.dirty = true }
+
   /** Selects the chunks to draw; keeps the last selection while nothing changed and the camera moved < RESELECT_DISTANCE. */
   cull(camera: THREE.Vector3, radius: number, maxInstances: number): { instances: number; draws: number } {
-    const last = this.lastEye
-    if (!this.dirty && last && radius === this.lastRadius && maxInstances === this.lastMax &&
+    const last = this.lastEye, cutY = this.cut?.y ?? null
+    if (!this.dirty && last && radius === this.lastRadius && maxInstances === this.lastMax && cutY === this.lastCut &&
         Math.hypot(camera.x - last.x, camera.z - last.z) < RESELECT_DISTANCE) return this.result
     this.dirty = false
+    this.lastCut = cutY
     this.lastEye = camera.clone()
     this.lastRadius = radius
     this.lastMax = maxInstances
     const list: DecorationChunk[] = []
-    for (const [ci, e] of this.entries) list.push({ ci, dist: Math.hypot(e.centre.x - camera.x, e.centre.z - camera.z), count: e.count })
+    // Chunks wholly above the layer cut show none of theirs (the crossed layer is re-extracted under the cut).
+    for (const [ci, e] of this.entries) if (!this.cut?.hides(ci)) list.push({ ci, dist: Math.hypot(e.centre.x - camera.x, e.centre.z - camera.z), count: e.count })
     const show = selectVisible(list, radius, maxInstances)
     let instances = 0, draws = 0
     for (const [ci, e] of this.entries) {

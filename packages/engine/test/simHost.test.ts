@@ -90,6 +90,15 @@ describe('SimHost', () => {
     clock.t = 500; host.pump()
     expect(out.filter((m) => m.type === 'tick')).toHaveLength(0)
   })
+  it('posts ready with void: true when the generator declares a void world, else false', () => {
+    for (const isVoid of [true, false]) {
+      const out: FromSim[] = []
+      const gen = defineGenerator({ configure: () => (isVoid ? { void: true } : undefined), generateColumn() {} })
+      const host = new SimHost((m) => out.push(m), { generator: gen })
+      host.handle({ type: 'init', buffers: createWorldBuffers([32, 32, 32]), blocks: TEST_BLOCKS, seed: 1, options: {}, terrain: {} })
+      expect(out.find((m) => m.type === 'ready')).toMatchObject({ type: 'ready', void: isVoid })
+    }
+  })
   it('reports init failures as fatal', () => {
     const out: FromSim[] = []
     const host = new SimHost((m) => out.push(m), { rules: defineRules({ blocks: { nope: {} } }), generator: empty })

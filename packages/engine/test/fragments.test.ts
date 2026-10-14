@@ -44,6 +44,15 @@ it('holds the source until every spanning chunk is ready and retains debris thro
   for (let now = 600; now < 1100; now += 50) track.frame(now, () => 12)
   expect(track.size).toBe(0)
 })
+it('a fragment that fell out of a void world vanishes without a landing', () => {
+  const clock = new SimClock(50), track = new FragmentTrack(clock)
+  track.update(0, { born: [{ ...birth, source: [] }], poses: Int32Array.of(1, 0, 0), landed: [] }, 0)
+  track.releaseSources()
+  expect(track.frame(50, () => 100)).toHaveLength(1)
+  track.update(1, { born: [], poses: new Int32Array(), landed: [], removed: [1] }, 50)
+  expect(track.frame(100, () => 100)).toEqual([])
+  expect(track.size).toBe(0)
+})
 it('a fragment re-announced after a load starts where it was, with nothing to wait for', () => {
   const clock = new SimClock(50), track = new FragmentTrack(clock)
   const reborn: FragmentBirth = { ...birth, source: [], offset256: -768 }

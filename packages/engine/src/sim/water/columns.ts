@@ -292,6 +292,8 @@ export class WaterColumns {
   private cursor = 0
   /** Lower segments, their edges and the world's height (attach); null: a single-layer world, stepped exactly as 3c. */
   under: UnderSegments | null = null
+  /** Void world (spec §3): water resting on the bottom of the volume leaves the world, credited to the sea account. */
+  drainFloor = false
   edges: WaterEdges | null = null
   height = 0
   /** Bodies' level for a member ref (set by WaterBodies, Task 6): the surface the quiet test reads for it. */
@@ -411,7 +413,8 @@ export class WaterColumns {
     if (U) { this.limitUnder(U); this.scaleUnder(U); this.inflowUnder(U) }
     this.transferAll()
     if (U) { this.transferUnder(U); this.hook?.rebalance() }
-    const credit = sea ? this.pinAll(sea, seaSurface) : 0
+    let credit = sea ? this.pinAll(sea, seaSurface) : 0
+    if (this.drainFloor) credit += this.drainAll(U)
     this.settle()
     for (let k = 0; k < this.list.length; k++) this.stepping[this.list.data[k]!] = 0
     return credit
@@ -755,6 +758,28 @@ export class WaterColumns {
     T.dirty[t] = 1
     if (amount >= FLUX_EPS) T.wake(t)
     else if (this.trickledMark[t] === 0) { this.trickledMark[t] = 1; this.trickled.push(t) }
+  }
+
+  /** Void world: water resting on the bottom of the volume leaves it (credited to the sea account, which only sinks). */
+  private drainAll(U: UnderSegments | null): number {
+    const floor = this.floor, depth = this.depth, sx = this.sx, tx = this.tiles.tx
+    let credit = 0
+    const drain = (c: number) => {
+      if (floor[c] === 0 && depth[c]! > 0) { credit += depth[c]!; depth[c] = 0 }
+      // Only a column's lowest lower segment (U.first[c]; the chain runs bottom-up through U.next) can rest on y 0. A
+      // segment of a pressurized body is left alone: a full segment cannot rest at the bottom of an open column.
+      const i = U ? U.first[c]! : -1
+      if (i >= 0 && U!.floor[i] === 0 && U!.body[i]! < 0 && (U!.depth[i]! > 0 || U!.excess[i]! > 0)) {
+        credit += U!.depth[i]! + U!.excess[i]!; U!.depth[i] = 0; U!.excess[i] = 0
+      }
+    }
+    for (let k = 0; k < this.list.length; k++) {
+      const t = this.list.data[k]!
+      const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
+      for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) drain(c)
+    }
+    for (let k = 0; k < this.ring.length; k++) drain(this.ring.data[k]!)
+    return credit
   }
 
   private pinAll(sea: Uint8Array, target: number): number {

@@ -1,3 +1,5 @@
+import type { SystemSection } from './systems.ts'
+
 /** A save's per-system sections (spec §3). Pending commands are not saved (plan deviation 3). */
 export type SectionName = 'scheduler' | 'water' | 'gravity' | 'collapse' | 'workers'
 /** Bumped when a section's packed layout changes; a save with another version is refused (persist/manifest.ts). */
@@ -13,7 +15,8 @@ export interface SimSnapshot {
   revisions: Uint32Array
   /** Only the regions asked for. */
   regions: RegionBlob[]
-  sections: { name: SectionName; bytes: Uint8Array }[]
+  /** Engine sections carry their version in SECTION_VERSIONS; game system sections (`system:name`) carry their own. */
+  sections: { name: SectionName | SystemSection; version?: number; bytes: Uint8Array }[]
   /** Wall time the sim spent: its stall. */
   ms: number
 }
@@ -23,5 +26,5 @@ export interface SimRestore {
   tick: number; paused: boolean
   /** Every region of the world. */
   regions: RegionBlob[]
-  sections: Partial<Record<SectionName, Uint8Array>>
+  sections: Partial<Record<SectionName | SystemSection, Uint8Array>>
 }

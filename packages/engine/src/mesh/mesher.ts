@@ -1,6 +1,7 @@
 import { InstanceBuilder, extractDecorations } from '../render/decorations/extract.ts'
 import type { ChunkSnapshot } from '../world/reader.ts'
 import { meshOpaqueAndCutout } from './greedy.ts'
+import type { CutPlane } from './meshJob.ts'
 import { meshTranslucent } from './liquid.ts'
 import { QuadBuilder, type LayerMesh } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
@@ -23,16 +24,17 @@ export class Mesher {
   private readonly flowers = new InstanceBuilder(64)
   private readonly mask = new Int32Array(1024)
 
-  mesh(snap: ChunkSnapshot, tables: MeshTables, ox = 0, oy = 0, oz = 0): ChunkMeshData {
+  /** `plane`: the layer cut through this chunk (meshJob.ts applyCut), if it crosses it. */
+  mesh(snap: ChunkSnapshot, tables: MeshTables, ox = 0, oy = 0, oz = 0, plane?: CutPlane): ChunkMeshData {
     this.opaque.reset()
     this.cutout.reset()
     this.translucent.reset()
     this.liquid.reset()
     this.grass.reset()
     this.flowers.reset()
-    meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask)
+    meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
-    extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers)
+    extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers, plane)
     return {
       opaque: this.opaque.build(), cutout: this.cutout.build(), translucent: this.translucent.build(), liquid: this.liquid.build(),
       grass: this.grass.build(), flowers: this.flowers.build(),

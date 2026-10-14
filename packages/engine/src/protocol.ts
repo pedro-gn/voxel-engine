@@ -10,6 +10,7 @@ import type { WorldBuffers } from './world/buffers.ts'
 import type { WorldSize } from './world/layout.ts'
 import type { WorkerOptions, WorkerTick } from './sim/workers/types.ts'
 import type { SimRestore, SimSnapshot } from './sim/snapshot.ts'
+import type { SystemPublication } from './sim/systems.ts'
 
 export interface SimInitOptions {
   workers?: WorkerOptions
@@ -58,8 +59,9 @@ export type ToSim =
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
-  | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
-  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; slotsUsed: number; tickMs: number }
+  /** `void`: the generator declared a void world (spec §3). */
+  | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number; void: boolean }
+  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; systems?: SystemPublication[]; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
   | { type: 'terrain'; id: number; ok: false; message: string }
@@ -76,10 +78,12 @@ export type Override = readonly [number, number, number, number]
 export type ToMesh =
   | { type: 'init'; buffers: WorldBuffers; pages: SharedArrayBuffer[]; tables: MeshTables }
   | { type: 'page'; index: number; page: SharedArrayBuffer }
-  | { type: 'job'; id: number; chunk: number; overrides?: Override[] }
+  /** `cut`: world y of the highest visible layer, set only for chunks the layer cut crosses (spec §4). */
+  | { type: 'job'; id: number; chunk: number; overrides?: Override[]; cut?: number }
 
 export type FromMesh =
-  | { type: 'result'; id: number; chunk: number; version: number; data: ChunkMeshData }
+  /** `cut`: the job's cut, echoed so the main thread can drop a result meshed for a cut that moved on. */
+  | { type: 'result'; id: number; chunk: number; version: number; data: ChunkMeshData; cut?: number }
   | { type: 'retry'; id: number; chunk: number }
   | { type: 'error'; id: number; chunk: number; message: string }
 

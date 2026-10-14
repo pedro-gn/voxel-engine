@@ -5,6 +5,29 @@ const make = (heightAt?: (x: number, z: number) => number) =>
   new OrbitCamera({ worldSize: [256, 128, 256], heightAt })
 
 describe('OrbitCamera', () => {
+  it('reset() returns to the home yaw and pitch, keeps the target and distance, takes the short way round', () => {
+    const cam = new OrbitCamera({ worldSize: [256, 100, 256], yaw: 0.5, pitch: 0.9 })
+    cam.goal.target = [40, 0, 60]
+    cam.rotate(2 * Math.PI * 3 + 1, -0.3) // three turns and a bit
+    cam.zoom(500)
+    const d = cam.goal.distance
+    cam.reset()
+    expect(cam.goal.pitch).toBeCloseTo(0.9)
+    expect(Math.abs(cam.goal.yaw - cam.current.yaw)).toBeLessThanOrEqual(Math.PI) // never spins several turns back
+    expect(((cam.goal.yaw - 0.5) / (2 * Math.PI)) % 1).toBeCloseTo(0)
+    expect(cam.goal.target).toEqual([40, 0, 60])
+    expect(cam.goal.distance).toBe(d)
+  })
+  it('starts at its home view', () => {
+    const cam = new OrbitCamera({ worldSize: [256, 100, 256], yaw: 2, pitch: 1, distance: 120 })
+    expect([cam.goal.yaw, cam.goal.pitch, cam.goal.distance]).toEqual([2, 1, 120])
+    expect([cam.current.yaw, cam.current.pitch, cam.current.distance]).toEqual([2, 1, 120])
+  })
+  it('takes pitch and distance limits from its options', () => {
+    const cam = new OrbitCamera({ worldSize: [256, 100, 256], minPitch: 0.6, maxPitch: 1.1, minDistance: 20, maxDistance: 150 })
+    cam.rotate(0, 5); expect(cam.goal.pitch).toBe(1.1)
+    cam.zoom(1e6); expect(cam.goal.distance).toBe(150)
+  })
   it('clamps pitch and distance', () => {
     const c = make()
     c.rotate(0, 10)

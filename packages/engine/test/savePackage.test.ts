@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MemoryStore, checkSlotName } from '../src/persist/store.ts'
-import { SaveError, checkBlocks, checkManifest, type ManifestDraft } from '../src/persist/manifest.ts'
+import { SaveError, checkBlocks, checkManifest, checkSystemSections, type ManifestDraft } from '../src/persist/manifest.ts'
 import { gcBlobs, readSave, writeSave } from '../src/persist/package.ts'
 import { SECTION_VERSIONS } from '../src/sim/snapshot.ts'
 
@@ -82,6 +82,15 @@ describe('save package', () => {
     expect(checkBlocks(['air', 'stone'], ['air', 'stone', 'glass'])).toEqual([])
     expect(checkBlocks(['air', 'dirt'], ['air', 'stone'])).toEqual(['block 1 is "dirt" in the save but "stone" in this engine'])
     expect(checkBlocks(['air', 'stone', 'x'], ['air', 'stone'])).toEqual(['block 2 "x" is unknown to this engine'])
+  })
+  it('stamps a system section with its own version and checkManifest leaves it to the game', async () => {
+    const w = await writeSave(new MemoryStore(), 'a', draft(), [...sections(), { name: 'system:colony', version: 3, bytes: bytes(20, 3) }], regions(), [])
+    const manifest = w.manifest
+    expect(manifest.sections.find(s => s.name === 'system:colony')!.version).toBe(3)
+    expect(checkManifest(manifest)).toEqual([])
+    expect(checkSystemSections(manifest, [{ name: 'colony', version: 3 }])).toEqual([])
+    expect(checkSystemSections(manifest, [{ name: 'colony', version: 4 }])).toEqual(['section system:colony v3, game expects v4'])
+    expect(checkSystemSections(manifest, [])).toEqual(['section system:colony is unknown to this game'])
   })
   it('collects blobs no kept manifest references', async () => {
     const store = new MemoryStore()

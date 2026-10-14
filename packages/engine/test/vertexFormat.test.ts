@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AO_CURVE, flipDiagonal, vertexAO } from '../src/mesh/ao.ts'
-import { packA, packB, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { CUT_BIT, packA, packB, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 
 describe('vertex format', () => {
   it('round-trips word A at its limits', () => {
@@ -8,6 +8,12 @@ describe('vertex format', () => {
     expect(unpackA(a)).toEqual({ x: 32, y: 32, z: 32, normal: 5, ao: 3, corner: 3, drop: 16 })
     expect(unpackA(packA(0, 1, 2, 0, 0, 1))).toEqual({ x: 0, y: 1, z: 2, normal: 0, ao: 0, corner: 1, drop: 0 })
     expect(a).toBeLessThanOrEqual(0xffffffff)
+  })
+  it('keeps the layer-cut bit clear of every other field of word A', () => {
+    const max = packA(63, 63, 63, 7, 3, 3, 31)
+    expect(max & CUT_BIT).toBe(0)
+    expect(unpackA((max | CUT_BIT) >>> 0)).toEqual(unpackA(max))
+    expect(unpackA((packA(0, 0, 0, 0, 0, 0, 0) | CUT_BIT) >>> 0)).toEqual({ x: 0, y: 0, z: 0, normal: 0, ao: 0, corner: 0, drop: 0 })
   })
   it('round-trips word B at its limits', () => {
     expect(unpackB(packB(4095, 15, 15, 32, 32))).toEqual({ layer: 4095, sky: 15, block: 15, w: 32, h: 32 })

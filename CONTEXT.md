@@ -13,7 +13,7 @@ A block type that does not participate in structural collapse. It keeps its exis
 _Avoid_: Indestructible block, immovable block
 
 **Fixed support**:
-A normal solid block without individual gravity, or the finite world floor, that can hold a face-connected structural fragment.
+A normal solid block without individual gravity, or the finite world floor (not in a void world), that can hold a face-connected structural fragment.
 _Avoid_: Any solid block, anchored terrain only
 
 **Structural fragment**:
@@ -63,6 +63,22 @@ _Avoid_: Underwater fog (scene fog is untouched), water tint (the water material
 **View distance**:
 The distance from the camera beyond which the world is not drawn; the fog dissolves its last quarter into the sky. Infinity draws the whole world.
 _Avoid_: Render distance, chunk radius, LOD
+
+**Game system**:
+A game's own simulation code, run by the engine once per tick after the worker units step, with its own commands (`name:`), save section (`system:name`) and per-tick publication.
+_Avoid_: Plugin, mod, script
+
+**Controlled unit**:
+A worker unit owned by a game system: never given work by the engine, driven by one intent at a time (walk, dig or build), reporting what happened to it. Its digs keep nothing.
+_Avoid_: Player unit, NPC
+
+**Void world**:
+A world whose bottom is open: water, falling blocks, fragments and units that reach it leave the world.
+_Avoid_: Sky world, no-floor mode
+
+**Layer cut**:
+The highest visible layer: everything above it is hidden and the cut layer's tops are drawn as solid, darker faces; the simulation is untouched.
+_Avoid_: Slice, clipping, x-ray
 
 **Save**:
 A package that lets a world continue where it stopped: a manifest plus content-addressed blobs (save regions and system sections). Faithful, not bit-identical: navigation and in-flight searches are rebuilt on load.

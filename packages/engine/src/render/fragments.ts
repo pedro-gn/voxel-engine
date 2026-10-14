@@ -3,6 +3,7 @@ import { attribute, float, normalLocal, texture, varying, vec4 } from 'three/tsl
 import type { BlockRegistry } from '../blocks/registry.ts'
 import type { Layout } from '../world/layout.ts'
 import { fragmentGeometry } from './fragmentGeometry.ts'
+import { belowCut } from './layerCut.ts'
 import type { FragmentFrame } from './fragmentTrack.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
@@ -23,6 +24,7 @@ export class FragmentMeshes {
       m.colorNode = layer === 1 ? vec4(albedo.rgb, 1) : albedo
       if (layer === 2) { m.alphaTest = 0.5; m.side = THREE.DoubleSide }
       if (layer === 3) { m.transparent = true; m.depthWrite = false }
+      m.maskNode = belowCut() // the layer cut hides fragments above it (spec §4)
       m.shadowSide = THREE.FrontSide; this.materials.set(layer, m)
     }
   }
