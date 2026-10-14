@@ -8,7 +8,7 @@ import { setLinear } from './lighting.ts'
 import type { WaterParams } from './settings.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 import { rippleEffect, tiltedNormal } from './water/ripples.ts'
-import { curtainVertex, surfaceVertex, voxelWaterVertex, type WaterVertex } from './water/waterVertex.ts'
+import { curtainVertex, surfaceVertex, voidFloor, voxelWaterVertex, type WaterVertex } from './water/waterVertex.ts'
 
 type N = ReturnType<typeof float>
 type V2 = THREE.Node<'vec2'>
@@ -148,6 +148,9 @@ export class WaterMaterial {
     this.u.waveScale.value = p.waveScale
     this.u.waveSpeed.value = p.waveSpeed
   }
+
+  /** Void world (spec §3): curtains fade out toward the bottom of the volume. */
+  setVoidFloor(v: boolean): void { voidFloor.value = v ? 1 : 0 }
 
   applyAtmosphere(a: Atmosphere): void {
     const [x, y, z] = sunDirection(a.sun.azimuth, a.sun.elevation)

@@ -120,7 +120,7 @@ export class SimHost {
             const chunks = this.sim.restore(msg.restore)
             const L = this.sim.layout
             this.ready = true
-            this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+            this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
             return
           }
           if (msg.genPorts && msg.genPorts.length > 0) {
@@ -133,7 +133,7 @@ export class SimHost {
           const chunks = this.sim.generate(this.modules.generator)
           const L = this.sim.layout
           this.ready = true
-          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+          this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
         } catch (e) {
           this.fail(e)
         }
@@ -348,7 +348,7 @@ export class SimHost {
         try {
           const chunks = sim.finishGenerate()
           this.ready = true
-          this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz })
+          this.post({ type: 'ready', chunks, slotsUsed: sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: sim.voidWorld })
         } catch (e) {
           this.fail(e)
         }

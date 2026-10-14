@@ -117,6 +117,8 @@ export class Visuals {
   }
 
   getWater(): WaterParams { return this.waterParams }
+  /** Void world (spec §3): waterfalls fade out near the bottom instead of splashing on it. */
+  setVoidFloor(v: boolean): void { this.water.setVoidFloor(v) }
   setWater(input: WaterInput): void {
     this.waterParams = mergeWater(this.waterParams, input)
     this.water.setParams(this.waterParams)

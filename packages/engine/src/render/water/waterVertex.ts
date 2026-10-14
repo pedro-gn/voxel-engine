@@ -11,6 +11,10 @@ type N = any
  * the engine sets it every frame.
  */
 export const waterAlpha = uniform(1)
+/** 1 in a void world (spec §3): a curtain fades out over its last VOID_FADE_BLOCKS above the bottom instead of splashing. */
+export const voidFloor = uniform(0)
+/** Blocks above the bottom of a void world over which a waterfall curtain fades out. */
+export const VOID_FADE_BLOCKS = 16
 
 /** What the water shading reads, whatever draws the water: static voxel cells, the heightfield surface or a curtain. */
 export interface WaterVertex {
@@ -205,6 +209,7 @@ export function curtainVertex(): WaterVertex {
     // A fall whitens as it goes down: it takes in air on the way.
     white: varying(mix(smoothstep(8, 64, flux).mul(s.mul(0.4).add(0.3)), float(1), isSplash)),
     fall: varying(float(1).add(flux.div(32).min(3))),
-    alpha: varying(mix(fade, splash, isSplash)) as N,
+    // Void world: the fall fades out toward the bottom of the volume (world y; curtain meshes sit at world y 0). Branch-free.
+    alpha: varying(mix(fade, splash, isSplash).mul(mix(float(1), smoothstep(float(0), float(VOID_FADE_BLOCKS), y), voidFloor))) as N,
   }
 }

@@ -180,6 +180,8 @@ export interface Engine {
   /** The underwater view's amount, 0–1: fades in while the camera (either mode) is in liquid (spec 4d). */
   readonly underwater: number
   readonly atmosphere: AtmosphereController
+  /** True when the generator declared a void world (spec §3); known once the world is ready. */
+  readonly voidWorld: boolean
   get quality(): Quality
   set quality(value: Partial<Quality>)
   get effects(): Effects
@@ -408,6 +410,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   let halted = false
   let fatal: string | null = null
   let generated = false
+  let voidWorld = false
   let initialGen = { ms: 0, columns: 0 }
   let terrainSeq = 0
   const terrainWaits = new Map<number, { resolve: (v: never) => void; reject: (e: EngineError) => void; columns: number }>()
@@ -564,6 +567,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         waterWorker?.postMessage({ type: 'page', index: m.index, page: m.page } satisfies ToWater)
         break
       case 'ready':
+        voidWorld = m.void
+        visuals.setVoidFloor(m.void)
         generated = true
         initialGen = { ms: m.genMs, columns: m.columns }
         slotsUsed = m.slotsUsed
@@ -835,6 +840,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     },
     physics,
     get workers() { return latestWorkers },
+    get voidWorld() { return voidWorld },
     // A staged mesh is accepted but not drawn until its fragment sources release together.
     meshVersion: ci => stagedSources.has(ci) ? -1 : queue.appliedVersion(ci),
     meshFailed: ci => failed.has(ci),

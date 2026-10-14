@@ -37,6 +37,8 @@ export class FragmentTrack {
       const b = this.bodies.get(landing.id)
       if (b) { b.samples.push({ tick, offset: landing.offset256 }); b.landing = landing }
     }
+    // Fell out of a void world: gone at once, nothing was written to wait for.
+    for (const id of data.removed ?? []) this.bodies.delete(id)
     this.hold()
   }
   frame(now: number, applied: (ci: number) => number): FragmentFrame[] {

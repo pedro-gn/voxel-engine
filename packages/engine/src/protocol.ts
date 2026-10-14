@@ -59,7 +59,8 @@ export type ToSim =
 export type FromSim =
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
-  | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number }
+  /** `void`: the generator declared a void world (spec §3). */
+  | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number; void: boolean }
   | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; systems?: SystemPublication[]; slotsUsed: number; tickMs: number }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
