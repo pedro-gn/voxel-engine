@@ -134,3 +134,12 @@ cost if wrong.
   each 8-block terrace, so the brink column is wet (≥ SHOW_MIN 16) but drawn dry. The surface layout code
   (`surfaceView.ts`, `surfaceMesh.ts`) is untouched by this branch, so this is a pre-existing 3c water-render issue at
   shallow brinks, tracked separately.
+
+## Benchmarks (2026-10-14, laptop, no game running, 16 GB free)
+
+- **BENCH_CUT** (`?scene=sky`, 12 one-layer steps, worse of two runs): p50 52 ms, **p95 113 ms**, max 113 ms — target
+  ≤ 150 ms met (other run: p50 47, p95 107). The first runs showed single steps of 2.2–4.1 s; a probe found frame stalls
+  of 0.7 and 2.5 s in the scene's first ~9 s **with no cut at all** (one-off first appearances, likely pipeline
+  compiles), so the bench now waits for 5 s of frames without a gap over 150 ms before measuring. Those warm-up stalls
+  are an open item of their own.
+- **Mesher gate** (`bench:node`): 2.41 and 2.39 ms/chunk (limit 3 ms).

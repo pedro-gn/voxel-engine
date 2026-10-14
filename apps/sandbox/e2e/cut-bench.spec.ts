@@ -27,7 +27,13 @@ test('one layer-cut step on the 256² sky island is drawn within 150 ms (spec §
   await page.goto('/?scene=sky')
   await page.waitForFunction(() => (window as W).__elovox?.ready === true, null, { timeout: 120_000 })
   await page.waitForFunction(() => { const s = (window as W).__elovox!.engine.stats(); return s.meshQueue === 0 && s.meshInFlight === 0 }, null, { timeout: 120_000 })
-  await page.waitForTimeout(2000)
+  // The scene's first seconds hold one-off stalls of up to ~2.5 s with no cut at all (first appearances: the waterfall,
+  // the units). Measure only after 5 s of frames with no gap over 150 ms, so the steps time the cut alone.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const e = (window as W).__elovox!.engine
+    let last = performance.now(), calm = last
+    const off = e.on('frame', () => { const n = performance.now(); if (n - last > 150) calm = n; last = n; if (n - calm > 5000) { off(); resolve() } })
+  }))
   const ms: number[] = []
   for (let i = 0; i < STEPS; i++) ms.push(await step(page, ISLAND_TOP - i))
   const out = { cutStepMs: { p50: p(ms, 0.5), p95: p(ms, 0.95), max: Math.max(...ms) }, steps: ms.map(v => Math.round(v)) }
