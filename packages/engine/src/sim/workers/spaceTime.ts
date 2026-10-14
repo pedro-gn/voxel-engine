@@ -30,6 +30,8 @@ const HEADING = [3, 2, 0, 1] as const
  * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket, valid only
  * if no one else has its cells for the rest of the table's horizon). With a
  * `refuge` predicate it ends only at the window's end on a refuge pose: a way out of someone else's route.
+ * A step goes along the route (start, then `targets` in order) or is one the unit can take back: never a drop off the
+ * route it cannot climb again, so a pocket or a refuge never strands it where its way on is gone.
  */
 export class SpaceTimeSearch {
   status: SpaceTimeStatus = 'pending'
@@ -50,6 +52,8 @@ export class SpaceTimeSearch {
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
   private readonly targetSet: ReadonlySet<number>
+  /** The route's own steps (start → targets[0] → targets[1] …) as pose * 4 + direction: they may be one-way. */
+  private readonly routeSteps = new Set<number>()
   /** The current state id of each (pose, tick) key; a cheaper way there replaces it until the state is popped. */
   private readonly ids = new Map<number, number>()
   /** Keys of (pose, tick) states already popped. */
@@ -79,6 +83,11 @@ export class SpaceTimeSearch {
     this.port = port; this.table = table; this.owner = owner; this.start = start; this.startTick = startTick; this.targets = targets
     this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.avoid = avoid; this.end = startTick + table.window
     this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p)); this.targetSet = new Set(targets)
+    for (let i = 0; i < targets.length; i++) {
+      const a = i ? this.targetCoords[i - 1]! : this.origin, b = this.targetCoords[i]!, dx = b[0] - a[0], dz = b[2] - a[2]
+      const d = dx === 1 && !dz ? 0 : dx === -1 && !dz ? 1 : dz === 1 && !dx ? 2 : dz === -1 && !dx ? 3 : -1
+      if (d >= 0) this.routeSteps.add((i ? targets[i - 1]! : start) * 4 + d)
+    }
     const last = this.targetCoords.at(-1) ?? (toward === undefined ? undefined : port.coords(toward)), dx = last ? last[0] - this.origin[0] : 0, dz = last ? last[2] - this.origin[2] : 0
     // Right of (dx, dz) is (-dz, dx); directions index DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1].
     this.right = !dx && !dz ? -1 : Math.abs(dx) >= Math.abs(dz) ? dx > 0 ? 2 : 3 : dz > 0 ? 1 : 0
@@ -218,7 +227,7 @@ export class SpaceTimeSearch {
         if (this.table.free(this.owner, t + 1, this.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p))
       } else {
         const d = this.action - 1, q = this.neighbor(p, d)
-        if (q >= 0 && this.inBox(q) && this.allowed(q) && !this.closed(q)) {
+        if (q >= 0 && this.inBox(q) && this.allowed(q) && !this.closed(q) && (this.routeSteps.has(p * 4 + d) || this.neighbor(q, d ^ 1) === p)) {
           let s = this.stepOf.get(p * 4 + d)
           if (!s || s.q !== q) { s = { q, k: this.port.ticksOf(p, q), cells: this.port.stepCells(p, q) }; this.stepOf.set(p * 4 + d, s) }
           const k = s.k
