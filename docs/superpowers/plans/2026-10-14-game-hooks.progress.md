@@ -61,3 +61,6 @@ Ledger kept in the repo (committed with each task) at the user's request instead
 - Task 10: complete (commit 3decb71; tests: vitest layerCut/chunkMeshes/chunkBatches/meshQueue/raycast/chunkCull/decorationMeshes/engineWorld → 68 passed; root typecheck 0)
 - Task 11: Ruling: `reset()` rounds the turn count from the CURRENT yaw, not the goal's (the plan's code used `goal.yaw`, which fails its own test "never spins several turns back" when the goal is turns ahead of the camera) — cost if wrong: none.
 - Task 11: Ruling: OrbitCamera ignores options given as `undefined` (an `EngineOptions.camera` with unset keys would otherwise erase the defaults); added test "starts at its home view" — cost if wrong: none.
+- Task 11: complete (commit 1e9ce80; tests: vitest orbitCamera/firstPerson → 39 passed; root typecheck 0)
+- Task 12: Ruling: the shadow fade is applied as the shadow's own intensity (`sun.shadow.intensity = shadowFade(elevation)`, autoUpdate off at 0) rather than through the atmosphere's `shadow.strength` uniform — same visible effect, one place — cost if wrong: none.
+- Task 12: added test "a custom day replaces the default" (defineDay); `DAY_KEYFRAMES` and `DayKey` exported from `@elovox/engine`.

@@ -4,6 +4,17 @@ import { fitShadow, frustumCorners, type V3 } from './shadowFit.ts'
 
 /** three's lookAt degenerates for a vertical light direction. */
 const MAX_ELEVATION = 89.5
+/** Degrees: the directional light (and its shadow box) never comes from lower, so a low sun keeps a tight shadow fit. */
+export const MIN_SHADOW_ELEVATION = 12
+/** Degrees of real elevation at and below which the shadow is gone. */
+export const SHADOW_FADE_FROM = 3
+/** The elevation the directional light (and its shadow box) uses: never below MIN_SHADOW_ELEVATION. */
+export function shadowElevation(e: number): number { return Math.max(e, MIN_SHADOW_ELEVATION) }
+/** Shadow strength factor: 0 at ≤ SHADOW_FADE_FROM, 1 at ≥ MIN_SHADOW_ELEVATION of real elevation, smooth between. */
+export function shadowFade(e: number): number {
+  const t = Math.min(1, Math.max(0, (e - SHADOW_FADE_FROM) / (MIN_SHADOW_ELEVATION - SHADOW_FADE_FROM)))
+  return t * t * (3 - 2 * t)
+}
 const forward = new THREE.Vector3()
 
 export function setLinear(c: THREE.Color, rgb: Rgb): THREE.Color {
@@ -17,6 +28,7 @@ export class SunLights {
   private readonly scene: THREE.Scene
   private dir: V3 = [0, 1, 0]
   private visible = 1
+  private fade = 1
   private enabled = true
 
   constructor(scene: THREE.Scene, mapSize: number) {
@@ -30,8 +42,10 @@ export class SunLights {
   }
 
   apply(a: Atmosphere): void {
-    this.dir = sunDirection(a.sun.azimuth, Math.min(MAX_ELEVATION, a.sun.elevation))
+    // The light comes from at least MIN_SHADOW_ELEVATION (the sky keeps the real sun disc); its shadow fades out below it.
+    this.dir = sunDirection(a.sun.azimuth, Math.min(MAX_ELEVATION, shadowElevation(a.sun.elevation)))
     this.visible = sunVisibility(a.sun.elevation)
+    this.fade = shadowFade(a.sun.elevation)
     setLinear(this.sun.color, a.sun.color)
     this.sun.intensity = a.sun.intensity * this.visible * Math.PI
     setLinear(this.hemi.color, a.ambient.sky)
@@ -78,10 +92,10 @@ export class SunLights {
    * So "off" is a zero shadow intensity and no map updates instead.
    */
   private syncShadow(): void {
-    const on = this.enabled && this.visible > 0
+    const on = this.enabled && this.visible > 0 && this.fade > 0
     this.sun.castShadow = true
     this.sun.shadow.autoUpdate = on
-    this.sun.shadow.intensity = on ? 1 : 0
+    this.sun.shadow.intensity = on ? this.fade : 0
   }
 
   dispose(): void {

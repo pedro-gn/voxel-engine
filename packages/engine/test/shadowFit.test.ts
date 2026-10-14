@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HALF_STEP, fitShadow, frustumCorners, shadowDistance, type V3 } from '../src/render/shadowFit.ts'
+import { MIN_SHADOW_ELEVATION, SHADOW_FADE_FROM, shadowElevation, shadowFade } from '../src/render/lighting.ts'
+import { sunDirection } from '../src/render/atmosphere.ts'
 
 const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -93,5 +95,22 @@ describe('shadowDistance', () => {
     expect(shadowDistance(70)).toBe(210)
     expect(shadowDistance(400)).toBe(550)
     expect(shadowDistance(600)).toBe(700)
+  })
+})
+
+describe('low sun', () => {
+  it('places the light no lower than MIN_SHADOW_ELEVATION, so the fit at 4° is the fit at 12°', () => {
+    expect(shadowElevation(4)).toBe(MIN_SHADOW_ELEVATION)
+    expect(shadowElevation(40)).toBe(40)
+    const at = (e: number) => fitShadow(viewCorners(), sunDirection(250, shadowElevation(e)), 2048, 0, 128)
+    expect(at(4)).toEqual(at(12))
+  })
+  it('fades the shadow out between 12° and 3° of real elevation', () => {
+    expect(shadowFade(SHADOW_FADE_FROM)).toBe(0)
+    expect(shadowFade(-5)).toBe(0)
+    expect(shadowFade(MIN_SHADOW_ELEVATION)).toBe(1)
+    expect(shadowFade(60)).toBe(1)
+    const mid = shadowFade(7.5)
+    expect(mid).toBeGreaterThan(0); expect(mid).toBeLessThan(1)
   })
 })

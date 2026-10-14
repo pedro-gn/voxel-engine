@@ -158,7 +158,23 @@ export const PRESETS: Readonly<Record<'open' | 'diorama' | 'sunset', Atmosphere>
   }),
 })
 
+/** One keyframe of a day: the look at time `t` (0 midnight, 0.5 noon), resolved over the 'open' preset. */
+export interface DayKey { t: number; atmosphere: AtmosphereInput }
+
+/** The default day (first guesses, tuned at the checkpoints): t 0 is midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. The night "sun" is the moon. */
+export const DAY_KEYFRAMES: readonly DayKey[] = deepFreeze([
+  { t: 0.0, atmosphere: { sun: { azimuth: 0, elevation: 40, color: '#9fb4ff', intensity: 0.25 }, ambient: { sky: '#3a4a7a', ground: '#1e1a24', intensity: 0.3 }, sky: { zenith: '#0b1530', horizon: '#26345e', sunGlow: 0.05, clouds: { light: '#4a5680', shade: '#20263f' } }, fog: { color: '#1d2747' }, shadow: { strength: 0.5, tint: '#1a2140' }, grade: { exposure: 0.9 } } },
+  { t: 0.2, atmosphere: { sun: { azimuth: 60, elevation: -8, color: '#9fb4ff', intensity: 0.2 }, ambient: { sky: '#4a5590', ground: '#2a2230', intensity: 0.32 }, sky: { zenith: '#1a2550', horizon: '#6a5a8a', sunGlow: 0.1 }, fog: { color: '#4a4a74' } } },
+  { t: 0.25, atmosphere: { sun: { azimuth: 90, elevation: 2, color: '#ffb27a', intensity: 1.1 }, ambient: { sky: '#d9a6c8', ground: '#5a4050', intensity: 0.5 }, sky: { zenith: '#5a6ab0', horizon: '#ffa98a', sunGlow: 1.2 }, fog: { color: '#f2b0a0' } } },
+  { t: 0.32, atmosphere: { sun: { azimuth: 110, elevation: 30, color: '#fff1d6', intensity: 1.5 }, ambient: { sky: '#a8c8ff', ground: '#6b5a45', intensity: 0.65 } } },
+  { t: 0.5, atmosphere: { sun: { azimuth: 180, elevation: 62, color: '#fff6e8', intensity: 1.7 }, ambient: { sky: '#a8c8ff', ground: '#6b5a45', intensity: 0.75 }, sky: { zenith: '#2f6fd6', horizon: '#bcd9f2', sunGlow: 0.6 }, fog: { color: '#bcd9f2' } } },
+  { t: 0.68, atmosphere: { sun: { azimuth: 250, elevation: 30, color: '#fff1d6', intensity: 1.5 }, ambient: { intensity: 0.65 } } },
+  { t: 0.75, atmosphere: { sun: { azimuth: 270, elevation: 2, color: '#ffb27a', intensity: 1.2 }, ambient: { sky: '#d9a6c8', ground: '#5a4050', intensity: 0.5 }, sky: { zenith: '#6a5aa8', horizon: '#ff9fb0', sunGlow: 1.2 }, fog: { color: '#f2a5a8' } } },
+  { t: 0.8, atmosphere: { sun: { azimuth: 300, elevation: -8, color: '#9fb4ff', intensity: 0.2 }, ambient: { sky: '#4a5590', ground: '#2a2230', intensity: 0.32 }, sky: { zenith: '#1a2550', horizon: '#5a4a7a', sunGlow: 0.1 }, fog: { color: '#3a3a64' } } },
+])
+
 const ease = (t: number) => t * t * (3 - 2 * t)
+const resolveDay = (keys: readonly DayKey[]) => keys.map(k => ({ t: k.t, a: resolveAtmosphere(OPEN, k.atmosphere) }))
 
 /** Holds the scene's atmosphere and its preset transitions. Advanced once per rendered frame. */
 export class AtmosphereController {
@@ -169,6 +185,9 @@ export class AtmosphereController {
   private elapsed = 0
   private duration = 0
   private changed = true
+  /** The day's keyframes, resolved (DAY_KEYFRAMES unless defineDay replaced them). */
+  private day: { t: number; a: Atmosphere }[] = resolveDay(DAY_KEYFRAMES)
+  private tod: number | null = null
 
   constructor(initial = 'open') {
     const p = this.preset(initial)
@@ -182,7 +201,31 @@ export class AtmosphereController {
 
   presetNames(): string[] { return [...this.presets.keys()] }
 
+  /** The time of day last set (spec §6); null while a preset or an explicit look is in force. */
+  get timeOfDay(): number | null { return this.tod }
+
+  /** Replaces the day's keyframes: at least one, sorted by t in [0, 1); the day wraps from the last back to the first. */
+  defineDay(keys: readonly DayKey[]): void {
+    if (!Array.isArray(keys) || !keys.length || keys.some((k, i) => !(k.t >= 0 && k.t < 1) || (i > 0 && k.t <= keys[i - 1]!.t))) throw new RangeError('keyframes must be sorted by t in [0, 1)')
+    this.day = resolveDay(keys)
+  }
+
+  /** Sets the look from the day's keyframes (t in [0, 1): 0 midnight, 0.25 sunrise, 0.5 noon); a preset set later takes over again. */
+  setTimeOfDay(t: number): void {
+    if (!(t >= 0 && t < 1)) throw new RangeError(`time of day must be in [0, 1), got ${t}`)
+    const d = this.day, n = d.length
+    let i = n - 1
+    while (i > 0 && d[i]!.t > t) i--
+    if (d[0]!.t > t) i = n - 1
+    const a = d[i]!, b = d[(i + 1) % n]!
+    const span = ((b.t - a.t + 1) % 1) || 1
+    const f = ((t - a.t + 1) % 1) / span
+    this.now = lerpAtmosphere(a.a, b.a, f); this.from = this.now; this.to = this.now; this.duration = 0; this.elapsed = 0
+    this.tod = t; this.changed = true
+  }
+
   set(target: string | AtmosphereInput, options: { duration?: number } = {}): void {
+    this.tod = null
     const duration = options.duration ?? 0
     if (!Number.isFinite(duration) || duration < 0) throw new RangeError(`duration must be a finite number ≥ 0, got ${duration}`)
     if (typeof target === 'string') {

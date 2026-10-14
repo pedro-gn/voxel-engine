@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  AtmosphereController, PRESETS, hexToLinear, lerpAngle, lerpAtmosphere, resolveAtmosphere, sunDirection, sunVisibility,
+  AtmosphereController, DAY_KEYFRAMES, PRESETS, hexToLinear, lerpAngle, lerpAtmosphere, resolveAtmosphere, sunDirection, sunVisibility,
 } from '../src/render/atmosphere.ts'
 
 describe('colours', () => {
@@ -157,5 +157,53 @@ describe('AtmosphereController', () => {
     expect(c.current.sun.elevation).toBe(-10)
     expect(c.current.fog).toEqual(PRESETS.open.fog)
     expect(() => c.define('', {})).toThrow(/name/)
+  })
+})
+
+describe('time of day', () => {
+  it('interpolates the keyframes and wraps around midnight', () => {
+    const a = new AtmosphereController()
+    a.setTimeOfDay(0.5)
+    expect(a.current.sun.elevation).toBeGreaterThan(45) // noon
+    expect(a.update(0)).toBe(true)
+    a.setTimeOfDay(0.99); const late = a.current.sun.azimuth
+    a.setTimeOfDay(0.01); const early = a.current.sun.azimuth
+    expect(Math.abs(((early - late + 540) % 360) - 180)).toBeLessThan(15) // no jump across midnight
+    expect(a.timeOfDay).toBeCloseTo(0.01)
+  })
+
+  it('is dark but playable at night and bright at noon', () => {
+    const a = new AtmosphereController()
+    a.setTimeOfDay(0); const night = a.current
+    a.setTimeOfDay(0.5); const noon = a.current
+    expect(night.ambient.intensity).toBeGreaterThan(0.15)
+    expect(night.ambient.intensity).toBeLessThan(noon.ambient.intensity)
+    expect(night.sun.intensity).toBeLessThan(noon.sun.intensity)
+  })
+
+  it('a preset takes over again', () => {
+    const a = new AtmosphereController()
+    a.setTimeOfDay(0.3)
+    a.set('sunset')
+    expect(a.timeOfDay).toBeNull()
+    expect(a.current).toEqual(PRESETS.sunset)
+  })
+
+  it('rejects bad times and bad keyframes', () => {
+    const a = new AtmosphereController()
+    expect(() => a.setTimeOfDay(1)).toThrow(RangeError)
+    expect(() => a.setTimeOfDay(Number.NaN)).toThrow(RangeError)
+    expect(() => a.defineDay([])).toThrow(RangeError)
+    expect(() => a.defineDay([{ t: 0.5, atmosphere: {} }, { t: 0.2, atmosphere: {} }])).toThrow('keyframes must be sorted by t in [0, 1)')
+  })
+})
+
+describe('day keyframes', () => {
+  it('a custom day replaces the default', () => {
+    const a = new AtmosphereController()
+    a.defineDay([{ t: 0, atmosphere: { sun: { elevation: 10 } } }, { t: 0.5, atmosphere: { sun: { elevation: 50 } } }])
+    a.setTimeOfDay(0.25)
+    expect(a.current.sun.elevation).toBeCloseTo(30)
+    expect(DAY_KEYFRAMES.length).toBeGreaterThan(4)
   })
 })
