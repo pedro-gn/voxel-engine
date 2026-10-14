@@ -9,7 +9,8 @@ export const SHOW_MIN = 16
 export const SINK = 0.02
 /**
  * A drawn column's share of a vertex lies at least this far (blocks, 4/256) above its own floor's top: a shallow column next
- * to lower water (a brink over a one-block step) is never pulled into its bed, and its surface never z-fights the bed's top face.
+ * to lower water (a brink over a one-block step) is never pulled into its bed. A quarter of SHOW_MIN: the thin strip at a brink's
+ * edge can still z-fight its bed far from the camera.
  */
 export const LIFT = 4 / 256
 /** Below this speed (blocks per second) the ripples stand still… */

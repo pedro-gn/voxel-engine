@@ -1023,8 +1023,8 @@ export class SurfaceView {
 
   /**
    * The ground (blocks) a curtain must clear in column (ax, az), in the row beside its end: a column that is drawn has its
-   * floor, but no higher than its drawn corners `ca`, `cb` on the end's line (the drawn surface may dip under the floor there,
-   * where the arc lands); a column that is not drawn has its level.
+   * floor, but no higher than its drawn corners `ca`, `cb` on the end's line (corners stay at least LIFT above the floor, so
+   * this bites only for corners carried by the alpha blend); a column that is not drawn has its level.
    */
   private groundBeside(s: Int32Array, cur: boolean, ax: number, az: number, ca: number, cb: number): number {
     const a = ax + az * this.sx, w = s[a]!
