@@ -2,6 +2,10 @@ import type { WorldSize } from '../world/layout.ts'
 
 export interface OrbitOptions {
   worldSize: WorldSize
+  /** The home view: where the camera starts and where reset() turns back to (defaults 0.7, 0.85, 70). */
+  yaw?: number
+  pitch?: number
+  distance?: number
   minDistance?: number
   maxDistance?: number
   minPitch?: number
@@ -21,6 +25,8 @@ export class OrbitCamera {
   readonly current: OrbitState
   lastDragDistance = 0
   private readonly o: Required<Omit<OrbitOptions, 'heightAt'>> & Pick<OrbitOptions, 'heightAt'>
+  /** The home yaw and pitch reset() returns to. */
+  private readonly home: { yaw: number; pitch: number }
   private readonly keys = new Set<string>()
   private edge: [number, number] = [0, 0]
   private _enabled = true
@@ -34,11 +40,22 @@ export class OrbitCamera {
 
   constructor(options: OrbitOptions) {
     this.o = {
-      minDistance: 8, maxDistance: 400, minPitch: 0.15, maxPitch: 1.45, damping: 10, moveSpeed: 1.2, ...options,
+      minDistance: 8, maxDistance: 400, minPitch: 0.15, maxPitch: 1.45, damping: 10, moveSpeed: 1.2, yaw: 0.7, pitch: 0.85, distance: 70,
+      // An option given as undefined (EngineOptions.camera spread in) keeps its default.
+      ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined)) as OrbitOptions,
     }
     const [sx, , sz] = options.worldSize
-    this.goal = { target: [sx / 2, 0, sz / 2], yaw: 0.7, pitch: 0.85, distance: 70 }
+    this.home = { yaw: this.o.yaw, pitch: this.o.pitch }
+    this.goal = { target: [sx / 2, 0, sz / 2], yaw: this.o.yaw, pitch: this.o.pitch, distance: this.o.distance }
     this.current = { ...this.goal, target: [...this.goal.target] }
+  }
+
+  /** Back to the home yaw and pitch, keeping the target and the zoom; turns the short way round from where the camera is. */
+  reset(): void {
+    const turn = 2 * Math.PI
+    const k = Math.round((this.current.yaw - this.home.yaw) / turn)
+    this.goal.yaw = this.home.yaw + k * turn
+    this.goal.pitch = clamp(this.home.pitch, this.o.minPitch, this.o.maxPitch)
   }
 
   rotate(dYaw: number, dPitch: number): void {

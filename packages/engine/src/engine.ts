@@ -48,6 +48,8 @@ import type { SimSnapshot } from './sim/snapshot.ts'
 
 export interface EngineOptions {
   canvas: HTMLCanvasElement
+  /** The orbit camera's home view (OrbitCamera.reset() turns back to it) and its pitch and distance limits (spec §5). */
+  camera?: { yaw?: number; pitch?: number; distance?: number; minPitch?: number; maxPitch?: number; minDistance?: number; maxDistance?: number }
   size?: WorldSize
   seed: number
   blocks: BlockDef[]
@@ -389,7 +391,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const layerCut = new LayerCut(layout)
   /** The world as the layer cut shows it: air above the cut (picking and the orbit's ground follow it). */
   const cutGet = (x: number, y: number, z: number) => { const c = layerCut.y; return c !== null && y > c ? AIR : world.get(x, y, z) }
-  const controls = new OrbitCamera({ worldSize: size, heightAt: (x, z) => columnTop(cutGet, registry.solid, size, x, z) })
+  const controls = new OrbitCamera({ ...o.camera, worldSize: size, heightAt: (x, z) => columnTop(cutGet, registry.solid, size, x, z) })
   const detachControls = controls.attach(canvas)
   // First person is built once engine.collision exists (public API below); until then only the orbit can be active.
   let cameraMode: CameraMode = 'orbit'
