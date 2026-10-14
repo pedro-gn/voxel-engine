@@ -7,6 +7,12 @@ export const JOIN = SUB
 export const SHOW_MIN = 16
 /** A column that is not drawn has its corners this far (blocks) under its ground, so a drying column sinks out of sight. */
 export const SINK = 0.02
+/**
+ * A drawn column's share of a vertex lies at least this far (blocks, 4/256) above its own floor's top: a shallow column next
+ * to lower water (a brink over a one-block step) is never pulled into its bed. A quarter of SHOW_MIN: the thin strip at a brink's
+ * edge can still z-fight its bed far from the camera.
+ */
+export const LIFT = 4 / 256
 /** Below this speed (blocks per second) the ripples stand still… */
 export const FLOW_STILL = 0.15
 /** …below this they drift gently (1), above it steeply (2.5): 3a's two flow speeds. */
@@ -308,6 +314,11 @@ export function effective(v: number, floor: number): number { return shows(v, fl
 const vVal = new Float64Array(4)
 const vKind = new Int8Array(4) // 0 outside the world, 1 not drawn (its ground counts), 2 drawn (its surface counts)
 const vGroup = new Int8Array(4)
+const vBed = new Float64Array(4) // floor top + LIFT (1/SUB block): the lowest a drawn column's share may be
+/** LIFT in 1/SUB block. */
+const LIFT_SUB = LIFT * SUB
+/** vertexShares' floor when none is given: low enough that it never raises anything. */
+const NO_FLOOR = -0x10000
 
 /** Whether two of a vertex's columns join: two drawn surfaces within JOIN, or a drawn surface and a ground below it within JOIN. */
 function joins(a: number, b: number): boolean {
@@ -324,21 +335,30 @@ function joins(a: number, b: number): boolean {
  * notes: Rendering). The columns are grouped by single linkage, where:
  * - two drawn columns join when their surfaces lie within JOIN;
  * - a drawn column joins the ground of an undrawn one that lies below it within JOIN (a film's edge thins to the ground).
- * Each drawn column gets its group's average, so every column of a group (in particular two neighbours whose surfaces lie
- * within JOIN) shares the vertex. Higher ground (walls) and drops beyond JOIN stay apart; curtains hang there. A column that
- * is not drawn gets its ground minus SINK.
+ * Each drawn column gets its group's value: the group's average, raised to the highest bed of its drawn members (floor top
+ * + LIFT) when it lies under one, so every column of a group (in particular two neighbours whose surfaces lie within JOIN)
+ * shares the vertex and no drawn column's share sinks into its own floor (a shallow brink over a one-block step stays on top
+ * of its bed to the edge, and the lower column ramps down from there). Higher ground (walls) and drops beyond JOIN stay
+ * apart; curtains hang there. A column that is not drawn gets its ground minus SINK.
+ * f0–f3 are the columns' floors (blocks; only the drawn ones count): left out, nothing is raised.
  * Returns whether the vertex is smooth: four drawn columns within JOIN of each other, so no curtain hangs between them.
  */
-export function vertexShares(e0: number, e1: number, e2: number, e3: number, out: Float32Array, o: number): boolean {
+export function vertexShares(
+  e0: number, e1: number, e2: number, e3: number, out: Float32Array, o: number,
+  f0 = NO_FLOOR, f1 = NO_FLOOR, f2 = NO_FLOOR, f3 = NO_FLOOR,
+): boolean {
   if (e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) { // the common case, inside a lake or a river
     const lo01 = e0 < e1 ? e0 : e1, hi01 = e0 < e1 ? e1 : e0, lo23 = e2 < e3 ? e2 : e3, hi23 = e2 < e3 ? e3 : e2
     if ((hi01 > hi23 ? hi01 : hi23) - (lo01 < lo23 ? lo01 : lo23) <= JOIN) {
-      const h = (e0 + e1 + e2 + e3) * (1 / (4 * SUB)) // a power of two: exact
+      const f01 = f0 > f1 ? f0 : f1, f23 = f2 > f3 ? f2 : f3
+      const bed = (f01 > f23 ? f01 : f23) * SUB + LIFT_SUB, sum = e0 + e1 + e2 + e3
+      const h = (sum >= 4 * bed ? sum : 4 * bed) * (1 / (4 * SUB)) // a power of two: exact
       out[o] = h; out[o + 1] = h; out[o + 2] = h; out[o + 3] = h
       return true
     }
   }
   vVal[0] = e0; vVal[1] = e1; vVal[2] = e2; vVal[3] = e3
+  vBed[0] = f0 * SUB + LIFT_SUB; vBed[1] = f1 * SUB + LIFT_SUB; vBed[2] = f2 * SUB + LIFT_SUB; vBed[3] = f3 * SUB + LIFT_SUB
   let drawn = 0
   for (let q = 0; q < 4; q++) {
     const w = vVal[q]!
@@ -356,9 +376,14 @@ export function vertexShares(e0: number, e1: number, e2: number, e3: number, out
   }
   for (let q = 0; q < 4; q++) {
     if (vKind[q] !== 2) continue
-    let gs = 0, n = 0
-    for (let m = 0; m < 4; m++) if (vKind[m] !== 0 && vGroup[m] === vGroup[q]) { gs += vVal[m]!; n++ }
-    out[o + q] = gs / n / SUB
+    let gs = 0, n = 0, bed = -Infinity
+    for (let m = 0; m < 4; m++) {
+      if (vKind[m] === 0 || vGroup[m] !== vGroup[q]) continue
+      gs += vVal[m]!; n++
+      if (vKind[m] === 2 && vBed[m]! > bed) bed = vBed[m]!
+    }
+    const avg = gs / n
+    out[o + q] = (avg >= bed ? avg : bed) / SUB
   }
   return false
 }
@@ -370,11 +395,18 @@ function at(s: Int32Array, floor: Int16Array, sx: number, sz: number, x: number,
   return effective(s[j]!, floor[j]!)
 }
 
+/** Floor (blocks) of column (x, z), or NO_FLOOR outside the world. */
+function floorAt(floor: Int16Array, sx: number, sz: number, x: number, z: number): number {
+  return x < 0 || z < 0 || x >= sx || z >= sz ? NO_FLOOR : floor[x + z * sx]!
+}
+
 /** vertexShares at vertex (vx, vz) of the published surfaces `s`: out[o + q] for column (vx − 1 + (q & 1), vz − 1 + (q >> 1)). */
 export function vertexHeights(s: Int32Array, floor: Int16Array, sx: number, sz: number, vx: number, vz: number, out: Float32Array, o: number): boolean {
   return vertexShares(
     at(s, floor, sx, sz, vx - 1, vz - 1), at(s, floor, sx, sz, vx, vz - 1),
     at(s, floor, sx, sz, vx - 1, vz), at(s, floor, sx, sz, vx, vz), out, o,
+    floorAt(floor, sx, sz, vx - 1, vz - 1), floorAt(floor, sx, sz, vx, vz - 1),
+    floorAt(floor, sx, sz, vx - 1, vz), floorAt(floor, sx, sz, vx, vz),
   )
 }
 
