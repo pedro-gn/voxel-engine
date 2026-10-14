@@ -682,8 +682,9 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     const start = performance.now()
     while (results.length > 0 && performance.now() - start < UPLOAD_BUDGET_MS) {
       const r = results.shift()!
-      // Meshed for a layer cut that has moved on (or for none, or none any more): mesh it again for the current one.
-      if (r.cut !== layerCut.expected(r.chunk)) { markDirty(r.chunk, PRIORITY.CUT); continue }
+      // Meshed for a layer cut that has moved on (or for none, or none any more): dropped. cut() already marked the chunk
+      // again (LayerCut.accepts), so it is meshed for the current cut without a second mark here.
+      if (!layerCut.accepts(r.chunk, r.cut)) continue
       if (queue.accept(r.chunk, r.version)) {
         if (fragments.holdsChunk(r.chunk) || stagedSources.has(r.chunk)) stagedSources.set(r.chunk, r.data)
         else visuals.applyMesh(r.chunk, r.data)
