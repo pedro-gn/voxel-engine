@@ -125,4 +125,73 @@ describe('controlled units', () => {
     const v = r.ctx.units.view(id)!
     expect([v.x256 >> 8, v.y256 >> 8, v.z256 >> 8]).toEqual([20, 4, 20])
   })
+
+  it('digs from a work pose, reports dug and keeps nothing', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.dig(id, [10, 3, 10]))
+    h.until(() => h.events.some(e => e.unit === id && e.type === 'dug'))
+    expect(h.events.find(e => e.type === 'dug')).toEqual({ unit: id, type: 'dug', pos: [10, 3, 10], voxel: 1 })
+    expect(h.sim.store.getVoxel(10, 3, 10)).toBe(0)
+    expect(h.sim.workers!.view(id)!.stock).toEqual([])
+    expect(h.sim.workers!.viewDrops()).toEqual([])
+    expect(h.ctx.units.view(id)!.intent).toBeNull()
+  })
+
+  it('builds without stock and reports built', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.build(id, [10, 4, 10], 2))
+    h.until(() => h.events.some(e => e.unit === id && e.type === 'built'))
+    expect(h.events.find(e => e.type === 'built')).toEqual({ unit: id, type: 'built', pos: [10, 4, 10], voxel: 2 })
+    expect(h.sim.store.getVoxel(10, 4, 10)).toBe(2)
+  })
+
+  it('fails a dig on air and a build into stone', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.dig(id, [10, 6, 10]))
+    h.sim.step()
+    expect(h.events.at(-1)).toEqual({ unit: id, type: 'failed', reason: 'target-changed' })
+    h.run(c => c.units.build(id, [10, 3, 10], 2))
+    h.sim.step()
+    expect(h.events.at(-1)).toEqual({ unit: id, type: 'failed', reason: 'target-changed' })
+  })
+
+  it('fails when the target changes before the commit', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.dig(id, [12, 3, 12]))
+    h.sim.submit(0, ++seq, { type: 'setBlock', pos: [12, 3, 12], voxel: 2 }); h.sim.step()
+    h.until(() => h.events.some(e => e.unit === id && e.type === 'failed'))
+    expect(h.events.find(e => e.type === 'failed')).toEqual({ unit: id, type: 'failed', reason: 'target-changed' })
+    expect(h.sim.store.getVoxel(12, 3, 12)).toBe(2)
+  })
+
+  it('a dig intent that loses its task fails instead of hanging', () => {
+    const h = harness((g) => { for (let y = 4; y < 8; y++) g.set(20, y, 20, 1) })
+    const id = h.run(c => c.units.spawn([20, 8, 20]))
+    h.run(c => c.units.dig(id, [25, 3, 25]))
+    h.sim.submit(0, ++seq, { type: 'fillRegion', min: [20, 4, 20], max: [20, 7, 20], voxel: 0 }); h.sim.step() // it falls
+    h.until(() => h.events.some(e => e.unit === id && e.type === 'failed'))
+    expect(h.events.find(e => e.type === 'failed')).toEqual({ unit: id, type: 'failed', reason: 'unsafe' })
+    expect(h.ctx.units.view(id)!.intent).toBeNull()
+  })
+
+  it('a dig intent survives a save', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.dig(id, [20, 3, 20]))
+    for (let i = 0; i < 3; i++) h.sim.step()
+    const r = harness(undefined, h.sim.snapshot(null))
+    r.until(() => r.events.some(e => e.unit === id && (e.type === 'dug' || e.type === 'failed')))
+    expect(r.events.find(e => e.unit === id)).toEqual({ unit: id, type: 'dug', pos: [20, 3, 20], voxel: 1 })
+    expect(r.sim.store.getVoxel(20, 3, 20)).toBe(0)
+  })
+
+  it('rejects a non-buildable voxel as a programming error', () => {
+    const h = harness()
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    expect(() => h.run(c => c.units.build(id, [10, 4, 10], 0))).toThrow('voxel is not buildable')
+  })
 })

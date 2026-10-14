@@ -1,6 +1,6 @@
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import type { Layout } from '../../world/layout.ts'
-import { voxelId } from '../../world/voxel.ts'
+import { AIR, voxelId } from '../../world/voxel.ts'
 import { raycast } from '../../interact/raycast.ts'
 import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
@@ -289,7 +289,33 @@ export class WorkerSystem {
     if (u.state !== 'falling') u.state = u.motion ? 'walking' : 'planning'
     this.dirty.add(u.id)
   }
-  work(_id: number, _kind: 'dig' | 'build', _pos: Vec3, _voxel = 0): void { throw new Error('not implemented') }
+  /** Digs or builds one voxel from a work pose: `dug`/`built`, or `failed`. No stock or tool is needed (plan deviation D5). */
+  work(id: number, kind: 'dig' | 'build', pos: Vec3, voxel = 0): void {
+    this.checkPos(pos)
+    const u = this.controlledUnit(id)
+    if (kind === 'build' && (!integer(voxel, 1, 0xffff) || voxelId(voxel) >= this.port.registry.count || !this.build[voxelId(voxel)])) throw new Error('voxel is not buildable')
+    this.sleepers.wake(u.id)
+    this.clearOrder(u)
+    u.intent = kind === 'dig' ? { kind, pos: [pos[0], pos[1], pos[2]] } : { kind, pos: [pos[0], pos[1], pos[2]], voxel }
+    this.startIntent(u); this.revision++
+  }
+  /** Turns a dig/build intent into a one-cell internal order claimed by the unit (as engineering actions do). */
+  private startIntent(u: Unit): void {
+    const i = u.intent
+    if (!i || i.kind === 'goTo') return
+    if (u.state === 'incapacitated' || u.state === 'falling') { this.failIntent(u, 'unsafe'); return }
+    const p = this.port.layout.voxelIndex(...i.pos), v = this.port.get(...i.pos), id = voxelId(v), build = i.kind === 'build'
+    if (build ? this.port.registry.solid[id] === 1 : id === AIR) { this.failIntent(u, 'target-changed'); return }
+    if (!build && !this.dig[id]) { this.failIntent(u, 'missing-tool'); return }
+    if (build && !this.attached(i.pos)) { this.failIntent(u, 'no-access'); return }
+    if (this.targets.has(p)) { this.failIntent(u, 'traffic'); return }
+    const order: Order = { id: -u.id, kind: i.kind, min: i.pos, max: i.pos, voxel: build ? i.voxel : 0, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false, idleSince: this.time, noCrewSince: -1 }
+    const t: Task = { order, i: 0, p, pos: i.pos, expected: v, claim: u.id, added: this.time, failures: new Map() }
+    const goals = this.workGoals(u, t)
+    if (!goals.length) { this.failIntent(u, this.workGoals(u, t, true).length ? 'traffic' : 'no-access'); return }
+    this.targets.add(p); u.task = t; u.workPoses = goals; u.progressAt = this.time
+    this.plan(u, goals); u.state = 'planning'; this.dirty.add(u.id)
+  }
   /** Ends a controlled unit's intent quietly: no event. */
   stop(id: number): void {
     const u = this.controlledUnit(id)
@@ -554,6 +580,8 @@ export class WorkerSystem {
     }
     this.buildReservationsChanged()
     this.goalsVersion++
+    // Controlled units take their dig or build intent up again (routes and claims are not saved).
+    for (const u of this.units.values()) if (u.controlled && u.intent && u.intent.kind !== 'goTo') this.startIntent(u)
   }
   command(command: Command): void {
     // Any order, cancel, spawn or despawn may change what a sleeper waits for.
@@ -765,18 +793,23 @@ export class WorkerSystem {
     for (const u of this.units.values()) {
       const t = u.task
       if (!t || u.state !== 'working' || u.progress < u.duration || this.mutations >= this.commitCap) continue
-      if (this.satisfied(t)) { this.finish(u); continue }
+      if (this.satisfied(t)) { this.finish(u); if (u.controlled && u.intent && u.intent.kind !== 'goTo') this.failIntent(u, 'target-changed'); continue }
       if (!this.canWork(this.pose(u), t)) { this.block(u, 'unsafe'); continue }
       const v = this.port.get(...t.pos), id = voxelId(v), build = t.order.kind === 'build', material = voxelId(t.order.voxel)
       if (v !== t.expected) { t.expected = v; this.block(u, 'target-changed'); t.failures.delete(u.id); u.revision = -1; continue }
       if (build && this.port.registry.solid[id]) { this.block(u, 'target-changed'); continue }
       if (build && this.overlaps(...t.pos)) { this.block(u, 'traffic'); continue }
-      if (build && !(u.stock.get(material) ?? 0)) { this.block(u, 'missing-material'); continue }
-      if (!build && (!this.dig[id] || this.tools[id] && !u.tools.has(this.tools[id]!))) { this.block(u, 'missing-tool'); continue }
+      // A controlled unit's resources belong to the game (plan deviation D5): no stock to build, no tool to dig.
+      if (build && !u.controlled && !(u.stock.get(material) ?? 0)) { this.block(u, 'missing-material'); continue }
+      if (!build && (!this.dig[id] || !u.controlled && this.tools[id] && !u.tools.has(this.tools[id]!))) { this.block(u, 'missing-tool'); continue }
       if (build && !this.attached(t.pos)) { this.block(u, 'no-access'); continue }
       const drop = this.drops[id]!
       const ok = this.port.edit(t.pos, v, build ? t.order.voxel : 0, () => {
-        if (build) u.stock.set(material, u.stock.get(material)! - 1)
+        if (u.controlled) {
+          // Spec §2: a controlled unit's dig yields an event, not stock or a pile; its build takes nothing.
+          this.unitEvent(build ? { unit: u.id, type: 'built', pos: t.pos, voxel: t.order.voxel } : { unit: u.id, type: 'dug', pos: t.pos, voxel: v })
+          u.intent = null
+        } else if (build) u.stock.set(material, u.stock.get(material)! - 1)
         else if (drop) {
           if (this.stockCount(u) < this.capacity) u.stock.set(drop, (u.stock.get(drop) ?? 0) + 1)
           else { let pile = this.loose.get(t.p); if (!pile) { pile = new Map(); this.loose.set(t.p, pile) }; const count = (pile.get(drop) ?? 0) + 1; pile.set(drop, count); this.dirtyDrops.set(`${t.p}:${drop}`, { pos: t.pos, block: drop, count }); this.port.emit('workDrop', { pos: t.pos, block: drop, count: 1 }) }
