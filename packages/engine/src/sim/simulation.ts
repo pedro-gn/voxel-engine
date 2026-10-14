@@ -24,7 +24,7 @@ import { pack, unpack, type Packed } from '../persist/pack.ts'
 import { decodeRegion, encodeRegion } from '../persist/regions.ts'
 import type { RegionBlob, SectionName, SimRestore, SimSnapshot } from './snapshot.ts'
 import type { WorkersSnapshot } from './workers/snapshot.ts'
-import { SystemRunner, type GameSystem, type SystemContext, type SystemPublication, type SystemUnits } from './systems.ts'
+import { SystemRunner, refuseSystemSections, type GameSystem, type SystemContext, type SystemPublication, type SystemUnits } from './systems.ts'
 
 export interface SimulationOptions {
   buffers: WorldBuffers
@@ -440,6 +440,8 @@ export class Simulation {
    * relights, rebuilds water from the voxels, then restores each section over it. Returns every chunk index.
    */
   restore(s: SimRestore): number[] {
+    // Without game systems, a save that has system sections is refused (with them, SystemRunner.restore checks them).
+    if (!this.systems) refuseSystemSections(s.sections)
     const scratch = new Uint16Array(CHUNK_VOLUME)
     for (const { r, bytes } of s.regions) decodeRegion(bytes, this.layout, r, (ci, data) => {
       const vox = typeof data === 'number' ? scratch.fill(data) : data

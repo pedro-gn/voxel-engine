@@ -67,6 +67,13 @@ export type SystemSection = `system:${string}`
 export const SYSTEM_SECTION = 'system:'
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
+const REFUSED = 'the save cannot be loaded by this game:'
+
+/** A simulation without game systems refuses a save that has system sections, as SystemRunner.restore refuses unknown ones. */
+export function refuseSystemSections(sections: Partial<Record<string, Uint8Array>>): void {
+  const bad = Object.keys(sections).filter(n => n.startsWith(SYSTEM_SECTION) && sections[n]).map(n => `section ${n} is unknown to this game`)
+  if (bad.length) throw new Error(`${REFUSED}\n${bad.join('\n')}`)
+}
 
 function nameHash(name: string): number {
   let h = 0x811c9dc5
@@ -148,7 +155,7 @@ export class SystemRunner {
       saved.delete(e.sys.name)
     }
     for (const name of saved.keys()) bad.push(`section system:${name} is unknown to this game`)
-    if (bad.length) throw new Error(`the save cannot be loaded by this game:\n${bad.join('\n')}`)
+    if (bad.length) throw new Error(`${REFUSED}\n${bad.join('\n')}`)
     this.started = true
     for (const e of this.entries) {
       const s = sections[`${SYSTEM_SECTION}${e.sys.name}`]!

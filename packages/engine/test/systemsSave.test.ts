@@ -62,7 +62,7 @@ describe('system save sections', () => {
     const a = sim([counter(1)]); a.generate(floor); a.step()
     const snap = toRestore(a.snapshot(null))
     expect(() => sim([counter(2)]).restore(snap)).toThrow('section system:counter v1, game expects v2')
-    expect(() => sim([]).restore(snap)).not.toThrow() // no runner: system sections are ignored by a sim without systems
+    expect(() => sim([]).restore(snap)).toThrow(/^the save cannot be loaded by this game:\nsection system:counter is unknown to this game$/) // a sim without systems refuses them too
     const other: GameSystem = { name: 'other', version: 1, tick: () => {}, snapshot: () => null }
     expect(() => sim([other]).restore(snap)).toThrow(/section system:other is missing\nsection system:counter is unknown to this game/)
   })
