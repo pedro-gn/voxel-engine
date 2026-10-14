@@ -14,9 +14,11 @@ export interface PathResult { status: PathStatus; path: number[]; cost: number }
 export interface NavQuery { status: PathStatus; spent: number; readonly estimate: number; readonly seen: Map<number, number>; step(cap: number): number; cancel(): void; mixState(mix: (n: number) => void): void; readonly bytes: number }
 /**
  * `allowed` replaces the port policy for this search; `accept` admits any pose as a goal (h = 0 when there are no explicit
- * goals); `region` confines expansions to one tile, and a search that had to skip a pose outside it ends `limited`.
+ * goals); `region` confines expansions to one tile, and a search that had to skip a pose outside it ends `limited`;
+ * `reversible` takes only steps the unit can take back (no drop it cannot climb again), for walks off a route that must
+ * leave the unit its way on.
  */
-export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean; region?: number }
+export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number): boolean; region?: number; reversible?: boolean }
 const DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1]
 const UNSET = -2
 /** First slice of a new search estimated short: such routes finish in it instead of queueing behind long searches. */
@@ -428,6 +430,7 @@ export class PathSearch {
   private readonly allow?: (p: number) => boolean
   private readonly accept?: (p: number) => boolean
   private readonly region?: number
+  private readonly reversible: boolean
   /** Whether confinement or a blocked pose (a body, which moves on) cut an edge: an exhausted search then proves nothing. */
   private cut = false
   /** Goal coordinates, x y z per goal, for the heuristic. */
@@ -441,7 +444,7 @@ export class PathSearch {
   private readonly rejected = new Set<number>()
   private rejectedPass = -1
   constructor(nav: NavigationSystem, start: number, goals: readonly number[], blocked?: ReadonlySet<number>, options?: SearchOptions) {
-    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept; this.region = options?.region
+    this.nav = nav; this.goals = goals; this.blocked = blocked; this.allow = options?.allowed; this.accept = options?.accept; this.region = options?.region; this.reversible = options?.reversible === true
     this.goalSet = new Set(goals)
     this.goalCoords = new Int32Array(goals.length * 3)
     goals.forEach((g, i) => this.goalCoords.set(nav.port.layout.voxelCoords(g), i * 3))
@@ -538,7 +541,7 @@ export class PathSearch {
         const to = nav.edge(this.ex, this.ey, this.ez, this.eti, this.direction)
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
         else if (to >= 0 && this.blocked?.has(to)) this.cut = true
-        else if (to >= 0) {
+        else if (to >= 0 && (!this.reversible || nav.neighbor(to, this.direction ^ 1, this.seen) === this.positions[this.expanding]!)) {
           const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
@@ -551,7 +554,7 @@ export class PathSearch {
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }
-    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0); mix(this.region ?? -1); mix(this.cut ? 1 : 0)
+    mix(['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'].indexOf(this.status)); mix(this.validationProgress); mix(this.cost); mix(this.spent); mix(this.allow ? 1 : 0); mix(this.accept ? 1 : 0); mix(this.region ?? -1); mix(this.reversible ? 1 : 0); mix(this.cut ? 1 : 0)
     mix(['search', 'path', 'reverse', 'validate'].indexOf(this.phase)); mix(this.validateRevision); mix(this.reverseCursor)
     numbers(this.goals); numbers([...(this.blocked ?? [])].sort((a, b) => a - b))
     mix(this.count); mix(this.size); mix(this.expanding); mix(this.direction); mix(this.reconstruct)

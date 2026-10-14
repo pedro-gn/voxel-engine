@@ -1124,7 +1124,8 @@ export class WorkerSystem {
     const wait = u.wait
     for (let d = 0; d < 4; d++) {
       const p = this.nav.neighbor(from, d)
-      if (p < 0 || p === intended || this.occupied.has(p) || !this.poseOk(u, this.port.layout.voxelCoords(p))) continue
+      // A sidestep is a step the unit can take back: never a drop it cannot climb again.
+      if (p < 0 || p === intended || this.occupied.has(p) || this.nav.neighbor(p, d ^ 1) !== from || !this.poseOk(u, this.port.layout.voxelCoords(p))) continue
       u.search?.cancel(); u.search = null; u.path = [from, p]; u.cursor = 1; u.wait = 0; u.retry = this.time + 24
       if (this.beginMotion(u, p)) { u.reason = 'traffic'; this.dirty.add(u.id); return }
       if (u.reason !== 'traffic') return // beginMotion blocked the unit for another reason; it already gave up its task
@@ -1854,13 +1855,16 @@ export class WorkerSystem {
     out.add(this.position(u))
     return out
   }
-  /** Sends an idle unit to the nearest free pose off u's route within MAKE_WAY_RADIUS; it stays idle while it looks. */
+  /**
+   * Sends an idle unit to the nearest free pose off u's route within MAKE_WAY_RADIUS, by steps it can take back (never
+   * down into a pit it cannot climb out of); it stays idle while it looks.
+   */
   private makeWay(o: Unit, u: Unit): void {
     const L = this.port.layout, route = this.routeAndGoals(u, o), from = this.position(o), [ox, oy, oz] = this.pose(o)
     const near = (p: number) => { const [x, y, z] = L.voxelCoords(p); return Math.abs(x - ox) <= MAKE_WAY_RADIUS && Math.abs(z - oz) <= MAKE_WAY_RADIUS && Math.abs(y - oy) <= 4 }
     o.search = this.nav.request(from, [], undefined, {
       allowed: p => near(p) && this.nav.allowed(p),
-      accept: p => p !== from && !route.has(p) && (this.occupied.get(p) ?? o.id) === o.id,
+      accept: p => p !== from && !route.has(p) && (this.occupied.get(p) ?? o.id) === o.id, reversible: true,
     })
     o.retry = this.time + YIELD_TICKS; this.dirty.add(o.id)
   }

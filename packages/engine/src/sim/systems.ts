@@ -44,6 +44,8 @@ export interface SystemContext {
   blockLight(x: number, y: number, z: number): number
   /** Water above the bottom of cell (x, y, z), in 1/256 block (0 when dry). */
   waterDepth(x: number, y: number, z: number): number
+  /** Removes up to `amount` (1/256 block) of the water `waterDepth` reads there; returns what it removed (0 when dry). */
+  takeWater(x: number, y: number, z: number, amount: number): number
   /**
    * True when a live (not incapacitated) worker unit's body, a falling block or a structural fragment is in the cell; false
    * outside the world. An incapacitated unit releases its cells, but restoring a save reserves every unit's body again, so

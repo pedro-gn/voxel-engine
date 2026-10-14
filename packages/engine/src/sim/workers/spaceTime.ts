@@ -30,6 +30,9 @@ const HEADING = [3, 2, 0, 1] as const
  * target, or at the window's end on any pose (a target there rejoins the route, any other pose is a pocket, valid only
  * if no one else has its cells for the rest of the table's horizon). With a
  * `refuge` predicate it ends only at the window's end on a refuge pose: a way out of someone else's route.
+ * A state that left the route by a one-way step (not one of the route's own steps, start then `targets` in order, and
+ * not one the unit can take back, as a drop it cannot climb again) may end only back on the route: never as a pocket or
+ * a refuge, which would strand the unit where its way on is gone. Reaching a target clears it.
  */
 export class SpaceTimeSearch {
   status: SpaceTimeStatus = 'pending'
@@ -50,12 +53,16 @@ export class SpaceTimeSearch {
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
   private readonly targetSet: ReadonlySet<number>
-  /** The current state id of each (pose, tick) key; a cheaper way there replaces it until the state is popped. */
+  /** The route's own steps (start → targets[0] → targets[1] …) as pose * 4 + direction: they may be one-way. */
+  private readonly routeSteps = new Set<number>()
+  /** The current state id of each (pose, tick, stranded) key; a cheaper way there replaces it until the state is popped. */
   private readonly ids = new Map<number, number>()
-  /** Keys of (pose, tick) states already popped. */
+  /** Keys of (pose, tick, stranded) states already popped. */
   private readonly popped = new Set<number>()
   private poses: number[] = []
   private ticks: number[] = []
+  /** 1 for a state off the route past a one-way step since its last target: it may not end as a pocket or a refuge. */
+  private stranded: number[] = []
   private gs: number[] = []
   private hs: number[] = []
   /** Planar direction to the right of the route's heading, or -1 without targets. */
@@ -79,10 +86,15 @@ export class SpaceTimeSearch {
     this.port = port; this.table = table; this.owner = owner; this.start = start; this.startTick = startTick; this.targets = targets
     this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.avoid = avoid; this.end = startTick + table.window
     this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p)); this.targetSet = new Set(targets)
+    for (let i = 0; i < targets.length; i++) {
+      const a = i ? this.targetCoords[i - 1]! : this.origin, b = this.targetCoords[i]!, dx = b[0] - a[0], dz = b[2] - a[2]
+      const d = dx === 1 && !dz ? 0 : dx === -1 && !dz ? 1 : dz === 1 && !dx ? 2 : dz === -1 && !dx ? 3 : -1
+      if (d >= 0) this.routeSteps.add((i ? targets[i - 1]! : start) * 4 + d)
+    }
     const last = this.targetCoords.at(-1) ?? (toward === undefined ? undefined : port.coords(toward)), dx = last ? last[0] - this.origin[0] : 0, dz = last ? last[2] - this.origin[2] : 0
     // Right of (dx, dz) is (-dz, dx); directions index DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1].
     this.right = !dx && !dz ? -1 : Math.abs(dx) >= Math.abs(dz) ? dx > 0 ? 2 : 3 : dz > 0 ? 1 : 0
-    this.add(start, startTick, -1, 0)
+    this.add(start, startTick, -1, 0, 0)
   }
   private h(p: number): number {
     if (!this.targets.length) return 0
@@ -140,12 +152,12 @@ export class SpaceTimeSearch {
     const fa = this.f(a), fb = this.f(b)
     return fa < fb || fa === fb && (this.hs[a]! < this.hs[b]! || this.hs[a] === this.hs[b] && this.poses[a]! < this.poses[b]!)
   }
-  private key(p: number, t: number): number { return p * (this.table.window + 1) + (t - this.startTick) }
-  private add(p: number, t: number, parent: number, g: number): void {
-    const key = this.key(p, t), old = this.ids.get(key)
+  private key(p: number, t: number, stranded: number): number { return (p * (this.table.window + 1) + (t - this.startTick)) * 2 + stranded }
+  private add(p: number, t: number, parent: number, g: number, stranded: number): void {
+    const key = this.key(p, t, stranded), old = this.ids.get(key)
     if (old !== undefined && (this.popped.has(key) || this.gs[old]! <= g)) return
     const id = this.poses.length
-    this.ids.set(key, id); this.poses.push(p); this.ticks.push(t); this.gs.push(g); this.hs.push(this.h(p)); this.parents.push(parent)
+    this.ids.set(key, id); this.poses.push(p); this.ticks.push(t); this.stranded.push(stranded); this.gs.push(g); this.hs.push(this.h(p)); this.parents.push(parent)
     let i = this.heap.length
     this.heap.push(id)
     while (i) { const q = (i - 1) >> 1; if (!this.less(this.heap[i]!, this.heap[q]!)) break; [this.heap[i], this.heap[q]] = [this.heap[q]!, this.heap[i]!]; i = q }
@@ -204,21 +216,23 @@ export class SpaceTimeSearch {
       used++; this.ops++
       if (this.expanding < 0) {
         if (!this.heap.length) { this.status = 'failed'; break }
-        const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!, key = this.key(p, t)
+        const id = this.pop(), p = this.poses[id]!, t = this.ticks[id]!, key = this.key(p, t, this.stranded[id]!)
         // A state reached more cheaply after this entry was queued is popped from its newer entry.
         if (this.ids.get(key) !== id) continue
         this.popped.add(key)
-        if (t >= this.end ? (this.refuge ? this.refuge(p) : true) && (this.targets.includes(p) || this.holdable(p)) : this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
+        if (t >= this.end ? (this.refuge ? this.refuge(p) : true) && (this.targets.includes(p) || !this.stranded[id] && this.holdable(p)) : this.targets.length && p === this.targets.at(-1)) { this.finish(id); break }
         if (t >= this.end) continue
         this.expanding = id; this.action = 0
         continue
       }
       const id = this.expanding, p = this.poses[id]!, t = this.ticks[id]!
       if (this.action === 0) {
-        if (this.table.free(this.owner, t + 1, this.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p))
+        if (this.table.free(this.owner, t + 1, this.cellsOf(p))) this.add(p, t + 1, id, this.gs[id]! + 1 + this.lane(p) + this.off(p), this.stranded[id]!)
       } else {
         const d = this.action - 1, q = this.neighbor(p, d)
         if (q >= 0 && this.inBox(q) && this.allowed(q) && !this.closed(q)) {
+          // Back on the route, a state is free to end anywhere again; off it, a step it cannot take back strands it.
+          const stranded = this.targetSet.has(q) ? 0 : this.stranded[id] || !this.routeSteps.has(p * 4 + d) && this.neighbor(q, d ^ 1) !== p ? 1 : 0
           let s = this.stepOf.get(p * 4 + d)
           if (!s || s.q !== q) { s = { q, k: this.port.ticksOf(p, q), cells: this.port.stepCells(p, q) }; this.stepOf.set(p * 4 + d, s) }
           const k = s.k
@@ -226,7 +240,7 @@ export class SpaceTimeSearch {
             const cells = s.cells
             let ok = true
             for (let i = 1; i <= k && ok; i++) ok = this.table.free(this.owner, t + i, cells)
-            if (ok) this.add(q, t + k, id, this.gs[id]! + k * (1 + this.lane(q) + this.off(p)))
+            if (ok) this.add(q, t + k, id, this.gs[id]! + k * (1 + this.lane(q) + this.off(p)), stranded)
           }
         }
       }
@@ -239,7 +253,7 @@ export class SpaceTimeSearch {
     mix(this.targets.length); for (const p of this.targets) mix(p)
     mix(this.expanding); mix(this.action)
     mix(this.poses.length)
-    for (let i = 0; i < this.poses.length; i++) { mix(this.poses[i]!); mix(this.ticks[i]!); mix(this.gs[i]!); mix(this.parents[i]!) }
+    for (let i = 0; i < this.poses.length; i++) { mix(this.poses[i]!); mix(this.ticks[i]!); mix(this.stranded[i]!); mix(this.gs[i]!); mix(this.parents[i]!) }
     mix(this.heap.length); for (const id of this.heap) mix(id)
     mix(this.plan ? this.plan.steps.length : -1)
     if (this.plan) { for (const s of this.plan.steps) { mix(s.pose); mix(s.until) } mix(this.plan.rejoin) }
