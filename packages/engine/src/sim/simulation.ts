@@ -380,7 +380,10 @@ export class Simulation {
       // 4. light
       if (!this.isPaused) this.workers?.afterPhysics()
       // Game systems see this tick's unit results; what they ask of units acts in the next tick's unit step (spec §2).
-      if (!this.isPaused && this.systems) publications = this.systems.tick(this.workers?.takeUnitEvents() ?? [])
+      if (!this.isPaused) {
+        const unitEvents = this.workers?.takeUnitEvents() ?? []
+        if (this.systems) publications = this.systems.tick(unitEvents)
+      }
       this.light.propagate()
       // 5. the water mirror follows the heightfield every tick, paused or not, so edits made while paused show
       this.physics('water mirror', () => { this.water.flush() })

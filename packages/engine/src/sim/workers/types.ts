@@ -41,6 +41,9 @@ export interface WorkerView {
   id: number; x256: number; y256: number; z256: number; facing: number; state: WorkerState
   order: number; progress: number; duration: number; reason?: WorkBlockReason
   stock: readonly { block: number; count: number }[]
+  /** Set for a unit owned by a game system, with its current intent (null when it has none). */
+  controlled?: boolean
+  intent?: Intent | null
 }
 export interface WorkOrderView {
   id: number; kind: 'dig' | 'build'; min: Vec3; max: Vec3; voxel: number

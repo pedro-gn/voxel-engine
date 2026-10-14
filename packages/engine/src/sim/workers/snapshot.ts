@@ -1,10 +1,12 @@
 import type { Vec3 } from '../commands.ts'
-import type { WorkBlockReason, WorkerState } from './types.ts'
+import type { Intent, WorkBlockReason, WorkerState } from './types.ts'
 
 /** A unit as a save keeps it (plan deviation 6): where it stands, what it carries and where it is going. */
 export interface UnitSnapshot {
   id: number; x: number; y: number; z: number; facing: number; state: WorkerState; vy: number
   tools: string[]; stock: [number, number][]; goal: number | null; available: boolean; allowDig: boolean; buildBlock: number
+  /** Owned by a game system, its intent and, while falling, the height its fall started from (plan deviation D8: optional). */
+  controlled?: boolean; intent?: Intent; fallFrom?: number
 }
 
 export interface OrderSnapshot {

@@ -15,7 +15,7 @@ import { SLEEP_TICKS, Sleepers } from './sleepers.ts'
 import { SpaceTimeSearch, type SpaceTimePort } from './spaceTime.ts'
 import { NO_CREW_TICKS, effectivePriority, parkChoice, shares } from './frontier.ts'
 import type { WorkersSnapshot } from './snapshot.ts'
-import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView, type UnitEvent } from './types.ts'
+import { WORKER_STATES, type WorkerCommand, type WorkerOptions, type WorkerState, type WorkerTick, type WorkerView, type WorkBlockReason, type WorkOrderView, type UnitEvent, type Intent } from './types.ts'
 
 export interface WorkerPort {
   layout: Layout; registry: BlockRegistry
@@ -94,6 +94,11 @@ interface Unit {
   segment: PathSearch | null
   /** The path keepRight last looked at and its length then: only nodes appended since are looked at again. */
   laned: { path: readonly number[]; len: number } | null
+  /** Owned by a game system: never auto-assigned, driven by one intent at a time, reporting unit events (spec §2). */
+  controlled: boolean
+  intent: Intent | null
+  /** Q8 height the current fall started from (the `fell` event's height). */
+  fallFrom: number
 }
 /**
  * last: pose where the refined path ends; segs: refined segments by end index in `path`, with the region revision they
@@ -255,11 +260,71 @@ export class WorkerSystem {
   }
   /** This tick's events of controlled units; clears them. */
   takeUnitEvents(): UnitEvent[] { return this.unitEvents.splice(0) }
-  spawnControlled(_pos: Vec3): number { throw new Error('not implemented') }
-  despawnControlled(_id: number): void { throw new Error('not implemented') }
-  goTo(_id: number, _pos: Vec3): void { throw new Error('not implemented') }
+  /** A new unit owned by a game system; throws if the pose is not safe or the unit limit is reached. */
+  spawnControlled(pos: Vec3): number {
+    this.checkPos(pos)
+    this.sleepers.wakeAll()
+    if (this.units.size >= this.maxUnits) throw new Error('unit limit reached')
+    if (!this.safePose(pos)) throw new Error('spawn needs clear body, safe water and support')
+    return this.spawnUnit(pos, [], new Map(), true).id
+  }
+  despawnControlled(id: number): void {
+    const u = this.controlledUnit(id)
+    this.sleepers.wakeAll()
+    this.removeUnit(u); this.cancelOrphanOrders(); this.revision++
+  }
+  /** Walks a controlled unit to `pos`: `arrived` there, or `failed` (plan deviation D3: traffic is retried, not a failure). */
+  goTo(id: number, pos: Vec3): void {
+    this.checkPos(pos)
+    const u = this.controlledUnit(id)
+    this.sleepers.wake(u.id)
+    this.clearOrder(u)
+    u.intent = { kind: 'goTo', pos: [pos[0], pos[1], pos[2]] }
+    this.revision++
+    if (u.state === 'incapacitated') { this.failIntent(u, 'unsafe'); return }
+    if (!this.safePose(pos)) { this.failIntent(u, 'no-access'); return }
+    u.goal = this.port.layout.voxelIndex(...pos); this.goalsVersion++
+    u.allowDig = false; u.buildBlock = 0; u.retry = 0; u.revision = -1
+    // A falling unit lands first (fall() then plans toward the goal).
+    if (u.state !== 'falling') u.state = u.motion ? 'walking' : 'planning'
+    this.dirty.add(u.id)
+  }
   work(_id: number, _kind: 'dig' | 'build', _pos: Vec3, _voxel = 0): void { throw new Error('not implemented') }
-  stop(_id: number): void { throw new Error('not implemented') }
+  /** Ends a controlled unit's intent quietly: no event. */
+  stop(id: number): void {
+    const u = this.controlledUnit(id)
+    this.sleepers.wake(u.id)
+    this.clearOrder(u); u.intent = null; this.revision++
+  }
+  private unitEvent(e: UnitEvent): void { this.unitEvents.push(e) }
+  private controlledUnit(id: number): Unit {
+    const u = integer(id, 1) ? this.units.get(id) : undefined
+    if (!u) throw new Error(`unknown unit ${String(id)}`)
+    if (!u.controlled) throw new Error(`unit ${id} is not controlled`)
+    return u
+  }
+  /** Ends a controlled unit's intent with a `failed` event (plan deviation D3). */
+  private failIntent(u: Unit, reason: WorkBlockReason): void {
+    this.unitEvent({ unit: u.id, type: 'failed', reason })
+    u.intent = null
+    if (u.goal !== null) { u.goal = null; this.goalsVersion++ }
+    if (!u.motion && u.state !== 'falling' && u.state !== 'incapacitated') u.state = 'idle'
+    this.dirty.add(u.id)
+  }
+  /** Inserts a new unit at a checked pose (the caller checked the unit limit and the pose). */
+  private spawnUnit(pos: Vec3, tools: Iterable<string>, stock: Map<number, number>, controlled: boolean): Unit {
+    const u = this.newUnit(this.nextUnit, pos[0] * 256 + 128, pos[1] * 256, pos[2] * 256 + 128, tools, stock)
+    if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
+    if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
+    if (controlled) { u.controlled = true; u.available = false }
+    this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id })
+    return u
+  }
+  private removeUnit(u: Unit): void {
+    this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); this.deferred.delete(u.id)
+    for (const t of this.tasks) t.failures.delete(u.id)
+    for (const h of this.parkedFailures.values()) h.failures.delete(u.id)
+  }
   get busy(): boolean { return this.nav.pending > 0 || [...this.units.values()].some(u => u.state === 'walking' || u.state === 'working' || u.state === 'falling' || u.state === 'planning') || this.orders.some(o => !o.cancelled && o.cursor < o.total) }
   afterWrite(x: number, y: number, z: number, old: number, value: number): void {
     this.sleepers.wakeTile(this.nav.tileOf(x, y, z))
@@ -411,7 +476,12 @@ export class WorkerSystem {
   private ids(cmd: { ids?: unknown }, required = true): Unit[] {
     if (!required && cmd.ids === undefined) return []
     if (!Array.isArray(cmd.ids) || !cmd.ids.length || cmd.ids.length > this.maxUnits || new Set(cmd.ids).size !== cmd.ids.length) throw new Error('ids must be a nonempty list of distinct unit ids')
-    return cmd.ids.map(id => { if (!integer(id, 1) || !this.units.has(id)) throw new Error(`unknown unit ${String(id)}`); return this.units.get(id)! })
+    return cmd.ids.map(id => {
+      if (!integer(id, 1) || !this.units.has(id)) throw new Error(`unknown unit ${String(id)}`)
+      const u = this.units.get(id)!
+      if (u.controlled) throw new Error(`unit ${id} is controlled by a game system`)
+      return u
+    })
   }
   private checkPos(p: unknown): asserts p is Vec3 { if (!Array.isArray(p) || p.length !== 3 || !this.port.layout.inBounds(p[0], p[1], p[2])) throw new Error('position must be an in-bounds integer [x,y,z]') }
   private clearOrder(u: Unit): void {
@@ -427,7 +497,8 @@ export class WorkerSystem {
     return { id, x, y, z, facing: 0, state: 'idle', tools: new Set(tools), stock,
       goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
       allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, wadingOut: false, stale: 0, progressAt: this.time, route: null, segment: null,
-      projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null }
+      projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null,
+      controlled: false, intent: null, fallFrom: 0 }
   }
   /** Plan deviation 6: durable state only; navigation, searches, reservations, claims and failure histories are rebuilt. */
   snapshot(): WorkersSnapshot {
@@ -438,7 +509,8 @@ export class WorkerSystem {
         let x = u.x, y = u.y, z = u.z
         if (u.motion && !u.motion.flat) [x, y, z] = u.motion.start
         const state: WorkerState = u.state === 'falling' || u.state === 'incapacitated' ? u.state : u.goal === null ? 'idle' : 'planning'
-        return { id: u.id, x, y, z, facing: u.facing, state, vy: u.vy, tools: [...u.tools], stock: [...u.stock], goal: u.goal, available: u.available, allowDig: u.allowDig, buildBlock: u.buildBlock }
+        return { id: u.id, x, y, z, facing: u.facing, state, vy: u.vy, tools: [...u.tools], stock: [...u.stock], goal: u.goal, available: u.available, allowDig: u.allowDig, buildBlock: u.buildBlock,
+          ...(u.controlled && { controlled: true }), ...(u.intent && { intent: u.intent }), ...(u.controlled && u.state === 'falling' && { fallFrom: u.fallFrom }) }
       }),
       orders: this.orders.map(o => ({
         id: o.id, kind: o.kind, min: [...o.min] as Vec3, max: [...o.max] as Vec3, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled,
@@ -470,6 +542,9 @@ export class WorkerSystem {
     for (const v of s.units) {
       const u = this.newUnit(v.id, v.x, v.y, v.z, v.tools, new Map(v.stock))
       Object.assign(u, { facing: v.facing, state: v.state, vy: v.vy, goal: v.goal, available: v.available, allowDig: v.allowDig, buildBlock: v.buildBlock })
+      // Controlled units (plan deviation D8: optional fields, the section stays v1); a fall in flight keeps its start.
+      u.controlled = v.controlled === true; u.intent = v.intent ?? null; u.fallFrom = v.fallFrom ?? v.y
+      if (u.controlled) u.available = false
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error(`restored unit ${u.id} overlaps another unit`)
       this.units.set(u.id, u); this.dirty.add(u.id)
     }
@@ -497,10 +572,7 @@ export class WorkerSystem {
           stock.set(item.block, (stock.get(item.block) ?? 0) + item.count)
         }
       }
-      const u = this.newUnit(this.nextUnit, c.pos[0] * 256 + 128, c.pos[1] * 256, c.pos[2] * 256 + 128, c.tools ?? [], stock)
-      if (this.stockCount(u) > this.capacity) throw new Error('inventory capacity exceeded')
-      if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error('spawn overlaps a unit')
-      this.nextUnit++; this.units.set(u.id, u); this.revision++; this.dirty.add(u.id); this.port.emit('unitSpawned', { id: u.id }); return
+      this.spawnUnit(c.pos, c.tools ?? [], stock, false); return
     }
     if (c.type === 'workCancel') {
       if (!integer(c.order, 1)) throw new Error('invalid order id')
@@ -587,7 +659,7 @@ export class WorkerSystem {
         for (const u of group) { u.route = this.newRoute(field, [u.goal!]); u.escape = [] }
       }
     } else if (c.type === 'unitCancel') for (const u of units) { this.clearOrder(u); u.available = false }
-    else if (c.type === 'unitDespawn') { for (const u of units) { this.clearOrder(u); this.release(u); this.table.releaseOwner(u.id); this.units.delete(u.id); this.dirty.delete(u.id); this.deferred.delete(u.id); for (const t of this.tasks) t.failures.delete(u.id); for (const h of this.parkedFailures.values()) h.failures.delete(u.id) }; this.cancelOrphanOrders() }
+    else if (c.type === 'unitDespawn') { for (const u of units) this.removeUnit(u); this.cancelOrphanOrders() }
     this.revision++
   }
   private cancelOrder(o: Order): void {
@@ -680,6 +752,8 @@ export class WorkerSystem {
     // Only a move order waits in 'blocked'; a unit without one stays assignable.
     u.state = u.goal === null ? 'idle' : 'blocked'
     this.dirty.add(u.id)
+    // A controlled unit's intent ends here, except a walk held up by traffic, which retries as a move order does (D3).
+    if (u.controlled && u.intent && (u.intent.kind !== 'goTo' || reason !== 'traffic')) this.failIntent(u, reason)
   }
   private finish(u: Unit): void {
     this.releaseWorkPoses(u)
@@ -829,7 +903,7 @@ export class WorkerSystem {
   private eligible(t: Task, u: Unit): boolean { return !t.claim && (!t.order.ids || t.order.ids.has(u.id)) && this.workable(t) && this.canRetry(t, u) }
   private assign(): void {
     const units = [...this.units.values()]
-    const assignable = (u: Unit) => u.available && u.goal === null && !u.task && !u.motion && u.state === 'idle'
+    const assignable = (u: Unit) => !u.controlled && u.available && u.goal === null && !u.task && !u.motion && u.state === 'idle'
     let idle = 0
     if (this.assignmentCap === undefined) for (const u of units) if (assignable(u)) idle++
     const perTick = this.assignmentCap ?? Math.max(16, Math.ceil(idle / this.assignmentShare))
@@ -1030,15 +1104,19 @@ export class WorkerSystem {
     return false
   }
   private incapacitate(u: Unit): void {
+    if (u.controlled && u.intent) this.failIntent(u, 'unsafe')
     this.sleepers.wakeOwner(u.id); this.sleepers.wake(u.id)
     this.clearOrder(u); u.motion = null; u.state = 'incapacitated'; u.vy = 0
     this.release(u); this.table.releaseOwner(u.id); u.projection = null; u.conflict = null; this.dirty.add(u.id); this.port.emit('unitIncapacitated', { id: u.id }); this.cancelOrphanOrders()
   }
   private fall(u: Unit): void {
+    if (u.state !== 'falling') u.fallFrom = u.y
     this.sleepers.wakeOwner(u.id); this.sleepers.wake(u.id)
     this.resetRoute(u)
     u.state = 'falling'; u.motion = null
     if (u.task) { if (u.task.order.id < 0) this.targets.delete(u.task.p); u.task.claim = 0; u.task = null }
+    // A fall loses a dig or build intent's task; a walk lands and plans on toward its goal.
+    if (u.controlled && u.intent && u.intent.kind !== 'goTo') this.failIntent(u, 'unsafe')
     u.vy = Math.min(512, u.vy + 24); u.progressAt = this.time
     const target = Math.max(0, u.y - u.vy)
     for (let yy = Math.ceil(u.y / 256) - 1; yy >= Math.floor(target / 256); yy--) {
@@ -1048,6 +1126,7 @@ export class WorkerSystem {
     }
     if (u.state === 'falling') u.y = target
     if (u.y === 0) { u.vy = 0; u.state = u.goal === null ? 'idle' : 'planning' }
+    if (u.controlled && u.state !== 'falling' && u.fallFrom > u.y) this.unitEvent({ unit: u.id, type: 'fell', height: (u.fallFrom - u.y) / 256 })
     const cells = this.body(u.x, u.y, u.z)
     if (!this.volumeFree(cells) || !this.reserve(u, cells)) this.incapacitate(u)
     this.dirty.add(u.id)
@@ -1209,6 +1288,7 @@ export class WorkerSystem {
           const [x, y, z] = this.port.layout.voxelCoords(u.goal)
           if (u.x !== x * 256 + 128 || u.y !== y * 256 || u.z !== z * 256 + 128) { this.beginMotion(u, u.goal, u.cursor); continue }
           this.port.emit('unitArrived', { id: u.id }); u.goal = null; this.goalsVersion++; u.state = 'idle'; this.dirty.add(u.id)
+          if (u.controlled) { this.unitEvent({ unit: u.id, type: 'arrived' }); u.intent = null }
         }
         else if (this.time >= u.retry) { this.plan(u, [u.goal]); u.state = 'planning' }
       }
@@ -1936,7 +2016,7 @@ export class WorkerSystem {
   }
   view(id: number): WorkerView | undefined {
     const u = this.units.get(id)
-    return u && { id, available: u.available, x256: u.x, y256: u.y, z256: u.z, facing: u.facing, state: u.state, order: u.task?.order.id ?? 0, progress: u.progress, duration: u.duration, ...(u.reason && { reason: u.reason }), stock: [...u.stock].map(([block, count]) => ({ block, count })) }
+    return u && { id, available: u.available, x256: u.x, y256: u.y, z256: u.z, facing: u.facing, state: u.state, order: u.task?.order.id ?? 0, progress: u.progress, duration: u.duration, ...(u.reason && { reason: u.reason }), stock: [...u.stock].map(([block, count]) => ({ block, count })), ...(u.controlled && { controlled: true, intent: u.intent }) }
   }
   viewDrops(): { pos: Vec3; block: number; count: number }[] { return [...this.loose].flatMap(([p, pile]) => [...pile].map(([block, count]) => ({ pos: this.port.layout.voxelCoords(p), block, count }))) }
   publication(versions?: Uint32Array, tick = 0): WorkerTick {
@@ -1968,6 +2048,8 @@ export class WorkerSystem {
     mix(this.units.size)
     for (const u of this.units.values()) {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
+      // Only controlled units mix these fields, so worlds without them hash as before.
+      if (u.controlled) { mix(1); mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) } }
       mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.wadingOut ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)
