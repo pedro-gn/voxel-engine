@@ -351,6 +351,30 @@ u32 #2: decoration id (8b) | reserved (24b)
   instances and draws.
 - Decorations don't collide and raycasts ignore them.
 
+**Soft grass (2026-10-15, for the colony's art kit).** Optional `grass` fields for fuller,
+softer tufts; each default keeps the look above exactly:
+
+| Field | Default | Range | Effect |
+|---|---|---|---|
+| `width` | 1 | (0, 4] | Blade width multiplier (roots 0.05–0.09 wide at 1). |
+| `jitter` | 0.3 | [0, 1] | Brightness variation between tufts (× 1 − j/2 … 1 + j/2). |
+| `blunt` | 0 | [0, 1] | 0 pointed; 1 the mid section widens × 1.5 and rises 0.15: rounder blades. |
+| `rootShade` | 0.45 | [0, 1] | Occlusion at the root (× 1 − rootShade, fading to 1 at the tip). Lower it so tufts melt into the top tile. |
+| `clump` | 1 | [0, 1] | How much the low-frequency patch noise thins (to 30 % of the blades) and shortens tufts; 0 keeps every tuft full and even. |
+| `turn` | 0 | [0, 1] | A random rotation per tuft about its cell centre (fraction of a full turn; rotated corners spill ≤ 0.09 block); breaks the grain that dense, even grass shows from afar (the default keeps the 8 mirrored layouts). |
+| `coverage` | none | `{ scale > 0, threshold ∈ [0, 1], soft ∈ (0, 0.5] }`, defaults 24, 0.35, 0.1 | Bare patches: a world-space noise (one cell every `scale` blocks) below `threshold` leaves a top without grass; across ± `soft` the tufts thin and shorten. |
+
+The shader reads them from three uniform arrays beside `params`: `shape` (width, jitter,
+blunt, rootShade), `cover` (1 / scale, threshold, soft, clump) and `extra` (turn); `grassStyle()` in `defs.ts`
+packs them. Flowers are not affected by `coverage`.
+
+**Grass mask (2026-10-15).** `engine.grassMask` is a per-column grass factor over the world's x/z that the game
+writes: `get(x, z)`, `set(x, z, value)`, `setMany([x0, z0, x1, z1, …], value)` and `clear()`; values in [0, 1] (stored
+as bytes), 1 everywhere by default (the grass above, unchanged). The grass and flower shaders read it per tuft from an
+R8 texture (`textureLoad`, no remesh) and scale blade count and height — and flower size — by it: 0 hides the grass on
+a column (a pile pressing it flat), a low value thins and shortens it (a trampled path). A change re-uploads the
+texture (≤ 1 MB at 1024 × 1024 columns); bad columns or values throw RangeError and a bad batch writes nothing.
+
 ## 8. Textures and sub-project 1 visual fixes
 
 ### Procedural painter (`apps/sandbox/src/paint/`)
