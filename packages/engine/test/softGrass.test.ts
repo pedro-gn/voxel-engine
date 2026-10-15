@@ -13,6 +13,11 @@ describe('soft grass style', () => {
     expect(s.cover[1]! + s.cover[2]!).toBeLessThan(0)
     expect(s.cover[2]).toBeGreaterThan(0) // smoothstep needs edge0 < edge1
     expect(s.cover[3]).toBe(1) // clump: today's thinning of tufts by the patch noise
+    expect(s.extra).toEqual([0, 0, 0, 0]) // turn: no rotation, the 8 mirrored layouts of today
+  })
+  it('packs turn (a random rotation per tuft, against a repeating grain) in extra.x', () => {
+    expect(grassStyle(meadow({ turn: 1 })).extra).toEqual([1, 0, 0, 0])
+    expect(grassStyle(null).extra).toEqual([0, 0, 0, 0])
   })
   it('packs clump (how much the patch noise thins and shortens tufts) in cover.w', () => {
     expect(grassStyle(meadow({ clump: 0.2 })).cover[3]).toBe(0.2)
@@ -47,5 +52,6 @@ describe('soft grass style', () => {
     expect(bad({ coverage: 'patchy' })).toThrow(/grass\.coverage/)
     expect(bad({ clump: 1.5 })).toThrow(/grass\.clump/)
     expect(bad({ clump: -0.2 })).toThrow(/grass\.clump/)
+    expect(bad({ turn: 2 })).toThrow(/grass\.turn/)
   })
 })

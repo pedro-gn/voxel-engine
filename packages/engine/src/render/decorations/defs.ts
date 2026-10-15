@@ -24,6 +24,8 @@ export interface GrassDef {
   coverage?: GrassCoverage
   /** How much the low-frequency patch noise thins and shortens tufts (default 1: down to 30 % of the blades); 0 keeps every tuft full. [0, 1]. */
   clump?: number
+  /** A random rotation per tuft about its cell centre, as a fraction of a full turn (default 0: the 8 mirrored layouts); breaks the grain dense grass shows from afar. [0, 1]. */
+  turn?: number
 }
 export interface FlowerDef { chance?: number; patchScale?: number; colors?: readonly string[] }
 export interface DecorationDef { name: string; grass?: GrassDef; flowers?: FlowerDef; /** Instance density by the decorated block's state & 3 (e.g. grass youth: [1, ⅔, ⅓, 0]). Default all 1. */ stateDensity?: readonly [number, number, number, number] }
@@ -35,21 +37,21 @@ export function defineDecoration(def: DecorationDef): DecorationDef {
 /** The style fields are present only when the definition sets them; `grassStyle` fills the defaults. */
 export interface ResolvedGrass {
   blades: number; height: readonly [number, number]; base: Rgb; tip: Rgb; overhang: number
-  width?: number; jitter?: number; blunt?: number; rootShade?: number; coverage?: Required<GrassCoverage>; clump?: number
+  width?: number; jitter?: number; blunt?: number; rootShade?: number; coverage?: Required<GrassCoverage>; clump?: number; turn?: number
 }
 
 /** Today's grass: the style an unset field keeps. */
-export const GRASS_STYLE_DEFAULTS = { width: 1, jitter: 0.3, blunt: 0, rootShade: 0.45, coverage: { scale: 24, threshold: 0.35, soft: 0.1 }, clump: 1 } as const
+export const GRASS_STYLE_DEFAULTS = { width: 1, jitter: 0.3, blunt: 0, rootShade: 0.45, coverage: { scale: 24, threshold: 0.35, soft: 0.1 }, clump: 1, turn: 0 } as const
 
-/** Packed per decoration for the grass shader: shape (width, jitter, blunt, rootShade); cover (1 / scale, threshold, soft, clump). */
-export interface GrassStyle { shape: [number, number, number, number]; cover: [number, number, number, number] }
+/** Packed per decoration for the grass shader: shape (width, jitter, blunt, rootShade); cover (1 / scale, threshold, soft, clump); extra (turn, 0, 0, 0). */
+export interface GrassStyle { shape: [number, number, number, number]; cover: [number, number, number, number]; extra: [number, number, number, number] }
 
 export function grassStyle(g: ResolvedGrass | null): GrassStyle {
   const d = GRASS_STYLE_DEFAULTS
   const shape: GrassStyle['shape'] = [g?.width ?? d.width, g?.jitter ?? d.jitter, g?.blunt ?? d.blunt, g?.rootShade ?? d.rootShade]
   // Without coverage, a threshold below every noise value keeps the grass everywhere (soft stays > 0 for smoothstep).
   const c = g?.coverage, clump = g?.clump ?? d.clump
-  return { shape, cover: c ? [1 / c.scale, c.threshold, c.soft, clump] : [0, -1, 0.5, clump] }
+  return { shape, cover: c ? [1 / c.scale, c.threshold, c.soft, clump] : [0, -1, 0.5, clump], extra: [g?.turn ?? d.turn, 0, 0, 0] }
 }
 export interface ResolvedFlowers { chance: number; patchScale: number; colors: readonly Rgb[] }
 export interface ResolvedDecoration { name: string; grass: ResolvedGrass | null; flowers: ResolvedFlowers | null; stateDensity: readonly number[] }
@@ -98,6 +100,7 @@ function resolve(d: DecorationDef): ResolvedDecoration {
     if (g.jitter !== undefined) grass.jitter = num(`${p} grass.jitter`, g.jitter, 0.3, unit, 'in [0, 1]')
     if (g.blunt !== undefined) grass.blunt = num(`${p} grass.blunt`, g.blunt, 0, unit, 'in [0, 1]')
     if (g.rootShade !== undefined) grass.rootShade = num(`${p} grass.rootShade`, g.rootShade, 0.45, unit, 'in [0, 1]')
+    if (g.turn !== undefined) grass.turn = num(`${p} grass.turn`, g.turn, 0, unit, 'in [0, 1]')
     if (g.clump !== undefined) grass.clump = num(`${p} grass.clump`, g.clump, 1, unit, 'in [0, 1]')
     if (g.coverage !== undefined) {
       const c = g.coverage, d = GRASS_STYLE_DEFAULTS.coverage

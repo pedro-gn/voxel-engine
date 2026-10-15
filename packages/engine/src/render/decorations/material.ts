@@ -35,6 +35,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   // The soft-grass style beside params: shape (width, jitter, blunt, rootShade), cover (1 / scale, threshold, soft, clump).
   const styles = reg.defs.map((d) => grassStyle(d.grass))
   const shapes = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.shape)), MAX_DECORATIONS, new THREE.Vector4(1, 0.3, 0, 0.45)), 'vec4')
+  const extras = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.extra)), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const covers = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.cover)), MAX_DECORATIONS, new THREE.Vector4(0, -1, 0.5, 1)), 'vec4')
   const bases = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.base ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const tips = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.tip ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
@@ -48,11 +49,17 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const gi = instance()
   const vBase: N = varying((bases.element(gi.deco) as N).xyz), vTip: N = varying((tips.element(gi.deco) as N).xyz)
   const pos = attribute('position', 'vec3'), info = attribute('info', 'vec4')
-  const P: N = params.element(gi.deco), S: N = shapes.element(gi.deco), C: N = covers.element(gi.deco)
+  const P: N = params.element(gi.deco), S: N = shapes.element(gi.deco), C: N = covers.element(gi.deco), X: N = extras.element(gi.deco)
   const k = floor(gi.rnd.mul(8))
   const swap = k.mod(2).greaterThan(0.5), mirX = floor(k.div(2)).mod(2).greaterThan(0.5), mirZ = k.greaterThanEqual(4)
   const sx = select(swap, info.w, info.z), sz = select(swap, info.z, info.w)
-  const rx: N = select(mirX, float(1).sub(sx), sx), rz: N = select(mirZ, float(1).sub(sz), sz)
+  const mx: N = select(mirX, float(1).sub(sx), sx), mz: N = select(mirZ, float(1).sub(sz), sz)
+  // Turn: rotate the tuft about the cell centre by a random angle (a fraction X.x of a full turn), drawn in a little so the
+  // rotated corners stay in the cell. At X.x = 0 this is the identity.
+  const ang: N = fract(gi.rnd.mul(91.7)).mul(X.x).mul(6.283185), ca: N = ang.cos(), sa: N = ang.sin()
+  const pull: N = mix(float(1), float(0.84), X.x)
+  const tx: N = mx.sub(0.5).mul(pull), tz: N = mz.sub(0.5).mul(pull)
+  const rx: N = tx.mul(ca).sub(tz.mul(sa)).add(0.5), rz: N = tx.mul(sa).add(tz.mul(ca)).add(0.5)
   const t: N = pos.y
   const fade = fadeAt(gi.world)
   // Per-tile density: a low-frequency patch value (vertex stage, from the instance's world cell) blended with a per-instance random.
@@ -72,10 +79,13 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const t2 = t.mul(t)
   const over = P.w.mul(fade)
   const sway = wind(gi.world, gi.rnd)
+  // The blade's lateral offset turns with the tuft (mirroring keeps a mirrored blade's offset, as before).
+  const lx: N = pos.x.sub(info.z), lz: N = pos.z.sub(info.w)
+  const latX: N = lx.mul(ca).sub(lz.mul(sa)), latZ: N = lx.mul(sa).add(lz.mul(ca))
   const local = vec3(
-    rx.add(pos.x.sub(info.z).mul(spread)).add(leanX.mul(over).mul(1.6).add(sway).mul(t2)),
+    rx.add(latX.mul(spread)).add(leanX.mul(over).mul(1.6).add(sway).mul(t2)),
     tShape.mul(height).sub(vec2(leanX, leanZ).length().mul(over).mul(0.5).mul(t2)),
-    rz.add(pos.z.sub(info.w).mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
+    rz.add(latZ.mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
   )
   const grass = new VoxelNodeMaterial(gi.sky)
   grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(1), mix(float(0.3), float(1), density), C.w)).mul(cover)), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
