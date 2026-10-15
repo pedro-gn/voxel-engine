@@ -12,6 +12,11 @@ describe('soft grass style', () => {
     // Coverage off: a threshold below any noise value, so every decorated top keeps its grass.
     expect(s.cover[1]! + s.cover[2]!).toBeLessThan(0)
     expect(s.cover[2]).toBeGreaterThan(0) // smoothstep needs edge0 < edge1
+    expect(s.cover[3]).toBe(1) // clump: today's thinning of tufts by the patch noise
+  })
+  it('packs clump (how much the patch noise thins and shortens tufts) in cover.w', () => {
+    expect(grassStyle(meadow({ clump: 0.2 })).cover[3]).toBe(0.2)
+    expect(grassStyle(meadow({ clump: 0, coverage: { scale: 10 } })).cover).toEqual([0.1, GRASS_STYLE_DEFAULTS.coverage.threshold, GRASS_STYLE_DEFAULTS.coverage.soft, 0])
   })
   it('packs width, jitter, blunt and root shade, and coverage as frequency, threshold and soft', () => {
     const s = grassStyle(meadow({ width: 2.5, jitter: 0.1, blunt: 0.6, rootShade: 0.15, coverage: { scale: 20, threshold: 0.4, soft: 0.1 } }))
@@ -40,5 +45,7 @@ describe('soft grass style', () => {
     expect(bad({ coverage: { soft: 0 } })).toThrow(/grass\.coverage\.soft/)
     expect(bad({ coverage: { soft: 0.6 } })).toThrow(/grass\.coverage\.soft/)
     expect(bad({ coverage: 'patchy' })).toThrow(/grass\.coverage/)
+    expect(bad({ clump: 1.5 })).toThrow(/grass\.clump/)
+    expect(bad({ clump: -0.2 })).toThrow(/grass\.clump/)
   })
 })

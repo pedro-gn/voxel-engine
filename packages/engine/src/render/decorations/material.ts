@@ -32,10 +32,10 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const radius = uniform(96)
   const pad = <T>(xs: T[], n: number, fill: T) => [...xs, ...new Array<T>(Math.max(0, n - xs.length)).fill(fill)]
   const params = uniformArray(pad(reg.defs.map((d) => new THREE.Vector4(d.grass?.blades ?? 0, d.grass?.height[0] ?? 0, d.grass?.height[1] ?? 0, d.grass?.overhang ?? 0)), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
-  // The soft-grass style beside params: shape (width, jitter, blunt, rootShade), cover (1 / scale, threshold, soft, 0).
+  // The soft-grass style beside params: shape (width, jitter, blunt, rootShade), cover (1 / scale, threshold, soft, clump).
   const styles = reg.defs.map((d) => grassStyle(d.grass))
   const shapes = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.shape)), MAX_DECORATIONS, new THREE.Vector4(1, 0.3, 0, 0.45)), 'vec4')
-  const covers = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.cover)), MAX_DECORATIONS, new THREE.Vector4(0, -1, 0.5, 0)), 'vec4')
+  const covers = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.cover)), MAX_DECORATIONS, new THREE.Vector4(0, -1, 0.5, 1)), 'vec4')
   const bases = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.base ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const tips = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.tip ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const petals = uniformArray(reg.defs.flatMap((d) => pad((d.flowers?.colors ?? []).map((c) => v4(c)), MAX_FLOWER_COLORS, new THREE.Vector4()))
@@ -65,7 +65,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const mid = float(1).sub(t.mul(2).sub(1).abs())
   const spread = S.x.mul(S.z.mul(0.5).mul(mid).add(1))
   const tShape: N = t.add(S.z.mul(0.15).mul(mid))
-  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85)).mul(mix(float(0.75), float(1.1), density)).mul(mix(float(0.5), float(1), cover))
+  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85)).mul(mix(float(1), mix(float(0.75), float(1.1), density), C.w)).mul(mix(float(0.5), float(1), cover))
   const bit = (m: number) => select(gi.edge.bitAnd(uint(m)).notEqual(uint(0)), float(1), float(0))
   const leanX = bit(1).mul(smoothstep(0.55, 1, rx)).sub(bit(2).mul(smoothstep(0.55, 1, float(1).sub(rx))))
   const leanZ = bit(4).mul(smoothstep(0.55, 1, rz)).sub(bit(8).mul(smoothstep(0.55, 1, float(1).sub(rz))))
@@ -78,7 +78,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
     rz.add(pos.z.sub(info.w).mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
   )
   const grass = new VoxelNodeMaterial(gi.sky)
-  grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(0.3), float(1), density)).mul(cover)), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
+  grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(1), mix(float(0.3), float(1), density), C.w)).mul(cover)), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
   const vt: N = varying(t), vr: N = varying(gi.rnd), vS: N = varying(S)
   const gAlbedo: N = mix(vBase, vTip, vt.pow(1.2)).mul(vr.mul(vS.y).add(float(1).sub(vS.y.mul(0.5))))
   grass.colorNode = vec4(gAlbedo, 1)

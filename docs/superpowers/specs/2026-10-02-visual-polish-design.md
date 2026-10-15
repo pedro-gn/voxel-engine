@@ -360,10 +360,11 @@ softer tufts; each default keeps the look above exactly:
 | `jitter` | 0.3 | [0, 1] | Brightness variation between tufts (× 1 − j/2 … 1 + j/2). |
 | `blunt` | 0 | [0, 1] | 0 pointed; 1 the mid section widens × 1.5 and rises 0.15: rounder blades. |
 | `rootShade` | 0.45 | [0, 1] | Occlusion at the root (× 1 − rootShade, fading to 1 at the tip). Lower it so tufts melt into the top tile. |
+| `clump` | 1 | [0, 1] | How much the low-frequency patch noise thins (to 30 % of the blades) and shortens tufts; 0 keeps every tuft full and even. |
 | `coverage` | none | `{ scale > 0, threshold ∈ [0, 1], soft ∈ (0, 0.5] }`, defaults 24, 0.35, 0.1 | Bare patches: a world-space noise (one cell every `scale` blocks) below `threshold` leaves a top without grass; across ± `soft` the tufts thin and shorten. |
 
 The shader reads them from two uniform arrays beside `params`: `shape` (width, jitter,
-blunt, rootShade) and `cover` (1 / scale, threshold, soft); `grassStyle()` in `defs.ts`
+blunt, rootShade) and `cover` (1 / scale, threshold, soft, clump); `grassStyle()` in `defs.ts`
 packs them. Flowers are not affected by `coverage`.
 
 ## 8. Textures and sub-project 1 visual fixes
