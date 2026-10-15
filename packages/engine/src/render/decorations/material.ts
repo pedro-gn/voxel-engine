@@ -5,7 +5,7 @@ import {
 } from 'three/tsl'
 import type { LightUniforms } from '../voxelLighting.ts'
 import { VoxelNodeMaterial, voxelLit } from '../voxelLighting.ts'
-import { MAX_DECORATIONS, MAX_FLOWER_COLORS, type DecorationRegistry } from './defs.ts'
+import { MAX_DECORATIONS, MAX_FLOWER_COLORS, grassStyle, type DecorationRegistry } from './defs.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any // TSL node typings are too narrow for swizzles and uniform-array elements
@@ -32,6 +32,10 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const radius = uniform(96)
   const pad = <T>(xs: T[], n: number, fill: T) => [...xs, ...new Array<T>(Math.max(0, n - xs.length)).fill(fill)]
   const params = uniformArray(pad(reg.defs.map((d) => new THREE.Vector4(d.grass?.blades ?? 0, d.grass?.height[0] ?? 0, d.grass?.height[1] ?? 0, d.grass?.overhang ?? 0)), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
+  // The soft-grass style beside params: shape (width, jitter, blunt, rootShade), cover (1 / scale, threshold, soft, 0).
+  const styles = reg.defs.map((d) => grassStyle(d.grass))
+  const shapes = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.shape)), MAX_DECORATIONS, new THREE.Vector4(1, 0.3, 0, 0.45)), 'vec4')
+  const covers = uniformArray(pad(styles.map((s) => new THREE.Vector4(...s.cover)), MAX_DECORATIONS, new THREE.Vector4(0, -1, 0.5, 0)), 'vec4')
   const bases = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.base ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const tips = uniformArray(pad(reg.defs.map((d) => v4(d.grass?.tip ?? [0, 0, 0])), MAX_DECORATIONS, new THREE.Vector4()), 'vec4')
   const petals = uniformArray(reg.defs.flatMap((d) => pad((d.flowers?.colors ?? []).map((c) => v4(c)), MAX_FLOWER_COLORS, new THREE.Vector4()))
@@ -44,7 +48,7 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const gi = instance()
   const vBase: N = varying((bases.element(gi.deco) as N).xyz), vTip: N = varying((tips.element(gi.deco) as N).xyz)
   const pos = attribute('position', 'vec3'), info = attribute('info', 'vec4')
-  const P: N = params.element(gi.deco)
+  const P: N = params.element(gi.deco), S: N = shapes.element(gi.deco), C: N = covers.element(gi.deco)
   const k = floor(gi.rnd.mul(8))
   const swap = k.mod(2).greaterThan(0.5), mirX = floor(k.div(2)).mod(2).greaterThan(0.5), mirZ = k.greaterThanEqual(4)
   const sx = select(swap, info.w, info.z), sz = select(swap, info.z, info.w)
@@ -54,7 +58,14 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   // Per-tile density: a low-frequency patch value (vertex stage, from the instance's world cell) blended with a per-instance random.
   const clump = smoothstep(0.25, 0.75, mx_noise_float(vec3(gi.world.xz.mul(0.09), 0)).mul(0.5).add(0.5))
   const density = clump.mul(0.65).add(gi.rnd.mul(0.35))
-  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85)).mul(mix(float(0.75), float(1.1), density))
+  // Coverage: bare tops where a world-space low-frequency noise falls below the threshold; tufts thin and shorten across ± soft.
+  const coverAt: N = vec3((gi.world.xz as N).mul(C.x), 3.7)
+  const cover = smoothstep(C.y.sub(C.z), C.y.add(C.z), mx_noise_float(coverAt).mul(0.5).add(0.5))
+  // Blade shape: the width multiplier, and a blunt tip that widens and raises the mid section (t is 0, 0.5 or 1 per vertex).
+  const mid = float(1).sub(t.mul(2).sub(1).abs())
+  const spread = S.x.mul(S.z.mul(0.5).mul(mid).add(1))
+  const tShape: N = t.add(S.z.mul(0.15).mul(mid))
+  const height: N = mix(P.y, P.z, info.y).mul(fade).mul(gi.rnd.mul(0.3).add(0.85)).mul(mix(float(0.75), float(1.1), density)).mul(mix(float(0.5), float(1), cover))
   const bit = (m: number) => select(gi.edge.bitAnd(uint(m)).notEqual(uint(0)), float(1), float(0))
   const leanX = bit(1).mul(smoothstep(0.55, 1, rx)).sub(bit(2).mul(smoothstep(0.55, 1, float(1).sub(rx))))
   const leanZ = bit(4).mul(smoothstep(0.55, 1, rz)).sub(bit(8).mul(smoothstep(0.55, 1, float(1).sub(rz))))
@@ -62,17 +73,17 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const over = P.w.mul(fade)
   const sway = wind(gi.world, gi.rnd)
   const local = vec3(
-    rx.add(pos.x.sub(info.z)).add(leanX.mul(over).mul(1.6).add(sway).mul(t2)),
-    t.mul(height).sub(vec2(leanX, leanZ).length().mul(over).mul(0.5).mul(t2)),
-    rz.add(pos.z.sub(info.w)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
+    rx.add(pos.x.sub(info.z).mul(spread)).add(leanX.mul(over).mul(1.6).add(sway).mul(t2)),
+    tShape.mul(height).sub(vec2(leanX, leanZ).length().mul(over).mul(0.5).mul(t2)),
+    rz.add(pos.z.sub(info.w).mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
   )
   const grass = new VoxelNodeMaterial(gi.sky)
-  grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(0.3), float(1), density))), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
-  const vt: N = varying(t), vr: N = varying(gi.rnd)
-  const gAlbedo: N = mix(vBase, vTip, vt.pow(1.2)).mul(vr.mul(0.3).add(0.85))
+  grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(0.3), float(1), density)).mul(cover)), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
+  const vt: N = varying(t), vr: N = varying(gi.rnd), vS: N = varying(S)
+  const gAlbedo: N = mix(vBase, vTip, vt.pow(1.2)).mul(vr.mul(vS.y).add(float(1).sub(vS.y.mul(0.5))))
   grass.colorNode = vec4(gAlbedo, 1)
   grass.side = THREE.DoubleSide
-  voxelLit(grass, { normal: vec3(0, 1, 0), sky: gi.sky, blk: gi.blk, ao: mix(float(0.55), float(1), vt), albedo: gAlbedo }, lights)
+  voxelLit(grass, { normal: vec3(0, 1, 0), sky: gi.sky, blk: gi.blk, ao: mix(float(1).sub(vS.w), float(1), vt), albedo: gAlbedo }, lights)
 
   // ---- flowers ----
   const fi = instance()
