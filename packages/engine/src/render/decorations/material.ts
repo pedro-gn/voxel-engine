@@ -54,11 +54,10 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const swap = k.mod(2).greaterThan(0.5), mirX = floor(k.div(2)).mod(2).greaterThan(0.5), mirZ = k.greaterThanEqual(4)
   const sx = select(swap, info.w, info.z), sz = select(swap, info.z, info.w)
   const mx: N = select(mirX, float(1).sub(sx), sx), mz: N = select(mirZ, float(1).sub(sz), sz)
-  // Turn: rotate the tuft about the cell centre by a random angle (a fraction X.x of a full turn), drawn in a little so the
-  // rotated corners stay in the cell. At X.x = 0 this is the identity.
+  // Turn: rotate the tuft about the cell centre by a random angle (a fraction X.x of a full turn); rotated corners spill
+  // at most ~0.09 block into the neighbours, less than the overhang already allows. At X.x = 0 this is the identity.
   const ang: N = fract(gi.rnd.mul(91.7)).mul(X.x).mul(6.283185), ca: N = ang.cos(), sa: N = ang.sin()
-  const pull: N = mix(float(1), float(0.84), X.x)
-  const tx: N = mx.sub(0.5).mul(pull), tz: N = mz.sub(0.5).mul(pull)
+  const tx: N = mx.sub(0.5), tz: N = mz.sub(0.5)
   const rx: N = tx.mul(ca).sub(tz.mul(sa)).add(0.5), rz: N = tx.mul(sa).add(tz.mul(ca)).add(0.5)
   const t: N = pos.y
   const fade = fadeAt(gi.world)
