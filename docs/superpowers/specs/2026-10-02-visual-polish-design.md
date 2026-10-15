@@ -368,6 +368,13 @@ The shader reads them from three uniform arrays beside `params`: `shape` (width,
 blunt, rootShade), `cover` (1 / scale, threshold, soft, clump) and `extra` (turn); `grassStyle()` in `defs.ts`
 packs them. Flowers are not affected by `coverage`.
 
+**Grass mask (2026-10-15).** `engine.grassMask` is a per-column grass factor over the world's x/z that the game
+writes: `get(x, z)`, `set(x, z, value)`, `setMany([x0, z0, x1, z1, …], value)` and `clear()`; values in [0, 1] (stored
+as bytes), 1 everywhere by default (the grass above, unchanged). The grass and flower shaders read it per tuft from an
+R8 texture (`textureLoad`, no remesh) and scale blade count and height — and flower size — by it: 0 hides the grass on
+a column (a pile pressing it flat), a low value thins and shortens it (a trampled path). A change re-uploads the
+texture (≤ 1 MB at 1024 × 1024 columns); bad columns or values throw RangeError and a bad batch writes nothing.
+
 ## 8. Textures and sub-project 1 visual fixes
 
 ### Procedural painter (`apps/sandbox/src/paint/`)

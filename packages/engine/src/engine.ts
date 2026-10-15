@@ -8,6 +8,7 @@ import { FP_FOV, FP_VIEW_DISTANCE, FirstPersonController, firstPersonToOrbit, or
 import { UnderwaterFade, cameraInLiquid } from './render/underwater.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { bindCollision, type Collision } from './interact/collision.ts'
+import { GrassMask } from './render/decorations/grassMask.ts'
 import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, GenConnect, SimInitOptions, TerrainRect, ToMesh, ToSim } from './protocol.ts'
@@ -191,6 +192,19 @@ export interface Engine {
   set effects(value: Partial<Effects>)
   get water(): WaterParams
   set water(value: WaterInput)
+  /**
+   * A per-column grass factor over the world's x/z, read by the grass each frame (no remesh): 1 is full grass (the
+   * default everywhere), 0 none — e.g. a pile pressing the grass flat, or a trampled path at a low value. Scales each
+   * tuft's blade count and height, and its flowers. Values are stored as bytes; bad columns or values throw RangeError.
+   */
+  readonly grassMask: {
+    get(x: number, z: number): number
+    set(x: number, z: number, value: number): void
+    /** Flat [x0, z0, x1, z1, …] pairs, all set to `value`; nothing is written if any pair is bad. */
+    setMany(cells: ArrayLike<number>, value: number): void
+    /** Full grass everywhere again. */
+    clear(): void
+  }
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
   /** AABB-vs-voxel collision over the ghost-aware world (a predicted edit collides at once). Pure geometry: no dt or gravity. */
   readonly collision: Collision
@@ -293,6 +307,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const seed = restore ? restore.manifest.seed : o.seed
   const layout = new Layout(size)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
+  const grassMask = new GrassMask(size[0], size[2])
   const tileSize = checkTileSize(o.tileSize ?? TILE)
   const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
   const buffers = createWorldBuffers(size)
@@ -404,6 +419,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
+    grassMask,
     faceLayers,
     water: surfaceMirror,
     batchChunks: o.batchChunks ?? true,
@@ -866,6 +882,12 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     set effects(value: Partial<Effects>) { visuals.setEffects(value) },
     get water(): WaterParams { return visuals.getWater() },
     set water(value: WaterInput) { visuals.setWater(value) },
+    grassMask: {
+      get: (x, z) => grassMask.get(x, z),
+      set: (x, z, value) => grassMask.set(x, z, value),
+      setMany: (cells, value) => grassMask.setMany(cells, value),
+      clear: () => grassMask.clear(),
+    },
     submit(cmd) {
       const s = ++seq
       if (halted) return s // stopped: there is no sim to ack it
