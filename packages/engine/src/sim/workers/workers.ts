@@ -239,11 +239,15 @@ export class WorkerSystem {
   private readonly commitCap: number
   private readonly capacity: number
   private readonly maxOrders: number
+  /** Cells above its feet a unit builds at (WorkerOptions.buildReach; 1 by default). */
+  private readonly buildReach: number
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
     this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096; this.prebuildCap = options.prebuildCap ?? 1024; this.sleepEnabled = options.sleep !== false; this.decisionCap = options.decisionCap ?? 256
     this.assignmentCap = options.assignmentCap; this.assignmentShare = options.assignmentShare ?? 8; this.commitCap = options.commitCap ?? 16
     this.capacity = options.inventoryCapacity ?? 512; this.maxOrders = options.maxOrders ?? 128
+    this.buildReach = options.buildReach ?? 1
+    if (!integer(this.buildReach, 1, 16)) throw new RangeError('workers buildReach must be an integer in 1..16')
     for (const [name, n] of Object.entries({ maxUnits: this.maxUnits, searchCap: this.searchCap, prebuildCap: this.prebuildCap, decisionCap: this.decisionCap, assignmentCap: this.assignmentCap ?? 16, assignmentShare: this.assignmentShare, commitCap: this.commitCap, capacity: this.capacity, maxOrders: this.maxOrders, maxSearchNodes: options.maxSearchNodes ?? 16384 })) {
       if (!integer(n, 1, 1 << 20)) throw new RangeError(`workers ${name} must be a positive integer <= 1048576`)
     }
@@ -252,7 +256,8 @@ export class WorkerSystem {
     this.dig = new Uint16Array(R.count); this.build = new Uint16Array(R.count); this.drops = new Uint16Array(R.count); this.tools = new Array(R.count)
     for (const [name, m] of Object.entries(options.materials ?? {})) {
       const id = R.id(name)
-      if (!R.solid[id] || R.liquid[id]) throw new Error(`work material ${name} must be solid`)
+      // A non-solid block (a bed) may be built, never dug: digging, drops and tools are about solid matter.
+      if (R.liquid[id] || !R.solid[id] && (m.buildTicks === undefined || m.digTicks !== undefined || m.drop !== undefined || m.tool !== undefined)) throw new Error(`work material ${name} must be solid`)
       for (const [field, value] of Object.entries({ digTicks: m.digTicks, buildTicks: m.buildTicks })) if (value !== undefined && !integer(value, 1, 65535)) throw new RangeError(`${name}.${field} must be in 1..65535`)
       if (m.tool !== undefined && (typeof m.tool !== 'string' || !m.tool.length)) throw new Error('tool must be a nonempty string')
       this.dig[id] = m.digTicks ?? 0; this.build[id] = m.buildTicks ?? 0; this.drops[id] = m.drop === undefined ? id : R.id(m.drop); this.tools[id] = m.tool
@@ -673,7 +678,8 @@ export class WorkerSystem {
     }
     if (c.type === 'unitMove') {
       if (c.allowDig !== undefined && typeof c.allowDig !== 'boolean') throw new Error('allowDig must be boolean')
-      if (c.buildBlock !== undefined && (!integer(c.buildBlock, 1, this.port.registry.count - 1) || !this.build[c.buildBlock])) throw new Error('invalid route build material')
+      // A route builds floors to walk on: a solid material only.
+      if (c.buildBlock !== undefined && (!integer(c.buildBlock, 1, this.port.registry.count - 1) || !this.build[c.buildBlock] || !this.port.registry.solid[c.buildBlock])) throw new Error('invalid route build material')
       this.checkPos(c.pos)
       if (!this.nav.stand(...c.pos)) throw new Error('move destination needs body clearance and support')
       const destinations: number[] = [], chosen = new Set<number>()
@@ -724,18 +730,32 @@ export class WorkerSystem {
     }
   }
   private satisfied(t: Task): boolean { const v = this.port.get(...t.pos); return t.order.kind === 'dig' ? !this.port.registry.solid[voxelId(v)] : v === t.order.voxel }
+  /**
+   * Whether a unit at `pos` can work task t: the target is beside its column, from one below its feet to one above them, in
+   * a clear line from its eye. A build reaches higher with `buildReach`: above its head, the unit reaches up its own column,
+   * so the cells there must not be solid from just above its head up to the target's height (beside the column), or up to
+   * just below the target (straight up: how the last cell of a roof, boxed in on four sides, is closed from below).
+   */
   private canWork(pos: Vec3, t: Task): boolean {
     if (!this.safePose(pos)) return false
     const [x, y, z] = pos, [tx, ty, tz] = t.pos
-    if (Math.abs(x - tx) + Math.abs(z - tz) > 1 || ty < y - 1 || ty > y + 1 || x === tx && z === tz) return false
+    if (Math.abs(x - tx) + Math.abs(z - tz) > 1 || ty < y - 1) return false
+    if (ty >= y + 2) {
+      if (t.order.kind !== 'build' || ty > y + this.buildReach) return false
+      const beside = x !== tx || z !== tz
+      for (let yy = y + 2; yy < ty || beside && yy === ty; yy++) if (this.port.registry.solid[voxelId(this.port.get(x, yy, z))]) return false
+      return true
+    }
+    if (x === tx && z === tz) return false
     const origin: Vec3 = [x + .5, y + 1, z + .5], target: Vec3 = [tx + .5, ty + .5, tz + .5]
     const dir: Vec3 = [target[0] - origin[0], target[1] - origin[1], target[2] - origin[2]], distance = Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
     const hit = raycast(this.port.get, v => this.port.registry.solid[voxelId(v)] === 1, this.port.layout.size, origin, dir, distance)
     return !hit || this.port.layout.voxelIndex(...hit.pos) === t.p
   }
   private workGoals(u: Unit, t: Task, ignoreOccupancy = false): number[] {
-    const out: number[] = [], [x, y, z] = t.pos
-    for (const [dx, dz] of DIRS) for (let yy = y - 1; yy <= y + 1; yy++) {
+    const out: number[] = [], [x, y, z] = t.pos, reach = t.order.kind === 'build' ? this.buildReach : 1
+    // Beside the target, from one above it down to `reach` below it; above its head, a build also reaches straight up.
+    for (const [dx, dz] of reach > 1 ? [...DIRS, [0, 0] as const] : DIRS) for (let yy = y - reach; yy <= y + 1; yy++) {
       const pos: Vec3 = [x + dx, yy, z + dz]
       if (!this.canWork(pos, t)) continue
       const p = this.port.layout.voxelIndex(...pos)
@@ -748,7 +768,7 @@ export class WorkerSystem {
   /** Nav tiles whose edges decide whether the task's work poses are reachable from nearby. */
   private tilesAround(pos: Vec3): Map<number, number> {
     const [sx, sy, sz] = this.port.layout.size, tiles = new Map<number, number>()
-    for (let y = Math.max(0, pos[1] - 3) >> 4; y <= Math.min(sy - 1, pos[1] + 3) >> 4; y++) for (let z = Math.max(0, pos[2] - 2) >> 4; z <= Math.min(sz - 1, pos[2] + 2) >> 4; z++) for (let x = Math.max(0, pos[0] - 2) >> 4; x <= Math.min(sx - 1, pos[0] + 2) >> 4; x++) {
+    for (let y = Math.max(0, pos[1] - 2 - this.buildReach) >> 4; y <= Math.min(sy - 1, pos[1] + 3) >> 4; y++) for (let z = Math.max(0, pos[2] - 2) >> 4; z <= Math.min(sz - 1, pos[2] + 2) >> 4; z++) for (let x = Math.max(0, pos[0] - 2) >> 4; x <= Math.min(sx - 1, pos[0] + 2) >> 4; x++) {
       const ti = this.nav.tileOf(x << 4, y << 4, z << 4); tiles.set(ti, this.nav.revisions[ti]!)
     }
     return tiles

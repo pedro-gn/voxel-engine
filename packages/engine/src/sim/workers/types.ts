@@ -22,7 +22,16 @@ export interface WorkerOptions {
   assignmentShare?: number
   commitCap?: number
   inventoryCapacity?: number
+  /**
+   * Work materials by block name. A solid block may be dug and built; a non-solid one (not liquid) may only be built (a bed:
+   * `buildTicks` alone), and it never serves as a route's floor (`unitMove.buildBlock`).
+   */
   materials?: Record<string, WorkMaterial>
+  /**
+   * Cells above its feet a unit builds at (1..16, default 1: the head's height). Above its head it reaches up its own column,
+   * which must be clear of solid blocks up to the target. Digging keeps a reach of 1.
+   */
+  buildReach?: number
 }
 export type WorkerState = 'idle' | 'planning' | 'walking' | 'working' | 'blocked' | 'falling' | 'incapacitated'
 export type WorkBlockReason = 'no-access' | 'missing-material' | 'missing-tool' | 'unsafe' | 'traffic' | 'search-limited' | 'target-changed'
