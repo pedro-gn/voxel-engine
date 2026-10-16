@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu'
 import { sunDirection, sunVisibility, type Atmosphere, type Rgb } from './atmosphere.ts'
 import { fitShadow, frustumCorners, type V3 } from './shadowFit.ts'
+import { receiverPlanePCF } from './shadowFilter.ts'
 
 /** three's lookAt degenerates for a vertical light direction. */
 const MAX_ELEVATION = 89.5
@@ -36,6 +37,8 @@ export class SunLights {
     const s = this.sun.shadow
     s.mapSize.set(mapSize, mapSize)
     s.radius = 2.5 // soft PCF (Task 1, P5)
+    // Runtime extension supported by ShadowNode; not yet declared by @types/three.
+    Object.assign(s, { filterNode: receiverPlanePCF })
     s.bias = -0.0004 // the bias confirmed by the Task 1 spike
     s.normalBias = 0 // the materials offset along their own normal instead (voxelLighting.ts)
     scene.add(this.sun, this.sun.target, this.hemi)

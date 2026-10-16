@@ -10,6 +10,8 @@ export interface BlockDef {
   solid?: boolean
   opaque?: boolean
   layer?: RenderLayer
+  /** False when a client-owned model draws the block: keep its voxel semantics, but emit no chunk faces. */
+  render?: boolean
   emits?: number
   liquid?: boolean
   decoration?: string
@@ -80,7 +82,7 @@ export class BlockRegistry {
       this.falls[id] = falls ? 1 : 0
       const layer: RenderLayer = d.layer ?? (liquid ? 'liquid' : 'opaque')
       if (layer === 'liquid' && !liquid) throw new Error(`block "${d.name}": layer "liquid" needs liquid: true`)
-      this.layer[id] = LAYER_CODE[layer]
+      this.layer[id] = d.render === false ? LAYER.NONE : LAYER_CODE[layer]
       this.opaque[id] = (d.opaque ?? layer === 'opaque') ? 1 : 0
       this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid
       if (d.collapses && (falls || liquid || d.source !== undefined || this.solid[id] !== 1)) {
