@@ -6,7 +6,7 @@ import type { UnitEvent, WorkerView } from './workers/types.ts'
 import { WorldFullError } from '../world/chunkStore.ts'
 
 /**
- * A controlled unit's API inside a system call. `despawn`, `goTo`, `dig`, `build` and `stop` throw for an id that is
+ * A controlled unit's API inside a system call. `despawn`, `goTo`, `dig`, `build`, `stop` and `setWorkSpeed` throw for an id that is
  * unknown, gone (despawned, or died: watch for the `died` event) or not controlled; the methods that take a position throw
  * for an out-of-bounds one, and `build` for a voxel that is not buildable. Thrown inside `init`, `restore`, `tick` or `publish`
  * that is fatal to the simulation, inside `command` it only refuses the command. Check `view(id)` first when unsure.
@@ -25,6 +25,12 @@ export interface SystemUnits {
   build(id: number, pos: Vec3, voxel: number): void
   /** Ends the intent without an event. */
   stop(id: number): void
+  /**
+   * Sets the unit's work speed (1 by default): each build or dig step it starts afterwards takes
+   * max(1, round(base / speed)) ticks, base being the material's `buildTicks` / `digTicks`; a step under way keeps its
+   * duration. Saved with the unit. Throws for a speed that is not finite or is <= 0.
+   */
+  setWorkSpeed(id: number, speed: number): void
   /** A copy of the unit's state (pose, state, intent, block reason); undefined for an unknown or gone unit. Never throws. */
   view(id: number): WorkerView | undefined
 }

@@ -643,8 +643,9 @@ export class Simulation {
       dig: (id, pos) => sim.workers!.work(id, 'dig', pos),
       build: (id, pos, voxel) => sim.workers!.work(id, 'build', pos, voxel),
       stop: (id) => sim.workers!.stop(id),
+      setWorkSpeed: (id, speed) => sim.workers!.setWorkSpeed(id, speed),
       view: (id) => sim.workers!.view(id),
-    } : { events: [], spawn: noUnits, despawn: noUnits, goTo: noUnits, dig: noUnits, build: noUnits, stop: noUnits, view: noUnits }
+    } : { events: [], spawn: noUnits, despawn: noUnits, goTo: noUnits, dig: noUnits, build: noUnits, stop: noUnits, setWorkSpeed: noUnits, view: noUnits }
     return {
       get tick() { return sim.tick },
       layout: sim.layout,
