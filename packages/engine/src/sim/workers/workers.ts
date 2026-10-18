@@ -338,7 +338,6 @@ export class WorkerSystem {
     this.targets.add(p); u.task = t; u.workPoses = goals; u.progressAt = this.time
     this.plan(u, goals); u.state = 'planning'; this.dirty.add(u.id)
   }
-  /** Ends a controlled unit's intent quietly: no event. */
   /**
    * A controlled unit's work speed: each timed step (a build or a dig) it starts after this takes
    * max(1, round(base / speed)) ticks. A step under way keeps its duration; route planning costs are unchanged.
@@ -348,6 +347,7 @@ export class WorkerSystem {
     if (typeof speed !== 'number' || !Number.isFinite(speed) || speed <= 0) throw new Error('work speed must be a positive finite number')
     u.speed = speed
   }
+  /** Ends a controlled unit's intent quietly: no event. */
   stop(id: number): void {
     const u = this.controlledUnit(id)
     this.sleepers.wake(u.id)
