@@ -1,6 +1,6 @@
 import type { Layout } from '../../world/layout.ts'
 import { voxelId } from '../../world/voxel.ts'
-import { WADE_COST, edgeCost, type NavigationSystem } from './navigation.ts'
+import { COST_SCALE, WADE_COST, type NavigationSystem } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 
 export const UNREACHED = 0xffff
@@ -32,6 +32,11 @@ export interface Region {
   poses: Int32Array        // slot → world voxel index
   /** 1 where the pose's feet are in water: a step onto it costs WADE_COST more (0 everywhere in a relaxed record). */
   wet: Uint8Array
+  /**
+   * With surface speeds (NavigationSystem.surfaces), the cost of a flat step onto each pose, by the block under its feet
+   * (relaxed records too: a speed change is a geometry change); empty without surfaces.
+   */
+  flat: Uint16Array
   /** forward edges: 4 per slot, slot of the target inside the region or -1 (edges leaving the region are exits) */
   next: Int16Array
   exits: Exit[]
@@ -50,11 +55,20 @@ export interface Region {
 }
 /** Fixed per-record overhead counted in `bytes`; tiles with no pose share every array and cost only this. */
 const RECORD_BYTES = 64
-const NO_POSES = new Int32Array(0), NO_WET = new Uint8Array(0), NO_SLOTS = new Int16Array(0), NO_FIELDS = new Uint16Array(0), NO_COLS = new Int16Array(257), NO_EXITS: Exit[] = Object.freeze([]) as unknown as Exit[]
+const NO_POSES = new Int32Array(0), NO_WET = new Uint8Array(0), NO_FLAT = new Uint16Array(0), NO_SLOTS = new Int16Array(0), NO_FIELDS = new Uint16Array(0), NO_COLS = new Int16Array(257), NO_EXITS: Exit[] = Object.freeze([]) as unknown as Exit[]
 /** Exit keys used by route and group searches: 1 + region * 4096 + exit index. */
 export const exitKey = (region: number, e: number): number => 1 + region * 4096 + e
 export const splitKey = (key: number): [region: number, e: number] => [Math.floor((key - 1) / 4096), (key - 1) % 4096]
-export const localOf = (L: Layout, p: number): number => { const [x, y, z] = L.voxelCoords(p); return (x & 15) + ((z & 15) << 4) + ((y & 15) << 8) }
+/**
+ * Cost of the region edge from pose `from` (a world index) onto slot `t` of `r`: NavigationSystem.stepCost read from the
+ * record (its wet flags and flat costs).
+ */
+export const regionStepCost = (r: Region, from: number, t: number, L: Layout): number => {
+  const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(r.poses[t]! / plane), wet = r.wet[t] !== 0
+  if (!r.flat.length) return 4 + (ty > sy ? 2 : sy - ty) + (wet ? WADE_COST : 0)
+  return (ty === sy ? r.flat[t]! : (4 + (ty > sy ? 2 : sy - ty)) * COST_SCALE) + (wet ? WADE_COST * COST_SCALE : 0)
+}
+export const localOf =(L: Layout, p: number): number => { const [x, y, z] = L.voxelCoords(p); return (x & 15) + ((z & 15) << 4) + ((y & 15) << 8) }
 /** Region slot of a world pose, or -1 when it is not a pose of the region. */
 export const slotOf = (region: Region, p: number, L: Layout): number => {
   const [x, , z] = L.voxelCoords(p), c = (x & 15) + ((z & 15) << 4)
@@ -99,6 +113,7 @@ export class RegionBuild {
   private count = 0
   private poses = new Int32Array(0)
   private wet = new Uint8Array(0)
+  private flat = NO_FLAT
   private next = new Int16Array(0)
   private degree = new Int32Array(0)
   private revStart = new Int32Array(0)
@@ -149,7 +164,11 @@ export class RegionBuild {
     const below = uniform!(x, y - 1, z)
     return below !== undefined && !solid[voxelId(below)]
   }
-  private cost(a: number, b: number): number { const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8; return 4 + (yb > ya ? 2 : ya - yb) + (this.wet[b] ? WADE_COST : 0) }
+  private cost(a: number, b: number): number {
+    const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8
+    if (!this.flat.length) return 4 + (yb > ya ? 2 : ya - yb) + (this.wet[b] ? WADE_COST : 0)
+    return (ya === yb ? this.flat[b]! : (4 + (yb > ya ? 2 : ya - yb)) * COST_SCALE) + (this.wet[b] ? WADE_COST * COST_SCALE : 0)
+  }
   /** Returns charged operations, at most `cap`. */
   step(cap: number): number {
     let used = 0
@@ -171,6 +190,8 @@ export class RegionBuild {
           for (let s = 0; s < P; s++) { const l = this.locals[s]!; this.poses[s] = L.voxelIndex(ox + (l & 15), oy + (l >> 8), oz + ((l >> 4) & 15)) }
           // Landmark tables read relaxed records: no water cost there keeps them a lower bound when water drains.
           this.wet = new Uint8Array(P); if (!this.relaxed) for (let s = 0; s < P; s++) this.wet[s] = this.nav.wet(this.poses[s]!) ? 1 : 0
+          this.flat = this.nav.surfaces && P ? new Uint16Array(P) : NO_FLAT
+          if (this.nav.surfaces) for (let s = 0; s < P; s++) this.flat[s] = this.nav.flatCost(this.poses[s]!)
           this.charge(2 * P); this.phase = 'edges'; this.cursor = 0
         }
       } else if (this.phase === 'edges') {
@@ -183,7 +204,7 @@ export class RegionBuild {
         if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * 4 + d] = t; this.degree[t]!++ }; continue }
         const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
         if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; continue }
-        this.crossings.push({ slot, d, to, cost: edgeCost(L, pose, to) + (!this.relaxed && this.nav.wet(to) ? WADE_COST : 0), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
+        this.crossings.push({ slot, d, to, cost: this.nav.stepCost(pose, to, !this.relaxed && this.nav.wet(to)), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
       } else if (this.phase === 'exits') {
         const cr = this.crossings
         if (this.cursor < cr.length) { this.extend(cr[this.cursor++]!); continue }
@@ -269,9 +290,9 @@ export class RegionBuild {
     if (!this.done) throw new Error('region build is not done')
     if (this.built) return this.built
     const r: Region = this.count
-      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, wet: this.wet, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
-      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, wet: NO_WET, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
-    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.wet.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
+      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, wet: this.wet, flat: this.flat, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
+      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, wet: NO_WET, flat: NO_FLAT, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
+    r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.wet.byteLength + r.flat.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
     return this.built = r
   }
   mixState(mix: (n: number) => void): void {
@@ -299,7 +320,7 @@ export function reverseField(region: Region, targets: readonly number[], layout:
     const g = heap.peekF(), s = heap.pop()
     if (g !== out[s]) continue
     for (let i = rs[s]!; i < rs[s + 1]!; i++) {
-      const src = rev[i]!, c = Math.min(UNREACHED - 1, g + edgeCost(layout, region.poses[src]!, region.poses[s]!) + (region.wet[s] ? WADE_COST : 0))
+      const src = rev[i]!, c = Math.min(UNREACHED - 1, g + regionStepCost(region, region.poses[src]!, s, layout))
       if (c < out[src]!) { out[src] = c; heap.push(src, c, 0) }
     }
   }

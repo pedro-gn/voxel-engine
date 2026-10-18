@@ -125,7 +125,7 @@ export class GroupField {
     let estimate = Infinity
     for (const s of starts) {
       const [x, y, z] = L.voxelCoords(s)
-      estimate = Math.min(estimate, (Math.max(0, g0[0]! - x, x - g1[0]!) + Math.max(0, g0[2]! - z, z - g1[2]!)) * 4 + Math.max(0, g0[1]! - y) * 2)
+      estimate = Math.min(estimate, (Math.max(0, g0[0]! - x, x - g1[0]!) + Math.max(0, g0[2]! - z, z - g1[2]!)) * nav.minStep + Math.max(0, g0[1]! - y) * nav.minClimb)
     }
     this.estimate = estimate === Infinity ? 0 : estimate
     if (!goals.length || !starts.length && !this.exhaust) this.status = 'found'
@@ -174,7 +174,7 @@ export class GroupField {
     let h = Infinity
     for (const [x0, z0, x1, y1, z1] of this.boxes) {
       const dx = Math.max(0, x0! - x, x - x1!), dz = Math.max(0, z0! - z, z - z1!)
-      h = Math.min(h, (dx + dz) * 4 + Math.max(0, y - y1!) * 2)
+      h = Math.min(h, (dx + dz) * this.nav.minStep + Math.max(0, y - y1!) * this.nav.minClimb)
     }
     if (h === Infinity) h = 0
     const alt = this.alt

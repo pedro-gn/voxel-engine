@@ -32,6 +32,12 @@ export interface WorkerOptions {
    * which must be clear of solid blocks up to the target. Digging keeps a reach of 1.
    */
   buildReach?: number
+  /**
+   * Walking speed by floor block name (each a solid block; speed in (0, 4]): a unit walking flat over a block with speed s
+   * covers it s times as fast, and routes choose by time. Climbs and drops keep their timing. Absent or empty: today's
+   * timing and routes exactly.
+   */
+  surfaces?: Record<string, { speed: number }>
 }
 export type WorkerState = 'idle' | 'planning' | 'walking' | 'working' | 'blocked' | 'falling' | 'incapacitated'
 export type WorkBlockReason = 'no-access' | 'missing-material' | 'missing-tool' | 'unsafe' | 'traffic' | 'search-limited' | 'target-changed'

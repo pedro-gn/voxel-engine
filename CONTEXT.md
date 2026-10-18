@@ -73,8 +73,12 @@ A worker unit owned by a game system: never given work by the engine, driven by 
 _Avoid_: Player unit, NPC
 
 **Work speed**:
-A controlled unit's multiplier on its timed work: each dig or build step it starts takes the material's ticks divided by it (1 by default). Walking is unaffected.
+A controlled unit's multiplier on its timed work: each dig or build step it starts takes the material's ticks divided by it (1 by default). Walking is unaffected (see Surface speed).
 _Avoid_: Haste, work rate
+
+**Surface speed**:
+A floor block's walking speed (`WorkerOptions.surfaces`, 1 for every block by default): a unit walking flat over it covers it that many times as fast, summed piece by piece along each straight motion, and routes choose by time, so a longer road can win. Climbs, drops and wading keep their timing. Changing a floor's speed, even by swapping one solid block for another, changes routes as an edit of the ground does. With none configured, timing and routes are exactly the engine's without it.
+_Avoid_: Road speed, terrain cost, movement multiplier
 
 **Void world**:
 A world whose bottom is open: water, falling blocks, fragments and units that reach it leave the world.
