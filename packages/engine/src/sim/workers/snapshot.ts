@@ -7,6 +7,8 @@ export interface UnitSnapshot {
   tools: string[]; stock: [number, number][]; goal: number | null; available: boolean; allowDig: boolean; buildBlock: number
   /** Owned by a game system, its intent and, while falling, the height its fall started from (plan deviation D8: optional). */
   controlled?: boolean; intent?: Intent; fallFrom?: number
+  /** A controlled unit's work speed, when it is not 1 (SystemUnits.setWorkSpeed). */
+  speed?: number
 }
 
 export interface OrderSnapshot {

@@ -99,6 +99,8 @@ interface Unit {
   intent: Intent | null
   /** Q8 height the current fall started from (the `fell` event's height). */
   fallFrom: number
+  /** Work speed set by a game system (1 by default): divides the duration of each timed step the unit starts. */
+  speed: number
 }
 /**
  * last: pose where the refined path ends; segs: refined segments by end index in `path`, with the region revision they
@@ -152,6 +154,8 @@ const WADE_ON_DEPTH = 384
 /** Flat heuristic estimate above which a unit walks a hierarchical route; steps one field descent may take. */
 export const HIER_MIN = 48 * 4
 const SEGMENT_STEPS = 256
+/** The hash mixes a work speed by its float64 bits (two 32-bit words). */
+const SPEED_BITS = new Float64Array(1), SPEED_WORDS = new Int32Array(SPEED_BITS.buffer)
 /** Regions a route may recover in from costs priced one region ahead before it plans anew. */
 const MAX_RECOVERIES = 16
 const STATUSES = ['pending', 'found', 'unreachable', 'limited', 'stale', 'cancelled'] as const
@@ -334,12 +338,23 @@ export class WorkerSystem {
     this.targets.add(p); u.task = t; u.workPoses = goals; u.progressAt = this.time
     this.plan(u, goals); u.state = 'planning'; this.dirty.add(u.id)
   }
+  /**
+   * A controlled unit's work speed: each timed step (a build or a dig) it starts after this takes
+   * max(1, round(base / speed)) ticks. A step under way keeps its duration; route planning costs are unchanged.
+   */
+  setWorkSpeed(id: number, speed: number): void {
+    const u = this.controlledUnit(id)
+    if (typeof speed !== 'number' || !Number.isFinite(speed) || speed <= 0) throw new Error('work speed must be a positive finite number')
+    u.speed = speed
+  }
   /** Ends a controlled unit's intent quietly: no event. */
   stop(id: number): void {
     const u = this.controlledUnit(id)
     this.sleepers.wake(u.id)
     this.clearOrder(u); u.intent = null; this.revision++
   }
+  /** A step's duration at the unit's work speed; speed 1 is the material's ticks exactly. */
+  private workTicks(u: Unit, base: number): number { return u.speed === 1 ? base : Math.max(1, Math.round(base / u.speed)) }
   private unitEvent(e: UnitEvent): void { this.unitEvents.push(e) }
   private controlledUnit(id: number): Unit {
     const u = integer(id, 1) ? this.units.get(id) : undefined
@@ -542,7 +557,7 @@ export class WorkerSystem {
       goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
       allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, wadingOut: false, stale: 0, progressAt: this.time, route: null, segment: null,
       projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null,
-      controlled: false, intent: null, fallFrom: 0 }
+      controlled: false, intent: null, fallFrom: 0, speed: 1 }
   }
   /** Plan deviation 6: durable state only; navigation, searches, reservations, claims and failure histories are rebuilt. */
   snapshot(): WorkersSnapshot {
@@ -554,7 +569,7 @@ export class WorkerSystem {
         if (u.motion && !u.motion.flat) [x, y, z] = u.motion.start
         const state: WorkerState = u.state === 'falling' || u.state === 'incapacitated' ? u.state : u.goal === null ? 'idle' : 'planning'
         return { id: u.id, x, y, z, facing: u.facing, state, vy: u.vy, tools: [...u.tools], stock: [...u.stock], goal: u.goal, available: u.available, allowDig: u.allowDig, buildBlock: u.buildBlock,
-          ...(u.controlled && { controlled: true }), ...(u.intent && { intent: u.intent }), ...(u.controlled && u.state === 'falling' && { fallFrom: u.fallFrom }) }
+          ...(u.controlled && { controlled: true }), ...(u.intent && { intent: u.intent }), ...(u.controlled && u.state === 'falling' && { fallFrom: u.fallFrom }), ...(u.speed !== 1 && { speed: u.speed }) }
       }),
       orders: this.orders.map(o => ({
         id: o.id, kind: o.kind, min: [...o.min] as Vec3, max: [...o.max] as Vec3, voxel: o.voxel, total: o.total, done: o.done, pending: o.pending, cancelled: o.cancelled,
@@ -587,7 +602,7 @@ export class WorkerSystem {
       const u = this.newUnit(v.id, v.x, v.y, v.z, v.tools, new Map(v.stock))
       Object.assign(u, { facing: v.facing, state: v.state, vy: v.vy, goal: v.goal, available: v.available, allowDig: v.allowDig, buildBlock: v.buildBlock })
       // Controlled units (plan deviation D8: optional fields, the section stays v1); a fall in flight keeps its start.
-      u.controlled = v.controlled === true; u.intent = v.intent ?? null; u.fallFrom = v.fallFrom ?? v.y
+      u.controlled = v.controlled === true; u.intent = v.intent ?? null; u.fallFrom = v.fallFrom ?? v.y; u.speed = v.speed ?? 1
       if (u.controlled) u.available = false
       if (!this.reserve(u, this.body(u.x, u.y, u.z))) throw new Error(`restored unit ${u.id} overlaps another unit`)
       this.units.set(u.id, u); this.dirty.add(u.id)
@@ -1316,7 +1331,7 @@ export class WorkerSystem {
         const t: Task = { order, i: 0, p, pos: a.pos, expected: this.port.get(...a.pos), claim: u.id, added: this.time, failures: new Map() }
         if (this.satisfied(t)) { u.actionCursor++; continue }
         if (!this.canWork(this.pose(u), t)) { this.block(u, 'unsafe'); continue }
-        this.targets.add(p); u.task = t; u.actionCursor++; u.state = 'working'; u.progress = 0; u.duration = a.kind === 'build' ? this.build[voxelId(a.voxel)]! : this.dig[voxelId(t.expected)]!; this.dirty.add(u.id); continue
+        this.targets.add(p); u.task = t; u.actionCursor++; u.state = 'working'; u.progress = 0; u.duration = this.workTicks(u, a.kind === 'build' ? this.build[voxelId(a.voxel)]! : this.dig[voxelId(t.expected)]!); this.dirty.add(u.id); continue
       }
       if (u.search) {
         const s = u.search
@@ -1350,7 +1365,7 @@ export class WorkerSystem {
       if (u.repair || this.waitsHere(u)) continue
       if (u.path[u.cursor] !== undefined) { this.beginPathMotion(u); continue }
       if (u.task && this.canWork(this.pose(u), u.task)) {
-        u.state = 'working'; u.progress = 0; u.duration = u.task.order.kind === 'build' ? this.build[voxelId(u.task.order.voxel)]! : this.dig[voxelId(this.port.get(...u.task.pos))]!
+        u.state = 'working'; u.progress = 0; u.duration = this.workTicks(u, u.task.order.kind === 'build' ? this.build[voxelId(u.task.order.voxel)]! : this.dig[voxelId(this.port.get(...u.task.pos))]!)
         this.dirty.add(u.id); continue
       }
       if (u.task) { if (this.time >= u.retry) this.plan(u, this.workGoals(u, u.task)); u.state = 'planning'; continue }
@@ -2124,7 +2139,7 @@ export class WorkerSystem {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
       // Only controlled units mix these fields, so worlds without them hash as before.
       // fallFrom only while falling: a save keeps it only then (UnitSnapshot.fallFrom).
-      if (u.controlled) { mix(1); if (u.state === 'falling') mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) } }
+      if (u.controlled) { mix(1); if (u.state === 'falling') mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) }; if (u.speed !== 1) { SPEED_BITS[0] = u.speed; mix(SPEED_WORDS[0]!); mix(SPEED_WORDS[1]!) } }
       mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.wadingOut ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)

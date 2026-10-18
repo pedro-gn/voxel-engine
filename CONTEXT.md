@@ -72,6 +72,10 @@ _Avoid_: Plugin, mod, script
 A worker unit owned by a game system: never given work by the engine, driven by one intent at a time (walk, dig or build), reporting what happened to it. Its digs keep nothing.
 _Avoid_: Player unit, NPC
 
+**Work speed**:
+A controlled unit's multiplier on its timed work: each dig or build step it starts takes the material's ticks divided by it (1 by default). Walking is unaffected.
+_Avoid_: Haste, work rate
+
 **Void world**:
 A world whose bottom is open: water, falling blocks, fragments and units that reach it leave the world.
 _Avoid_: Sky world, no-floor mode
