@@ -35,3 +35,11 @@ BASE (branch start): 1b46c05 (plan commit on top of origin main 571d935).
 - Task 6: Ruling: the bench also reports (not gated) an all-stairs chunk, as the spec asks; `decoratedMeshTables` gains a `shaped` flag for the roofs tables. Sandbox e2e uses `E2E_PORT=5287`: port 5199 is another project's dev server (colony-production) and Playwright's `reuseExistingServer` silently loaded it.
 - Task 6: Bench (plain node, fresh process each, 3 runs): surface 2.374 / 2.388 / 2.456 ms; roofs 2.816 / 2.815 / 2.760 ms (limit 3); all stairs 20.5–24.7 ms (reported). Earlier runs under machine load: surface up to 2.8–3.3 and roofs 3.0–3.1 — the roofs margin is ~0.2 ms.
 - Task 6: Sandbox: `?scene=shapes` (96 × 32 × 64): rows of every stair facing × half (planks, stone) beside cubes, slabs, posts/beams; a gable roof; a 7 × 7 hip roof; an L-shaped hip roof (inner corners) in stone; a framed wall. e2e passes; screenshot apps/sandbox/test-results/shapes.png (git-ignored).
+- Task 6: complete (commit bd45170; tests: npm test → engine 126 files 1363 passed + 2 expected fail, terrain 174, terrain-editor 200, sandbox 139; npm run typecheck → exit 0; e2e shapes.spec.ts → 1 passed)
+
+## Engine checkpoint (stop: Part B waits for the user's OK and SP12)
+Open issues:
+- Roofs gate margin ~0.2 ms; under machine load the gate can fail on noise (surface itself read 2.8–3.3 then).
+- `bench/workers.node.ts` fails its own `stats.visited <= 4096` assert on base too (pre-existing).
+- Cube faces against a shape are lit by `faceLight`'s neighbour approximation (brightest neighbour − 1), not the sim's light; AO is 0 on shaped faces and shapes do not darken cube AO.
+- Falling/fragment shaped blocks draw as cubes (spec's known limitation).
