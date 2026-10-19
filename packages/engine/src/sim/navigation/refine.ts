@@ -1,6 +1,5 @@
 import type { Layout } from '../../world/layout.ts'
-import { WADE_COST, edgeCost } from './navigation.ts'
-import { UNREACHED, exitKey, landing, slotOf, type Exit, type Region } from './regions.ts'
+import { UNREACHED, exitKey, landing, regionStepCost, slotOf, type Exit, type Region } from './regions.ts'
 
 /**
  * Walks down a region field from `from` to a pose of cost 0, taking at each pose the first direction whose step is
@@ -25,7 +24,7 @@ export function descend(region: Region, field: Uint16Array | number, from: numbe
     for (let k = 0; k < 4 && moved < 0; k++) {
       const d = k === 0 ? face : k <= face ? k - 1 : k, t = region.next[slot * 4 + d]!
       ops++
-      if (t >= 0 && values[base + t]! + edgeCost(layout, pose, region.poses[t]!) + (region.wet[t] ? WADE_COST : 0) === here && allowed(region.poses[t]!)) moved = t
+      if (t >= 0 && values[base + t]! + regionStepCost(region, pose, t, layout) === here && allowed(region.poses[t]!)) moved = t
     }
     ops++
     if (moved < 0) return { path, ops, ok: false, cut: false }

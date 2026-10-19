@@ -1,6 +1,6 @@
-import { WADE_COST, edgeCost, type NavigationSystem, type PathResult, type PathStatus } from './navigation.ts'
+import type { NavigationSystem, PathResult, PathStatus } from './navigation.ts'
 import { IdHeap } from './heap.ts'
-import { RegionBuild, UNREACHED, exitKey, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
+import { RegionBuild, UNREACHED, exitKey, regionStepCost, reverseField, slotOf, splitKey, type Region, type RegionStore } from './regions.ts'
 import { NO_COST, type LandmarkTables } from './landmarks.ts'
 
 export interface RouteOptions { exclude?: ReadonlySet<number> /* exit.from poses not to use */; maxNodes?: number /* default 65536 */; weight?: number /* default ROUTE_WEIGHT */; landmarks?: LandmarkTables | null /* default: the navigation's current tables */ }
@@ -14,10 +14,13 @@ const STATUSES: readonly PathStatus[] = ['pending', 'found', 'unreachable', 'lim
 type Phase = 'start' | 'search' | 'validate'
 const PHASES: readonly Phase[] = ['start', 'search', 'validate']
 
-/** Min over goals of the flat A* heuristic; consistent over region exits too, since their costs are real path costs. */
-export function routeHeuristic(goals: readonly (readonly [number, number, number])[], x: number, y: number, z: number): number {
+/**
+ * Min over goals of the flat A* heuristic; consistent over region exits too, since their costs are real path costs.
+ * `step` and `climb`: the lower bounds per planar step and per block risen (NavigationSystem.minStep / minClimb).
+ */
+export function routeHeuristic(goals: readonly (readonly [number, number, number])[], x: number, y: number, z: number, step = 4, climb = 2): number {
   let h = Infinity
-  for (const [gx, gy, gz] of goals) h = Math.min(h, (Math.abs(x - gx) + Math.abs(z - gz)) * 4 + Math.max(0, gy - y) * 2)
+  for (const [gx, gy, gz] of goals) h = Math.min(h, (Math.abs(x - gx) + Math.abs(z - gz)) * step + Math.max(0, gy - y) * climb)
   return h === Infinity ? 0 : h
 }
 
@@ -166,7 +169,7 @@ export class RouteSearch {
    */
   private h(p: number): number {
     const [x, y, z] = this.nav.port.layout.voxelCoords(p)
-    let h = routeHeuristic(this.goalCoords, x, y, z)
+    let h = routeHeuristic(this.goalCoords, x, y, z, this.nav.minStep, this.nav.minClimb)
     const alt = this.alt, ups = this.ups
     if (alt && ups) {
       const tile = this.nav.tileOfPose(p)
@@ -294,7 +297,7 @@ export class RouteSearch {
       let moved = false
       for (let d = 0; d < 4 && !moved; d++) {
         const t = r.next[slot * 4 + d]!
-        if (t >= 0 && field[t]! + edgeCost(L, r.poses[slot]!, r.poses[t]!) + (r.wet[t] ? WADE_COST : 0) === field[slot]) { slot = t; moved = true }
+        if (t >= 0 && field[t]! + regionStepCost(r, r.poses[slot]!, t, L) === field[slot]) { slot = t; moved = true }
       }
       steps++
       if (!moved) break

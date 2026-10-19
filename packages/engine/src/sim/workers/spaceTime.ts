@@ -9,8 +9,10 @@ export interface SpaceTimePort {
   cellsOf(p: number): number[]
   /** Union of body cells over a step a→b. */
   stepCells(a: number, b: number): number[]
-  /** Ticks a step a→b takes: 4 flat, 4 + 2 climb, 4 + d drop. */
+  /** Ticks a step a→b takes: 4 flat (fewer or more on a surface with a speed), 4 + 2 climb, 4 + d drop. */
   ticksOf(a: number, b: number): number
+  /** Fewest ticks a one-block flat step may take (the heuristic's bound; absent: 4). */
+  minStepTicks?: number
   coords(p: number): [number, number, number]
   /** Whether p lies in the oncoming lane of a passage for a unit heading in planar direction d (absent: no lanes). */
   oncoming?(p: number, d: number): boolean
@@ -102,7 +104,8 @@ export class SpaceTimeSearch {
     if (h !== undefined) return h
     const [x, , z] = this.coords(p), n = this.targets.length
     h = Infinity
-    for (let i = 0; i < n; i++) { const c = this.targetCoords[i]!; h = Math.min(h, 4 * (Math.abs(x - c[0]) + Math.abs(z - c[2])) + 4 * (n - 1 - i)) }
+    const k = this.port.minStepTicks ?? 4
+    for (let i = 0; i < n; i++) { const c = this.targetCoords[i]!; h = Math.min(h, k * (Math.abs(x - c[0]) + Math.abs(z - c[2])) + k * (n - 1 - i)) }
     this.hOf.set(p, h)
     return h
   }

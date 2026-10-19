@@ -3,7 +3,7 @@ import type { Layout } from '../../world/layout.ts'
 import { AIR, voxelId } from '../../world/voxel.ts'
 import { raycast } from '../../interact/raycast.ts'
 import type { Command, Vec3 } from '../commands.ts'
-import { NavigationSystem, type PathSearch } from '../navigation/navigation.ts'
+import { NavigationSystem, surfaceCosts, type PathSearch } from '../navigation/navigation.ts'
 import { EngineeringSearch, type RouteAction } from '../navigation/engineering.ts'
 import { RouteSearch } from '../navigation/routeSearch.ts'
 import { GroupField, startClusters } from '../navigation/groupField.ts'
@@ -245,6 +245,12 @@ export class WorkerSystem {
   private readonly maxOrders: number
   /** Cells above its feet a unit builds at (WorkerOptions.buildReach; 1 by default). */
   private readonly buildReach: number
+  /**
+   * Walking speed by block id of the floor (WorkerOptions.surfaces; 1 where none is set), or null when none is configured:
+   * timing and routes are then exactly today's. `minStepTicks`: the fewest ticks a one-block flat step may take.
+   */
+  private readonly speeds: Float64Array | null = null
+  private readonly minStepTicks: number | undefined
   constructor(port: WorkerPort, options: WorkerOptions = {}) {
     this.port = port
     this.maxUnits = options.maxUnits ?? 1000; this.searchCap = options.searchCap ?? 4096; this.prebuildCap = options.prebuildCap ?? 1024; this.sleepEnabled = options.sleep !== false; this.decisionCap = options.decisionCap ?? 256
@@ -265,6 +271,20 @@ export class WorkerSystem {
       for (const [field, value] of Object.entries({ digTicks: m.digTicks, buildTicks: m.buildTicks })) if (value !== undefined && !integer(value, 1, 65535)) throw new RangeError(`${name}.${field} must be in 1..65535`)
       if (m.tool !== undefined && (typeof m.tool !== 'string' || !m.tool.length)) throw new Error('tool must be a nonempty string')
       this.dig[id] = m.digTicks ?? 0; this.build[id] = m.buildTicks ?? 0; this.drops[id] = m.drop === undefined ? id : R.id(m.drop); this.tools[id] = m.tool
+    }
+    const surfaces = Object.entries(options.surfaces ?? {})
+    if (surfaces.length) {
+      const speeds = new Float64Array(R.count).fill(1)
+      for (const [name, s] of surfaces) {
+        let id: number
+        try { id = R.id(name) } catch { throw new RangeError(`workers surface ${name} is not a block`) }
+        if (!R.solid[id] || R.liquid[id]) throw new RangeError(`workers surface ${name} must be a solid block`)
+        const speed = s?.speed
+        if (typeof speed !== 'number' || !Number.isFinite(speed) || speed <= 0 || speed > 4) throw new RangeError(`workers surface ${name}.speed must be a number in (0, 4]`)
+        speeds[id] = speed
+      }
+      this.speeds = speeds; this.nav.surfaces = surfaceCosts(speeds)
+      this.minStepTicks = Math.max(1, Math.ceil(4 / Math.max(1, ...speeds)))
     }
   }
   /** Void world (spec §3): the bottom of the volume is no support, and units below it die. */
@@ -392,7 +412,11 @@ export class WorkerSystem {
     // the pose there: the region layer reads both as geometry.
     if ((R.liquid[a] || R.liquid[b]) && a !== b && !R.solid[a] && !R.solid[b]) this.nav.invalidateLiquid(x, y, z, this.time)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
-    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b]) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
+    // A floor whose walking speed changes (a solid swap included) changes step costs: the tiles around it are rebuilt and the
+    // searches over them go stale. It is no change of solid geometry: the landmark tables answer in bounds that hold under any
+    // speeds (LandmarkTables' scales), so a road project does not retire them (accesses review M1).
+    const speed = this.speeds !== null && this.speeds[a] !== this.speeds[b]
+    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || speed) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
   invalidateAll(): void {
@@ -408,6 +432,7 @@ export class WorkerSystem {
       const a = voxelId(old[i]!), b = voxelId(value[i]!)
       // Liquid presence and kind are region geometry too (the head-cell and feet rules of NavigationSystem.regionStand).
       if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || (R.liquid[a] || R.liquid[b]) && a !== b) return true
+      if (this.speeds !== null && this.speeds[a] !== this.speeds[b]) return true
     }
     return false
   }
@@ -1064,6 +1089,7 @@ export class WorkerSystem {
       const cells = walkSweep(L, [u.x, u.y, u.z], [x * 256 + 128, u.y, z * 256 + 128])
       if (cells.some(p => this.occupied.has(p) && this.occupied.get(p) !== u.id) || !this.walkable(u, cells, y)) continue
       if (own && cells.some(p => L.voxelCoords(p)[1] === y && !own.has(p))) continue
+      if (this.speeds && !this.shortcutPays(u.path, u.cursor, i, [u.x, u.y, u.z])) continue
       return this.beginMotion(u, to, i + 1, cells)
     }
     return this.beginMotion(u, u.path[u.cursor]!)
@@ -1097,11 +1123,54 @@ export class WorkerSystem {
     }
     // Owning the first tick now keeps projections made later this tick from claiming the cells it just took.
     for (let t = this.time + 1; t <= this.time + (flat ? 1 : ticks); t++) this.table.reserve(u.id, t, cells)
-    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area, world: this.dynamicWasBusy ? -1 : this.worldRevision, policy: this.policy, axis: flat ? this.axisStep(start, to) : -1 }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
+    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area, world: this.dynamicWasBusy ? -1 : this.worldRevision, policy: this.policy, axis: flat && ticks === 4 ? this.axisStep(start, to) : -1 }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
   }
   private stepTicks(start: readonly [number, number, number], to: number): number {
     const [tx, ty, tz] = this.port.layout.voxelCoords(to), y = start[1] >> 8
-    return ty * 256 === start[1] ? Math.max(1, Math.ceil(ceilSqrt((tx * 256 + 128 - start[0]) ** 2 + (tz * 256 + 128 - start[2]) ** 2) / WALK_SPEED)) : 4 + (ty > y ? 2 : y - ty)
+    if (ty * 256 !== start[1]) return 4 + (ty > y ? 2 : y - ty)
+    const ticks = Math.max(1, Math.ceil(ceilSqrt((tx * 256 + 128 - start[0]) ** 2 + (tz * 256 + 128 - start[2]) ** 2) / WALK_SPEED))
+    if (!this.speeds) return ticks
+    const time = this.surfaceTime(start, tx, tz)
+    return time < 0 ? ticks : Math.max(1, Math.ceil(time / WALK_SPEED))
+  }
+  /**
+   * With surface speeds, a flat line's time in Q8 lengths at speed 1: the line from `start` to the center of (tx, tz) is
+   * cut where it crosses cell borders, and each piece counts its length / the speed of the block under it. -1 when no
+   * floor under it has a speed other than 1 (its ticks are then today's, exactly).
+   */
+  private surfaceTime(start: readonly [number, number, number], tx: number, tz: number): number {
+    const S = this.speeds!, sx = start[0], sz = start[2], dx = tx * 256 + 128 - sx, dz = tz * 256 + 128 - sz, y = start[1] >> 8
+    if (y === 0 || (!dx && !dz)) return -1
+    const ts = [0, 1]
+    for (const [s, d] of [[sx, dx], [sz, dz]] as const) {
+      if (!d) continue
+      const lo = Math.min(s, s + d), hi = Math.max(s, s + d)
+      for (let k = Math.floor(lo / 256) + 1; k * 256 < hi; k++) { const t = (k * 256 - s) / d; if (t > 0 && t < 1) ts.push(t) }
+    }
+    ts.sort((a, b) => a - b)
+    const len = Math.sqrt(dx * dx + dz * dz)
+    let sum = 0, any = false
+    for (let i = 1; i < ts.length; i++) {
+      const t0 = ts[i - 1]!, t1 = ts[i]!
+      if (t1 <= t0) continue
+      const m = (t0 + t1) / 2, speed = S[voxelId(this.port.get(Math.floor((sx + dx * m) / 256), y - 1, Math.floor((sz + dz * m) / 256)))]!
+      if (speed !== 1) any = true
+      sum += (t1 - t0) * len / speed
+    }
+    return any ? sum : -1
+  }
+  /**
+   * With surface speeds, whether walking straight from `start` to path node `i` takes no longer than following the path
+   * from node `cursor` there: a shortcut must not cut across slower ground than the route chose.
+   */
+  private shortcutPays(path: readonly number[], cursor: number, i: number, start: readonly [number, number, number]): boolean {
+    const L = this.port.layout, time = (s: readonly [number, number, number], p: number) => {
+      const [x, , z] = L.voxelCoords(p), t = this.surfaceTime(s, x, z)
+      return t >= 0 ? t : Math.sqrt((x * 256 + 128 - s[0]) ** 2 + (z * 256 + 128 - s[2]) ** 2)
+    }
+    let along = time(start, path[cursor]!)
+    for (let j = cursor + 1; j <= i; j++) { const [x, y, z] = L.voxelCoords(path[j - 1]!); along += time([x * 256 + 128, y * 256, z * 256 + 128], path[j]!) }
+    return time(start, path[i]!) <= along + 1e-6
   }
   private verticalCells(to: number, ticks: number, start: [number, number, number]): number[] {
     const set = new Set<number>()
@@ -1317,7 +1386,8 @@ export class WorkerSystem {
         engineeringWork += u.engineering.step(Math.min(128, Math.max(0, this.searchCap - engineeringWork)))
         if (u.engineering.status === 'pending') continue
         const search = u.engineering; u.engineering = null
-        if (search.status === 'found' && (!u.alternative.length || search.cost < u.alternativeCost)) { u.actions = search.actions; u.actionCursor = 0; u.path = []; u.cursor = 0; u.alternative = []; u.alternativeCost = 0 }
+        // Engineering costs are unscaled (4 a walk, the dig and build ticks): scaled as the route's to compare (review I3).
+        if (search.status === 'found' && (!u.alternative.length || search.cost * this.nav.costScale < u.alternativeCost)) { u.actions = search.actions; u.actionCursor = 0; u.path = []; u.cursor = 0; u.alternative = []; u.alternativeCost = 0 }
         else if (u.alternative.length) { u.path = u.alternative; u.cursor = 1; u.alternative = [] }
         else { this.block(u, search.status === 'limited' || u.searchLimited ? 'search-limited' : search.missingMaterial ? 'missing-material' : 'no-access'); continue }
         u.searchLimited = false
@@ -1339,7 +1409,7 @@ export class WorkerSystem {
         u.search = null
         if (s.status === 'found') {
           u.stale = 0
-          if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
+          if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32 * this.nav.costScale) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
           if (u.task) {
             const p = s.path.at(-1)!, owner = this.workPositions.get(p)
             // Another unit took this pose while the search ran: search again for the poses still free.
@@ -1671,7 +1741,7 @@ export class WorkerSystem {
       if (to === undefined || pr.t < (this.untilAt(u, pr.cursor - 1) ?? -1)) { if (!this.claim(u, pr.t + 1, this.body(...start))) return this.stand(u, pr); pr.t++; continue }
       const ticks = this.stepTicks(start, to), [tx, , tz] = L.voxelCoords(to), from = pr.t
       if (L.voxelCoords(to)[1] * 256 === start[1]) {
-        const axis = this.axisStep(start, to)
+        const axis = ticks === 4 ? this.axisStep(start, to) : -1
         const area = axis >= 0 ? null : new Set(walkSweep(L, start, [tx * 256 + 128, start[1], tz * 256 + 128]))
         for (let e = 0; e < ticks; e++) {
           const cells = area ? walkSweep(L, this.motionPose(to, e, ticks, start), this.motionPose(to, e + 1, ticks, start)).filter(p => area.has(p)) : this.stepCellsAt(start, to, axis, e)
@@ -2051,7 +2121,7 @@ export class WorkerSystem {
       neighbor: (p, d) => this.nav.neighbor(p, d), allowed: p => this.poseOk(u, L.voxelCoords(p)), coords: p => L.voxelCoords(p),
       cellsOf: p => this.body(...at(p)),
       stepCells: (a, b) => { const s = at(a), e = at(b); return e[1] === s[1] ? walkSweep(L, s, e) : this.verticalCells(b, this.stepTicks(s, b), s) },
-      ticksOf: (a, b) => this.stepTicks(at(a), b),
+      ticksOf: (a, b) => this.stepTicks(at(a), b), minStepTicks: this.minStepTicks,
       oncoming: (p, d) => this.oncomingLane(p, d),
     }
   }

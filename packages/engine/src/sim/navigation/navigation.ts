@@ -22,7 +22,7 @@ export interface SearchOptions { allowed?(p: number): boolean; accept?(p: number
 const DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1]
 const UNSET = -2
 /** First slice of a new search estimated short: such routes finish in it instead of queueing behind long searches. */
-const FRESH_SLICE = 512, SHORT_ESTIMATE = 32 * 4
+const FRESH_SLICE = 512, SHORT_STEPS = 32
 /** Long queries sliced together; the rest wait their turn. */
 const WINDOW = 8
 /** Prebuild rings: tiles within this many columns of an anchor, on its level and the levels above and below. */
@@ -34,6 +34,26 @@ interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: numb
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
 /** Extra planning cost of a step onto a pose whose feet are in water: wading counts as about three steps, so routes keep to dry land unless going round is much longer. Walking speed is the same. */
 export const WADE_COST = 8
+/**
+ * With surface speeds configured, every base cost (a step, a climb, a drop, wading) is multiplied by this, so a flat step
+ * onto a block of speed s can cost round(4 × COST_SCALE / s) in whole numbers. Without surfaces costs stay unscaled.
+ */
+export const COST_SCALE = 4
+/** Most a flat step may cost (a very slow surface), so region fields (Uint16) keep their headroom. */
+const MAX_FLAT = 4095
+/**
+ * Edge costs with surface speeds. `flat[id]`: the cost of a flat step onto a pose standing on block `id`; climbs, drops
+ * and wading keep their base cost × COST_SCALE (their timing does not change with the floor). `step` and `climb`: the
+ * lower bounds the heuristics use per planar step (at the fastest configured speed) and per block risen.
+ */
+export interface SurfaceCosts { flat: Uint16Array; step: number; climb: number; maxFlat: number }
+/** Surface costs from speeds by block id (1 where none is set). */
+export function surfaceCosts(speeds: Float64Array): SurfaceCosts {
+  let max = 1, maxFlat = 4 * COST_SCALE
+  const flat = new Uint16Array(speeds.length)
+  for (let id = 0; id < speeds.length; id++) { const s = speeds[id]!; max = Math.max(max, s); flat[id] = Math.min(MAX_FLAT, Math.max(1, Math.round(4 * COST_SCALE / s))); maxFlat = Math.max(maxFlat, flat[id]!) }
+  return { flat, step: Math.max(1, Math.floor(4 * COST_SCALE / max)), climb: 2 * COST_SCALE, maxFlat }
+}
 /**
  * Ticks a tile holds its liquid changes before the region layer sees them, in one revision bump. Water at a river's edge
  * flickers many times a tick; bumping on each change restarted every build and search over it. Until then the live policy
@@ -193,6 +213,29 @@ export class NavigationSystem {
   }
   /** Void world (spec §3): the bottom of the volume is no support. */
   voidFloor = false
+  /** Surface speeds (WorkerOptions.surfaces), or null: costs are then exactly the unscaled ones. Set once, before any search. */
+  surfaces: SurfaceCosts | null = null
+  /** Heuristic lower bounds per planar step and per block risen: 4 and 2 unscaled. */
+  get minStep(): number { return this.surfaces ? this.surfaces.step : 4 }
+  get minClimb(): number { return this.surfaces ? this.surfaces.climb : 2 }
+  /** What one unscaled cost unit is worth in this navigation's costs: COST_SCALE with surfaces, else 1 (accesses review I3). */
+  get costScale(): number { return this.surfaces ? COST_SCALE : 1 }
+  /**
+   * Planning cost of the step from pose `from` to pose `to` (one of its edges): 4, +2 for a climb, +1 per block dropped,
+   * + WADE_COST onto water; with surfaces all × COST_SCALE, except that a flat step costs its floor's flat cost.
+   */
+  stepCost(from: number, to: number, wet = this.wet(to)): number {
+    const plane = this.plane, sy = (from / plane) | 0, ty = (to / plane) | 0, S = this.surfaces
+    if (!S) return 4 + (ty > sy ? 2 : sy - ty) + (wet ? WADE_COST : 0)
+    return (ty === sy ? this.flatCost(to) : (4 + (ty > sy ? 2 : sy - ty)) * COST_SCALE) + (wet ? WADE_COST * COST_SCALE : 0)
+  }
+  /** With surfaces, the cost of a flat step onto pose p, by the block under its feet (block 0 on the world floor). */
+  flatCost(p: number): number {
+    const S = this.surfaces!, y = (p / this.plane) | 0
+    if (y === 0) return S.flat[0]!
+    const r = p - y * this.plane, z = (r / this.sx) | 0
+    return S.flat[voxelId(this.port.get(r - z * this.sx, y - 1, z))]!
+  }
   stand(x: number, y: number, z: number): boolean {
     return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 ? !this.voidFloor : this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
   }
@@ -371,7 +414,7 @@ export class NavigationSystem {
     let share = cap >> 1
     for (const s of this.requests) {
       if (share <= 0) break
-      if (s.spent || s.estimate > SHORT_ESTIMATE) continue
+      if (s.spent || s.estimate > SHORT_STEPS * this.minStep) continue
       const used = s.step(Math.min(share, FRESH_SLICE)); share -= used; cap -= used; this.visited += used
     }
     this.requests = this.requests.filter(s => s.status === 'pending')
@@ -470,7 +513,8 @@ export class PathSearch {
     if (!G.length) return 0
     const plane = this.nav.plane, sx = this.nav.sx, y = (p / plane) | 0, r = p - y * plane, z = (r / sx) | 0, x = r - z * sx
     let h = 0xffffffff
-    for (let i = 0; i < G.length; i += 3) h = Math.min(h, (Math.abs(x - G[i]!) + Math.abs(z - G[i + 2]!)) * 4 + Math.max(0, G[i + 1]! - y) * 2)
+    const step = this.nav.minStep, climb = this.nav.minClimb
+    for (let i = 0; i < G.length; i += 3) h = Math.min(h, (Math.abs(x - G[i]!) + Math.abs(z - G[i + 2]!)) * step + Math.max(0, G[i + 1]! - y) * climb)
     return h
   }
   private less(a: number, b: number): boolean {
@@ -542,7 +586,7 @@ export class PathSearch {
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
         else if (to >= 0 && this.blocked?.has(to)) this.cut = true
         else if (to >= 0 && (!this.reversible || nav.neighbor(to, this.direction ^ 1, this.seen) === this.positions[this.expanding]!)) {
-          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0), id = this.ids.get(to)
+          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + (nav.surfaces ? nav.stepCost(this.positions[this.expanding]!, to) : 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0)), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
         }
