@@ -50,8 +50,12 @@ export function chunkVertex(scales?: ScaleTable, liquid = false) {
   const layer = layerBits.toFloat()
   const sky = b.shiftRight(uint(12)).bitAnd(uint(15)).toFloat().div(15)
   const blk = b.shiftRight(uint(16)).bitAnd(uint(15)).toFloat().div(15)
+  // A shaped block's corner between grid points, in sixteenths (vertexFormat.ts word B); 0 for every other vertex.
+  const fx = b.shiftRight(uint(20)).bitAnd(uint(15)).toFloat().div(16)
+  const fy = b.shiftRight(uint(24)).bitAnd(uint(15)).toFloat().div(16)
+  const fz = b.shiftRight(uint(28)).bitAnd(uint(15)).toFloat().div(16)
 
-  const local = vec3(px, py.sub(drop.div(16)), pz)
+  const local = vec3(px.add(fx), py.add(fy).sub(drop.div(16)), pz.add(fz))
   // Chunk-centred; a batched chunk adds its translation here (an unbatched mesh's model matrix carries it instead).
   const position = local.sub(16).add(batchOffset())
   const normal = select(nIdx.equal(uint(0)), vec3(1, 0, 0),

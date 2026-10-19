@@ -74,7 +74,7 @@ export class MeshJobRunner {
       if (px < 0 || py < 0 || pz < 0 || px >= PAD || py >= PAD || pz >= PAD) continue
       const pi = padIndex(px, py, pz)
       s.voxels[pi] = v
-      if (this.tables.opaque[voxelId(v)]) { s.light[pi] = 0; continue }
+      if (this.tables.blocksLight[voxelId(v)]) { s.light[pi] = 0; continue }
       // Approximate the light the sim will compute, so a freshly dug hole is not black for a tick.
       let sky = 0, blk = 0
       for (let d = 0; d < 6; d++) {

@@ -94,7 +94,7 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
       const nid = voxelId(s.voxels[ni]!)
       if (t.opaque[nid] || (liquid ? t.liquidGroup[nid] === group : nid === id)) continue
       const l = s.light[ni]!
-      const b = packB(t.faceLayers[id * 6 + f]!, l & 15, l >> 4, 1, 1)
+      const b = packB(t.faceLayers[id * 6 + f]!, l & 15, l >> 4)
       const plane = (f & 1) === 0 ? 1 : 0
       for (let c = 0; c < 4; c++) {
         const cu = c === 1 || c === 2 ? 1 : 0

@@ -61,3 +61,8 @@ it('a fragment re-announced after a load starts where it was, with nothing to wa
   track.releaseSources()
   for (const t of [0, 10, 25, 50, 100]) for (const f of track.frame(t, () => 0)) expect(f.offset).toBeLessThanOrEqual(-3)
 })
+it('draws a shaped member as an opaque cube while it falls (known limitation)', () => {
+  const registry = new BlockRegistry([{ name: 'stair', collapses: true, shape: 'stair' }])
+  const data = fragmentGeometry(birth, layout, registry, new Uint16Array(12), () => 15)
+  expect(data.map(d => d.layer)).toEqual([1])
+})

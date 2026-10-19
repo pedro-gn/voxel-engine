@@ -13,6 +13,12 @@ export interface MeshTables {
   /** 1 for a spring: drawn at full level whatever its state. */
   source: Uint8Array
   faceLayers: Uint16Array
+  /** `SHAPE` code per id (blocks/shapes.ts); 0 for whole cubes. */
+  shape: Uint8Array
+  /** 1 when a block stops light: opaque cubes, slabs and stairs. Their own cells hold no light. */
+  blocksLight: Uint8Array
+  /** False when no block has a shape: the shaped-cell pass is skipped. */
+  hasShapes: boolean
   deco: DecorationTables
 }
 
@@ -20,6 +26,7 @@ export function meshTablesFrom(registry: BlockRegistry, faceLayers: Uint16Array,
   return {
     opaque: registry.opaque, layer: registry.layer, liquid: registry.liquid,
     liquidGroup: registry.liquidGroup, source: registry.source, faceLayers, deco,
+    shape: registry.shape, blocksLight: registry.blocksLight, hasShapes: registry.shape.some((c) => c !== 0),
     waterGroup: waterGroupOf(registry),
   }
 }

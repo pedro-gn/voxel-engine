@@ -16,8 +16,9 @@ describe('vertex format', () => {
     expect(unpackA((packA(0, 0, 0, 0, 0, 0, 0) | CUT_BIT) >>> 0)).toEqual({ x: 0, y: 0, z: 0, normal: 0, ao: 0, corner: 0, drop: 0 })
   })
   it('round-trips word B at its limits', () => {
-    expect(unpackB(packB(4095, 15, 15, 32, 32))).toEqual({ layer: 4095, sky: 15, block: 15, w: 32, h: 32 })
-    expect(packB(4095, 15, 15, 63, 63)).toBeGreaterThan(0) // unsigned, even with the top bit set
+    expect(unpackB(packB(4095, 15, 15, 15, 8, 1))).toEqual({ layer: 4095, sky: 15, block: 15, fx: 15, fy: 8, fz: 1 })
+    expect(unpackB(packB(7, 3, 2))).toEqual({ layer: 7, sky: 3, block: 2, fx: 0, fy: 0, fz: 0 })
+    expect(packB(4095, 15, 15, 15, 15, 15)).toBeGreaterThan(0) // unsigned, even with the top bit set
   })
 })
 

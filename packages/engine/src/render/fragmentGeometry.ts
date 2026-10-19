@@ -1,4 +1,4 @@
-import type { BlockRegistry } from '../blocks/registry.ts'
+import { LAYER, type BlockRegistry } from '../blocks/registry.ts'
 import type { FragmentBirth } from '../sim/collapse.ts'
 import type { Layout } from '../world/layout.ts'
 import { cubeLight } from './fallingTrack.ts'
@@ -14,14 +14,14 @@ const CORNERS = [
 ] as const
 export interface FragmentGeometry { layer: number; positions: Float32Array; normals: Float32Array; uv: Float32Array; info: Float32Array; indices: Uint32Array }
 
-/** Pure exposed-face builder, called once per birth. Faces against opaque members and equal glass are culled. */
+/** Pure exposed-face builder, called once per birth. Faces against opaque members and equal glass are culled. A shaped block falls as a cube (known limitation). */
 export function fragmentGeometry(birth: FragmentBirth, layout: Layout, registry: BlockRegistry, faceLayers: Uint16Array,
   light: (x: number, y: number, z: number) => number): FragmentGeometry[] {
   const own = new Map<number, number>()
   birth.positions.forEach((p, i) => own.set(p, birth.voxels[i]! & 0xfff))
   const layers = new Map<number, { positions: number[]; normals: number[]; uv: number[]; info: number[]; indices: number[] }>()
   birth.positions.forEach((p, i) => {
-    const [x, y, z] = layout.voxelCoords(p), id = birth.voxels[i]! & 0xfff, layer = registry.layer[id]!
+    const [x, y, z] = layout.voxelCoords(p), id = birth.voxels[i]! & 0xfff, drawn = registry.layer[id]!, layer = drawn === LAYER.SHAPE ? LAYER.OPAQUE : drawn
     let b = layers.get(layer)
     if (!b) { b = { positions: [], normals: [], uv: [], info: [], indices: [] }; layers.set(layer, b) }
     const illumination = cubeLight(light, x, y, z)
