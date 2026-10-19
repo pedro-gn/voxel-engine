@@ -412,9 +412,11 @@ export class WorkerSystem {
     // the pose there: the region layer reads both as geometry.
     if ((R.liquid[a] || R.liquid[b]) && a !== b && !R.solid[a] && !R.solid[b]) this.nav.invalidateLiquid(x, y, z, this.time)
     // Liquid flow is dynamic state, retried while dynamicBusy(); only geometry and solid material swaps wake failures.
-    // A floor whose walking speed changes (a solid swap included) changes step costs: a geometry change for routes and landmarks.
+    // A floor whose walking speed changes (a solid swap included) changes step costs: the tiles around it are rebuilt and the
+    // searches over them go stale. It is no change of solid geometry: the landmark tables answer in bounds that hold under any
+    // speeds (LandmarkTables' scales), so a road project does not retire them (accesses review M1).
     const speed = this.speeds !== null && this.speeds[a] !== this.speeds[b]
-    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || speed) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b] || speed, R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
+    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || speed) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
   invalidateAll(): void {
@@ -1384,7 +1386,8 @@ export class WorkerSystem {
         engineeringWork += u.engineering.step(Math.min(128, Math.max(0, this.searchCap - engineeringWork)))
         if (u.engineering.status === 'pending') continue
         const search = u.engineering; u.engineering = null
-        if (search.status === 'found' && (!u.alternative.length || search.cost < u.alternativeCost)) { u.actions = search.actions; u.actionCursor = 0; u.path = []; u.cursor = 0; u.alternative = []; u.alternativeCost = 0 }
+        // Engineering costs are unscaled (4 a walk, the dig and build ticks): scaled as the route's to compare (review I3).
+        if (search.status === 'found' && (!u.alternative.length || search.cost * this.nav.costScale < u.alternativeCost)) { u.actions = search.actions; u.actionCursor = 0; u.path = []; u.cursor = 0; u.alternative = []; u.alternativeCost = 0 }
         else if (u.alternative.length) { u.path = u.alternative; u.cursor = 1; u.alternative = [] }
         else { this.block(u, search.status === 'limited' || u.searchLimited ? 'search-limited' : search.missingMaterial ? 'missing-material' : 'no-access'); continue }
         u.searchLimited = false
@@ -1406,7 +1409,7 @@ export class WorkerSystem {
         u.search = null
         if (s.status === 'found') {
           u.stale = 0
-          if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
+          if (u.goal !== null && (u.allowDig || u.buildBlock) && s.cost > 32 * this.nav.costScale) { u.alternative = s.path; u.alternativeCost = s.cost; this.engineer(u); continue }
           if (u.task) {
             const p = s.path.at(-1)!, owner = this.workPositions.get(p)
             // Another unit took this pose while the search ran: search again for the poses still free.

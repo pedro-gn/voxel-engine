@@ -178,3 +178,63 @@ describe('surface speed', { timeout: 60_000 }, () => {
     expect(Math.abs(fast - plain)).toBeLessThanOrEqual(1)
   })
 })
+
+describe('surface speed: engineering and landmark tables (accesses review I3, M1)', { timeout: 120_000 }, () => {
+  /** A stone wall at x 8 (y 4..7) across the world, with a 1-cell gap at z 14; stone digs in 50 ticks. */
+  const walled: Extra = (ctx, cx, cz) => { if (cx || cz) return; for (let z = 0; z < 32; z++) if (z !== 14) for (let y = 4; y < 8; y++) ctx.set(8, y, z, 1) }
+  function digOrWalk(options: WorkerOptions) {
+    const sim = new Simulation({ buffers: createWorldBuffers([32, 32, 32]), blocks, seed: 1, randomTicksPerChunk: 0, log: () => {}, workers: { searchCap: 32768, materials: { ...materials, stone: { digTicks: 50, buildTicks: 3 } }, ...options } })
+    sim.generate({ generateColumn(ctx, cx, cz) { for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) for (let y = 0; y < 4; y++) ctx.set(x, y, z, 1); walled(ctx, cx, cz) } })
+    const id = spawn(sim, [5, 4, 5]), t0 = sim.tick
+    cmd(sim, { type: 'unitMove', ids: [id], pos: [11, 4, 5], allowDig: true })
+    for (let i = 0; i < 600 && !(sim.workers!.view(id)!.state === 'idle' && sim.workers!.view(id)!.x256 >> 8 === 11); i++) sim.step()
+    let dug = 0
+    for (let z = 0; z < 32; z++) for (let y = 4; y < 8; y++) if (z !== 14 && (sim.store.getVoxel(8, y, z) & 0xfff) !== 1) dug++
+    return { ticks: sim.tick - t0, dug, at: sim.workers!.view(id)!.x256 >> 8 }
+  }
+
+  it('a unit moved with allowDig weighs digging against walking alike with and without surfaces (I3)', () => {
+    const plain = digOrWalk({}), unused = digOrWalk({ surfaces: { planks: { speed: 1.6 } } })
+    expect(plain).toMatchObject({ dug: 0, at: 11 })
+    expect(unused).toMatchObject({ dug: 0, at: 11 })
+    expect(unused.ticks).toBe(plain.ticks)
+  })
+
+  /** A 128-wide world warmed until its regions and landmark tables are ready. */
+  function warm(options: WorkerOptions) {
+    const sim = world(128, undefined, options)
+    const nav = sim.workers!.nav
+    for (let i = 0; i < 20000 && !nav.landmarks.current(); i++) nav.prebuild(8192, [])
+    expect(nav.landmarks.current()).not.toBeNull()
+    return sim
+  }
+
+  it('a write that changes only a floor\'s speed keeps the landmark tables; one that changes solidity retires them (M1)', () => {
+    const sim = warm({ surfaces: FAST }), nav = sim.workers!.nav
+    // Twenty road swaps, one every 20 ticks (a road project): the tables stay current throughout.
+    let current = 0
+    for (let k = 0; k < 20; k++) {
+      cmd(sim, { type: 'fillRegion', min: [10 + k, 3, 40], max: [10 + k, 3, 40], voxel: ROAD })
+      for (let i = 0; i < 20; i++) { sim.step(); if (nav.landmarks.current()) current++ }
+    }
+    expect(current).toBe(20 * 20)
+    // A route planned now still takes the new road where it is faster (the bounds stay admissible).
+    const id = spawn(sim, [10, 4, 37])
+    let maxZ = 0
+    cmd(sim, { type: 'unitMove', ids: [id], pos: [29, 4, 37] })
+    for (let i = 0; i < 400 && !(sim.workers!.view(id)!.state === 'idle' && sim.workers!.view(id)!.x256 >> 8 === 29); i++) { sim.step(); maxZ = Math.max(maxZ, sim.workers!.view(id)!.z256 >> 8) }
+    expect(sim.workers!.view(id)!.x256 >> 8).toBe(29)
+    // A block placed (solidity) still retires them.
+    cmd(sim, { type: 'fillRegion', min: [60, 4, 60], max: [60, 4, 60], voxel: 1 })
+    expect(nav.landmarks.current()).toBeNull()
+    expect(maxZ).toBeGreaterThanOrEqual(37)
+  })
+
+  it('with no surfaces, a block swap of the same speed keeps the tables and a solidity write retires them, as before', () => {
+    const sim = warm({}), nav = sim.workers!.nav
+    cmd(sim, { type: 'fillRegion', min: [10, 3, 40], max: [10, 3, 40], voxel: PAVING })
+    expect(nav.landmarks.current()).not.toBeNull()
+    cmd(sim, { type: 'fillRegion', min: [60, 4, 60], max: [60, 4, 60], voxel: 1 })
+    expect(nav.landmarks.current()).toBeNull()
+  })
+})

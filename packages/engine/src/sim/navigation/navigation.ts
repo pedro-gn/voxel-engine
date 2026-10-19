@@ -46,13 +46,13 @@ const MAX_FLAT = 4095
  * and wading keep their base cost × COST_SCALE (their timing does not change with the floor). `step` and `climb`: the
  * lower bounds the heuristics use per planar step (at the fastest configured speed) and per block risen.
  */
-export interface SurfaceCosts { flat: Uint16Array; step: number; climb: number }
+export interface SurfaceCosts { flat: Uint16Array; step: number; climb: number; maxFlat: number }
 /** Surface costs from speeds by block id (1 where none is set). */
 export function surfaceCosts(speeds: Float64Array): SurfaceCosts {
-  let max = 1
+  let max = 1, maxFlat = 4 * COST_SCALE
   const flat = new Uint16Array(speeds.length)
-  for (let id = 0; id < speeds.length; id++) { const s = speeds[id]!; max = Math.max(max, s); flat[id] = Math.min(MAX_FLAT, Math.max(1, Math.round(4 * COST_SCALE / s))) }
-  return { flat, step: Math.max(1, Math.floor(4 * COST_SCALE / max)), climb: 2 * COST_SCALE }
+  for (let id = 0; id < speeds.length; id++) { const s = speeds[id]!; max = Math.max(max, s); flat[id] = Math.min(MAX_FLAT, Math.max(1, Math.round(4 * COST_SCALE / s))); maxFlat = Math.max(maxFlat, flat[id]!) }
+  return { flat, step: Math.max(1, Math.floor(4 * COST_SCALE / max)), climb: 2 * COST_SCALE, maxFlat }
 }
 /**
  * Ticks a tile holds its liquid changes before the region layer sees them, in one revision bump. Water at a river's edge
@@ -218,6 +218,8 @@ export class NavigationSystem {
   /** Heuristic lower bounds per planar step and per block risen: 4 and 2 unscaled. */
   get minStep(): number { return this.surfaces ? this.surfaces.step : 4 }
   get minClimb(): number { return this.surfaces ? this.surfaces.climb : 2 }
+  /** What one unscaled cost unit is worth in this navigation's costs: COST_SCALE with surfaces, else 1 (accesses review I3). */
+  get costScale(): number { return this.surfaces ? COST_SCALE : 1 }
   /**
    * Planning cost of the step from pose `from` to pose `to` (one of its edges): 4, +2 for a climb, +1 per block dropped,
    * + WADE_COST onto water; with surfaces all × COST_SCALE, except that a flat step costs its floor's flat cost.

@@ -21,16 +21,28 @@ export class LandmarkTables {
   /** Per tile: the record epoch every landmark read (else no entry), and the cost from exit e's `from` pose to landmark k at k * exits + e. */
   readonly exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>
   private readonly tileCount: number
-  constructor(geometry: number, flips: number, tiles: readonly number[], tileCount: number, lo: Int32Array, exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>) {
-    this.geometry = geometry; this.flips = flips; this.tiles = tiles; this.tileCount = tileCount; this.lo = lo; this.exits = exits
+  /**
+   * Accesses review M1: with surface speeds, a floor's speed may change after the tables were computed without retiring
+   * them. Every flat step then costs between `step` and `maxFlat` whatever the speeds (climbs, drops and wading never
+   * change), so a cost d computed then is at least `low` × d and at most `high` × d now: lower bounds are read scaled by
+   * `lowScale` (step / maxFlat), upper ones by `highScale` (maxFlat / step). Both 1 without surfaces.
+   */
+  private readonly lowScale: number
+  private readonly highScale: number
+  constructor(geometry: number, flips: number, tiles: readonly number[], tileCount: number, lo: Int32Array, exits: ReadonlyMap<number, { epoch: number; d: Int32Array }>, lowScale = 1, highScale = 1) {
+    this.geometry = geometry; this.flips = flips; this.tiles = tiles; this.tileCount = tileCount; this.lo = lo; this.exits = exits; this.lowScale = lowScale; this.highScale = highScale
   }
   get count(): number { return this.tiles.length }
   /** Lower bound of the cost from any pose of `tile` to landmark k (a pose leaves its tile through an exit). */
-  low(k: number, tile: number): number { return this.lo[k * this.tileCount + tile]! }
-  /** Cost from the `from` pose of exit e of `region` to landmark k when the tables read this very record, else NO_COST. */
+  low(k: number, tile: number): number { const v = this.lo[k * this.tileCount + tile]!; return v === NO_COST || this.lowScale === 1 ? v : Math.floor(v * this.lowScale) }
+  /**
+   * Cost from the `from` pose of exit e of `region` to landmark k when the tables read this very record, else NO_COST; an
+   * upper bound of it now (`highScale`).
+   */
   exit(k: number, region: Region, e: number): number {
     const t = this.exits.get(region.index)
-    return t && t.epoch === region.epoch ? t.d[k * region.exits.length + e]! : NO_COST
+    const v = t && t.epoch === region.epoch ? t.d[k * region.exits.length + e]! : NO_COST
+    return v === NO_COST || this.highScale === 1 ? v : Math.ceil(v * this.highScale)
   }
   /**
    * Upper bound of the cost from the pose at `slot` of `region` to landmark k: its cheapest way out through an exit whose
@@ -200,7 +212,8 @@ export class Landmarks {
   private finish(): void {
     const job = this.job!, exits = new Map<number, { epoch: number; d: Int32Array }>()
     for (const [index, t] of job.exits) exits.set(index, { epoch: t.epoch, d: t.d })
-    this.ready = new LandmarkTables(job.geometry, job.flips, job.tiles, this.nav.revisions.length, job.lo, exits)
+    const S = this.nav.surfaces
+    this.ready = new LandmarkTables(job.geometry, job.flips, job.tiles, this.nav.revisions.length, job.lo, exits, S ? S.step / S.maxFlat : 1, S ? S.maxFlat / S.step : 1)
     this.job = null
   }
   mixState(mix: (n: number) => void): void {
