@@ -1,7 +1,8 @@
 import { MAX_BLOCK_ID } from '../world/voxel.ts'
+import { SHAPE, SHAPE_CODE, type BlockShape } from './shapes.ts'
 
 export type RenderLayer = 'opaque' | 'cutout' | 'translucent' | 'liquid'
-export const LAYER = { NONE: 0, OPAQUE: 1, CUTOUT: 2, TRANSLUCENT: 3, LIQUID: 4 } as const
+export const LAYER = { NONE: 0, OPAQUE: 1, CUTOUT: 2, TRANSLUCENT: 3, LIQUID: 4, SHAPE: 5 } as const
 export const FACE_COUNT = 6 // +X, -X, +Y, -Y, +Z, -Z
 
 export interface BlockDef {
@@ -21,6 +22,8 @@ export interface BlockDef {
   collapses?: boolean
   /** Makes this liquid block a spring of the named liquid: it counts as full and injects that liquid every fluid step. */
   source?: string
+  /** Draws the block as a slab, stair or post oriented by its voxel state; every system but drawing and light treats it as a full cell. */
+  shape?: BlockShape
 }
 
 export function defineBlock(def: BlockDef): BlockDef {
@@ -46,6 +49,10 @@ export class BlockRegistry {
   readonly source: Uint8Array
   /** The base liquid's id for a liquid or a spring; 0 for every other block. */
   readonly liquidGroup: Uint16Array
+  /** `SHAPE` code per id; 0 for whole cubes. */
+  readonly shape: Uint8Array
+  /** 1 when the block stops sky and block light: opaque cubes, slabs and stairs. */
+  readonly blocksLight: Uint8Array
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
 
@@ -64,6 +71,8 @@ export class BlockRegistry {
     this.structural = new Uint8Array(this.count)
     this.source = new Uint8Array(this.count)
     this.liquidGroup = new Uint16Array(this.count)
+    this.shape = new Uint8Array(this.count)
+    this.blocksLight = new Uint8Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -82,8 +91,15 @@ export class BlockRegistry {
       this.falls[id] = falls ? 1 : 0
       const layer: RenderLayer = d.layer ?? (liquid ? 'liquid' : 'opaque')
       if (layer === 'liquid' && !liquid) throw new Error(`block "${d.name}": layer "liquid" needs liquid: true`)
-      this.layer[id] = d.render === false ? LAYER.NONE : LAYER_CODE[layer]
-      this.opaque[id] = (d.opaque ?? layer === 'opaque') ? 1 : 0
+      if (d.shape !== undefined) {
+        const word = liquid ? 'liquid' : d.decoration !== undefined ? 'decoration' : d.render === false ? 'render: false'
+          : falls ? 'falls' : layer !== 'opaque' ? `layer "${layer}"` : null
+        if (word !== null) throw new Error(`block "${d.name}": shape "${d.shape}" cannot be combined with ${word}`)
+        this.shape[id] = SHAPE_CODE[d.shape]
+      }
+      this.layer[id] = d.render === false ? LAYER.NONE : d.shape !== undefined ? LAYER.SHAPE : LAYER_CODE[layer]
+      this.opaque[id] = d.shape === undefined && (d.opaque ?? layer === 'opaque') ? 1 : 0
+      this.blocksLight[id] = this.opaque[id] || this.shape[id] === SHAPE.SLAB || this.shape[id] === SHAPE.STAIR ? 1 : 0
       this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid
       if (d.collapses && (falls || liquid || d.source !== undefined || this.solid[id] !== 1)) {
         throw new Error(`block "${d.name}": collapses requires a solid, non-liquid block without falls or source`)

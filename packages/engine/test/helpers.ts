@@ -10,8 +10,15 @@ export const TEST_BLOCKS: BlockDef[] = [
   defineBlock({ name: 'leaves', textures: 'leaves', layer: 'cutout' }),
 ]
 
+/** Shaped stone, appended after `TEST_BLOCKS` by `testRegistry()` (ids 8–10), so tests that append their own blocks to `TEST_BLOCKS` keep their ids. */
+export const SHAPED_TEST_BLOCKS: BlockDef[] = [
+  defineBlock({ name: 'stone_slab', textures: 'stone', shape: 'slab' }),
+  defineBlock({ name: 'stone_stair', textures: 'stone', shape: 'stair' }),
+  defineBlock({ name: 'stone_post', textures: 'stone', shape: 'post' }),
+]
+
 export function testRegistry(): BlockRegistry {
-  return new BlockRegistry(TEST_BLOCKS)
+  return new BlockRegistry([...TEST_BLOCKS, ...SHAPED_TEST_BLOCKS])
 }
 
-export const ID = { air: 0, stone: 1, dirt: 2, grass: 3, glass: 4, water: 5, torch: 6, leaves: 7 } as const
+export const ID = { air: 0, stone: 1, dirt: 2, grass: 3, glass: 4, water: 5, torch: 6, leaves: 7, stone_slab: 8, stone_stair: 9, stone_post: 10 } as const

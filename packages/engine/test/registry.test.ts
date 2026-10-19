@@ -9,7 +9,7 @@ describe('BlockRegistry', () => {
     expect(r.id('stone')).toBe(ID.stone)
     expect(r.id('leaves')).toBe(ID.leaves)
     expect(r.name(ID.grass)).toBe('grass')
-    expect(r.count).toBe(8)
+    expect(r.count).toBe(11)
   })
   it('derives flag tables with defaults', () => {
     expect(r.opaque[ID.air]).toBe(0)
@@ -57,6 +57,20 @@ describe('BlockRegistry', () => {
     expect(() => new BlockRegistry([defineBlock({ name: 'a', emits: 16 })])).toThrow(/emits/)
     const many = Array.from({ length: 4096 }, (_, i) => defineBlock({ name: `b${i}` }))
     expect(() => new BlockRegistry(many)).toThrow(/too many/)
+  })
+  it('records shapes', () => {
+    const r = testRegistry()
+    expect([r.shape[ID.stone], r.shape[ID.stone_slab], r.shape[ID.stone_stair], r.shape[ID.stone_post]]).toEqual([0, 1, 2, 3])
+    expect(r.layer[ID.stone_stair]).toBe(LAYER.SHAPE)
+    expect([r.opaque[ID.stone_slab], r.solid[ID.stone_slab], r.structural[ID.stone_slab]]).toEqual([0, 1, 2])
+    expect([r.blocksLight[ID.stone], r.blocksLight[ID.stone_slab], r.blocksLight[ID.stone_stair], r.blocksLight[ID.stone_post], r.blocksLight[ID.glass]]).toEqual([1, 1, 1, 0, 0])
+    expect(r.faceLayers(new Map([['stone', 7]]))[ID.stone_stair * 6 + 2]).toBe(7)
+  })
+  it.each([
+    [{ liquid: true }, 'liquid'], [{ decoration: 'meadow' }, 'decoration'], [{ render: false }, 'render'],
+    [{ falls: true }, 'falls'], [{ layer: 'cutout' as const }, 'layer'],
+  ])('rejects a shape combined with %o', (extra, word) => {
+    expect(() => new BlockRegistry([{ name: 'x', shape: 'slab', ...extra }])).toThrow(new RegExp(`block "x": shape .*${word}`))
   })
   it('records falls, springs and liquid groups', () => {
     const r2 = new BlockRegistry([
