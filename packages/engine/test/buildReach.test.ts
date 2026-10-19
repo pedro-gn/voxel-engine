@@ -125,6 +125,36 @@ describe('non-solid buildables and build reach', () => {
     expect(outcome(r, id)).toEqual({ unit: id, type: 'built', pos: [10, 7, 10], voxel: PLANKS })
     expect(r.sim.store.getVoxel(10, 7, 10)).toBe(PLANKS)
   })
+
+  it('a build can carry its own reach: feet + 4 with { reach: 4 }, then plain builds are limited to buildReach again', () => {
+    const pillars = (g: Gen) => { pillar(7)(g); for (let y = 4; y <= 7; y++) g.set(14, y, 10, STONE) }
+    const h = harness(pillars, { buildReach: 3 })
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.build(id, [10, 8, 10], PLANKS, { reach: 4 }))
+    expect(outcome(h, id)).toEqual({ unit: id, type: 'built', pos: [10, 8, 10], voxel: PLANKS })
+    h.events.length = 0
+    h.run(c => c.units.build(id, [14, 8, 10], PLANKS))
+    expect(outcome(h, id)).toMatchObject({ type: 'failed', reason: 'no-access' })
+    expect(h.sim.store.getVoxel(14, 8, 10)).toBe(0)
+  })
+
+  it('a reach of its own survives a save', () => {
+    const h = harness(pillar(7), { buildReach: 3 })
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.build(id, [10, 8, 10], PLANKS, { reach: 4 }))
+    h.until(() => h.sim.workers!.view(id)!.state === 'working')
+    const r = harness(undefined, { buildReach: 3 }, h.sim.snapshot(null))
+    expect(outcome(r, id)).toEqual({ unit: id, type: 'built', pos: [10, 8, 10], voxel: PLANKS })
+  })
+
+  it('refuses a reach outside 1..16', () => {
+    const h = harness(pillar(7), { buildReach: 3 })
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    for (const reach of [0, 17, 2.5]) {
+      expect(() => h.run(c => c.units.build(id, [10, 8, 10], PLANKS, { reach }))).toThrow('build reach must be an integer 1..16')
+      expect(() => h.sim.workers!.work(id, 'build', [10, 8, 10], PLANKS, reach)).toThrow(RangeError)
+    }
+  })
 })
 
 /** A solid build onto a unit standing idle in the cell (the path unchanged since 99558af): it fails with traffic at the commit, nothing placed. */

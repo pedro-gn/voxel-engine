@@ -128,6 +128,8 @@ interface Order extends Omit<WorkOrderView, 'effectivePriority'> {
    * progress is the tick of the last placed cell. A layer that stalls falls back to reserving the whole box.
    */
   ringPending: Int32Array | null; rings: number; floor: number; ring: number; progress: number; stalled: boolean
+  /** A controlled build's own reach (SystemUnits.build); every other order uses `buildReach`. */
+  reach?: number
 }
 /** A failure holds until the unit moves, the reservation policy changes, or a nav tile it depended on changes. */
 interface TaskFailure { origin: number; policy: number; nav: number; tiles: ReadonlyMap<number, number>; retry: number; reason: WorkBlockReason }
@@ -331,14 +333,18 @@ export class WorkerSystem {
     if (u.state !== 'falling') u.state = u.motion ? 'walking' : 'planning'
     this.dirty.add(u.id)
   }
-  /** Digs or builds one voxel from a work pose: `dug`/`built`, or `failed`. No stock or tool is needed (plan deviation D5). */
-  work(id: number, kind: 'dig' | 'build', pos: Vec3, voxel = 0): void {
+  /**
+   * Digs or builds one voxel from a work pose: `dug`/`built`, or `failed`. No stock or tool is needed (plan deviation D5).
+   * `reach` replaces `buildReach` for this one build.
+   */
+  work(id: number, kind: 'dig' | 'build', pos: Vec3, voxel = 0, reach?: number): void {
+    if (reach !== undefined && !integer(reach, 1, 16)) throw new RangeError('build reach must be an integer 1..16')
     this.checkPos(pos)
     const u = this.controlledUnit(id)
     if (kind === 'build' && (!integer(voxel, 1, 0xffff) || voxelId(voxel) >= this.port.registry.count || !this.build[voxelId(voxel)])) throw new Error('voxel is not buildable')
     this.sleepers.wake(u.id)
     this.clearOrder(u)
-    u.intent = kind === 'dig' ? { kind, pos: [pos[0], pos[1], pos[2]] } : { kind, pos: [pos[0], pos[1], pos[2]], voxel }
+    u.intent = kind === 'dig' ? { kind, pos: [pos[0], pos[1], pos[2]] } : { kind, pos: [pos[0], pos[1], pos[2]], voxel, ...(reach !== undefined && { reach }) }
     this.startIntent(u); this.revision++
   }
   /** Turns a dig/build intent into a one-cell internal order claimed by the unit (as engineering actions do). */
@@ -352,6 +358,7 @@ export class WorkerSystem {
     if (build && !this.attached(i.pos)) { this.failIntent(u, 'no-access'); return }
     if (this.targets.has(p)) { this.failIntent(u, 'traffic'); return }
     const order: Order = { id: -u.id, kind: i.kind, min: i.pos, max: i.pos, voxel: build ? i.voxel : 0, total: 1, done: 0, pending: 1, cursor: 1, cancelled: false, ids: new Set([u.id]), priority: 128, parked: [], parkedRevision: -1, ringPending: null, rings: 0, floor: 0, ring: 0, progress: 0, stalled: false, idleSince: this.time, noCrewSince: -1 }
+    if (build && i.reach !== undefined) order.reach = i.reach
     const t: Task = { order, i: 0, p, pos: i.pos, expected: v, claim: u.id, added: this.time, failures: new Map() }
     const goals = this.workGoals(u, t)
     if (!goals.length) { this.failIntent(u, this.workGoals(u, t, true).length ? 'traffic' : 'no-access'); return }
@@ -781,7 +788,7 @@ export class WorkerSystem {
     const [x, y, z] = pos, [tx, ty, tz] = t.pos
     if (Math.abs(x - tx) + Math.abs(z - tz) > 1 || ty < y - 1) return false
     if (ty >= y + 2) {
-      if (t.order.kind !== 'build' || ty > y + this.buildReach) return false
+      if (t.order.kind !== 'build' || ty > y + (t.order.reach ?? this.buildReach)) return false
       const beside = x !== tx || z !== tz
       for (let yy = y + 2; yy < ty || beside && yy === ty; yy++) if (this.port.registry.solid[voxelId(this.port.get(x, yy, z))]) return false
       return true
@@ -793,7 +800,7 @@ export class WorkerSystem {
     return !hit || this.port.layout.voxelIndex(...hit.pos) === t.p
   }
   private workGoals(u: Unit, t: Task, ignoreOccupancy = false): number[] {
-    const out: number[] = [], [x, y, z] = t.pos, reach = t.order.kind === 'build' ? this.buildReach : 1
+    const out: number[] = [], [x, y, z] = t.pos, reach = t.order.kind === 'build' ? t.order.reach ?? this.buildReach : 1
     // Beside the target, from one above it down to `reach` below it; above its head, a build also reaches straight up.
     for (const [dx, dz] of reach > 1 ? [...DIRS, [0, 0] as const] : DIRS) for (let yy = y - reach; yy <= y + 1; yy++) {
       const pos: Vec3 = [x + dx, yy, z + dz]
@@ -806,9 +813,9 @@ export class WorkerSystem {
   /** Whether another unit holds pose p with no end in the reservation table (it stands there). */
   private poseHeld(p: number, u: Unit): boolean { const h = this.table.holder(p); return h !== 0 && h !== u.id }
   /** Nav tiles whose edges decide whether the task's work poses are reachable from nearby. */
-  private tilesAround(pos: Vec3): Map<number, number> {
-    const [sx, sy, sz] = this.port.layout.size, tiles = new Map<number, number>()
-    for (let y = Math.max(0, pos[1] - 2 - this.buildReach) >> 4; y <= Math.min(sy - 1, pos[1] + 3) >> 4; y++) for (let z = Math.max(0, pos[2] - 2) >> 4; z <= Math.min(sz - 1, pos[2] + 2) >> 4; z++) for (let x = Math.max(0, pos[0] - 2) >> 4; x <= Math.min(sx - 1, pos[0] + 2) >> 4; x++) {
+  private tilesAround(t: Task): Map<number, number> {
+    const pos = t.pos, [sx, sy, sz] = this.port.layout.size, tiles = new Map<number, number>()
+    for (let y = Math.max(0, pos[1] - 2 - (t.order.reach ?? this.buildReach)) >> 4; y <= Math.min(sy - 1, pos[1] + 3) >> 4; y++) for (let z = Math.max(0, pos[2] - 2) >> 4; z <= Math.min(sz - 1, pos[2] + 2) >> 4; z++) for (let x = Math.max(0, pos[0] - 2) >> 4; x <= Math.min(sx - 1, pos[0] + 2) >> 4; x++) {
       const ti = this.nav.tileOf(x << 4, y << 4, z << 4); tiles.set(ti, this.nav.revisions[ti]!)
     }
     return tiles
@@ -823,7 +830,7 @@ export class WorkerSystem {
       // Bounded per task: an evicted worker merely retries, and assignment attempts are capped per tick.
       t.failures.delete(u.id)
       if (t.failures.size >= MAX_FAILURES) t.failures.delete(t.failures.keys().next().value!)
-      t.failures.set(u.id, { origin: this.position(u), policy: this.policy, nav: this.nav.revision, tiles: tiles ?? this.tilesAround(t.pos), retry, reason })
+      t.failures.set(u.id, { origin: this.position(u), policy: this.policy, nav: this.nav.revision, tiles: tiles ?? this.tilesAround(t), retry, reason })
     }
     t.reason = reason; t.order.reason = reason
   }

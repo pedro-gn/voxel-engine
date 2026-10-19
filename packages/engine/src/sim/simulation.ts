@@ -641,7 +641,7 @@ export class Simulation {
       despawn: (id) => sim.workers!.despawnControlled(id),
       goTo: (id, pos) => sim.workers!.goTo(id, pos),
       dig: (id, pos) => sim.workers!.work(id, 'dig', pos),
-      build: (id, pos, voxel) => sim.workers!.work(id, 'build', pos, voxel),
+      build: (id, pos, voxel, options) => sim.workers!.work(id, 'build', pos, voxel, options?.reach),
       stop: (id) => sim.workers!.stop(id),
       setWorkSpeed: (id, speed) => sim.workers!.setWorkSpeed(id, speed),
       view: (id) => sim.workers!.view(id),
