@@ -117,7 +117,7 @@ export class Simulation {
 
   constructor(o: SimulationOptions) {
     this.registry = new BlockRegistry(o.blocks)
-    this.store = new ChunkStore({ buffers: o.buffers, opaque: this.registry.opaque, onNewPage: o.onNewPage, maxPages: o.maxPages })
+    this.store = new ChunkStore({ buffers: o.buffers, opaque: this.registry.blocksLight, onNewPage: o.onNewPage, maxPages: o.maxPages })
     this.layout = this.store.layout
     this.epochs = new Uint32Array(this.layout.chunkCount)
     this.jobs = new JobRunner(this.layout, this.epochs, (x, y, z) => this.store.getVoxel(x, y, z))
@@ -145,7 +145,7 @@ export class Simulation {
       touch: chunks => sim.store.touchChunks(chunks),
       fallingFloor: (x, z, from, to) => sim.gravity.floorAt(x, z, from, to),
     }, o.collapse)
-    this.light = new LightEngine(this.store, { opaque: this.registry.opaque, emits: this.registry.emits })
+    this.light = new LightEngine(this.store, { opaque: this.registry.blocksLight, emits: this.registry.emits })
     this.seed = o.seed
     this.workCap = o.workCap ?? 50_000
     this.regenLightDiffLimit = o.regenLightDiffLimit ?? 1024

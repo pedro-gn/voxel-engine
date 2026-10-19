@@ -30,15 +30,18 @@ export class WorldReader {
   readonly versions: Uint32Array
   private readonly views = new SlotViews()
   private readonly opaque: Uint8Array
+  private readonly blocksLight: Uint8Array
   private readonly floors: Int16Array
   /** Reader-private word; only ever touched by `fence()`. */
   private readonly fenceWord = new Int32Array(new SharedArrayBuffer(4))
 
-  constructor(buffers: WorldBuffers, opaque: Uint8Array) {
+  /** `opaque` decides trivial chunks (nothing to draw); `blocksLight` the light a uniform chunk implies. */
+  constructor(buffers: WorldBuffers, opaque: Uint8Array, blocksLight: Uint8Array = opaque) {
     this.layout = new Layout(buffers.size)
     this.table = new Int32Array(buffers.chunkTable)
     this.versions = new Uint32Array(buffers.versions)
     this.opaque = opaque
+    this.blocksLight = blocksLight
     this.floors = new Int16Array(buffers.water.floor)
   }
 
@@ -64,7 +67,7 @@ export class WorldReader {
   getLight(x: number, y: number, z: number): number {
     if (!this.layout.inBounds(x, y, z)) return FULL_SKY
     const e = this.table[this.layout.chunkOf(x, y, z)]!
-    if (e < 0) return impliedLight(decodeUniform(e), this.opaque)
+    if (e < 0) return impliedLight(decodeUniform(e), this.blocksLight)
     if (!this.views.hasSlot(e)) return FULL_SKY
     return this.views.light(e)[Layout.localIndex(x & 31, y & 31, z & 31)]!
   }
@@ -152,7 +155,7 @@ export class WorldReader {
     if (e < 0) {
       const v = decodeUniform(e)
       out.voxels.fill(v, dst, dst + count)
-      out.light.fill(impliedLight(v, this.opaque), dst, dst + count)
+      out.light.fill(impliedLight(v, this.blocksLight), dst, dst + count)
       return true
     }
     if (!this.views.hasSlot(e)) return false

@@ -34,7 +34,7 @@ export class MeshJobRunner {
   private readonly mesher = new Mesher()
 
   constructor(buffers: WorldBuffers, tables: MeshTables) {
-    this.reader = new WorldReader(buffers, tables.opaque)
+    this.reader = new WorldReader(buffers, tables.opaque, tables.blocksLight)
     this.tables = tables
   }
 

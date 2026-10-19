@@ -311,7 +311,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const tileSize = checkTileSize(o.tileSize ?? TILE)
   const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
   const buffers = createWorldBuffers(size)
-  const reader = new WorldReader(buffers, registry.opaque)
+  const reader = new WorldReader(buffers, registry.opaque, registry.blocksLight)
   const ghosts = new GhostEdits(layout)
   const queue = new MeshQueue()
   const tickMs = 1000 / (o.sim?.tickHz ?? 20)
@@ -548,7 +548,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     worker.onmessage = (e: MessageEvent<WaterReply>) => { if (waterWorker === worker) waterLink.receive(e.data) }
     worker.onerror = (e) => { e.preventDefault(); lost(e.message || 'the worker failed to load or crashed') }
     worker.onmessageerror = () => lost('the worker sent a message that could not be deserialized')
-    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, pages: [...pages], stepHz: 1000 / tickMs, surfaces: surfaceMirror.surfaces } satisfies ToWater)
+    worker.postMessage({ type: 'init', buffers, opaque: registry.opaque, blocksLight: registry.blocksLight, pages: [...pages], stepHz: 1000 / tickMs, surfaces: surfaceMirror.surfaces } satisfies ToWater)
     return worker
   }
   if (inWorker) waterWorker = spawnWater()

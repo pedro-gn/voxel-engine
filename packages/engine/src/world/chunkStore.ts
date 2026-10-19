@@ -11,6 +11,7 @@ export class WorldFullError extends Error {
 
 export interface ChunkStoreOptions {
   buffers: WorldBuffers
+  /** 1 for a block that stops light (`BlockRegistry.blocksLight`): its cell holds no light, a uniform chunk of it implies 0. */
   opaque: Uint8Array
   onNewPage?: (index: number, page: SharedArrayBuffer) => void
   maxPages?: number
