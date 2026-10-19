@@ -14,6 +14,7 @@ import { createTerrainEditor } from '@elovox/terrain-editor'
 import { createHud } from './hud.ts'
 import { CAVES_SIZE, digTunnelCommands, openCanalCommands, openDamCommands, pierceRoofCommands } from './scenes/caves.ts'
 import { DIORAMA_SIZE } from './scenes/diorama.ts'
+import { SHAPES_SIZE } from './scenes/shapes.ts'
 import { FLOOD_SIZE, breachCommands, digCommands, dropCommands, stopSpringCommands, stressCommands } from './scenes/flood.ts'
 import { paintTextures } from './textures.ts'
 import e2eDoc from './terrain/e2e.terrain.json'
@@ -73,6 +74,7 @@ const size: [number, number, number] = saved ? [...saved.manifest.size] : sceneN
   : sceneName === 'collapse' ? [...COLLAPSE_SIZE]
   : sceneName === 'caves' ? [...CAVES_SIZE]
   : sceneName === 'diorama' ? [...DIORAMA_SIZE]
+  : sceneName === 'shapes' ? [...SHAPES_SIZE]
   : sceneName === 'sky' ? [...SKY_SIZE]
   : terrainDoc ? [terrainDoc.size[0]!, 128, terrainDoc.size[1]!]
   : [n, 128, n]
@@ -102,6 +104,8 @@ const engine = await createEngine({
       ? () => new Worker(new URL('./caves.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'sky'
       ? () => new Worker(new URL('./sky.worker.ts', import.meta.url), { type: 'module' })
+    : sceneName === 'shapes'
+      ? () => new Worker(new URL('./shapes.worker.ts', import.meta.url), { type: 'module' })
     : sceneName === 'terrain' || sceneName === 'living' || sceneName === 'crowd'
       ? () => new Worker(new URL('./terrain.worker.ts', import.meta.url), { type: 'module' })
       : () => new Worker(new URL('./sim.worker.ts', import.meta.url), { type: 'module' }),
@@ -146,6 +150,11 @@ if (sceneName === 'diorama') {
     s.distance = 150
     s.pitch = 0.7
     s.yaw = 0.7 + Math.PI // camera on the lower-terrace side, so the cliff faces the viewer
+  }
+}
+if (sceneName === 'shapes' && presetCamera) {
+  for (const s of [engine.controls.goal, engine.controls.current]) {
+    s.target[0] = 44; s.target[1] = 10; s.target[2] = 21; s.distance = 48; s.pitch = 0.62; s.yaw = 0.5
   }
 }
 if (sceneName === 'terrain') {

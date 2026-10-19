@@ -61,3 +61,17 @@ describe('block shapes', () => {
     expect(vol(bs)).toBe(form.kind === 'straight' ? 3072 : form.kind === 'outer' ? 2560 : 3584)
   })
 })
+
+describe('shapes in the public API', () => {
+  it('exports the shape helpers from both entries', async () => {
+    const client = await import('../src/index.ts')
+    const sim = await import('../src/sim/runSimWorker.ts')
+    for (const entry of [client, sim] as Record<string, unknown>[]) {
+      for (const name of ['slabState', 'stairState', 'postState', 'turnShapeState']) expect(typeof entry[name]).toBe('function')
+    }
+    type Exported = [import('../src/index.ts').BlockShape, import('../src/index.ts').Facing, import('../src/index.ts').PostAxis,
+      import('../src/sim/runSimWorker.ts').BlockShape, import('../src/sim/runSimWorker.ts').Facing, import('../src/sim/runSimWorker.ts').PostAxis]
+    const sample: Exported = ['stair', 3, 'x', 'post', 0, 'z']
+    expect(sample).toHaveLength(6)
+  })
+})

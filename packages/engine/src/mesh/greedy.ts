@@ -76,7 +76,7 @@ export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: Qua
         const nid = voxelId(s.voxels[ni]!)
         if (t.opaque[nid]) continue
         if (layer === LAYER.CUTOUT && nid === id) continue
-        const l = t.hasShapes ? faceLight(s, t, ni) : s.light[ni]!
+        const l = t.hasShapes && t.shape[nid] !== 0 ? faceLight(s, t, ni) : s.light[ni]!
         const ao4 = faceAO(s, t, ni, f)
         const tex = t.faceLayers[id * 6 + f]!
         const cut = plane !== undefined && f === 2 && sl + 1 === plane.py && plane.covered[q[0]! + 1 + (q[2]! + 1) * 34] === 1 ? 1 : 0

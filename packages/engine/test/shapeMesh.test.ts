@@ -118,6 +118,17 @@ describe('shaped blocks in the chunk mesh', () => {
     expect(face[0]!.sky).toBeGreaterThanOrEqual(14)
   })
 
+  it("a stair's step facing a cube is lit from the stair's own cell, not the cube's", () => {
+    const s = emptySnap()
+    put(s, 5, 5, 5, packVoxel(ID.stone_stair, stairState(2))) // high half on −x: the step faces +x, into the stone
+    put(s, 6, 5, 5, ID.stone)
+    s.light[padIndex(6, 6, 6)] = 0
+    s.light[padIndex(7, 6, 6)] = 0
+    const step = quadsOfCell(meshOf(s), 5, 5, 5).filter((q) => q.normal === FACE.PX && minOf(q, 0) === 5.5)
+    expect(step).toHaveLength(1)
+    expect(step[0]!.sky).toBeGreaterThanOrEqual(14)
+  })
+
   it('no shapes, no change', () => {
     const plain = new BlockRegistry(TEST_BLOCKS.slice(0, 7))
     const t = meshTablesFrom(plain, plain.faceLayers(new Map(plain.textureNames().map((n, i) => [n, i + 1]))))
@@ -126,6 +137,20 @@ describe('shaped blocks in the chunk mesh', () => {
     const a = new Mesher().mesh(surfaceSnap(), tables), b = new Mesher().mesh(surfaceSnap(), t)
     expect(a.opaque!.vertices).toEqual(b.opaque!.vertices)
     expect(a.opaque!.indices).toEqual(b.opaque!.indices)
+  })
+
+  it('drops faces a neighbouring shape covers whatever its form', () => {
+    const s = emptySnap()
+    put(s, 5, 5, 5, packVoxel(ID.stone_stair, stairState(0)))
+    put(s, 5, 5, 6, packVoxel(ID.stone_stair, stairState(0)))
+    put(s, 5, 4, 5, packVoxel(ID.stone_stair, stairState(2, true)))
+    const m = meshOf(s)
+    const a = quadsOfCell(m, 5, 5, 5)
+    expect(a.filter((q) => q.normal === FACE.PZ && maxOf(q, 1) <= 5.5)).toHaveLength(0) // its slab part against the next one's
+    expect(a.filter((q) => q.normal === FACE.NY)).toHaveLength(0) // its bottom on the upside-down stair's top
+    expect(quadsOfCell(m, 5, 4, 5).filter((q) => q.normal === FACE.PY)).toHaveLength(0)
+    expect(quadsOfCell(m, 5, 5, 6).filter((q) => q.normal === FACE.NZ && maxOf(q, 1) <= 5.5)).toHaveLength(0)
+    assertOutwardWinding(m)
   })
 
   it('the layer cut hides shapes above it and flags none', () => {
