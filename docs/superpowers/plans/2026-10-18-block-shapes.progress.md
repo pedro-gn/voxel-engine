@@ -43,3 +43,8 @@ Open issues:
 - `bench/workers.node.ts` fails its own `stats.visited <= 4096` assert on base too (pre-existing).
 - Cube faces against a shape are lit by `faceLight`'s neighbour approximation (brightest neighbour − 1), not the sim's light; AO is 0 on shaped faces and shapes do not darken cube AO.
 - Falling/fragment shaped blocks draw as cubes (spec's known limitation).
+
+## Rebase onto origin/main 7c31ca1 (feat/surface-speed), 2026-10-19
+- `git rebase origin/main`: no conflicts (workers.ts merged cleanly: surface speed and per-build `reach` both kept; CONTEXT.md gained both glossary entries). Branch tips: fa70f9e..e281c3a now on 7c31ca1.
+- `npm test`: engine 127 files 1373 passed + 2 expected fail (surfaceSpeed tests included), terrain 174, terrain-editor 200, sandbox 139. `npm run typecheck`: exit 0. `E2E_PORT=5287 … shapes.spec.ts`: 1 passed.
+- Mesher gate, 3 runs: surface 2.524 / 2.620 / 2.676 ms; roofs 3.033 (FAIL) / 2.894 / 2.818 ms; all stairs 22–23 ms. No mesher code changed in the rebase; the machine reads the surface chunk ~0.15–0.3 ms slower than this morning. Open: the roofs gate is at the edge of noise.
