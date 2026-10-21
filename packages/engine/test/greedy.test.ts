@@ -95,7 +95,7 @@ describe('layer cut faces', () => {
   function cutBlock() {
     const s = emptySnap()
     for (let x = 10; x < 13; x++) for (let y = 10; y < 13; y++) for (let z = 10; z < 13; z++) put(s, x, y, z, ID.stone)
-    return { s, plane: applyCut(s, 0, 11, tables.opaque) }
+    return { s, plane: applyCut(s, 0, 11, tables.blocksLight) }
   }
   /** The +y quads' first vertices, with their cut flag. */
   function tops(m: ReturnType<typeof mesh>) {

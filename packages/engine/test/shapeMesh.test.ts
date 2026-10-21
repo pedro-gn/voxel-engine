@@ -157,7 +157,7 @@ describe('shaped blocks in the chunk mesh', () => {
     const s = emptySnap()
     put(s, 5, 5, 5, packVoxel(ID.stone_stair, stairState(0)))
     put(s, 5, 6, 5, packVoxel(ID.stone_stair, stairState(2)))
-    const plane = applyCut(s, 0, 5, tables.opaque)
+    const plane = applyCut(s, 0, 5, tables.blocksLight)
     const m = new Mesher().mesh(s, tables, 0, 0, 0, plane).opaque
     expect(positions(m).length).toBeGreaterThan(0)
     expect(Math.max(...positions(m).map((p) => p[1]))).toBeLessThanOrEqual(6)

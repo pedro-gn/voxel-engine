@@ -5,6 +5,8 @@ import { unpackInstance } from '../src/render/decorations/extract.ts'
 import { CHUNK_VOLUME } from '../src/world/layout.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
+import { slabState, stairState } from '../src/blocks/shapes.ts'
+import { packVoxel } from '../src/world/voxel.ts'
 import { ID, testRegistry } from './helpers.ts'
 import { meshTables } from './meshHelpers.ts'
 import { decoratedMeshTables } from './meshFixtures.ts'
@@ -113,6 +115,22 @@ describe('MeshJobRunner', () => {
     const g = r.data.grass!, at: number[][] = []
     for (let i = 0; i < g.length; i += 2) { const p = unpackInstance(g[i]!); at.push([p.lx, p.ly, p.lz]) }
     expect(at).toEqual([[5, 16, 5]])
+  })
+  it('flags a cut top under a slab or stair like one under a cube, not one under a post or glass', () => {
+    const { store, runner } = setup()
+    // walls at y 16 (the cut layer) with, above them: stone, a stair, an upside-down stair, a top slab, a post, glass
+    const above = [ID.stone, packVoxel(ID.stone_stair, stairState(1)), packVoxel(ID.stone_stair, stairState(1, true)),
+      packVoxel(ID.stone_slab, slabState(true)), ID.stone_post, ID.glass]
+    above.forEach((v, i) => { store.setVoxel(3 + i * 2, 16, 5, ID.stone); store.setVoxel(3 + i * 2, 17, 5, v) })
+    store.commit()
+    const r = runner.run({ id: 33, chunk: 0, cut: 16 })
+    if (r.type !== 'result') throw new Error('expected a result')
+    const v = r.data.opaque!.vertices, flagged = new Map<number, boolean>()
+    for (let i = 0; i < v.length; i += 2) {
+      const a = unpackA(v[i]!)
+      if (a.normal === FACE.PY && a.y === 17 && a.z === 5 && unpackB(v[i + 1]!).fx === 0) flagged.set(a.x, (v[i]! & CUT_BIT) !== 0)
+    }
+    expect([3, 5, 7, 9, 11, 13].map((x) => flagged.get(x))).toEqual([true, true, true, true, false, false])
   })
   it('never reports a trivial result under an odd (mid-write) version', () => {
     const { store, runner } = setup()
