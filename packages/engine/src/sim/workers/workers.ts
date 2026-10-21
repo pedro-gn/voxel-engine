@@ -631,6 +631,8 @@ export class WorkerSystem {
       this.targets.add(p); this.tasks.push(t); this.index(t)
     }
     for (const v of s.units) {
+      const reach = v.intent?.kind === 'build' ? v.intent.reach : undefined
+      if (reach !== undefined && !integer(reach, 1, 16)) throw new RangeError(`restored unit ${v.id}: build reach must be an integer 1..16`)
       const u = this.newUnit(v.id, v.x, v.y, v.z, v.tools, new Map(v.stock))
       Object.assign(u, { facing: v.facing, state: v.state, vy: v.vy, goal: v.goal, available: v.available, allowDig: v.allowDig, buildBlock: v.buildBlock })
       // Controlled units (plan deviation D8: optional fields, the section stays v1); a fall in flight keeps its start.
@@ -2216,7 +2218,7 @@ export class WorkerSystem {
       mix(u.id); mix(u.x); mix(u.y); mix(u.z); mix(u.facing); mix(WORKER_STATES.indexOf(u.state)); mix(u.goal ?? -1); mix(u.cursor); mix(u.progress); mix(u.duration); mix(u.vy); mix(u.retry); mix(u.revision); mix(u.wait)
       // Only controlled units mix these fields, so worlds without them hash as before.
       // fallFrom only while falling: a save keeps it only then (UnitSnapshot.fallFrom).
-      if (u.controlled) { mix(1); if (u.state === 'falling') mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') mix(u.intent.voxel) }; if (u.speed !== 1) { SPEED_BITS[0] = u.speed; mix(SPEED_WORDS[0]!); mix(SPEED_WORDS[1]!) } }
+      if (u.controlled) { mix(1); if (u.state === 'falling') mix(u.fallFrom); if (u.intent) { mix(['goTo', 'dig', 'build'].indexOf(u.intent.kind) + 1); numbers(u.intent.pos); if (u.intent.kind === 'build') { mix(u.intent.voxel); if (u.intent.reach !== undefined) mix(u.intent.reach) } }; if (u.speed !== 1) { SPEED_BITS[0] = u.speed; mix(SPEED_WORDS[0]!); mix(SPEED_WORDS[1]!) } }
       mix(u.available ? 1 : 0); numbers(u.escape.map(o => o.id)); mix(u.exposed); mix(u.unsafeHere ? 1 : 0); mix(u.wadingOut ? 1 : 0); mix(u.stale); mix(u.progressAt); reason(u.reason); mix(u.validatedWorld); numbers(u.validatedPose)
       mix(u.tools.size); for (const t of u.tools) { mix(t.length); for (const c of t) mix(c.charCodeAt(0)) }
       mix(u.stock.size)

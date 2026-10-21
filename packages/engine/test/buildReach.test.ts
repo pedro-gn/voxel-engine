@@ -147,6 +147,33 @@ describe('non-solid buildables and build reach', () => {
     expect(outcome(r, id)).toEqual({ unit: id, type: 'built', pos: [10, 8, 10], voxel: PLANKS })
   })
 
+  it('a build intent\'s reach is part of the state hash', () => {
+    const h = harness(pillar(7), { buildReach: 3 })
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.build(id, [10, 8, 10], PLANKS, { reach: 4 }))
+    const units = (h.sim.workers as unknown as { units: Map<number, { intent: { reach?: number } }> }).units
+    const before = h.sim.hash()
+    units.get(id)!.intent.reach = 5
+    expect(h.sim.hash()).not.toBe(before)
+    units.get(id)!.intent.reach = 4
+    expect(h.sim.hash()).toBe(before)
+  })
+
+  it('a save with a bad reach is refused on restore', () => {
+    const h = harness(pillar(7), { buildReach: 3 })
+    const id = h.run(c => c.units.spawn([5, 4, 5]))
+    h.run(c => c.units.build(id, [10, 8, 10], PLANKS, { reach: 4 }))
+    for (const reach of [0, 17, 2.5, '4']) {
+      const snap = structuredClone(h.sim.workers!.snapshot())
+      ;(snap.units.find(u => u.id === id)!.intent as { reach?: unknown }).reach = reach
+      const r = harness(pillar(7), { buildReach: 3 })
+      expect(() => r.sim.workers!.restore(snap)).toThrow('build reach must be an integer 1..16')
+    }
+    // the same save with its good reach restores
+    const r = harness(pillar(7), { buildReach: 3 })
+    expect(() => r.sim.workers!.restore(structuredClone(h.sim.workers!.snapshot()))).not.toThrow()
+  })
+
   it('refuses a reach outside 1..16', () => {
     const h = harness(pillar(7), { buildReach: 3 })
     const id = h.run(c => c.units.spawn([5, 4, 5]))
