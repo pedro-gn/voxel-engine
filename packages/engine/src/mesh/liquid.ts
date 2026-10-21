@@ -82,8 +82,9 @@ export function meshTranslucent(s: ChunkSnapshot, t: MeshTables, translucent: Qu
     const out = layer === LAYER.LIQUID ? liquidOut : translucent
     const liquid = t.liquid[id] === 1
     const group = liquid ? t.liquidGroup[id]! : 0
-    // Every water voxel of a column the sim owns (floor ≠ NO_FLOOR) is a segment's, drawn by render/water (3d: no static water).
-    if (liquid && id === t.waterGroup && s.floor[x + 1 + (z + 1) * PAD]! !== NO_FLOOR) continue
+    // The heightfield and its curtains draw simulated water, including the run emitted above a spring. Drawing the
+    // source's static liquid cube as well leaves a separate full-height box sticking through the flowing surface.
+    if (liquid && group === t.waterGroup && s.floor[x + 1 + (z + 1) * PAD]! !== NO_FLOOR) continue
     if (liquid) cornerHeights(s, t, pi, group)
     // Water over water: its top-row vertices carry LIQUID_DEEP, so foam treats the surface as full height however thin
     // the top layer is.

@@ -40,6 +40,41 @@ function at(view: SurfaceView, x: number, z: number, field: 'hCur' | 'hPrev' | '
 }
 
 describe('SurfaceView', () => {
+  it('keeps foam off an open shallow bed and marks its dry bank without tilting water into the wall', () => {
+    const s = scene(32, 32, (_x, z) => z < 16 ? 2 : 6, (_x, z) => z < 16 ? SUB / 4 : 0)
+    s.publish()
+    const d = s.view.column(0)!, middle = (8 + 8 * 32) * 4, bank = (8 + 15 * 32) * 4
+    expect([...d.shore.subarray(middle, middle + 4)]).toEqual([0, 0, 0, 0])
+    expect([...d.shore.subarray(bank, bank + 4)]).toEqual([0, 0, 1, 1])
+    expect([...d.slopeCurZ.subarray(bank, bank + 4)]).toEqual([0, 0, 0, 0])
+  })
+
+  it('keeps separate waterfall levels out of each other\'s normals and bank masks', () => {
+    const s = scene(32, 32, () => 2, x => (x < 16 ? 6 : 2) * SUB)
+    s.publish()
+    const d = s.view.column(0)!
+    for (const x of [15, 16]) {
+      const o = (x + 8 * 32) * 4
+      expect([...d.slopeCurX.subarray(o, o + 4)]).toEqual([0, 0, 0, 0])
+      expect([...d.shore.subarray(o, o + 4)]).toEqual([0, 0, 0, 0])
+    }
+    expect(d.curtains.count).toBeGreaterThan(0)
+  })
+
+  it('carries interpolated normals with geometry when another publish resets the water clock', () => {
+    const s = scene(64, 32, () => 2, x => (x < 31 ? 3 : 2.5) * SUB)
+    s.publish()
+    for (let z = 0; z < 32; z++) for (let x = 0; x < 31; x++) s.cols.depth[x + z * 64] += SUB / 4
+    s.view.apply(s.pub.publish([0, 1, 4, 5], s.cols)!, 1)
+    const d = s.view.column(0)!, o = (30 + 8 * 32) * 4
+    const drawn = d.frames.map(([prev, cur]) => Array.from({ length: 4 }, (_, k) => prev[o + k]! + (cur[o + k]! - prev[o + k]!) * 0.4))
+    expect(d.slopePrevX[o + 1]).not.toBe(d.slopeCurX[o + 1])
+    // An unrelated tile changes while this ramp is only 40% through its step.
+    s.cols.depth[50 + 8 * 64] += SUB / 4
+    s.view.apply(s.pub.publish([3], s.cols)!, 0.4)
+    for (let f = 0; f < d.frames.length; f++) for (let k = 0; k < 4; k++) expect(d.frames[f]![0][o + k]).toBeCloseTo(drawn[f]![k]!, 6)
+  })
+
   it('draws a lake as a plane at its surface, leaving out the ground far below its edge', () => {
     const { view, publish } = scene(32, 32, () => 2, (x, z) => (x >= 4 && x <= 27 && z >= 4 && z <= 27 ? 3 * SUB : 0))
     expect(publish()).toBe(true)

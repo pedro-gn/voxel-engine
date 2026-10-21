@@ -1,13 +1,14 @@
 import * as THREE from 'three/webgpu'
+import { positionWorld, time } from 'three/tsl'
 import { describe, expect, it, vi } from 'vitest'
 import { WaterMaterial } from '../src/render/water.ts'
 import {
   ARC_GAP, ARC_REACH, ARC_SEGMENTS, CURTAIN_TOP, SPLASH_LIFT, arcPoint, backPoint, flareAmount, flareCode, flareOpen, packFlux, splashCode,
   lipCode, splashHalfOf, splashSlopeOf,
 } from '../src/render/water/surfaceMesh.ts'
-import { SurfaceView } from '../src/render/water/surfaceView.ts'
-import { curtainVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
-import { WaterSurface } from '../src/render/water/waterSurface.ts'
+import { SURFACE_ATTRIBUTES, SurfaceView } from '../src/render/water/surfaceView.ts'
+import { curtainVertex, surfaceVertex, waterAlpha } from '../src/render/water/waterVertex.ts'
+import { CURTAIN_SEGMENTS, WaterSurface } from '../src/render/water/waterSurface.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { SUB } from '../src/sim/water/constants.ts'
@@ -39,6 +40,49 @@ function world(floor: (x: number) => number, depth: number) {
   return { cols, view, publish, set }
 }
 
+describe('surface lighting continuity', () => {
+  it('keeps shoreline foam strength continuous when the bed steps down under connected water', () => {
+    const view = published(64, 32, x => x < 32 ? 3 : 2, x => (x < 32 ? 0.125 : 1) * SUB)
+    const west = view.column(0)!, east = view.column(1)!, vertex = surfaceVertex()
+    const wo = (31 + 8 * 32) * 4, eo = 8 * 32 * 4
+    expect(west.hCur[wo + 1]).toBe(east.hCur[eo]) // One connected surface over two different bed depths.
+    const strength = (d: typeof west, o: number) => evaluate(vertex.surface, { info: [...d.info.subarray(o, o + 4)] })[0]!
+    expect(strength(west, wo)).toBeCloseTo(strength(east, eo), 6)
+    expect(strength(west, wo)).toBe(1)
+  })
+
+  it('lights a shared ramp vertex equally on both sides of a chunk boundary', () => {
+    // The river drops half a block at x=31: cell 31 slopes down to cell 32's flat water.
+    const view = published(64, 32, () => 2, x => (x < 31 ? 3 : 2.5) * SUB)
+    const ws = new WaterSurface(32, view, mat(), mat())
+    ws.update()
+    // The shallow brink is aerated, while the next cell is not (the same contrast seen in the Colony stream).
+    view.column(0)!.info[(31 + 8 * 32) * 4 + 3]! += 15 * 256
+    const vertex = surfaceVertex()
+    const at = (x: number, corner: number, node: unknown) => {
+      const geo = (ws.group.getObjectByName(`water-0-${x >> 5}`) as THREE.Mesh).geometry
+      const i = (x & 31) + 8 * 32
+      const attributes: Record<string, number[]> = { corner: [corner] }
+      for (const [name, a] of Object.entries(geo.attributes)) {
+        if (a instanceof THREE.InstancedBufferAttribute || a instanceof THREE.InterleavedBufferAttribute) attributes[name] = [a.getX(i), a.getY(i), a.getZ(i), a.getW(i)]
+      }
+      return evaluate(node, attributes)
+    }
+    const before = waterAlpha.value
+    try {
+      for (const alpha of [0, 0.37, 1]) {
+        waterAlpha.value = alpha
+        for (const [westX, eastX] of [[30, 31], [31, 32]]) {
+          const west = at(westX!, 1, vertex.normal), east = at(eastX!, 0, vertex.normal)
+          for (let k = 0; k < 3; k++) expect(west[k], `normal component ${k} at alpha ${alpha}`).toBeCloseTo(east[k]!, 6)
+          expect(at(westX!, 1, vertex.white)[0], `aeration at alpha ${alpha}`).toBeCloseTo(at(eastX!, 0, vertex.white)[0]!, 6)
+        }
+        expect(at(30, 1, vertex.white)[0]).toBe(0) // A river ramp has no cloudy aeration painted across it.
+      }
+    } finally { waterAlpha.value = before; ws.dispose() }
+  })
+})
+
 describe('WaterSurface', () => {
   it('builds one instanced surface per chunk column with water, wired to the view\'s arrays with a row range', () => {
     const view = published(64, 32, () => 2, (x) => (x < 20 ? SUB : 0))
@@ -48,8 +92,14 @@ describe('WaterSurface', () => {
     const mesh = ws.group.getObjectByName('water-0-0') as THREE.Mesh
     const geo = mesh.geometry as THREE.InstancedBufferGeometry
     expect(geo.instanceCount).toBe(1024)
+    const buffers = new Set(Object.values(geo.attributes).map(a => a instanceof THREE.InterleavedBufferAttribute ? a.data : a))
+    expect(buffers.size).toBeLessThanOrEqual(8) // WebGPU's portable vertex-buffer limit
     expect(geo.getAttribute('hCur').array).toBe(view.column(0)!.hCur)
     expect(geo.getAttribute('info').array).toBe(view.column(0)!.info)
+    for (const name of SURFACE_ATTRIBUTES) {
+      const a = geo.getAttribute(name), src = view.column(0)![name]
+      for (const i of [0, 19 + 8 * 32, 20 + 8 * 32]) expect([a.getX(i), a.getY(i), a.getZ(i), a.getW(i)]).toEqual([...src.subarray(i * 4, i * 4 + 4)])
+    }
     expect(mesh.position.toArray()).toEqual([0, 0, 0])
     expect(mesh.renderOrder).toBe(1)
     expect((geo.getAttribute('hCur') as THREE.BufferAttribute).updateRanges).toEqual([{ start: 0, count: 32 * 32 * 4 }])
@@ -71,16 +121,20 @@ describe('WaterSurface', () => {
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
     const hCur = ((ws.group.getObjectByName('water-0-0') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry).getAttribute('hCur') as THREE.BufferAttribute
+    const shading = (((ws.group.getObjectByName('water-0-0') as THREE.Mesh).geometry).getAttribute('shore') as THREE.InterleavedBufferAttribute).data
     hCur.clearUpdateRanges() // as three does once it has uploaded them
+    shading.clearUpdateRanges()
     for (let z = 16; z < 32; z++) for (let x = 0; x < 16; x++) cols.depth[x + z * 32] = 2 * SUB
     publish([2]) // tile (0, 1): rows 15..31 (its ring row 15 included)
     ws.update()
     expect(hCur.updateRanges).toEqual([{ start: 15 * 128, count: 17 * 128 }])
+    expect(shading.updateRanges).toEqual([{ start: 15 * 32 * shading.stride, count: 17 * 32 * shading.stride }])
     publish([]) // settles tile 2: the same rows
     for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) cols.depth[x + z * 32] = 2 * SUB
     publish([0]) // tile (0, 0): rows 0..16
     ws.update()
     expect(hCur.updateRanges).toEqual([{ start: 0, count: 32 * 128 }])
+    expect(shading.updateRanges).toEqual([{ start: 0, count: 32 * 32 * shading.stride }])
   })
 
   it('wires the new curtain arrays when the view grows them', () => {
@@ -134,26 +188,26 @@ describe('WaterSurface', () => {
     expect(curtains.visible).toBe(true)
   })
 
-  it('draws each curtain as a body: front and back faces and a side face at each end, of ARC_SEGMENTS segments that share their vertices, and a splash, bounded past its chunk column by the reach', () => {
+  it('draws each curtain as a finely subdivided body with shared vertices, free sides and a splash, bounded by its reach', () => {
     const view = published(32, 32, (x) => (x <= 10 ? 6 : 2), () => SUB)
     const ws = new WaterSurface(32, view, mat(), mat())
     ws.update()
     const cgeo = (ws.group.getObjectByName('water-0-0-curtains') as THREE.Mesh).geometry as THREE.InstancedBufferGeometry
     const strip = cgeo.getAttribute('strip')
-    const rows = ARC_SEGMENTS + 1
+    const rows = CURTAIN_SEGMENTS + 1
     expect(strip.itemSize).toBe(4)
     expect(strip.count).toBe(8 * rows + 6)
     expect(cgeo.getAttribute('position').count).toBe(strip.count)
     const vertex = (v: number) => [strip.getX(v), strip.getY(v), strip.getZ(v), strip.getW(v)] // (s, end, face, kind)
     for (let k = 0; k < rows; k++) for (let end = 0; end < 2; end++) for (let face = 0; face < 2; face++) {
-      expect(vertex(face * rows * 2 + k * 2 + end)).toEqual([k / ARC_SEGMENTS, end, face, 0]) // front, back
-      expect(vertex(4 * rows + end * rows * 2 + k * 2 + face)).toEqual([k / ARC_SEGMENTS, end, face, 1]) // sides, front edge then back edge
+      expect(vertex(face * rows * 2 + k * 2 + end)).toEqual([Math.fround(k / CURTAIN_SEGMENTS), end, face, 0]) // front, back
+      expect(vertex(4 * rows + end * rows * 2 + k * 2 + face)).toEqual([Math.fround(k / CURTAIN_SEGMENTS), end, face, 1]) // sides, front edge then back edge
     }
     for (let row = 0; row < 3; row++) for (let end = 0; end < 2; end++) expect(vertex(8 * rows + row * 2 + end)).toEqual([row - 1, end, 0, 2])
     const index = [...cgeo.getIndex()!.array]
-    expect(index.length).toBe(6 * ARC_SEGMENTS * 4 + 12)
+    expect(index.length).toBe(6 * CURTAIN_SEGMENTS * 4 + 12)
     const quad = (n: number) => [...new Set(index.slice(6 * n, 6 * n + 6))].sort((a, b) => a - b)
-    for (let k = 0; k < ARC_SEGMENTS; k++) {
+    for (let k = 0; k < CURTAIN_SEGMENTS; k++) {
       // Segment k of each face spans rows k and k + 1, both ends: its lower row is the next segment's upper row (no gap).
       const front = [2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 3], back = front.map((v) => v + 2 * rows)
       const sideA = [0, 1, 2, 3].map((v) => 4 * rows + 2 * k + v), sideB = sideA.map((v) => v + 2 * rows)
@@ -161,10 +215,10 @@ describe('WaterSurface', () => {
     }
     // The splash: two quads across the foot, rows −1, 0 and 0, 1.
     const splash = (row: number) => [8 * rows + 2 * row, 8 * rows + 2 * row + 1, 8 * rows + 2 * row + 2, 8 * rows + 2 * row + 3]
-    expect([quad(4 * ARC_SEGMENTS), quad(4 * ARC_SEGMENTS + 1)]).toEqual([splash(0), splash(1)])
+    expect([quad(4 * CURTAIN_SEGMENTS), quad(4 * CURTAIN_SEGMENTS + 1)]).toEqual([splash(0), splash(1)])
     // Drawn as two groups, every instance's splash before every body: a body drawn first would let the next curtain's body
     // cover part of its splash on screen (the water blends in draw order), a tooth per block along a wide fall's foot.
-    const bodies = 6 * ARC_SEGMENTS * 4
+    const bodies = 6 * CURTAIN_SEGMENTS * 4
     expect(cgeo.groups.map((g) => [g.start, g.count, g.materialIndex])).toEqual([[bodies, 12, 0], [0, bodies, 0]])
     const box = cgeo.boundingBox!
     expect(box.min.x).toBeLessThanOrEqual(-ARC_REACH - 1)
@@ -219,7 +273,7 @@ function evaluateNode(node: unknown, attributes: Record<string, number[]>, done:
     Array.from({ length: Math.max(a.length, b.length) }, (_, i) => f(at(a, i), at(b, i)))
   const e = (k: string) => evaluate(n[k], attributes, done)
   switch (n.constructor.name) {
-    case 'VarNode': case 'VaryingNode': case 'SubBuildNode': return e('node')
+    case 'VarNode': case 'VaryingNode': case 'SubBuildNode': case 'ConvertNode': return e('node')
     case 'ConstNode': { const c = n.value as number | { toArray(): number[] }; return typeof c === 'number' ? [c] : c.toArray() }
     case 'UniformNode': return [n.value as number]
     case 'AttributeNode': return attributes[n._attributeName as string]!
@@ -238,6 +292,7 @@ function evaluateNode(node: unknown, attributes: Record<string, number[]>, done:
     case 'MathNode': {
       const a = e('aNode')
       switch (n.method) {
+        case 'negate': return a.map(x => -x)
         case 'floor': return a.map(Math.floor)
         case 'sqrt': return a.map(Math.sqrt)
         case 'abs': return a.map(Math.abs)
@@ -246,6 +301,7 @@ function evaluateNode(node: unknown, attributes: Record<string, number[]>, done:
         case 'step': return zip(a, e('bNode'), (edge, x) => +(x >= edge))
         case 'smoothstep': { const b = e('bNode'), c = e('cNode'); return c.map((x, i) => { const t = Math.min(1, Math.max(0, (x - at(a, i)) / (at(b, i) - at(a, i)))); return t * t * (3 - 2 * t) }) }
         case 'normalize': { const l = Math.hypot(...a); return a.map((x) => x / l) }
+        case 'length': return [Math.hypot(...a)]
         case 'mix': { const b = e('bNode'), c = e('cNode'); return zip(a, b, (x) => x).map((x, i) => x + (at(b, i) - x) * at(c, i)) }
         default: throw new Error(`math ${n.method as string}`)
       }
@@ -382,11 +438,37 @@ describe('curtainVertex', () => {
         }
       }
     } finally { waterAlpha.value = before }
-    expect(checked).toBeGreaterThanOrEqual(4 * 2 * 2 * 2 * ARC_SEGMENTS) // every body triangle: front, back, both sides
+    expect(checked).toBeGreaterThanOrEqual(4 * 2 * 2 * 2 * CURTAIN_SEGMENTS) // every body triangle: front, back, both sides
   })
 })
 
 describe('WaterMaterial', () => {
+  it('keeps the falling foam phase continuous when discharge changes after a long runtime', () => {
+    const m = new WaterMaterial(createLightUniforms(), false)
+    const seen = new Set<unknown>()
+    const coordinates: unknown[] = []
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object' || seen.has(n)) return
+      seen.add(n)
+      if (Array.isArray(n)) { n.forEach(walk); return }
+      if (!(n as { isNode?: boolean }).isNode) return
+      if ((n as object).constructor.name === 'FunctionOverloadingNode') coordinates.push((n as { parametersNodes: unknown[] }).parametersNodes[0])
+      for (const value of Object.values(n)) walk(value)
+    }
+    walk(m.curtain.colorNode)
+    try {
+      expect(coordinates.length).toBe(2) // The two world-space noise samples that paint the falling foam.
+      const at = (n: unknown, seconds: number, flux: number) => evaluate(n, { cInfo: [5, 9, 240, packFlux(flux, 0, 0)] },
+        new Map<unknown, number[]>([[positionWorld, [227.5, 35, 128.5]], [time, [seconds]]]))
+      for (const coordinate of coordinates) for (const seconds of [120, 3600]) for (const [from, to] of [[8, 9], [9, 8], [0, 255], [255, 0]]) {
+        const before = at(coordinate, seconds, from!), after = at(coordinate, seconds + 1 / 60, to!)
+        expect(Math.abs(after[1]! - before[1]!), `foam phase jump after ${seconds}s, discharge ${from} → ${to}`).toBeLessThan(0.03)
+        expect(after[1]!).toBeGreaterThan(before[1]!) // The pattern keeps travelling down, without reversing.
+        expect(at(coordinate, seconds, to!)).toEqual(before) // Neighbouring sheets keep the same phase at a shared point.
+      }
+    } finally { m.dispose() }
+  })
+
   it('builds the curtain and surface shaders against their meshes\' attributes', () => {
     const warn = vi.spyOn(console, 'warn')
     try {

@@ -71,9 +71,7 @@ export class SurfaceMirror implements SurfaceSource {
       if (!d) { d = new ColumnData(); this.data[r]![cc] = d }
       if (lo <= hi) {
         const a = lo * ROW, len = (hi - lo + 1) * ROW
-        d.hPrev.set(src.subarray(o, o + len), a); o += len
-        d.hCur.set(src.subarray(o, o + len), a); o += len
-        d.info.set(src.subarray(o, o + len), a); o += len
+        for (const arr of d.arrays) { arr.set(src.subarray(o, o + len), a); o += len }
         d.mark(lo); d.mark(hi)
       }
       const cs = d.curtains, m = count * 4

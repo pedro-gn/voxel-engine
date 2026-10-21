@@ -21,10 +21,10 @@ const FLOW_SPEED = 1.2
 const FLOW_PERIOD = 1.5
 /** The water depth (blocks) a curtain's colour is taken at: a thin falling sheet, shallow-coloured whatever lies behind it. */
 const CURTAIN_DEPTH = 0.4
-/** Blocks per second the streaks run down a curtain at fall factor 1 (WaterVertex.fall: 1 to 4 with the flux). */
+/** Blocks per second the shared waterfall pattern travels downward, independent of the step's changing discharge. */
 const CURTAIN_FALL_SPEED = 2.5
-/** How white a curtain's aerated streaks get at most. */
-const CURTAIN_STREAK = 0.55
+/** How white a curtain's broad ribbons get at most. */
+const CURTAIN_STREAK = 0.62
 
 function createUniforms() {
   return {
@@ -48,13 +48,19 @@ type WaterUniforms = ReturnType<typeof createUniforms>
  * behind it, not water: it gets no depth colour or shore foam (the scene behind a waterfall is metres away and would paint it
  * deep-water dark), but aerated streaks running down it instead.
  */
-function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean, edits = false, curtain = false): void {
+function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: LightUniforms, depthEffects: boolean, heightfield = false, curtain = false): void {
   m.positionNode = v.position
   m.transparent = true
   m.depthWrite = false
   // Plan deviation D7: water above the layer cut's plane is discarded; a lake cut through shows its bed.
   m.maskNode = belowCut()
   const wp = positionWorld
+  // A continuous world-space phase keeps neighbouring sheets aligned. Multiplying elapsed time by the current discharge
+  // teleports this pattern whenever that discharge changes, with larger jumps the longer the game has been open.
+  const along = wp.x.add(wp.z), down = wp.y.add(time.mul(CURTAIN_FALL_SPEED))
+  const folds = mx_noise_float(vec3(along.mul(0.95), down.mul(0.16), 0.5))
+    .add(mx_noise_float(vec3(along.mul(1.8), down.mul(0.28), 1.7)).mul(0.3))
+  const crest = float(1).sub(smoothstep(0.04, 0.8, v.fallDepth))
   const speed = time.mul(u.waveSpeed)
   const h = (p: V2) => mx_noise_float(vec3(p.mul(u.waveScale).add(vec2(speed, speed.mul(0.6))), time.mul(0.25)))
     .add(mx_noise_float(vec3(p.mul(u.waveScale.mul(2.3)).sub(vec2(speed.mul(0.7), 0)), time.mul(0.4))).mul(0.5))
@@ -70,9 +76,11 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
   const ripple = normalize(vec3(g.x.mul(RIPPLE / EPS), 1, g.y.mul(RIPPLE / EPS)))
   // Ripples ride on the surface's own tilt (a river ramp); on flat water v.normal is straight up and this is the ripple.
   // Ripples from block edits at the water line tilt the surface (the heightfield's only) and whiten the first ring's crest.
-  const edit = edits ? rippleEffect(wp) : null
+  const edit = heightfield ? rippleEffect(wp) : null
   const flat = normalize(ripple.add(v.normal).sub(vec3(0, 1, 0)))
-  const n = select(v.isTop, edit ? tiltedNormal(flat, edit) : flat, v.normal)
+  const curtainNormal = normalize(mix(v.normal, vec3(0, 1, 0), crest.mul(0.85))
+    .add(vec3(v.normal.z, 0, v.normal.x.negate()).mul(folds.mul(0.14))))
+  const n = curtain ? curtainNormal : select(v.isTop, edit ? tiltedNormal(flat, edit) : flat, v.normal)
 
   const thickness = curtain ? float(CURTAIN_DEPTH) : depthEffects
     ? positionView.z.sub(perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar)).max(0)
@@ -83,28 +91,32 @@ function shade(m: VoxelNodeMaterial, v: WaterVertex, u: WaterUniforms, lights: L
     .add(mx_noise_float(vec3(wp.xz.mul(3.1).sub(vec2(drift.mul(0.6), drift.mul(1.2))), time.mul(0.45))))
     .mul(0.25).add(0.5)
   const fw = max(u.foamWidth, 1e-3)
-  const band = float(1).sub(smoothstep(0, max(u.foamWidth.mul(foamNoise.mul(0.8).add(0.6)), 1e-3), thickness))
-  const lap = smoothstep(0.75, 1.0, fract(thickness.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
-    .mul(float(1).sub(smoothstep(0, fw.mul(3), thickness)))
-  const foam = depthEffects && !curtain ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth)).mul(smoothstep(0.2, 0.6, v.surface)) : float(0)
-  // White water breaks up with the same noise as the foam, so fast water churns rather than turning flat white.
+  // The shared shoreline falls from 1 at the bank to 0 one cell inward. Use its horizontal distance for a steady-width
+  // ribbon over river ramps; scene depth would also whiten the thin sheet over a shallow bed just before the drop.
+  const edgeDistance = heightfield ? float(1).sub(v.shore) : thickness
+  const band = float(1).sub(smoothstep(0, max(u.foamWidth.mul(foamNoise.mul(0.8).add(0.6)), 1e-3), edgeDistance))
+  const lap = smoothstep(0.75, 1.0, fract(edgeDistance.div(fw.mul(1.6)).add(time.mul(0.35)).add(foamNoise.mul(0.3))))
+    .mul(float(1).sub(smoothstep(0, fw.mul(3), edgeDistance)))
+  // Leave open shallows coloured, including the thin brink before a ramp.
+  const foam = depthEffects && !curtain ? max(band, lap.mul(0.7)).mul(step(1e-4, u.foamWidth))
+    .mul(smoothstep(0.2, 0.6, v.surface)).mul(smoothstep(0.25, 0.9, v.shore)).mul(0.85) : float(0)
   const streaks = max(foam, v.white.mul(foamNoise.mul(0.6).add(0.55)).min(1))
-  // A curtain's aerated streaks: noise stretched down the fall (fine across it, long along it) scrolling down at its speed.
-  const along = wp.x.add(wp.z), down = wp.y.add(time.mul(v.fall).mul(CURTAIN_FALL_SPEED))
-  const aerated = smoothstep(0.05, 0.55, mx_noise_float(vec3(along.mul(2.3), down.mul(0.22), 0.5))
-    .add(mx_noise_float(vec3(along.mul(5.3), down.mul(0.45), 1.7)).mul(0.5)))
-  const fallWhite = curtain ? max(streaks, aerated.mul(CURTAIN_STREAK)) : streaks
+  // A soft roll at the brink gives way to broad descending foam, keeping a coloured core between the ribbons.
+  const roll = crest.mul(0.28)
+  const aerated = smoothstep(-0.35, 0.45, folds).mul(smoothstep(0.15, 1.8, v.fallDepth)).mul(CURTAIN_STREAK)
+  const fallWhite = curtain ? max(roll, max(v.white.mul(0.45), aerated)) : streaks
   const white = edit ? max(fallWhite, edit.z) : fallWhite
   const streak = select(v.isTop, float(0), mx_noise_float(vec3(along.mul(0.9), wp.y.mul(0.6).add(speed.mul(3).mul(v.fall)), 0)).mul(0.12))
   const albedo = mix(mix(u.shallow, u.deep, depthT).add(curtain ? float(0) : streak), vec3(1), white)
-  const opacity = curtain ? mix(float(0.7), float(0.95), white) : mix(mix(float(0.66), float(0.94), depthT), float(1), white)
+  const opacity = curtain ? mix(float(0.9), float(0.98), white) : mix(mix(float(0.66), float(0.94), depthT), float(1), white)
   m.colorNode = vec4(albedo, opacity.mul(v.alpha))
   voxelLit(m, { normal: n, sky: v.sky, blk: v.blk, ao: float(1), albedo }, lights)
 
   const view = cameraPosition.sub(wp).normalize()
   const half = normalize(view.add(u.sunDir))
-  const spec = dot(n, half).max(0).pow(160).mul(2.5).mul(smoothstep(0.35, 0.95, v.sky)).mul(u.sunVis)
-  const fresnel = float(1).sub(dot(n, view).max(0)).pow(4).mul(0.35)
+  // A soft highlight preserves the painted colour instead of whitening whole rows along a river ramp.
+  const spec = dot(n, half).max(0).pow(80).mul(0.32).mul(smoothstep(0.35, 0.95, v.sky)).mul(u.sunVis)
+  const fresnel = float(1).sub(dot(n, view).max(0)).pow(4).mul(0.22)
   m.emissiveNode = (m.emissiveNode as N).add(u.sunColor.mul(spec)).add(u.horizon.mul(fresnel))
 }
 
@@ -130,9 +142,9 @@ export class WaterMaterial {
   private readonly u = createUniforms()
 
   constructor(lights: LightUniforms, depthEffects: boolean) {
-    const make = (v: WaterVertex, edits = false, curtain = false): VoxelNodeMaterial => {
+    const make = (v: WaterVertex, heightfield = false, curtain = false): VoxelNodeMaterial => {
       const m = new VoxelNodeMaterial(v.sky)
-      shade(m, v, this.u, lights, depthEffects, edits, curtain)
+      shade(m, v, this.u, lights, depthEffects, heightfield, curtain)
       return m
     }
     this.voxel = make(voxelWaterVertex())

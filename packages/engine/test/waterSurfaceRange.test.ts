@@ -1,17 +1,16 @@
 import * as THREE from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
 import { WaterSurface } from '../src/render/water/waterSurface.ts'
+import { ColumnData } from '../src/render/water/surfaceView.ts'
 
 /** A SurfaceView stand-in with what WaterSurface reads: 4 × 4 chunk columns, one draw layer, every column wet with one curtain. */
 function fakeView() {
   const cx = 4, ccCount = 16
-  const column = () => ({
-    hPrev: new Float32Array(4096), hCur: new Float32Array(4096), info: new Float32Array(4096), rowLo: 0, rowHi: 31,
-    curtains: {
-      prev: new Float32Array(4), cur: new Float32Array(4), reach: new Float32Array(4), thick: new Float32Array(4),
-      flare: new Float32Array(4), info: new Float32Array(4), count: 1, generation: 0,
-    },
-  })
+  const column = () => {
+    const d = new ColumnData()
+    d.info.fill(0); d.mark(0); d.mark(31); d.curtains.count = 1
+    return d
+  }
   const cols = Array.from({ length: ccCount }, column)
   let dirty = cols.map((_, i) => i)
   return { cx, ccCount, column: (cc: number) => cols[cc], takeDirty: () => { const d = dirty; dirty = []; return d } }
