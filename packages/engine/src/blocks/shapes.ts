@@ -38,19 +38,30 @@ const OUTER: readonly StairForm[] = ([0, 1, 2, 3] as const).map((side) => Object
 const INNER: readonly StairForm[] = ([0, 1, 2, 3] as const).map((side) => Object.freeze({ kind: 'inner' as const, side }))
 
 /**
- * A stair's form from the stairs of the same half beside it (Minecraft's rule): if the stair on its high side faces across
- * it, an outer corner turned to that stair's facing; else if the stair on its low side faces across it, an inner corner.
- * `neighbour(dx, dz)` returns the stair state of the cell at that offset, or −1 when it holds no stair. Returns shared objects.
+ * A stair's form from the stairs beside it, Minecraft's `StairBlock.getStairsShape`: if the stair on its high side has the
+ * same half and faces across it (facing G), an outer corner turned to G — unless the cell on its −G side holds a stair
+ * with its own facing and half (`canTakeShape`); else the same test on its low side gives an inner corner, checked
+ * against the cell on its +G side. `neighbour(dx, dz)` returns the stair state of the cell at that offset, or −1 when
+ * it holds no stair. Reads only the four horizontal neighbours. Returns shared objects.
  */
 export function stairForm(state: number, neighbour: (dx: number, dz: number) => number): StairForm {
   const f = state & 3
   const half = state & UPSIDE_DOWN
   const back = neighbour(DX[f]!, DZ[f]!)
-  if (back >= 0 && (back & UPSIDE_DOWN) === half && ((back - f) & 1) === 1) return OUTER[back & 3]!
+  if (back >= 0 && (back & UPSIDE_DOWN) === half && ((back - f) & 1) === 1) {
+    const g = back & 3
+    if (canTakeShape(state, neighbour(-DX[g]!, -DZ[g]!))) return OUTER[g]!
+  }
   const front = neighbour(-DX[f]!, -DZ[f]!)
-  if (front >= 0 && (front & UPSIDE_DOWN) === half && ((front - f) & 1) === 1) return INNER[front & 3]!
+  if (front >= 0 && (front & UPSIDE_DOWN) === half && ((front - f) & 1) === 1) {
+    const g = front & 3
+    if (canTakeShape(state, neighbour(DX[g]!, DZ[g]!))) return INNER[g]!
+  }
   return STRAIGHT
 }
+
+/** Minecraft's `canTakeShape`: the side cell is not a stair with this stair's facing and half. */
+const canTakeShape = (state: number, side: number): boolean => side < 0 || (side & 7) !== (state & 7)
 
 /** An axis-aligned box in a cell, in sixteenths (0..16). */
 export type Box = readonly [x0: number, y0: number, z0: number, x1: number, y1: number, z1: number]

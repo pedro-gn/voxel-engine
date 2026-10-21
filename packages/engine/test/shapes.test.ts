@@ -37,6 +37,34 @@ describe('block shapes', () => {
     expect(stairForm(stairState(1), (dx, dz) => (dx === 0 && dz === 1 ? stairState(0, true) : -1))).toEqual(STRAIGHT) // other half
     expect(stairForm(stairState(1), (dx, dz) => (dx === 0 && dz === 1 ? stairState(1) : -1))).toEqual(STRAIGHT) // parallel
   })
+  /** A neighbour lookup from a map of `"dx,dz"` → stair state. */
+  const around = (cells: Record<string, number>) => (dx: number, dz: number) => cells[`${dx},${dz}`] ?? -1
+  it('keeps a stair in a row straight when a crossing stair sits behind it (Minecraft canTakeShape)', () => {
+    // a row facing +z along x; a stair facing +x behind the middle cell: the middle stays straight
+    const row = { '-1,0': stairState(1), '1,0': stairState(1) }
+    expect(stairForm(stairState(1), around({ ...row, '0,1': stairState(0) }))).toEqual(STRAIGHT)
+    // the side the outer corner opens to (−G) holds the row: straight; only the far side (+G): still an outer corner
+    expect(stairForm(stairState(1), around({ '-1,0': stairState(1), '0,1': stairState(0) }))).toEqual(STRAIGHT)
+    expect(stairForm(stairState(1), around({ '1,0': stairState(1), '0,1': stairState(0) }))).toEqual({ kind: 'outer', side: 0 })
+    // a same-facing stair of the other half, or another facing, does not hold the corner back
+    expect(stairForm(stairState(1), around({ '-1,0': stairState(1, true), '0,1': stairState(0) }))).toEqual({ kind: 'outer', side: 0 })
+    expect(stairForm(stairState(1), around({ '-1,0': stairState(3), '0,1': stairState(0) }))).toEqual({ kind: 'outer', side: 0 })
+  })
+  it('keeps a stair in a row straight when a crossing stair sits in front of it (inner analogue)', () => {
+    const row = { '-1,0': stairState(1), '1,0': stairState(1) }
+    expect(stairForm(stairState(1), around({ ...row, '0,-1': stairState(0) }))).toEqual(STRAIGHT)
+    // the inner corner's side (+G) holds the row: straight; only the other side (−G): still an inner corner
+    expect(stairForm(stairState(1), around({ '1,0': stairState(1), '0,-1': stairState(0) }))).toEqual(STRAIGHT)
+    expect(stairForm(stairState(1), around({ '-1,0': stairState(1), '0,-1': stairState(0) }))).toEqual({ kind: 'inner', side: 0 })
+    // upside down: the same rule within the upside-down half
+    expect(stairForm(stairState(1, true), around({ '1,0': stairState(1, true), '0,-1': stairState(0, true) }))).toEqual(STRAIGHT)
+    expect(stairForm(stairState(1, true), around({ '1,0': stairState(1), '0,-1': stairState(0, true) }))).toEqual({ kind: 'inner', side: 0 })
+  })
+  it('falls through to the inner check when the outer corner cannot take its shape', () => {
+    // behind and in front: stairs facing +x; the row on −x holds the outer corner back, +x is free for the inner one
+    const cells = { '-1,0': stairState(1), '0,1': stairState(0), '0,-1': stairState(0) }
+    expect(stairForm(stairState(1), around(cells))).toEqual({ kind: 'inner', side: 0 })
+  })
 
   const cases: [Facing, boolean, StairForm][] = []
   for (const f of [0, 1, 2, 3] as const) {
