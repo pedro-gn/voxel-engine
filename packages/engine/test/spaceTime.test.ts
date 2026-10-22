@@ -127,3 +127,34 @@ it('a refuge plan gets off the route at once instead of loitering on it until th
   // Two steps to the pocket's mouth and one into it, without waiting on the way.
   expect(s.plan!.steps.slice(0, 3).map(st => st.until)).toEqual([0, 4, 8])
 })
+it('with six directions and no ladder edge anywhere, spends the same operations for the same plan (mining review C1, M2)', () => {
+  const sig = (s: SpaceTimeSearch) => { const v: number[] = []; s.mixState(n => v.push(n)); return v }
+  const make = (dirs: number) => {
+    const { port, idx } = corridor(['........', '...P....'.replace(/[^P]/g, '#')]), table = new ReservationTable(32)
+    for (let k = 0; k <= 7; k++) for (let t = 4 * k + 4; t <= 4 * k + 8; t++) table.reserve(2, t, [idx(7 - k, 0)])
+    return run(new SpaceTimeSearch({ ...port, dirs }, table, 1, idx(0, 0), 0, [1, 2, 3, 4, 5, 6, 7].map(x => idx(x, 0))))
+  }
+  const four = make(4), six = make(6)
+  expect(six.ops).toBe(four.ops); expect(six.plan).toEqual(four.plan); expect(sig(six)).toEqual(sig(four))
+})
+it('climbs a ladder out of the way: a refuge up the rungs when the foot is wanted (mining review C1)', () => {
+  // A corridor at y 0 (x 0..7) and a ladder above x 0 (y 1..3); pose = x + 8y. A rung step takes 12 ticks.
+  const W = 8, at = (x: number, y: number) => x + W * y
+  const port = (dirs: number): SpaceTimePort => ({
+    dirs,
+    neighbor: (p, d) => {
+      const x = p % W, y = Math.floor(p / W)
+      if (d < 4) { if (y) return -1; const nx = x + [1, -1, 0, 0][d]!; return [0, 1].includes(d) && nx >= 0 && nx < W ? at(nx, 0) : -1 }
+      if (dirs < 6 || x) return -1
+      return d === 4 ? (y < 3 ? at(0, y + 1) : -1) : y > 0 ? at(0, y - 1) : -1
+    },
+    allowed: () => true, cellsOf: p => [p], stepCells: (a, b) => [a, b], ticksOf: (a, b) => (Math.floor(a / W) !== Math.floor(b / W) ? 12 : 4), coords: p => [p % W, Math.floor(p / W), 0],
+  })
+  const table = new ReservationTable(32)
+  for (let t = 14; t <= 64; t++) table.reserve(2, t, [at(0, 0), at(1, 0), at(2, 0), at(3, 0), at(4, 0), at(5, 0), at(6, 0), at(7, 0)])
+  const refuge = (p: number) => Math.floor(p / W) >= 1
+  const six = run(new SpaceTimeSearch(port(6), table, 1, at(0, 0), 0, [], undefined, undefined, refuge))
+  expect(six.status).toBe('found')
+  expect(six.plan!.steps.at(-1)!.pose).toBe(at(0, 1))
+  expect(run(new SpaceTimeSearch(port(4), table, 1, at(0, 0), 0, [], undefined, undefined, refuge)).status).toBe('failed')
+})
