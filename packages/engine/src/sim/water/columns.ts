@@ -129,14 +129,20 @@ function accelerateUnder(E: TileEdges, e: number, n: number, floor: Int16Array, 
   E.flux[e] = f
 }
 
-/** Step 3 for column c: scales its outflows (east, south, west, north edges; −1 where none; `extra`: its outflow over under edges) to move at most its depth. Returns the total outflow when it scaled, else 0. */
-function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, south: number, west: number, north: number, extra: number): number {
+/** What a segment `d` deep may send this step: all of it, or only what is above `keep` (WaterColumns.keep). */
+function sendable(d: number, keep: number): number { return d > keep ? d - keep : 0 }
+
+/**
+ * Step 3 for column c: scales its outflows (east, south, west, north edges; −1 where none; `extra`: its outflow over under
+ * edges) to move at most its depth above `keep`. Returns the total outflow when it scaled, else 0.
+ */
+function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, south: number, west: number, north: number, extra: number, keep: number): number {
   let out = extra
   if (east >= 0 && flux[east]! > 0) out += flux[east]! >> FLUX_FP
   if (south >= 0 && flux[south]! > 0) out += flux[south]! >> FLUX_FP
   if (west >= 0 && flux[west]! < 0) out += -flux[west]! >> FLUX_FP
   if (north >= 0 && flux[north]! < 0) out += -flux[north]! >> FLUX_FP
-  const d = depth[c]!
+  const d = sendable(depth[c]!, keep)
   if (out <= d) return 0
   if (east >= 0 && flux[east]! > 0) flux[east] = scaled(flux[east]!, d, out)
   if (south >= 0 && flux[south]! > 0) flux[south] = scaled(flux[south]!, d, out)
@@ -146,12 +152,12 @@ function limit(depth: Int32Array, flux: Int32Array, c: number, east: number, sou
 }
 
 /** Interior column: all four edges exist, so read each flux once without per-edge world-boundary checks. */
-function limitInterior(depth: Int32Array, flux: Int32Array, c: number, sx: number, extra: number): number {
+function limitInterior(depth: Int32Array, flux: Int32Array, c: number, sx: number, extra: number, keep: number): number {
   const east = c * 2, south = east + 1, west = east - 2, north = (c - sx) * 2 + 1
   const fe = flux[east]!, fs = flux[south]!, fw = flux[west]!, fn = flux[north]!
   const out = extra + (fe > 0 ? fe >> FLUX_FP : 0) + (fs > 0 ? fs >> FLUX_FP : 0)
     + (fw < 0 ? -fw >> FLUX_FP : 0) + (fn < 0 ? -fn >> FLUX_FP : 0)
-  const d = depth[c]!
+  const d = sendable(depth[c]!, keep)
   if (out <= d) return 0
   if (fe > 0) flux[east] = scaled(fe, d, out)
   if (fs > 0) flux[south] = scaled(fs, d, out)
@@ -294,10 +300,17 @@ export class WaterColumns {
   under: UnderSegments | null = null
   /** Void world (spec §3): water resting on the bottom of the volume leaves the world, credited to the sea account. */
   drainFloor = false
-  /** A segment shallower than this (1/SUB block) sends nothing: the retain option (WaterOptions.retain), MIN_FLOW by default. */
+  /** A segment shallower than this (1/SUB block) sends nothing: keep + MIN_FLOW (MIN_FLOW without the retain option). */
   minFlow = MIN_FLOW
-  /** A column thinner than this shows no water (mirror, renderer): max(SUB / 16, minFlow). An edge between two such films does not keep a tile awake. */
+  /**
+   * What a segment keeps when it sends (1/SUB block): its outflows together move at most its depth above this. 0 (all of
+   * it, as before the option) unless the retain option is above MIN_FLOW, then retain: only water above retain flows out.
+   */
+  keep = 0
+  /** A column thinner than this shows no water (mirror, renderer): max(SUB / 16, retain). An edge between two such films does not keep a tile awake. */
   shown = SHOWN
+  /** The mirror's hysteresis: a drawn segment stays drawn until it is thinner than this (`shown` without the retain option: none). */
+  hide = SHOWN
   edges: WaterEdges | null = null
   height = 0
   /** Bodies' level for a member ref (set by WaterBodies, Task 6): the surface the quiet test reads for it. */
@@ -496,30 +509,30 @@ export class WaterColumns {
     }
   }
 
-  /** Every column of the stepped tiles, then every ring column: each one's outflows together move at most its depth. */
+  /** Every column of the stepped tiles, then every ring column: each one's outflows together move at most its depth above keep. */
   private limitAll(): void {
     const depth = this.depth, flux = this.flux, sx = this.sx, sz = this.sz, tx = this.tiles.tx
     // extraOut and limitTop, inline: a column sent over under edges this step (layered and marked) adds its under outflow
     // to limit's, and is then marked limited, with its scale when it scaled.
     const layered = this.under !== null, no = this.stepNo, mark = this.topMark, topOut = this.topOut
-    const limited = this.topLimited, scaleD = this.topScaleD, scaleOut = this.topScaleOut, scaleMark = this.topScaleMark
+    const limited = this.topLimited, scaleD = this.topScaleD, scaleOut = this.topScaleOut, scaleMark = this.topScaleMark, keep = this.keep
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
         const sent = layered && mark[c] === no, extra = sent ? topOut[c]! : 0
         const out = x > 0 && z > 0 && x + 1 < sx && z + 1 < sz
-          ? limitInterior(depth, flux, c, sx, extra)
-          : limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, extra)
+          ? limitInterior(depth, flux, c, sx, extra, keep)
+          : limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, extra, keep)
         if (sent) {
           limited[c] = no
-          if (out > 0) { scaleD[c] = depth[c]!; scaleOut[c] = out; scaleMark[c] = no }
+          if (out > 0) { scaleD[c] = sendable(depth[c]!, keep); scaleOut[c] = out; scaleMark[c] = no }
         }
       }
     }
     for (let k = 0; k < this.ring.length; k++) {
       const c = this.ring.data[k]!, x = c % sx, z = (c - x) / sx
-      this.limitTop(c, limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c)))
+      this.limitTop(c, limit(depth, flux, c, x + 1 < sx ? c * 2 : -1, z + 1 < sz ? c * 2 + 1 : -1, x > 0 ? (c - 1) * 2 : -1, z > 0 ? (c - sx) * 2 + 1 : -1, this.extraOut(c), keep))
     }
   }
 
@@ -531,7 +544,7 @@ export class WaterColumns {
     // Only collected under-edge senders read these marks in limitUnder/scaleUnder.
     if (this.under === null || this.topMark[c] !== this.stepNo) return
     this.topLimited[c] = this.stepNo
-    if (out > 0) { this.topScaleD[c] = this.depth[c]!; this.topScaleOut[c] = out; this.topScaleMark[c] = this.stepNo }
+    if (out > 0) { this.topScaleD[c] = sendable(this.depth[c]!, this.keep); this.topScaleOut[c] = out; this.topScaleMark[c] = this.stepNo }
   }
 
   /** Grows the per-lower-segment scratch to the pool's size. */
@@ -606,15 +619,15 @@ export class WaterColumns {
 
   /** Senders limitAll did not cover (lower segments, top columns outside the stepped tiles and their ring): scaled on their under outflow alone. */
   private limitUnder(U: UnderSegments): void {
-    const no = this.stepNo
+    const no = this.stepNo, keep = this.keep
     for (let k = 0; k < this.sendersTop.length; k++) {
       const c = this.sendersTop.data[k]!
       if (this.topLimited[c] === no) continue
-      const out = this.topOut[c]!, d = this.depth[c]!
+      const out = this.topOut[c]!, d = sendable(this.depth[c]!, keep)
       if (out > d) { this.topScaleD[c] = d; this.topScaleOut[c] = out; this.topScaleMark[c] = no }
     }
     for (let k = 0; k < this.sendersUnder.length; k++) {
-      const i = this.sendersUnder.data[k]!, out = this.underOut[i]!, d = U.depth[i]!
+      const i = this.sendersUnder.data[k]!, out = this.underOut[i]!, d = sendable(U.depth[i]!, keep)
       if (out > d) { this.underScaleD[i] = d; this.underScaleOut[i] = out; this.underScaleMark[i] = no }
     }
   }

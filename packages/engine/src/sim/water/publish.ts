@@ -40,7 +40,10 @@ export function mergeTiles(a: readonly number[], b: readonly number[]): readonly
  * each swing moved the drawn shoreline a whole column back and forth.
  */
 export class WaterPublisher {
-  /** Shown from this depth and hidden below `hide`: SHOW_DEPTH / HIDE_DEPTH, raised to the retain option when it is deeper (nothing under retain is drawn). */
+  /**
+   * Shown from this depth and hidden below `hide`: SHOW_DEPTH / HIDE_DEPTH, or, when the retain option is deeper, shown from
+   * retain (nothing under retain starts to show) and hidden below retain − (SHOW_DEPTH − HIDE_DEPTH), the same band.
+   */
   readonly show: number
   readonly hide: number
   private readonly surface: Int32Array
@@ -67,7 +70,7 @@ export class WaterPublisher {
 
   constructor(b: WaterBuffers, retain = 0) {
     this.show = Math.max(SHOW_DEPTH, retain)
-    this.hide = Math.max(HIDE_DEPTH, retain)
+    this.hide = Math.max(HIDE_DEPTH, this.show - (SHOW_DEPTH - HIDE_DEPTH))
     this.surface = new Int32Array(b.surface)
     this.flux = new Int16Array(b.flux)
     this.stamp = new Int32Array(b.stamp)

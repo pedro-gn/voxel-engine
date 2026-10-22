@@ -136,6 +136,58 @@ describe('water loss option', () => {
     expect(failures()).toEqual([])
   })
 
+  it('a loss pass on a still lake republishes only changed tiles', () => {
+    // a walled 38 × 38 lake 2 blocks deep over 9 tiles: a pass lowers every column by 1/SUB, which changes no drawn level
+    // until the surface crosses a mirror eighth (about pass 17 of 20 here)
+    const { sim, failures } = lossSim(lake(2, 40, 4), { size: [64, 32, 64] })
+    settle(sim)
+    toPass(sim)
+    let publishes = 0, tiles = 0
+    for (let i = 0; i < 20 * EVERY; i++) {
+      const r = sim.step()
+      expect(sim.water.stats().tiles).toBe(0)
+      if (r.water) { publishes++; tiles += r.water.tiles.length }
+    }
+    expect(sim.water.column(20, 20).depth).toBeLessThan(2 * SUB - 16) // the surface did cross an eighth: some passes publish
+    expect(publishes).toBeGreaterThan(0)
+    expect(publishes).toBeLessThanOrEqual(8) // a crossing pass and the next step's other parity, a few times over
+    expect(tiles).toBeLessThanOrEqual(8 * 9)
+    expect(failures()).toEqual([])
+  })
+
+  it('rules read no water under retain', () => {
+    // The reviewer's ledge (I1): a 20 × 20 basin, its west half (x 1–10) a pond on the floor (y 1 full and one level at
+    // y 2), its east half a ledge (stone at y 1) holding the same level at y 2. The ledge column beside the pond keeps a
+    // film the pond's water stands against: undrawn, it must read dry to game rules.
+    let script: ((c: SystemContext) => void) | null = null
+    const sys: GameSystem = { name: 'probe', version: 1, snapshot: () => null, tick: (c) => { const f = script; script = null; f?.(c) } }
+    const b = basin(22, 6)
+    const fill: Fill = (x, y, z) => {
+      const v = b(x, y, z)
+      if (v !== AIR || x < 1 || x > 20 || z < 1 || z > 20) return v
+      if (y === 1) return x <= 10 ? w(7) : B.stone
+      return y === 2 ? w(0) : AIR
+    }
+    const { sim, failures } = lossSim(fill, { water: { retain: 32, lossEvery: 112, debug: true }, systems: [sys] })
+    const air = () => sim.store.getVoxel(11, 2, 10) === AIR
+    let passes = 0
+    while (!(air() && sim.water.column(11, 10).depth > 0) && passes < 40) {
+      run(sim, 112)
+      passes++
+    }
+    expect(air()).toBe(true)
+    expect(sim.water.column(11, 10).depth).toBeGreaterThan(0)
+    let got: number[] = []
+    const before = sim.water.total()
+    script = (c) => { got = [c.waterDepth(11, 2, 10), c.takeWater(11, 2, 10, 64), c.waterDepth(10, 2, 10)] }
+    sim.step()
+    expect(got[0]).toBe(0)
+    expect(got[1]).toBe(0)
+    expect(got[2]).toBeGreaterThan(0) // the pond beside it still serves the rules
+    expect(sim.water.total()).toBe(before)
+    expect(failures()).toEqual([])
+  })
+
   it('free underground water drains; a full body does not lose', () => {
     // Two sealed stone rooms under a roof at y 4: a half-filled tunnel (x 2–9, cells y 1–3, water at y 1) and a full
     // chamber (x 12–19, cells y 1–3, all water).

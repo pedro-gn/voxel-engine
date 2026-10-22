@@ -128,8 +128,15 @@ export class WaterSystem {
     const [sx, , sz] = port.layout.size
     this.cols = new WaterColumns(sx, sz, new Int16Array(port.buffers.floor))
     this.cols.floor.fill(0) // an empty world: every column dry on the world floor
-    this.cols.minFlow = retain
+    // Only water above retain flows out (spec §4.1): a segment keeps retain, and sends once it holds MIN_FLOW above it (a
+    // thinner excess, split over its edges, would round to nothing and hold its tile awake). At MIN_FLOW (the default) it
+    // keeps nothing and sends from MIN_FLOW, as before the option.
+    const keep = retain > MIN_FLOW ? retain : 0
+    this.cols.keep = keep
+    this.cols.minFlow = keep + MIN_FLOW
     this.cols.shown = Math.max(SUB / 16, retain)
+    // The mirror's hysteresis under retain: a drawn segment stays drawn down to retain − SUB / 32, as the publisher's band.
+    this.cols.hide = retain > SUB / 16 ? Math.max(SUB / 16, retain - SUB / 32) : this.cols.shown
     this.under = new UnderSegments(sx * sz)
     this.edges = new WaterEdges(this.cols.tiles.count)
     this.cols.attach(this.under, this.edges, this.height)
@@ -147,23 +154,26 @@ export class WaterSystem {
   }
 
   get enabled(): boolean { return this.water !== 0 }
-  /** Authoritative immersion above feet in Q8, including cave segments. */
-  depthAt(x: number, y: number, z: number): number {
+  /**
+   * Authoritative immersion above feet in Q8, including cave segments. `drawn` (what game rules read): a segment holding
+   * less than the retain option reads dry, as nothing under retain is drawn or flows on (no effect at the default retain).
+   */
+  depthAt(x: number, y: number, z: number, drawn = false): number {
     if (!this.enabled || !this.layout.inBounds(x, y, z)) return 0
-    const c = x + z * this.cols.sx, U = this.under
-    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (y >= U.floor[i]! && y < U.ceil[i]!) return Math.max(0, U.surface(i) - y * SUB)
-    return y >= this.cols.floor[c]! ? Math.max(0, this.cols.floor[c]! * SUB + this.cols.depth[c]! - y * SUB) : 0
+    const c = x + z * this.cols.sx, U = this.under, min = drawn ? this.cols.keep : 0
+    for (let i = U.first[c]!; i >= 0; i = U.next[i]!) if (y >= U.floor[i]! && y < U.ceil[i]!) return U.depth[i]! < min ? 0 : Math.max(0, U.surface(i) - y * SUB)
+    return y >= this.cols.floor[c]! && this.cols.depth[c]! >= min ? Math.max(0, this.cols.floor[c]! * SUB + this.cols.depth[c]! - y * SUB) : 0
   }
   /**
    * Removes up to `amount` (Q8) of the water above the bottom of cell (x, y, z), from the segment depthAt reads (a lower
    * segment holding y, else the top segment when y is at or above its floor), and returns what it removed: 0 when dry, out of
    * bounds, `amount` ≤ 0, or while a rebuild is pending (the voxels would bring the water back). The expected total drops by
    * the same amount; the tiles around wake and the mirror follows at the next flush. A body holding the segment drops and
-   * regroups at the next step (as an edit's does), so a sealed body levels again too.
+   * regroups at the next step (as an edit's does), so a sealed body levels again too. `drawn`: as depthAt's.
    */
-  take(x: number, y: number, z: number, amount: number): number {
+  take(x: number, y: number, z: number, amount: number, drawn = false): number {
     if (!(amount > 0) || this.needsRebuild) return 0
-    const got = Math.min(Math.floor(amount), this.depthAt(x, y, z))
+    const got = Math.min(Math.floor(amount), this.depthAt(x, y, z, drawn))
     if (got <= 0) return 0
     const cols = this.cols, U = this.under, c = x + z * cols.sx
     let i = U.first[c]!
@@ -421,7 +431,7 @@ export class WaterSystem {
     if (!this.needsRebuild) this.spreadDisplaced()
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
-    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under, shown = cols.shown
+    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under, shown = cols.shown, hide = cols.hide
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
       T.dirty[t] = 0
@@ -430,10 +440,10 @@ export class WaterSystem {
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
         const f = floor[c]!, d = depth[c]!, q = mirror.q[c]!
         // Most moving surfaces still occupy the same eighth of a voxel. Avoid the full mirror call for those columns.
-        if (q < 0 || mirror.lo[c] !== f || q !== mirrorQ(f, d, shown)) {
-          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set, shown)
+        if (q < 0 || mirror.lo[c] !== f || q !== mirrorQ(f, d, shown, hide, q)) {
+          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set, shown, hide)
         }
-        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set, shown)
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set, shown, hide)
       }
     }
     this.published = this.publisher.publish(out, cols, { under: this.under, edges: this.edges, height: this.height })
@@ -619,12 +629,14 @@ export class WaterSystem {
    * a body loses 1/SUB block, or all of it when it holds less than `retain` and did not gain since the previous pass; a top
    * column only when it is also still (no flux on its four edges: spec §4.1) and no neighbour holds `retain` or more. So a
    * front being filled, sloshing water and a pond's rim are never cut: wiping a rim would let the pond spill into the gap
-   * and be wiped again at every pass, a sink far above the per-column loss. The water goes to the `lost` account, so the conservation identity holds. Touched tiles
-   * republish; a tile wakes only where a segment went dry, so a settled pond keeps sleeping.
+   * and be wiped again at every pass, a sink far above the per-column loss. The water goes to the `lost` account, so the
+   * conservation identity holds. A tile republishes only where a segment's drawn state changed (redraws: its mirror level,
+   * or the publisher hiding it), so a still lake's pass costs nothing until its surface crosses a mirror eighth; a tile
+   * wakes only where a segment went dry, so a settled pond keeps sleeping.
    */
   private lose(): void {
     const cols = this.cols, depth = cols.depth, flux = cols.flux, sx = cols.sx, n = cols.n, T = cols.tiles, U = this.under
-    const mask = this.cycle.mask, prev = this.lossPrev, retain = this.o.retain
+    const mask = this.cycle.mask, prev = this.lossPrev, retain = this.o.retain, floor = cols.floor, mirror = this.mirror
     let lost = 0
     for (let c = 0; c < n; c++) {
       const d = depth[c]!
@@ -640,8 +652,8 @@ export class WaterSystem {
         }
         depth[c] = d - take
         lost += take
-        touched = true
         dried = take === d
+        touched = dried || this.redraws(floor[c]!, d, d - take, mirror.lo[c]!, mirror.q[c]!)
       }
       prev[c] = depth[c]!
       for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
@@ -650,8 +662,8 @@ export class WaterSystem {
           const take = ud < retain && ud <= U.lossPrev[i]! ? ud : 1
           U.depth[i] = ud - take
           lost += take
-          touched = true
           if (take === ud) dried = true
+          if (!touched) touched = take === ud || this.redraws(U.floor[i]!, ud, ud - take, U.mirrorLo[i]!, U.mirrorQ[i]!)
         }
         U.lossPrev[i] = U.depth[i]!
       }
@@ -661,6 +673,17 @@ export class WaterSystem {
       if (dried) T.wakeAround(x, z)
     }
     this.cycle.lost += lost
+  }
+
+  /**
+   * Whether a segment on `floor` going from `d` to `nd` by loss changes what is drawn: the mirror's level (its state `lo`, `q`;
+   * one not written yet counts as changed), or the publisher hiding it (loss only lowers, so it never starts to show).
+   */
+  private redraws(floor: number, d: number, nd: number, lo: number, q: number): boolean {
+    const cols = this.cols
+    if (q < 0 || lo !== floor || mirrorQ(floor, nd, cols.shown, cols.hide, q) !== q) return true
+    const hide = this.publisher.hide
+    return d >= hide && nd < hide
   }
 
   /** Whether a segment of column (x, z) or of one of its four neighbours holds water: only then can an edit there move any. */
