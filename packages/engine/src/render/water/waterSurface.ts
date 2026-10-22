@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu'
-import { ARC_GAP, ARC_REACH, ARC_SEGMENTS } from './surfaceMesh.ts'
-import type { ColumnData } from './surfaceView.ts'
+import { ARC_GAP, ARC_REACH } from './surfaceMesh.ts'
+import { SURFACE_ATTRIBUTES, type ColumnData } from './surfaceView.ts'
 import type { SurfaceSource } from './surfaceMirror.ts'
 
 /** Base quad corners, in the order (−x,−z) (+x,−z) (+x,+z) (−x,+z). */
@@ -9,11 +9,16 @@ const CORNERS = [0, 1, 2, 3]
 const SURFACE_INDEX = [0, 2, 1, 0, 3, 2]
 /** How far (blocks) a curtain reaches past its chunk column: from its column's edge, ARC_GAP + ARC_REACH out. */
 const CURTAIN_MARGIN = Math.ceil(ARC_GAP + ARC_REACH)
+const SHADING_ATTRIBUTES = SURFACE_ATTRIBUTES.slice(3)
+const SHADING_STRIDE = SHADING_ATTRIBUTES.length * 4
+/** Finer rendering of the same physical arc: a long fall must turn smoothly over its brink. */
+export const CURTAIN_SEGMENTS = 24
 
 interface Slot {
   surface: THREE.Mesh
   geo: THREE.InstancedBufferGeometry
   attrs: THREE.InstancedBufferAttribute[]
+  shading: THREE.InstancedInterleavedBuffer
   curtains: THREE.Mesh
   cgeo: THREE.InstancedBufferGeometry
   generation: number
@@ -40,7 +45,7 @@ function baseQuad(height: number): THREE.InstancedBufferGeometry {
 }
 
 /** Rows of a curtain's strips (top to foot), and the first vertex of its front, back, side and splash vertices (see baseBody). */
-const ROWS = ARC_SEGMENTS + 1
+const ROWS = CURTAIN_SEGMENTS + 1
 const FACE = (face: number, k: number, end: number): number => face * ROWS * 2 + k * 2 + end
 const SIDE = (end: number, k: number, face: number): number => 4 * ROWS + end * ROWS * 2 + k * 2 + face
 const SPLASH = (row: number, end: number): number => 8 * ROWS + row * 2 + end
@@ -48,7 +53,7 @@ const BODY_VERTICES = 8 * ROWS + 6
 
 /**
  * A curtain's base geometry: its body and its splash, `strip` = (s, end, face, kind) per vertex (see curtainVertex).
- * - The front (face 0) and back (face 1) faces are strips of ARC_SEGMENTS segments, rows 0..ARC_SEGMENTS from the top to the
+ * - The front (face 0) and back (face 1) faces are strips of CURTAIN_SEGMENTS segments, rows 0..CURTAIN_SEGMENTS from the top to the
  *   foot, with `end` 0 at the edge's end A and 1 at B; segment k is the quad between rows k and k + 1, so neighbouring
  *   segments share their row of vertices. The back face has the opposite winding.
  * - Each end has a side face: a strip of the same rows between the front and the back (kind 1).
@@ -59,11 +64,11 @@ function baseBody(height: number): THREE.InstancedBufferGeometry {
   const strip = new Float32Array(BODY_VERTICES * 4), index: number[] = []
   const put = (v: number, s: number, end: number, face: number, kind: number): void => { strip.set([s, end, face, kind], v * 4) }
   for (let k = 0; k < ROWS; k++) for (let end = 0; end < 2; end++) for (let face = 0; face < 2; face++) {
-    put(FACE(face, k, end), k / ARC_SEGMENTS, end, face, 0)
-    put(SIDE(end, k, face), k / ARC_SEGMENTS, end, face, 1)
+    put(FACE(face, k, end), k / CURTAIN_SEGMENTS, end, face, 0)
+    put(SIDE(end, k, face), k / CURTAIN_SEGMENTS, end, face, 1)
   }
   for (let row = 0; row < 3; row++) for (let end = 0; end < 2; end++) put(SPLASH(row, end), row - 1, end, 0, 2)
-  for (let k = 0; k < ARC_SEGMENTS; k++) {
+  for (let k = 0; k < CURTAIN_SEGMENTS; k++) {
     // top A, top B, foot B, foot A of the segment
     for (let face = 0; face < 2; face++) {
       const a = FACE(face, k, 0), b = FACE(face, k, 1), c = FACE(face, k + 1, 1), d = FACE(face, k + 1, 0)
@@ -116,7 +121,7 @@ function anyDrawn(info: Float32Array): boolean {
  * Marks rows [start, start + count) for upload. three keeps the ranges until it next uploads the attribute, which it skips
  * while the mesh is culled, so the ranges of several frames merge into the one range spanning them all.
  */
-function uploadRows(a: THREE.BufferAttribute, start: number, count: number): void {
+function uploadRows(a: THREE.BufferAttribute | THREE.InterleavedBuffer, start: number, count: number): void {
   const r = a.updateRanges[0]
   if (r) {
     const end = Math.max(r.start + r.count, start + count)
@@ -124,6 +129,18 @@ function uploadRows(a: THREE.BufferAttribute, start: number, count: number): voi
     r.count = end - r.start
   } else a.addUpdateRange(start, count)
   a.needsUpdate = true
+}
+
+/** One interleaved GPU buffer for all shading fields: WebGPU's default limit is eight vertex buffers, not eight attributes. */
+function copyShading(d: ColumnData, buffer: THREE.InstancedInterleavedBuffer, start: number, count: number): void {
+  for (let field = 0; field < SHADING_ATTRIBUTES.length; field++) {
+    const src = d[SHADING_ATTRIBUTES[field]!]!
+    for (let i = start; i < start + count; i += 4) {
+      const dst = (i / 4) * SHADING_STRIDE + field * 4
+      for (let k = 0; k < 4; k++) buffer.array[dst + k] = src[i + k]!
+    }
+  }
+  uploadRows(buffer, (start / 4) * SHADING_STRIDE, (count / 4) * SHADING_STRIDE)
 }
 
 /**
@@ -196,6 +213,7 @@ export class WaterSurface {
     if (d.rowLo <= d.rowHi) {
       const start = d.rowLo * 32 * 4, count = (d.rowHi - d.rowLo + 1) * 32 * 4
       for (const a of s.attrs) uploadRows(a, start, count)
+      copyShading(d, s.shading, start, count)
       d.rowLo = 32
       d.rowHi = -1
       // A chunk column that dried out draws nothing: skip its 1024 collapsed quads.
@@ -223,10 +241,10 @@ export class WaterSurface {
   private create(key: number, cc: number, r: number, d: ColumnData): Slot {
     const ox = (cc % this.view.cx) * 32, oz = Math.floor(cc / this.view.cx) * 32
     const geo = baseQuad(this.height)
-    const attrs = [instanced(d.hPrev), instanced(d.hCur), instanced(d.info)]
-    geo.setAttribute('hPrev', attrs[0]!)
-    geo.setAttribute('hCur', attrs[1]!)
-    geo.setAttribute('info', attrs[2]!)
+    const attrs = SURFACE_ATTRIBUTES.slice(0, 3).map(name => instanced(d[name]))
+    SURFACE_ATTRIBUTES.slice(0, 3).forEach((name, i) => geo.setAttribute(name, attrs[i]!))
+    const shading = new THREE.InstancedInterleavedBuffer(new Float32Array(1024 * SHADING_STRIDE), SHADING_STRIDE)
+    SHADING_ATTRIBUTES.forEach((name, i) => geo.setAttribute(name, new THREE.InterleavedBufferAttribute(shading, 4, i * 4)))
     geo.instanceCount = 1024
     const surface = this.mesh(geo, this.surfaceMaterial, ox, oz, `water-${r}-${cc}`)
     const cgeo = baseBody(this.height)
@@ -234,7 +252,7 @@ export class WaterSurface {
     cgeo.instanceCount = 0
     const curtains = this.mesh(cgeo, [this.curtainMaterial], ox, oz, `water-${r}-${cc}-curtains`)
     curtains.visible = false
-    const slot: Slot = { surface, geo, attrs, curtains, cgeo, generation: d.curtains.generation, inRange: this.near(cc) }
+    const slot: Slot = { surface, geo, attrs, shading, curtains, cgeo, generation: d.curtains.generation, inRange: this.near(cc) }
     this.slots.set(key, slot)
     return slot
   }

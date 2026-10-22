@@ -320,6 +320,9 @@ const LIFT_SUB = LIFT * SUB
 /** vertexShares' floor when none is given: low enough that it never raises anything. */
 const NO_FLOOR = -0x10000
 
+/** Shared vertex shading: height derivatives (blocks/block) and contact with dry ground near the water line. */
+export interface VertexShading { x: Float32Array; z: Float32Array; shore: Float32Array }
+
 /** Whether two of a vertex's columns join: two drawn surfaces within JOIN, or a drawn surface and a ground below it within JOIN. */
 function joins(a: number, b: number): boolean {
   const ka = vKind[a]!, kb = vKind[b]!, va = vVal[a]!, vb = vVal[b]!
@@ -346,6 +349,7 @@ function joins(a: number, b: number): boolean {
 export function vertexShares(
   e0: number, e1: number, e2: number, e3: number, out: Float32Array, o: number,
   f0 = NO_FLOOR, f1 = NO_FLOOR, f2 = NO_FLOOR, f3 = NO_FLOOR,
+  shading?: VertexShading,
 ): boolean {
   if (e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) { // the common case, inside a lake or a river
     const lo01 = e0 < e1 ? e0 : e1, hi01 = e0 < e1 ? e1 : e0, lo23 = e2 < e3 ? e2 : e3, hi23 = e2 < e3 ? e3 : e2
@@ -354,10 +358,15 @@ export function vertexShares(
       const bed = (f01 > f23 ? f01 : f23) * SUB + LIFT_SUB, sum = e0 + e1 + e2 + e3
       const h = (sum >= 4 * bed ? sum : 4 * bed) * (1 / (4 * SUB)) // a power of two: exact
       out[o] = h; out[o + 1] = h; out[o + 2] = h; out[o + 3] = h
+      if (shading) {
+        const dx = (e1 + e3 - e0 - e2) / (2 * SUB), dz = (e2 + e3 - e0 - e1) / (2 * SUB)
+        for (let q = o; q < o + 4; q++) { shading.x[q] = dx; shading.z[q] = dz; shading.shore[q] = 0 }
+      }
       return true
     }
   }
   vVal[0] = e0; vVal[1] = e1; vVal[2] = e2; vVal[3] = e3
+  if (shading) { shading.x.fill(0, o, o + 4); shading.z.fill(0, o, o + 4); shading.shore.fill(0, o, o + 4) }
   vBed[0] = f0 * SUB + LIFT_SUB; vBed[1] = f1 * SUB + LIFT_SUB; vBed[2] = f2 * SUB + LIFT_SUB; vBed[3] = f3 * SUB + LIFT_SUB
   let drawn = 0
   for (let q = 0; q < 4; q++) {
@@ -383,7 +392,21 @@ export function vertexShares(
       if (vKind[m] === 2 && vBed[m]! > bed) bed = vBed[m]!
     }
     const avg = gs / n
-    out[o + q] = (avg >= bed ? avg : bed) / SUB
+    const height = avg >= bed ? avg : bed
+    out[o + q] = height / SUB
+    if (shading) {
+      // Only wet members of this height group contribute slopes. Walls and separate waterfall levels never tilt it.
+      let dx = 0, dz = 0, nx = 0, nz = 0, shore = 0
+      for (let m = 0; m < 4; m++) {
+        if (vKind[m] === 1 && vVal[m]! >= height - JOIN) shore = 1
+        if (vKind[m] !== 2 || vGroup[m] !== vGroup[q]) continue
+        if ((m & 1) === 0 && vKind[m + 1] === 2 && vGroup[m + 1] === vGroup[q]) { dx += vVal[m + 1]! - vVal[m]!; nx++ }
+        if (m < 2 && vKind[m + 2] === 2 && vGroup[m + 2] === vGroup[q]) { dz += vVal[m + 2]! - vVal[m]!; nz++ }
+      }
+      shading.x[o + q] = nx > 0 ? dx / (nx * SUB) : 0
+      shading.z[o + q] = nz > 0 ? dz / (nz * SUB) : 0
+      shading.shore[o + q] = shore
+    }
   }
   return false
 }

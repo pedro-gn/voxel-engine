@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RippleSet, editRipples } from '../src/render/water/ripples.ts'
-import { SurfaceView } from '../src/render/water/surfaceView.ts'
+import { SURFACE_ATTRIBUTES, SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterColumns } from '../src/sim/water/columns.ts'
 import { RANKS, SUB } from '../src/sim/water/constants.ts'
 import { WaterPublisher } from '../src/sim/water/publish.ts'
@@ -69,6 +69,7 @@ describe('the layered refresh path', () => {
         if (!a || !s) continue
         expect([tick, cc, diff(s.hCur, a.hCur), diff(s.hPrev, a.hPrev), diff(s.info, a.info), diff(s.curtainMask, a.curtainMask),
           diff(s.curtains.cur.subarray(0, s.curtains.count * 4), a.curtains.cur.subarray(0, a.curtains.count * 4))]).toEqual([tick, cc, -1, -1, -1, -1, -1])
+        for (const name of SURFACE_ATTRIBUTES) expect(diff(s[name], a[name]), `${name}, tick ${tick}, chunk ${cc}`).toBe(-1)
       }
     }
   }, 30_000) // ~1.5 s alone; give it room beside the parallel suite

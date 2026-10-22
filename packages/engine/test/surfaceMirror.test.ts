@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SurfaceView } from '../src/render/water/surfaceView.ts'
+import { SURFACE_ATTRIBUTES, SurfaceView } from '../src/render/water/surfaceView.ts'
 import { WaterHost } from '../src/render/water/waterHost.ts'
 import { SurfaceMirror } from '../src/render/water/surfaceMirror.ts'
 import { RANKS } from '../src/sim/water/constants.ts'
@@ -40,6 +40,7 @@ describe('SurfaceMirror (4a-r2 #2)', () => {
           const a = ref.column(cc, r), m = mirror.column(cc, r)
           expect([tick, r, cc, !!a]).toEqual([tick, r, cc, !!m])
           if (!a || !m) continue
+          for (const name of SURFACE_ATTRIBUTES) expect(diff(m[name], a[name]), `${name}, tick ${tick}, layer ${r}, chunk ${cc}`).toBe(-1)
           const n = a.curtains.count * 4
           expect([tick, r, cc, diff(m.hPrev, a.hPrev), diff(m.hCur, a.hCur), diff(m.info, a.info), m.curtains.count - a.curtains.count,
             diff(m.curtains.prev.subarray(0, n), a.curtains.prev.subarray(0, n)), diff(m.curtains.cur.subarray(0, n), a.curtains.cur.subarray(0, n)),

@@ -28,12 +28,16 @@ export interface WaterVertex {
   blk: THREE.Node<'float'>
   /** Ripple flow: direction x, z and speed (0 still, 1 gentle, 2.5 steep). */
   flow: THREE.Node<'vec3'>
-  /** 0–1: how much shore foam the water may get (thin films get little). */
+  /** 0–1: shore foam strength (static voxel films fade; connected heightfields keep a continuous ribbon). */
   surface: THREE.Node<'float'>
+  /** Contact with the bank (0 in open water); independent of how shallow its bed is. */
+  shore: THREE.Node<'float'>
   /** 0–1: white water. */
   white: THREE.Node<'float'>
   /** Streak speed factor on sides and curtains. */
   fall: THREE.Node<'float'>
+  /** Vertical distance below a curtain's brink in blocks (0 for other water). */
+  fallDepth: THREE.Node<'float'>
   /** Opacity factor. */
   alpha: THREE.Node<'float'>
 }
@@ -59,7 +63,7 @@ export function voxelWaterVertex(): WaterVertex {
   const v = chunkVertex(undefined, true)
   return {
     position: v.position, normal: v.normal, isTop: v.normal.y.greaterThan(0.5), sky: v.sky, blk: v.blk,
-    flow: vec3(0, 0, 0), surface: v.surface, white: float(0), fall: float(1), alpha: float(1),
+    flow: vec3(0, 0, 0), surface: v.surface, shore: float(1), white: float(0), fall: float(1), fallDepth: float(0), alpha: float(1),
   }
 }
 
@@ -77,20 +81,25 @@ export function surfaceVertex(): WaterVertex {
   const shown = select(info.w.lessThan(0), float(0), float(1))
   const ox = select(corner.greaterThan(0.5).and(corner.lessThan(2.5)), float(1), float(0)).mul(shown)
   const oz = select(corner.greaterThan(1.5), float(1), float(0)).mul(shown)
-  // The quad's plane from its four corners: rise along x and along z.
-  const dx = h.y.add(h.z).sub(h.x).sub(h.w).mul(0.5)
-  const dz = h.z.add(h.w).sub(h.x).sub(h.y).mul(0.5)
-  const { sky, blk, white } = unpack(info.w)
+  // The same connected vertex has the same slope in every quad, including across chunk borders.
+  const dx = pick4(mix(attribute('slopePrevX', 'vec4'), attribute('slopeCurX', 'vec4'), waterAlpha), corner)
+  const dz = pick4(mix(attribute('slopePrevZ', 'vec4'), attribute('slopeCurZ', 'vec4'), waterAlpha), corner)
+  const { sky, blk } = unpack(info.w)
   const speed = vec2(info.x, info.y).length()
   const dir = vec2(info.x, info.y).div(speed.max(0.001))
   return {
     position: vec3(lx.add(ox), pick4(h, corner), lz.add(oz)),
     normal: varying(normalize(vec3(dx.negate(), float(1), dz.negate()))),
     isTop: bool(true),
-    sky, blk, white,
+    sky, blk,
+    // Connected river ramps keep their water colour; aerated white water belongs to actual falling curtains.
+    white: float(0),
     flow: varying(vec3(dir.x, dir.y, speed)),
-    surface: varying(smoothstep(0.05, 0.35, info.z)),
+    // Bank foam follows the shared shoreline, independent of each cell's bed depth. A shallow brink must not cut it.
+    surface: float(1),
+    shore: varying(pick4(attribute('shore', 'vec4'), corner)),
     fall: float(1),
+    fallDepth: float(0),
     alpha: float(1),
   }
 }
@@ -190,7 +199,7 @@ export function curtainVertex(): WaterVertex {
   const faceNormal = arcNormal.mul(float(1).sub(back.mul(2)))
   const normal = mix(mix(faceNormal, vec3(lx, 0, lz), isSide), vec3(0, 1, 0), isSplash)
   const { sky, blk } = unpack(light)
-  const fade = mix(float(0.45), float(1), smoothstep(0, 24, flux))
+  const fade = mix(float(0.7), float(1), smoothstep(0, 24, flux))
   // The splash shows at the ends that land on water, once the curtain has unrolled, and fades out toward its rows' edges.
   const wetB = water.div(2).floor()
   const wet = byEnd(water.sub(wetB.mul(2)), wetB)
@@ -206,9 +215,11 @@ export function curtainVertex(): WaterVertex {
     sky, blk,
     flow: vec3(0, 0, 0),
     surface: float(1),
+    shore: float(0),
     // A fall whitens as it goes down: it takes in air on the way.
     white: varying(mix(smoothstep(8, 64, flux).mul(s.mul(0.4).add(0.3)), float(1), isSplash)),
     fall: varying(float(1).add(flux.div(32).min(3))),
+    fallDepth: varying(top.sub(y).max(0)),
     // Void world: the fall fades out toward the bottom of the volume (world y; curtain meshes sit at world y 0). Branch-free.
     alpha: varying(mix(fade, splash, isSplash).mul(mix(float(1), smoothstep(float(0), float(VOID_FADE_BLOCKS), y), voidFloor))) as N,
   }

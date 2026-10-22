@@ -1,7 +1,7 @@
 import type { WaterTick } from '../../sim/water/publish.ts'
 import type { WorldSize } from '../../world/layout.ts'
 import type { WaterBuffers } from '../../world/waterBuffers.ts'
-import { SurfaceView, type DrawnSurfaces } from './surfaceView.ts'
+import { SURFACE_ATTRIBUTES, SurfaceView, type DrawnSurfaces } from './surfaceView.ts'
 
 /** One tick for the host: its publish (null: none) and the light ranges [cc, y0, y1]* to re-read after it. */
 export interface WaterEntry { tick: number; water: WaterTick | null; relight: number[] }
@@ -20,7 +20,7 @@ export const KEY_INTS = 4
 
 /**
  * Takes the view's dirty keys and packs what the renderer reads: per key [key, rowLo, rowHi, curtain count] (count −1: the
- * key has no data), then in `data`, key by key, rows rowLo..rowHi of hPrev, hCur and info (none when rowLo > rowHi), then
+ * key has no data), then in `data`, key by key, rows rowLo..rowHi of SURFACE_ATTRIBUTES (none when rowLo > rowHi), then
  * the first count × 4 floats of the six curtain arrays (prev, cur, reach, thick, flare, info). Resets each key's row range,
  * as WaterSurface.sync does when it uploads.
  */
@@ -30,7 +30,7 @@ export function packDirty(view: SurfaceView): { keys: Int32Array; data: Float32A
   for (const key of dirty) {
     const cc = key % n, d = view.column(cc, (key - cc) / n)
     if (!d) continue
-    if (d.rowLo <= d.rowHi) floats += (d.rowHi - d.rowLo + 1) * ROW * 3
+    if (d.rowLo <= d.rowHi) floats += (d.rowHi - d.rowLo + 1) * ROW * SURFACE_ATTRIBUTES.length
     floats += d.curtains.count * 4 * 6
   }
   const keys = new Int32Array(dirty.length * KEY_INTS), data = new Float32Array(floats)
@@ -42,9 +42,7 @@ export function packDirty(view: SurfaceView): { keys: Int32Array; data: Float32A
     keys[k * KEY_INTS + 1] = d.rowLo; keys[k * KEY_INTS + 2] = d.rowHi
     if (d.rowLo <= d.rowHi) {
       const a = d.rowLo * ROW, b = (d.rowHi + 1) * ROW
-      data.set(d.hPrev.subarray(a, b), o); o += b - a
-      data.set(d.hCur.subarray(a, b), o); o += b - a
-      data.set(d.info.subarray(a, b), o); o += b - a
+      for (const arr of d.arrays) { data.set(arr.subarray(a, b), o); o += b - a }
       d.rowLo = 32; d.rowHi = -1
     }
     const cs = d.curtains, m = cs.count * 4

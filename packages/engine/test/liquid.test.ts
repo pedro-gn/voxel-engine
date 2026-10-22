@@ -6,6 +6,7 @@ import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
 import { meshTablesFrom } from '../src/mesh/tables.ts'
 import { FACE, LIQUID_DEEP, packA, unpackA } from '../src/mesh/vertexFormat.ts'
 import { OUTSIDE, PAD, type ChunkSnapshot } from '../src/world/reader.ts'
+import { NO_FLOOR } from '../src/world/waterBuffers.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
@@ -188,6 +189,15 @@ describe('liquid groups and springs', () => {
   const SPRING_ID = 8
   const t2 = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
   const liquidOf = (s: ChunkSnapshot) => { const t = new QuadBuilder(), l = new QuadBuilder(); meshTranslucent(s, t2, t, l); return l.build() }
+  it('lets the simulated surface draw both a spring and its neighbouring water without a second floating source cube', () => {
+    const s = emptySnap()
+    put(s, 5, 5, 5, packVoxel(SPRING_ID, 3))
+    put(s, 5, 6, 5, water(3)) // the spring emits into the simulated run resting on its top
+    put(s, 6, 5, 5, water(3))
+    s.floor[6 + 6 * PAD] = 6
+    s.floor[7 + 6 * PAD] = 5
+    expect(liquidOf(s)).toBeNull()
+  })
   const faces = (m: ReturnType<typeof liquidOf>, normal: number) => {
     const out: { a: number; b: number }[] = []
     if (m) for (let i = 0; i < m.vertices.length; i += 8) if (unpackA(m.vertices[i]!).normal === normal) out.push({ a: m.vertices[i]!, b: m.vertices[i + 1]! })
@@ -220,7 +230,7 @@ describe('static and simulated water', () => {
     s.floor[(4 + 1) + (4 + 1) * PAD] = 5
     expect(mesh(s).n).toBe(6) // only the lone cell of the column nobody simulates
   })
-  it('still meshes a spring above its column\'s floor', () => {
+  it('draws a spring only where no simulation owns its column', () => {
     const reg = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'spring', liquid: true, source: 'water', textures: 'water' })])
     const t2 = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
     const s = emptySnap()
@@ -228,7 +238,11 @@ describe('static and simulated water', () => {
     s.floor[(6 + 1) + (5 + 1) * PAD] = 0
     const t = new QuadBuilder(), l = new QuadBuilder()
     meshTranslucent(s, t2, t, l)
-    expect(l.quadCount).toBe(6)
+    expect(l.quadCount).toBe(0)
+    s.floor.fill(NO_FLOOR) // A static world still needs the source mesh.
+    const staticWater = new QuadBuilder()
+    meshTranslucent(s, t2, new QuadBuilder(), staticWater)
+    expect(staticWater.quadCount).toBe(6)
   })
 })
 

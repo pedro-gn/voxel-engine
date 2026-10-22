@@ -7,7 +7,7 @@ import { hit, patch, resolve, type SlotSource } from './slotPatch.ts'
 import {
   ARC_COLUMNS, ARC_GAP, BODY_MAX, CURTAIN_BOTTOM, CURTAIN_TOP, DIR_X, DIR_Z, END_X, END_Z, FLARE_FADE, FLARE_MAX, JOIN, OUTSIDE,
   SINK, boreWhite, bodyThickness, curtainAt, effective, exitSpeed, flareAmount, flareCode, flareMargin, flareOpen, froude, layArc,
-  layBody, layLip, level, lipCode, localOf, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares,
+  layBody, layLip, level, lipCode, localOf, packFlux, quantizeFlow, shows, splashCode, splashHalf, surfaceWhite, vertexShares, type VertexShading,
 } from './surfaceMesh.ts'
 
 /**
@@ -63,6 +63,9 @@ export class Curtains {
   }
 }
 
+/** Surface attributes, in the same order on the worker wire and on the GPU; all have four floats per instance. */
+export const SURFACE_ATTRIBUTES = ['hPrev', 'hCur', 'info', 'slopePrevX', 'slopePrevZ', 'slopeCurX', 'slopeCurZ', 'shore'] as const
+
 /** Instance data of one chunk column: 32 × 32 quads, instance lx + lz × 32, 4 floats each. */
 export class ColumnData {
   /** Corner heights (blocks; corners (−x,−z) (+x,−z) (+x,+z) (−x,+z)) of the previous and the current step. */
@@ -70,6 +73,15 @@ export class ColumnData {
   readonly hCur = new Float32Array(4096)
   /** Flow x, flow z, depth (blocks), packed light (sky × 16 + block + 256 × white water); a negative packed value hides the quad. */
   readonly info = new Float32Array(4096).fill(-1)
+  /** Shared corner slopes, carried in time just like the corner heights. */
+  readonly slopePrevX = new Float32Array(4096)
+  readonly slopePrevZ = new Float32Array(4096)
+  readonly slopeCurX = new Float32Array(4096)
+  readonly slopeCurZ = new Float32Array(4096)
+  /** Per corner, dry ground near the water line; interpolated in the shader to restrict foam to the bank. */
+  readonly shore = new Float32Array(4096)
+  readonly arrays = SURFACE_ATTRIBUTES.map(name => this[name])
+  readonly frames = [[this.hPrev, this.hCur], [this.slopePrevX, this.slopeCurX], [this.slopePrevZ, this.slopeCurZ]] as const
   /** Rows (lz) changed since the renderer last took this column; rowLo > rowHi when none. */
   rowLo = 32
   rowHi = -1
@@ -85,6 +97,10 @@ export class ColumnData {
 
 /** 1 / SUB: a power of two, so multiplying by it is exact (and cheaper than dividing). */
 const PER_SUB = 1 / SUB
+
+function vertexShading(length: number): VertexShading {
+  return { x: new Float32Array(length), z: new Float32Array(length), shore: new Float32Array(length) }
+}
 
 /** Columns from a curtain's column to the farthest it can land on: its neighbour, then up to ARC_REACH (+ ARC_GAP) more. */
 const ARC_SPAN = ARC_COLUMNS
@@ -147,6 +163,10 @@ export class SurfaceView {
   private readonly pF = new Int16Array(9)
   /** …and one vertex's shares. */
   private readonly vtmp = new Float32Array(4)
+  private readonly shadingTmp = vertexShading(4)
+  private readonly slotShadingPrev = vertexShading(4)
+  private readonly slotShadingCur = vertexShading(4)
+  private readonly cornerIndices = new Int32Array(4)
   private readonly src: SlotSource
   private readonly light: (x: number, y: number, z: number) => number
   private readonly stepHz: number
@@ -178,6 +198,8 @@ export class SurfaceView {
   /** …its vertices' heights (4 per vertex, see vertexShares) and smoothness (bit 0 previous step, bit 1 current). */
   private readonly vPrev = new Float32Array(VERTICES * VERTICES * 4)
   private readonly vCur = new Float32Array(VERTICES * VERTICES * 4)
+  private readonly shadingPrev = vertexShading(VERTICES * VERTICES * 4)
+  private readonly shadingCur = vertexShading(VERTICES * VERTICES * 4)
   private readonly smooth = new Uint8Array(VERTICES * VERTICES)
   private readonly reg = { xa: 0, xb: 0, za: 0, zb: 0, hw: 0, vw: 0, aligned: false }
   /** The alpha (0–1) the surface is drawn at while an apply runs; negative: none given (the previous step is computed). */
@@ -414,8 +436,7 @@ export class SurfaceView {
       const x = c % sx, z = (c - x) / sx, cc = (x >> 5) + (z >> 5) * this.cx, d = this.data[r]![cc], key = r * this.ccCount + cc
       const o = ((x & 31) + (z & 31) * 32) * 4
       if (!d || d.info[o + 3]! < 0) continue
-      const hp = d.hPrev, hc = d.hCur
-      for (let k = o; k < o + 4; k++) hp[k] = hp[k]! + (hc[k]! - hp[k]!) * a
+      for (const [prev, cur] of d.frames) for (let k = o; k < o + 4; k++) prev[k] = prev[k]! + (cur[k]! - prev[k]!) * a
       d.mark(z & 31)
       this.markDirty(key)
       this.touch(key)
@@ -433,13 +454,10 @@ export class SurfaceView {
   private track(c: number, r: number, d: ColumnData, o: number): void {
     const s = c * RANKS + r
     if (this.movingMark[s] === this.epoch) return
-    const hp = d.hPrev, hc = d.hCur
-    const g0 = Math.abs(hc[o]! - hp[o]!), g1 = Math.abs(hc[o + 1]! - hp[o + 1]!)
-    const g2 = Math.abs(hc[o + 2]! - hp[o + 2]!), g3 = Math.abs(hc[o + 3]! - hp[o + 3]!)
-    if (g0 < SETTLED && g1 < SETTLED && g2 < SETTLED && g3 < SETTLED) {
-      if (g0 > 0 || g1 > 0 || g2 > 0 || g3 > 0) {
-        hp[o] = hc[o]!; hp[o + 1] = hc[o + 1]!; hp[o + 2] = hc[o + 2]!; hp[o + 3] = hc[o + 3]!
-      }
+    let far = false
+    for (const [prev, cur] of d.frames) for (let k = o; k < o + 4; k++) if (Math.abs(cur[k]! - prev[k]!) >= SETTLED) far = true
+    if (!far) {
+      for (const [prev, cur] of d.frames) for (let k = o; k < o + 4; k++) prev[k] = cur[k]!
       return
     }
     this.movingMark[s] = this.epoch
@@ -584,7 +602,8 @@ export class SurfaceView {
     let vi = 0
     for (let k = 0; k <= zb - za; k++) for (let i = 0; i < vw; i++, vi++) {
       const a = i + k * hw, b = a + hw
-      smooth[vi] = (shares(eC, fH, a, b, vC, vi * 4) ? 2 : 0) | (!aligned && shares(eP, fH, a, b, vP, vi * 4) ? 1 : 0)
+      smooth[vi] = (shares(eC, fH, a, b, vC, vi * 4, this.shadingCur) ? 2 : 0)
+        | (!aligned && shares(eP, fH, a, b, vP, vi * 4, this.shadingPrev) ? 1 : 0)
     }
     const g = this.reg
     g.xa = xa; g.xb = xb; g.za = za; g.zb = zb; g.hw = hw; g.vw = vw; g.aligned = aligned
@@ -686,10 +705,11 @@ export class SurfaceView {
     const s2 = hp[o + 2]! + (hc[o + 2]! - hp[o + 2]!) * a, s3 = hp[o + 3]! + (hc[o + 3]! - hp[o + 3]!) * a
     let smoothP = true, smoothC = true
     for (let k = 0; k < 4; k++) {
-      smoothP = patchCorner(pP, pF, k, hp, o, this.vtmp) && smoothP
-      smoothC = patchCorner(pC, pF, k, hc, o, this.vtmp) && smoothC
+      smoothP = patchCorner(pP, pF, k, hp, o, this.vtmp, this.slotShadingPrev, this.shadingTmp) && smoothP
+      smoothC = patchCorner(pC, pF, k, hc, o, this.vtmp, this.slotShadingCur, this.shadingTmp) && smoothC
     }
     if (onScreen) { hp[o] = s0; hp[o + 1] = s1; hp[o + 2] = s2; hp[o + 3] = s3 }
+    this.refreshShading(d, o, this.slotShadingPrev, this.slotShadingCur, SLOT_CORNERS, false, was, onScreen)
     const prevBits = smoothP ? 0 : edgeBits(pP, 4, 3)
     const s = level(src.value(c, r, true)), depth = Math.max(0, s - fl * SUB)
     const east = r === 0 ? this.fluxX[c]! : this.layers.fluxX(c, r), south = r === 0 ? this.fluxZ[c]! : this.layers.fluxZ(c, r)
@@ -755,6 +775,9 @@ export class SurfaceView {
     }
     if (onScreen) { hp[o] = s0; hp[o + 1] = s1; hp[o + 2] = s2; hp[o + 3] = s3 }
     hc[o] = vc[v0]!; hc[o + 1] = vc[v1]!; hc[o + 2] = vc[v2]!; hc[o + 3] = vc[v3]!
+    const indices = this.cornerIndices
+    indices[0] = v0; indices[1] = v1; indices[2] = v2; indices[3] = v3
+    this.refreshShading(d, o, this.shadingPrev, this.shadingCur, indices, aligned, was, onScreen)
     const s = level(this.cur[c]!), depth = Math.max(0, s - fl * SUB)
     const west = x > 0 ? this.fluxX[c - 1]! : 0, east = this.fluxX[c]!
     const north = z > 0 ? this.fluxZ[c - sx]! : 0, south = this.fluxZ[c]!
@@ -787,6 +810,20 @@ export class SurfaceView {
     if (out <= 0 || ej >= 0 || ej === OUTSIDE) return false
     const drop = ec - ~ej
     return drop > 0 && drop <= JOIN
+  }
+
+  /** Carries shared slopes with the same interpolation as geometry; the bank mask is independent of the riverbed depth. */
+  private refreshShading(d: ColumnData, o: number, prev: VertexShading, cur: VertexShading, indices: ArrayLike<number>, aligned: boolean, was: boolean, onScreen: boolean): void {
+    for (let k = 0; k < 4; k++) {
+      const j = o + k, v = indices[k]!
+      const px = onScreen ? d.slopePrevX[j]! + (d.slopeCurX[j]! - d.slopePrevX[j]!) * this.shown
+        : aligned ? (was ? d.slopeCurX[j]! : 0) : prev.x[v]!
+      const pz = onScreen ? d.slopePrevZ[j]! + (d.slopeCurZ[j]! - d.slopePrevZ[j]!) * this.shown
+        : aligned ? (was ? d.slopeCurZ[j]! : 0) : prev.z[v]!
+      d.slopePrevX[j] = px; d.slopePrevZ[j] = pz
+      d.slopeCurX[j] = cur.x[v]!; d.slopeCurZ[j] = cur.z[v]!
+      d.shore[j] = cur.shore[v]!
+    }
   }
 
   /**
@@ -1084,8 +1121,8 @@ function settleCurtains(cs: Curtains): boolean {
 }
 
 /** vertexShares for the vertex whose columns are halo cells a, a + 1, b, b + 1 of the effective values e and floors f. */
-function shares(e: Int32Array, f: Int16Array, a: number, b: number, out: Float32Array, o: number): boolean {
-  return vertexShares(e[a]!, e[a + 1]!, e[b]!, e[b + 1]!, out, o, f[a]!, f[a + 1]!, f[b]!, f[b + 1]!)
+function shares(e: Int32Array, f: Int16Array, a: number, b: number, out: Float32Array, o: number, shading: VertexShading): boolean {
+  return vertexShares(e[a]!, e[a + 1]!, e[b]!, e[b + 1]!, out, o, f[a]!, f[a + 1]!, f[b]!, f[b + 1]!, shading)
 }
 
 /**
@@ -1101,12 +1138,14 @@ function edgeBits(e: Int32Array, h: number, hw: number): number {
 
 /** Vertex k (0–3: (−x,−z) (+x,−z) (+x,+z) (−x,+z)) of a 3 × 3 patch: its 2 × 2 block (e0, e1, e2, e3 for vertexShares) and the centre's quadrant. */
 const BLOCKS: readonly (readonly number[])[] = [[0, 1, 3, 4, 3], [1, 2, 4, 5, 2], [4, 5, 7, 8, 0], [3, 4, 6, 7, 1]]
+const SLOT_CORNERS = [0, 1, 2, 3]
 
 /** Corner k of the patch's centre (effective values e, floors f) into out[o + k]; whether that vertex is smooth. */
-function patchCorner(e: Int32Array, f: Int16Array, k: number, out: Float32Array, o: number, tmp: Float32Array): boolean {
+function patchCorner(e: Int32Array, f: Int16Array, k: number, out: Float32Array, o: number, tmp: Float32Array, shading: VertexShading, shadingTmp: VertexShading): boolean {
   const b = BLOCKS[k]!, q0 = b[0]!, q1 = b[1]!, q2 = b[2]!, q3 = b[3]!
-  const smooth = vertexShares(e[q0]!, e[q1]!, e[q2]!, e[q3]!, tmp, 0, f[q0]!, f[q1]!, f[q2]!, f[q3]!)
+  const smooth = vertexShares(e[q0]!, e[q1]!, e[q2]!, e[q3]!, tmp, 0, f[q0]!, f[q1]!, f[q2]!, f[q3]!, shadingTmp)
   out[o + k] = tmp[b[4]!]!
+  shading.x[k] = shadingTmp.x[b[4]!]!; shading.z[k] = shadingTmp.z[b[4]!]!; shading.shore[k] = shadingTmp.shore[b[4]!]!
   return smooth
 }
 
