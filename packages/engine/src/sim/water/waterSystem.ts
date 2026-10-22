@@ -15,7 +15,7 @@ import { rebuildSegments, waterKinds } from './rebuild.ts'
 import { resegment, type Seg } from './resegment.ts'
 import { UnderSegments } from './under.ts'
 
-interface WaterJson { steps: number; sea: number; springs: number[]; cursor: number; stepNo: number; needsRebuild: boolean }
+interface WaterJson { steps: number; sea: number; springs: number[]; cursor: number; stepNo: number; needsRebuild: boolean; lost?: number }
 /** Saved lower segment: column, floor, ceil, depth, last, excess. Saved under edge: column a, floor a (−1: top), column b, floor b, flux. */
 const UNDER_FIELDS = 6, EDGE_FIELDS = 5
 
@@ -34,8 +34,14 @@ export interface WaterOptions {
    * nothing. Integer, MIN_FLOW ≤ retain ≤ SUB. Default MIN_FLOW (1/64 block): films flow, and draw from SUB / 16 as before.
    */
   retain: number
+  /**
+   * Every `lossEvery` steps, each wet top column and free lower segment (not in a body) loses 1/SUB block into the `lost`
+   * account, and one holding less than `retain` that did not gain since the previous pass loses all of it. Integer ≥ 0;
+   * 0 (default) turns loss off.
+   */
+  lossEvery: number
 }
-export const DEFAULT_WATER_OPTIONS: WaterOptions = Object.freeze({ tileCap: 1024, debug: false, retain: MIN_FLOW })
+export const DEFAULT_WATER_OPTIONS: WaterOptions = Object.freeze({ tileCap: 1024, debug: false, retain: MIN_FLOW, lossEvery: 0 })
 
 /** What the water system needs from the Simulation. */
 export interface WaterPort {
@@ -91,6 +97,8 @@ export class WaterSystem {
   private gTotal = 0
   private gEligible = 0
   private readonly seedOf: Int32Array
+  /** Per top column: its depth after the last loss pass (empty while loss is off). */
+  private readonly lossPrev: Int32Array
   private readonly targets: number[] = []
   private ex = 0
   private ez = 0
@@ -109,6 +117,8 @@ export class WaterSystem {
     if (!Number.isInteger(cap) || cap < 1) throw new RangeError(`water option tileCap must be an integer ≥ 1, got ${cap}`)
     const retain = this.o.retain
     if (!Number.isInteger(retain) || retain < MIN_FLOW || retain > SUB) throw new RangeError(`water option retain must be an integer ${MIN_FLOW}–${SUB}, got ${retain}`)
+    const every = this.o.lossEvery
+    if (!Number.isInteger(every) || every < 0) throw new RangeError(`water option lossEvery must be an integer ≥ 0, got ${every}`)
     const reg = port.registry
     this.water = waterGroupOf(reg)
     if (this.water !== 0 && (reg.opaque[this.water] === 1 || reg.emits[this.water]! > 0)) {
@@ -127,6 +137,7 @@ export class WaterSystem {
     this.cycle = new WaterCycle(sx * sz)
     this.mirror = new WaterMirror(sx * sz)
     this.stamp = new Int32Array(sx * sz)
+    this.lossPrev = new Int32Array(every > 0 ? sx * sz : 0)
     this.seedOf = new Int32Array(sx * sz)
     this.publisher = new WaterPublisher(port.buffers, retain)
     this.get = (x, y, z) => port.get(x, y, z)
@@ -167,6 +178,8 @@ export class WaterSystem {
   }
   get seaLevel(): number { return this.cycle.seaLevel }
   get sea(): number { return this.cycle.sea }
+  /** Water the loss pass took out of the world (1/SUB block); 0 while loss is off. */
+  get lost(): number { return this.cycle.lost }
   get stepCount(): number { return this.steps }
 
   /**
@@ -184,8 +197,8 @@ export class WaterSystem {
     this.expected = this.total()
   }
 
-  /** Σ depth + sea. */
-  total(): number { return this.cols.total() + this.cycle.sea }
+  /** Σ depth + sea + lost. */
+  total(): number { return this.cols.total() + this.cycle.sea + this.cycle.lost }
 
   /** Column (x, z): floor, depth and surface. For tests and tools. */
   column(x: number, z: number): { floor: number; depth: number; surface: number } {
@@ -390,6 +403,8 @@ export class WaterSystem {
     const cy = this.cycle
     cy.runSprings(this.cols, this.under, this.layout, this.get, this.port.registry.source, (i) => this.bodies.seed(i))
     cy.sea += this.cols.step(this.o.tileCap, cy.seaLevel > 0 ? cy.mask : null, cy.seaLevel * SUB)
+    const every = this.o.lossEvery
+    if (every > 0 && this.steps % every === 0) this.lose()
     if (this.o.debug) {
       const bad = this.check()
       if (bad.length > 0) {
@@ -443,7 +458,8 @@ export class WaterSystem {
     }
     for (const b of this.bodies.list) if (b.excess < 0) out.push(`a body has excess ${b.excess}`)
     const t = this.total()
-    if (t !== this.expected) out.push(`Σ depth + sea is ${t}, expected ${this.expected}`)
+    if (this.cycle.lost < 0) out.push(`the loss account is ${this.cycle.lost}`)
+    if (t !== this.expected) out.push(`Σ depth + sea + lost is ${t}, expected ${this.expected}`)
     return out
   }
 
@@ -509,19 +525,24 @@ export class WaterSystem {
     const cols = this.cols, U = this.under, n = cols.n
     const bodyExcess = new Map<number, number>()
     for (const b of this.bodies.list) if (b.members.length) bodyExcess.set(b.members[0]!, b.excess)
-    const under: number[] = []
+    const under: number[] = [], lossUnder: number[] = []
     for (let c = 0; c < n; c++) for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
       under.push(c, U.floor[i]!, U.ceil[i]!, U.depth[i]!, U.last[i]!, U.excess[i]! + (bodyExcess.get(i) ?? 0))
+      lossUnder.push(U.lossPrev[i]!)
     }
     const end = (ref: number): [number, number] => ref < n ? [ref, -1] : [U.col[ref - n]!, U.floor[ref - n]!]
     const edges: number[] = []
     for (const E of this.edges.tiles) if (E) for (let e = 0; e < E.count; e++) if (E.flux[e] !== 0) edges.push(...end(E.a[e]!), ...end(E.b[e]!), E.flux[e]!)
     const s = cols.state()
     const json: WaterJson = { steps: this.steps, sea: this.cycle.sea, springs: [...this.cycle.springs], cursor: s.cursor, stepNo: s.stepNo, needsRebuild: this.needsRebuild }
+    const loss = this.o.lossEvery > 0
+    // Loss state only while loss is on: a save without it is byte-identical to one from before the option.
+    if (loss || this.cycle.lost !== 0) json.lost = this.cycle.lost
     return { json, arrays: {
       depth: s.depth.slice(), flux: s.flux.slice(), last: s.last.slice(),
       awake: cols.tiles.awake.slice(), quiet: cols.tiles.quiet.slice(),
       under: Int32Array.from(under), edges: Int32Array.from(edges),
+      ...(loss && { lossPrev: this.lossPrev.slice(), lossUnder: Int32Array.from(lossUnder) }),
     } }
   }
 
@@ -531,12 +552,15 @@ export class WaterSystem {
     const j = p.json as WaterJson, a = p.arrays, cols = this.cols, U = this.under
     if (j.needsRebuild) { this.needsRebuild = true; return }
     cols.restoreState(a.depth as Int32Array, a.flux as Int32Array, a.last as Int32Array, j.cursor, j.stepNo)
-    const u = a.under as Int32Array
+    const u = a.under as Int32Array, lossUnder = a.lossUnder as Int32Array | undefined
     for (let k = 0; k < u.length; k += UNDER_FIELDS) {
       const i = this.lowerAt(u[k]!, u[k + 1]!)
       if (i < 0 || U.ceil[i] !== u[k + 2]) { this.port.log(`water restore: column ${u[k]} has no lower segment ${u[k + 1]}–${u[k + 2]}; its water is dropped`); continue }
       U.depth[i] = u[k + 3]!; U.last[i] = u[k + 4]!; U.excess[i] = u[k + 5]!
+      if (lossUnder) U.lossPrev[i] = lossUnder[k / UNDER_FIELDS]!
     }
+    const lossPrev = a.lossPrev as Int32Array | undefined
+    if (lossPrev && lossPrev.length === this.lossPrev.length) this.lossPrev.set(lossPrev)
     this.bodies.dropAll()
     this.bodies.seedFull()
     this.edges.ensure(cols, U, this.height)
@@ -551,6 +575,7 @@ export class WaterSystem {
     const cy = this.cycle
     cy.findSea(cols)
     cy.sea = j.sea
+    cy.lost = j.lost ?? 0
     cy.springs.clear()
     for (const s of j.springs) cy.springs.add(s)
     cols.tiles.awake.set(a.awake as Uint8Array)
@@ -579,6 +604,63 @@ export class WaterSystem {
     this.cols.mixState(mix)
     this.cycle.mixState(mix)
     this.mirror.mixState(mix)
+    if (this.o.lossEvery > 0) { // only with loss on, so worlds without it hash as before
+      mix(this.cycle.lost)
+      const U = this.under, prev = this.lossPrev
+      for (let c = 0; c < prev.length; c++) {
+        mix(prev[c]!)
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mix(U.lossPrev[i]!)
+      }
+    }
+  }
+
+  /**
+   * The loss pass (WaterOptions.lossEvery; plan D3–D5): every wet top column off the sea and every wet lower segment outside
+   * a body loses 1/SUB block, or all of it when it holds less than `retain` and did not gain since the previous pass; a top
+   * column only when it is also still (no flux on its four edges: spec §4.1) and no neighbour holds `retain` or more. So a
+   * front being filled, sloshing water and a pond's rim are never cut: wiping a rim would let the pond spill into the gap
+   * and be wiped again at every pass, a sink far above the per-column loss. The water goes to the `lost` account, so the conservation identity holds. Touched tiles
+   * republish; a tile wakes only where a segment went dry, so a settled pond keeps sleeping.
+   */
+  private lose(): void {
+    const cols = this.cols, depth = cols.depth, flux = cols.flux, sx = cols.sx, n = cols.n, T = cols.tiles, U = this.under
+    const mask = this.cycle.mask, prev = this.lossPrev, retain = this.o.retain
+    let lost = 0
+    for (let c = 0; c < n; c++) {
+      const d = depth[c]!
+      let touched = false, dried = false
+      if (d > 0 && mask[c] === 0) {
+        let take = 1
+        if (d < retain && d <= prev[c]!) {
+          const x = c % sx
+          const still = flux[2 * c] === 0 && flux[2 * c + 1] === 0 && (x === 0 || flux[2 * c - 2] === 0) && (c < sx || flux[2 * (c - sx) + 1] === 0)
+          const alone = (x === 0 || depth[c - 1]! < retain) && (x + 1 === sx || depth[c + 1]! < retain) &&
+            (c < sx || depth[c - sx]! < retain) && (c + sx >= n || depth[c + sx]! < retain)
+          if (still && alone) take = d
+        }
+        depth[c] = d - take
+        lost += take
+        touched = true
+        dried = take === d
+      }
+      prev[c] = depth[c]!
+      for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
+        const ud = U.depth[i]!
+        if (ud > 0 && U.body[i]! < 0) {
+          const take = ud < retain && ud <= U.lossPrev[i]! ? ud : 1
+          U.depth[i] = ud - take
+          lost += take
+          touched = true
+          if (take === ud) dried = true
+        }
+        U.lossPrev[i] = U.depth[i]!
+      }
+      if (!touched) continue
+      const x = c % sx, z = (c - x) / sx
+      T.dirty[T.of(x, z)] = 1
+      if (dried) T.wakeAround(x, z)
+    }
+    this.cycle.lost += lost
   }
 
   /** Whether a segment of column (x, z) or of one of its four neighbours holds water: only then can an edit there move any. */

@@ -101,6 +101,7 @@ export class SimHost {
               debug: msg.options.debugFluids === true,
               ...(msg.options.waterTileCap !== undefined && { tileCap: msg.options.waterTileCap }),
               ...(msg.options.waterRetain !== undefined && { retain: msg.options.waterRetain }),
+              ...(msg.options.waterLossEvery !== undefined && { lossEvery: msg.options.waterLossEvery }),
             },
             onNewPage: (index, page) => this.post({ type: 'page', index, page }),
             log: (message) => this.post({ type: 'log', message }),

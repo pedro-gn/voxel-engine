@@ -24,6 +24,8 @@ export interface SimInitOptions {
   waterTileCap?: number
   /** Water a column keeps before it sends any on, and under which nothing is drawn (1/256 block, integer 4–256). Default 4 (1/64 block). */
   waterRetain?: number
+  /** Every this many steps each wet water column loses 1/256 block (integer ≥ 0; 0, the default, turns loss off). */
+  waterLossEvery?: number
   /** Start with physics (gravity, water, region jobs) paused. */
   paused?: boolean
   /** Opted-in structural blocks only; count budgets and connected-fragment limits. */

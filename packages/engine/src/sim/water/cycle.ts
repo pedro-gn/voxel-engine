@@ -9,6 +9,8 @@ export class WaterCycle {
   seaLevel = 0
   /** The sea account (1/SUB block): credited by water that reaches the sea, debited by springs. Negative only without a sea level. */
   sea = 0
+  /** The loss account (1/SUB block): water the loss pass (WaterOptions.lossEvery) took out of the world. Never negative. Mixed and saved by WaterSystem only while loss is on. */
+  lost = 0
   /** 1 for a sea column. */
   readonly mask: Uint8Array
   /** Spring positions (Layout.voxelIndex) in the order they were found. */
