@@ -29,6 +29,8 @@ export class UnderSegments {
   /** The mirror's state for the segment (mirror.ts mirrorRun). */
   mirrorLo = new Int16Array(0)
   mirrorQ = new Int32Array(0)
+  /** Its depth after the last loss pass (WaterSystem's lossEvery); 0 for a new segment, so new water counts as gained. */
+  lossPrev = new Int32Array(0)
   /** Lower segments in use. */
   count = 0
   private readonly freed: number[] = []
@@ -61,6 +63,7 @@ export class UnderSegments {
     this.shown[i] = 0
     this.mirrorLo[i] = floor
     this.mirrorQ[i] = ~(ceil * 8)
+    this.lossPrev[i] = 0
     this.count++
     return i
   }
@@ -139,5 +142,6 @@ export class UnderSegments {
     this.shown = g8(this.shown)
     this.mirrorLo = g16(this.mirrorLo)
     this.mirrorQ = g32(this.mirrorQ)
+    this.lossPrev = g32(this.lossPrev)
   }
 }

@@ -26,6 +26,8 @@ export interface BlockDef {
   shape?: BlockShape
   /** Units climb it: a cell holding it is a pose without a floor, joined to the climbable cells above and below. Needs `solid: false` and no `liquid`. */
   climbable?: boolean
+  /** Water flows through the cell as if it were air, and the water mirror never writes it (an open gate). Units still see the block as `solid` says. Cannot be combined with `liquid`. */
+  passesWater?: boolean
 }
 
 export function defineBlock(def: BlockDef): BlockDef {
@@ -59,6 +61,8 @@ export class BlockRegistry {
   readonly climbable: Uint8Array
   /** True when any block is climbable: navigation then adds its up and down moves. */
   readonly hasClimbable: boolean
+  /** 1 for a block water flows through (`passesWater`). */
+  readonly passesWater: Uint8Array
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
 
@@ -80,6 +84,7 @@ export class BlockRegistry {
     this.shape = new Uint8Array(this.count)
     this.blocksLight = new Uint8Array(this.count)
     this.climbable = new Uint8Array(this.count)
+    this.passesWater = new Uint8Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -117,6 +122,10 @@ export class BlockRegistry {
       if (d.climbable) {
         if (liquid || this.solid[id] === 1) throw new RangeError(`block "${d.name}": climbable needs solid: false and no liquid`)
         this.climbable[id] = 1
+      }
+      if (d.passesWater) {
+        if (liquid) throw new Error(`block "${d.name}": passesWater cannot be combined with liquid`)
+        this.passesWater[id] = 1
       }
       this.emits[id] = emits
       const t = d.textures ?? d.name

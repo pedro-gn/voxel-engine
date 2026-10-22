@@ -635,6 +635,7 @@ export class Simulation {
   private makeSystemContext(rng: Pcg32, runner: SystemRunner): SystemContext {
     const sim = this
     const noUnits = () => { throw new Error('this simulation runs without worker units') }
+    const passes = (x: number, y: number, z: number) => sim.layout.inBounds(x, y, z) && sim.registry.passesWater[voxelId(sim.store.getVoxel(x, y, z))] === 1
     const units: SystemUnits = sim.workers ? {
       get events() { return runner.events },
       spawn: (pos) => sim.workers!.spawnControlled(pos),
@@ -657,8 +658,10 @@ export class Simulation {
       falls: (v) => sim.registry.falls[voxelId(v)] === 1,
       skyLight: (x, y, z) => skyLight(sim.store.getLight(x, y, z)),
       blockLight: (x, y, z) => blockLight(sim.store.getLight(x, y, z)),
-      waterDepth: (x, y, z) => sim.water.depthAt(x, y, z),
-      takeWater: (x, y, z, amount) => sim.water.take(x, y, z, amount),
+      // A cell water passes through (an open gate) reads dry: rules see the gate, the water beside it serves them. Rules
+      // see drawn water only: a segment under the retain option reads dry (WaterSystem.depthAt `drawn`).
+      waterDepth: (x, y, z) => passes(x, y, z) ? 0 : sim.water.depthAt(x, y, z, true),
+      takeWater: (x, y, z, amount) => passes(x, y, z) ? 0 : sim.water.take(x, y, z, amount, true),
       occupied: (x, y, z) => sim.occupied(x, y, z),
       edit: (pos, expected, value) => {
         if (!sim.layout.inBounds(...pos)) throw new RangeError(`edit outside the world: [${pos.join(', ')}]`)

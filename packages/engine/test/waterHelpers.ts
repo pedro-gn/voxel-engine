@@ -1,6 +1,7 @@
 import { defineBlock, type BlockDef } from '../src/blocks/registry.ts'
 import { defineGenerator, type GeneratorModule } from '../src/sim/generator.ts'
 import type { RulesModule } from '../src/sim/rules.ts'
+import type { GameSystem } from '../src/sim/systems.ts'
 import { Simulation } from '../src/sim/simulation.ts'
 import type { WaterOptions } from '../src/sim/water/waterSystem.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
@@ -26,6 +27,9 @@ export interface WaterSimOptions {
   water?: Partial<WaterOptions>
   rules?: RulesModule
   log?: (message: string) => void
+  /** The block table; default WATER_BLOCKS. */
+  blocks?: BlockDef[]
+  systems?: GameSystem[]
 }
 
 /** A generator that writes `fill` for every voxel, and reports `seaLevel` from configure() when given. */
@@ -44,7 +48,7 @@ export function fillGenerator(fill: Fill, seaLevel?: number): GeneratorModule {
 /** A Simulation generated from `fill` (32³ unless `size` says otherwise), without random ticks. */
 export function waterSim(fill: Fill, o: WaterSimOptions = {}): Simulation {
   const sim = new Simulation({
-    buffers: createWorldBuffers(o.size ?? [32, 32, 32]), blocks: WATER_BLOCKS, rules: o.rules, seed: o.seed ?? 1,
+    buffers: createWorldBuffers(o.size ?? [32, 32, 32]), blocks: o.blocks ?? WATER_BLOCKS, rules: o.rules, systems: o.systems, seed: o.seed ?? 1,
     log: o.log ?? (() => {}), water: o.water, randomTicksPerChunk: 0,
   })
   const gen = fillGenerator(fill, o.seaLevel)
