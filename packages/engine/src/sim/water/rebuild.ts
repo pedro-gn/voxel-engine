@@ -6,10 +6,11 @@ import { KIND, SUB, UNIT } from './constants.ts'
 import { quantize, type WaterMirror } from './mirror.ts'
 import type { UnderSegments } from './under.ts'
 
-/** Per block id: KIND.AIR for air, KIND.WATER for the simulated liquid `water`, KIND.WALL for everything else (springs and other liquids too). */
+/** Per block id: KIND.AIR for air, KIND.WATER for the simulated liquid `water`, KIND.PASS for a `passesWater` block, KIND.WALL for everything else (springs and other liquids too). */
 export function waterKinds(reg: BlockRegistry, water: number): Uint8Array {
   const k = new Uint8Array(4096).fill(KIND.WALL)
   k[0] = KIND.AIR
+  for (let id = 1; id < reg.count; id++) if (reg.passesWater[id] === 1) k[id] = KIND.PASS
   if (water > 0 && water < reg.count) k[water] = KIND.WATER
   return k
 }
@@ -52,7 +53,7 @@ export function rebuildSegments(store: ChunkStore, kind: Uint8Array, cols: Water
         if (typeof ch === 'number') {
           const kk = kind[ch & 0xfff]!
           if (kk === KIND.WALL) { if (f >= 0) close(y); y = (y | 31) + 1; continue }
-          if (kk === KIND.AIR) { if (f < 0) open(y); gap = true; y = (y | 31) + 1; continue }
+          if (kk === KIND.AIR || kk === KIND.PASS) { if (f < 0) open(y); gap = true; y = (y | 31) + 1; continue }
         }
         const v = typeof ch === 'number' ? ch : ch[local + ((y & 31) << 10)]!
         const kk = kind[v & 0xfff]!

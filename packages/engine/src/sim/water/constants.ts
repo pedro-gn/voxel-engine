@@ -56,8 +56,8 @@ export const UNIT = SUB / 8
 export const SPRING_RATES: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 40, 48, 56, 64, 96, 128]
 /** 3a units (32 sub) per 10 Hz step → sub per 20 Hz step: × 32 / 2. */
 export const SPRING_SCALE = 16
-/** What a voxel is to water. */
-export const KIND = { AIR: 0, WATER: 1, WALL: 2 } as const
+/** What a voxel is to water. PASS: a block water flows through like air (`passesWater`), which the mirror never writes. */
+export const KIND = { AIR: 0, WATER: 1, WALL: 2, PASS: 3 } as const
 
 /** A body member leaves its body when its deficit (cap − depth) exceeds this (1/8 block): hysteresis against flicker (3d). */
 export const LEAVE = SUB / 8

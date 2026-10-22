@@ -7,7 +7,7 @@ export function quantize(s: number): number { return (s + SUB / 16) >> 5 }
 /**
  * Makes one segment's cells match its water (spec §4 The voxel mirror; 3d: bounded by `ceil`): full cells under the
  * quantized surface, a partial cell at it, air above where water was, and air in cells a risen floor left under it (from
- * min(lo, floor)). Walls and springs are never written; nothing at or above `ceil` is touched. `lo`/`q` hold the segment's
+ * min(lo, floor)). Walls, springs and pass cells are never written; nothing at or above `ceil` is touched. `lo`/`q` hold the segment's
  * mirror state at index i (WaterMirror's arrays for a top segment, UnderSegments.mirrorLo / mirrorQ for a lower one).
  */
 export function mirrorRun(lo: Int16Array, q: Int32Array, i: number, x: number, z: number, floor: number, ceil: number, depth: number,
@@ -24,7 +24,7 @@ export function mirrorRun(lo: Int16Array, q: Int32Array, i: number, x: number, z
   let wrote = false
   for (let y = from; y < to; y++) {
     const v = get(x, y, z), k = kind[v & 0xfff]!
-    if (k === KIND.WALL) continue
+    if (k === KIND.WALL || k === KIND.PASS) continue
     let want = AIR
     if (y >= floor) {
       if (y < full) want = water | (7 << 12)
