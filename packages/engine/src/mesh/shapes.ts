@@ -83,6 +83,7 @@ const FORMS: readonly StairForm[] = [{ kind: 'straight' }, ...([0, 1, 2, 3] as c
  */
 const SIDE_COVER: Int8Array[] = []
 function fillSideCover(): void {
+  for (let state = 0; state < 16; state++) SIDE_COVER[SHAPE.LADDER * 16 + state] = new Int8Array(6) // a ladder covers nothing
   for (const code of [SHAPE.SLAB, SHAPE.STAIR, SHAPE.POST]) for (let state = 0; state < 16; state++) {
     const sides = [15, 15, 15, 15, 15, 15]
     for (const form of code === SHAPE.STAIR ? FORMS : [STRAIGHT]) coverOf(shapeBoxes(code, state, form)).forEach((c, f) => { sides[f]! &= c })

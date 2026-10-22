@@ -85,8 +85,16 @@ A world whose bottom is open: water, falling blocks, fragments and units that re
 _Avoid_: Sky world, no-floor mode
 
 **Block shape**:
-A block type's form other than the whole cube — slab, stair or post — drawn with its material's tiles and oriented by its voxel state; every system but drawing and light treats it as a full cell.
+A block type's form other than the whole cube — slab, stair, post or ladder — drawn with its material's tiles and oriented by its voxel state; every system but drawing and light treats it as its `solid` flag says (a full cell by default; a torch on a post or a ladder is not solid).
 _Avoid_: Model block, partial block
+
+**Climbable**:
+A non-solid, non-liquid block type units climb: its cell is a pose without a floor under it.
+_Avoid_: Scalable, rope block
+
+**Ladder**:
+A climbable block with the ladder shape: two rails and rungs 2/16 thick against the side its state names (the side holding its wall). It does not stop light.
+_Avoid_: Stairs (a stair is a shape units walk on)
 
 **Layer cut**:
 The highest visible layer: everything above it is hidden and the cut layer's tops are drawn as solid, darker faces; the simulation is untouched.

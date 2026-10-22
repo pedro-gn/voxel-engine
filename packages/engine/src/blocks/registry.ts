@@ -22,8 +22,10 @@ export interface BlockDef {
   collapses?: boolean
   /** Makes this liquid block a spring of the named liquid: it counts as full and injects that liquid every fluid step. */
   source?: string
-  /** Draws the block as a slab, stair or post oriented by its voxel state; every system but drawing and light treats it as a full cell. */
+  /** Draws the block as a slab, stair, post or ladder oriented by its voxel state; every system but drawing and light treats it as `solid` says (a full cell by default). */
   shape?: BlockShape
+  /** Units climb it: a cell holding it is a pose without a floor, joined to the climbable cells above and below. Needs `solid: false` and no `liquid`. */
+  climbable?: boolean
 }
 
 export function defineBlock(def: BlockDef): BlockDef {
@@ -53,6 +55,10 @@ export class BlockRegistry {
   readonly shape: Uint8Array
   /** 1 when the block stops sky and block light: opaque cubes, slabs and stairs. */
   readonly blocksLight: Uint8Array
+  /** 1 for a climbable block (a ladder). */
+  readonly climbable: Uint8Array
+  /** True when any block is climbable: navigation then adds its up and down moves. */
+  readonly hasClimbable: boolean
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
 
@@ -73,6 +79,7 @@ export class BlockRegistry {
     this.liquidGroup = new Uint16Array(this.count)
     this.shape = new Uint8Array(this.count)
     this.blocksLight = new Uint8Array(this.count)
+    this.climbable = new Uint8Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -107,6 +114,10 @@ export class BlockRegistry {
       this.collapses[id] = d.collapses ? 1 : 0
       this.structural[id] = d.collapses ? 1 : this.solid[id] && !falls && !liquid ? 2 : 0
       this.liquid[id] = liquid ? 1 : 0
+      if (d.climbable) {
+        if (liquid || this.solid[id] === 1) throw new RangeError(`block "${d.name}": climbable needs solid: false and no liquid`)
+        this.climbable[id] = 1
+      }
       this.emits[id] = emits
       const t = d.textures ?? d.name
       const [top, side, bottom] = typeof t === 'string' ? [t, t, t] : [t.top, t.side, t.bottom]
@@ -114,6 +125,7 @@ export class BlockRegistry {
     })
 
     this.hasCollapse = this.collapses.includes(1)
+    this.hasClimbable = this.climbable.includes(1)
     all.forEach((d, id) => {
       if (!this.liquid[id]) return
       if (d.source === undefined) { this.liquidGroup[id] = id; return }
