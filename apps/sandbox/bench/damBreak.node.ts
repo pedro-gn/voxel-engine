@@ -1,6 +1,7 @@
 // The flood scene's dam break on plain Node (Vitest's module transform makes the sim several times slower): sim tick
 // p50/p95/max, the water step and the mirror + publish, and with `settle` the ticks until every tile sleeps and how flat
 // the lake ends. Usage: node bench/damBreak.node.ts [ticks | settle]   (from apps/sandbox; default 3000 ticks)
+// Water options from the environment: WATER_RETAIN and WATER_LOSS_EVERY (unset: the engine's defaults, retain 4, no loss).
 import { Simulation, createWorldBuffers } from '@elovox/engine/testing'
 import { BLOCKS } from '../src/blocks.ts'
 import rules from '../src/rules.ts'
@@ -9,7 +10,9 @@ import { breachCommands, FLOOD_SIZE, floodGenerator, LAKE, stopSpringCommands } 
 const settle = process.argv[2] === 'settle'
 const ticks = settle ? 300_000 : Number(process.argv[2] ?? 3000)
 
-const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0, log: (m) => console.log(m) })
+const env = (k: string): number | undefined => (process.env[k] === undefined ? undefined : Number(process.env[k]))
+const waterOptions = { ...(env('WATER_RETAIN') !== undefined && { retain: env('WATER_RETAIN')! }), ...(env('WATER_LOSS_EVERY') !== undefined && { lossEvery: env('WATER_LOSS_EVERY')! }) }
+const sim = new Simulation({ buffers: createWorldBuffers([...FLOOD_SIZE]), blocks: BLOCKS, rules, seed: 1, randomTicksPerChunk: 0, log: (m) => console.log(m), water: waterOptions })
 sim.configure(floodGenerator, {})
 sim.generate(floodGenerator)
 const v0 = sim.water.total()
@@ -37,6 +40,7 @@ for (let t = 1; t <= ticks; t++) {
 const pct = (a: number[], p: number): number => [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(a.length * p))] ?? 0
 const most = (a: number[]): number => { let m = 0; for (const v of a) if (v > m) m = v; return m } // no spread: settle runs exceed the argument limit
 const line = (a: number[]): string => `p50 ${pct(a, 0.5).toFixed(2)}  p95 ${pct(a, 0.95).toFixed(2)}  max ${most(a).toFixed(2)} ms`
+console.log(`water options ${JSON.stringify(waterOptions)}; lost ${water.lost}`)
 console.log(`dam break, ${tick.length} ticks in ${((performance.now() - wall) / 1000).toFixed(1)} s; Σ depth + sea off on ${off} ticks`)
 console.log(`  sim tick        ${line(tick)}`)
 console.log(`  water step      ${line(stepMs)}`)
