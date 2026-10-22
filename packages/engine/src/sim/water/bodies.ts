@@ -1,5 +1,5 @@
 import { damp, moved, type StepHooks, type WaterColumns } from './columns.ts'
-import { BISECT_ROUNDS, FLUX_EPS, FLUX_FP, HEAD_EPS, LEAVE, MAX_HEAD, MIN_FLOW, SUB } from './constants.ts'
+import { BISECT_ROUNDS, FLUX_EPS, FLUX_FP, HEAD_EPS, LEAVE, MAX_HEAD, SUB } from './constants.ts'
 import type { TileEdges, WaterEdges } from './edges.ts'
 import type { UnderSegments } from './under.ts'
 
@@ -235,10 +235,10 @@ export class WaterBodies implements StepHooks {
   /**
    * Net water (1/SUB block, moved as transfer will move it) the body takes in through its collected boundary edges at level
    * H; `store` writes those fluxes. A boundary edge is accelerated as 3c's with H as the member side's surface: the body
-   * sends only while H is above the opening's floor; a free side sends only at least MIN_FLOW deep and above it.
+   * sends only while H is above the opening's floor; a free side sends only at least minFlow (the retain option) deep and above it.
    */
   private inflow(b: Body, H: number, gain: number, store: boolean): number {
-    const cols = this.cols, U = this.under, n = cols.n, no = cols.stepNo
+    const cols = this.cols, U = this.under, n = cols.n, no = cols.stepNo, mf = cols.minFlow
     let net = 0
     for (let k = 0; k < b.bTile.length; k++) {
       const L = this.edges.tiles[b.bTile[k]!]!, e = b.bEdge[k]!
@@ -252,7 +252,7 @@ export class WaterBodies implements StepHooks {
       let f = damp(L.flux[e]!) + h * gain
       if (f !== 0) {
         const freeSends = (f > 0) === (side > 0)
-        if (freeSends ? df < MIN_FLOW || sf <= lo : H <= lo) f = 0
+        if (freeSends ? df < mf || sf <= lo : H <= lo) f = 0
       }
       if (store) L.flux[e] = f
       net += side > 0 ? moved(f) : -moved(f)
@@ -263,7 +263,7 @@ export class WaterBodies implements StepHooks {
   /**
    * Whether boundary edge e (not collected this step) is live at level H: its flux at H moves FLUX_EPS or more, or the side
    * that can send stands more than HEAD_EPS above the other (the body sends while H is over the opening's floor; the free
-   * side while it is at least MIN_FLOW deep and over it), as WaterColumns.underLive keeps a tile awake.
+   * side while it is at least minFlow deep and over it), as WaterColumns.underLive keeps a tile awake.
    */
   private liveAt(L: TileEdges, e: number, side: number, H: number, gain: number): boolean {
     const cols = this.cols, U = this.under, n = cols.n, free = side > 0 ? L.a[e]! : L.b[e]!, lo = L.lo[e]! * SUB
@@ -275,7 +275,7 @@ export class WaterBodies implements StepHooks {
     const f = damp(L.flux[e]!) + h * gain
     if (moved(f >= 0 ? f : -f) >= FLUX_EPS) return true
     if (H > sf) return H - sf > HEAD_EPS && H > lo
-    return sf - H > HEAD_EPS && df >= MIN_FLOW && sf > lo
+    return sf - H > HEAD_EPS && df >= cols.minFlow && sf > lo
   }
 
   /** The surface of the free side of a boundary edge. */

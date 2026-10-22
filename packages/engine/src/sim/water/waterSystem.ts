@@ -9,7 +9,7 @@ import { WaterCycle } from './cycle.ts'
 import { WaterBodies } from './bodies.ts'
 import { WaterEdges, type TileEdges } from './edges.ts'
 import type { Packed } from '../../persist/pack.ts'
-import { WaterMirror, mirrorRun, quantize } from './mirror.ts'
+import { WaterMirror, mirrorQ, mirrorRun } from './mirror.ts'
 import { WaterPublisher, type WaterTick } from './publish.ts'
 import { rebuildSegments, waterKinds } from './rebuild.ts'
 import { resegment, type Seg } from './resegment.ts'
@@ -29,8 +29,13 @@ export interface WaterOptions {
   tileCap: number
   /** After every step, check Σ depth + sea against the running total and that no depth is negative; on failure log and rebuild. */
   debug: boolean
+  /**
+   * The depth (1/SUB block) a segment keeps before it sends any water on, and under which the mirror and the publisher draw
+   * nothing. Integer, MIN_FLOW ≤ retain ≤ SUB. Default MIN_FLOW (1/64 block): films flow, and draw from SUB / 16 as before.
+   */
+  retain: number
 }
-export const DEFAULT_WATER_OPTIONS: WaterOptions = Object.freeze({ tileCap: 1024, debug: false })
+export const DEFAULT_WATER_OPTIONS: WaterOptions = Object.freeze({ tileCap: 1024, debug: false, retain: MIN_FLOW })
 
 /** What the water system needs from the Simulation. */
 export interface WaterPort {
@@ -102,6 +107,8 @@ export class WaterSystem {
     this.o = { ...DEFAULT_WATER_OPTIONS, ...o }
     const cap = this.o.tileCap
     if (!Number.isInteger(cap) || cap < 1) throw new RangeError(`water option tileCap must be an integer ≥ 1, got ${cap}`)
+    const retain = this.o.retain
+    if (!Number.isInteger(retain) || retain < MIN_FLOW || retain > SUB) throw new RangeError(`water option retain must be an integer ${MIN_FLOW}–${SUB}, got ${retain}`)
     const reg = port.registry
     this.water = waterGroupOf(reg)
     if (this.water !== 0 && (reg.opaque[this.water] === 1 || reg.emits[this.water]! > 0)) {
@@ -111,6 +118,8 @@ export class WaterSystem {
     const [sx, , sz] = port.layout.size
     this.cols = new WaterColumns(sx, sz, new Int16Array(port.buffers.floor))
     this.cols.floor.fill(0) // an empty world: every column dry on the world floor
+    this.cols.minFlow = retain
+    this.cols.shown = Math.max(SUB / 16, retain)
     this.under = new UnderSegments(sx * sz)
     this.edges = new WaterEdges(this.cols.tiles.count)
     this.cols.attach(this.under, this.edges, this.height)
@@ -119,7 +128,7 @@ export class WaterSystem {
     this.mirror = new WaterMirror(sx * sz)
     this.stamp = new Int32Array(sx * sz)
     this.seedOf = new Int32Array(sx * sz)
-    this.publisher = new WaterPublisher(port.buffers)
+    this.publisher = new WaterPublisher(port.buffers, retain)
     this.get = (x, y, z) => port.get(x, y, z)
     this.set = (x, y, z, v) => port.setQuiet(x, y, z, v)
     const sys = this
@@ -397,7 +406,7 @@ export class WaterSystem {
     if (!this.needsRebuild) this.spreadDisplaced()
     // A pending rebuild means the columns are suspect: keep the voxels as the truth and the tiles dirty.
     if (this.water === 0 || this.needsRebuild) return out
-    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under
+    const cols = this.cols, T = cols.tiles, sx = cols.sx, floor = cols.floor, depth = cols.depth, mirror = this.mirror, U = this.under, shown = cols.shown
     for (let t = 0; t < T.count; t++) {
       if (T.dirty[t] !== 1) continue
       T.dirty[t] = 0
@@ -406,10 +415,10 @@ export class WaterSystem {
       for (let z = z0; z < z0 + TILE; z++) for (let x = x0, c = x0 + z * sx; x < x0 + TILE; x++, c++) {
         const f = floor[c]!, d = depth[c]!, q = mirror.q[c]!
         // Most moving surfaces still occupy the same eighth of a voxel. Avoid the full mirror call for those columns.
-        if (q < 0 || mirror.lo[c] !== f || q !== (d > 0 ? quantize(f * SUB + d) : f * 8)) {
-          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set)
+        if (q < 0 || mirror.lo[c] !== f || q !== mirrorQ(f, d, shown)) {
+          mirror.flush(c, x, z, f, d, this.water, this.kind, this.height, this.get, this.set, shown)
         }
-        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set)
+        for (let i = U.first[c]!; i >= 0; i = U.next[i]!) mirrorRun(U.mirrorLo, U.mirrorQ, i, x, z, U.floor[i]!, U.ceil[i]!, U.depth[i]!, this.water, this.kind, this.get, this.set, shown)
       }
     }
     this.published = this.publisher.publish(out, cols, { under: this.under, edges: this.edges, height: this.height })
@@ -606,16 +615,16 @@ export class WaterSystem {
 
   /**
    * Wakes the tile of every wet, non-sea column in the range that stands above a neighbour it can flow to, and of every
-   * column with a lower segment holding at least MIN_FLOW.
+   * column with a lower segment holding at least minFlow (the retain option).
    */
   private wakeUnsettled(x0: number, z0: number, x1: number, z1: number): void {
-    const { floor, depth, sx, sz, tiles } = this.cols, mask = this.cycle.mask, U = this.under
+    const { floor, depth, sx, sz, tiles, minFlow } = this.cols, mask = this.cycle.mask, U = this.under
     for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
       const c = x + z * sx, d = depth[c]!
       let low = false
-      for (let i = U.first[c]!; i >= 0 && !low; i = U.next[i]!) low = U.depth[i]! >= MIN_FLOW
+      for (let i = U.first[c]!; i >= 0 && !low; i = U.next[i]!) low = U.depth[i]! >= minFlow
       if (low) { tiles.wake(tiles.of(x, z)); continue }
-      if (d < MIN_FLOW || mask[c] === 1) continue
+      if (d < minFlow || mask[c] === 1) continue
       const s = floor[c]! * SUB + d
       if ((x > 0 && s > this.cols.surface(c - 1)) || (x + 1 < sx && s > this.cols.surface(c + 1)) ||
         (z > 0 && s > this.cols.surface(c - sx)) || (z + 1 < sz && s > this.cols.surface(c + sx))) tiles.wake(tiles.of(x, z))

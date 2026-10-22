@@ -5,7 +5,7 @@ import type { TileEdges, WaterEdges } from './edges.ts'
 import type { UnderSegments } from './under.ts'
 
 // Plain module constants: Vitest's module transform turns imported bindings into property reads, several times slower in
-// the step's loops.
+// the step's loops. MIN_FLOW is only the default of WaterColumns.minFlow (the retain option), which the loops take as a local.
 const { DEPTH_EPS, FLUX_EPS, FLUX_FP, FRICTION_SHIFT, GAIN, HEAD_EPS, MAX_HEAD, MIN_FLOW, SLEEP_STEPS, SLOPE_SHIFT, SUB, THROTTLED_GAIN, TILE } = K
 
 const FRICTION_MASK = (1 << FRICTION_SHIFT) - 1
@@ -64,7 +64,7 @@ function scaled(f: number, d: number, out: number): number {
  * floor above the receiver's surface: the water leaves the ground, unlike a wall of water collapsing), is a fall: its code
  * (fallCode, from the step's starting surfaces, so the order edges move in does not matter) says where transfer lands it.
  */
-function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number): void {
+function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number, minFlow: number): void {
   const da = depth[a]!, db = depth[b]!
   if (floor[a] === floor[b] && da >= 0 && db >= 0) {
     // Most edges share a bed. The floor cancels from the head and neither side can be a brink.
@@ -72,24 +72,24 @@ function accelerate(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall
     if (h > MAX_HEAD) h = MAX_HEAD
     else if (h < -MAX_HEAD) h = -MAX_HEAD
     let f = damp(flux[e]!) + h * gain
-    if (f > 0 && da < MIN_FLOW || f < 0 && db < MIN_FLOW) f = 0
+    if (f > 0 && da < minFlow || f < 0 && db < minFlow) f = 0
     flux[e] = f
     fall[e] = 0
     return
   }
-  accelerateUneven(floor, depth, flux, fall, e, a, b, gain, stride, sx, sz)
+  accelerateUneven(floor, depth, flux, fall, e, a, b, gain, stride, sx, sz, minFlow)
 }
 
 /** General edge path, including brinks and ballistic falls. */
-function accelerateUneven(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number): void {
+function accelerateUneven(floor: Int16Array, depth: Int32Array, flux: Int32Array, fall: Uint16Array, e: number, a: number, b: number, gain: number, stride: number, sx: number, sz: number, minFlow: number): void {
   const fa = floor[a]! * SUB, fb = floor[b]! * SUB, da = depth[a]!, db = depth[b]!
   const sa = fa + da, sb = fb + db
   let h = sa - sb
   if (h > MAX_HEAD) h = MAX_HEAD
   else if (h < -MAX_HEAD) h = -MAX_HEAD
   let f = damp(flux[e]!) + h * gain
-  if (f > 0) { if (da < MIN_FLOW || sa <= fb) f = 0 }
-  else if (f < 0) { if (db < MIN_FLOW || sb <= fa) f = 0 }
+  if (f > 0) { if (da < minFlow || sa <= fb) f = 0 }
+  else if (f < 0) { if (db < minFlow || sb <= fa) f = 0 }
   flux[e] = f
   let code = 0
   if (f > 0 && sa - sb > FALL_MIN && fa > sb && da >= SHOWN) code = fallCode(floor, b, stride, sb, sa - sb, sx, sz)
@@ -116,7 +116,7 @@ export interface StepHooks {
  * Step 2 for under edge e of E: 3c's accelerate without a fall code (plan decision 5); the opening's floor `lo` stands where
  * 3c reads the receiver's floor. Refs below n are top segments.
  */
-function accelerateUnder(E: TileEdges, e: number, n: number, floor: Int16Array, depth: Int32Array, uf: Int16Array, ud: Int32Array, gain: number): void {
+function accelerateUnder(E: TileEdges, e: number, n: number, floor: Int16Array, depth: Int32Array, uf: Int16Array, ud: Int32Array, gain: number, minFlow: number): void {
   const a = E.a[e]!, b = E.b[e]!
   const da = a < n ? depth[a]! : ud[a - n]!, db = b < n ? depth[b]! : ud[b - n]!
   const sa = (a < n ? floor[a]! : uf[a - n]!) * SUB + da, sb = (b < n ? floor[b]! : uf[b - n]!) * SUB + db
@@ -125,7 +125,7 @@ function accelerateUnder(E: TileEdges, e: number, n: number, floor: Int16Array, 
   if (h > MAX_HEAD) h = MAX_HEAD
   else if (h < -MAX_HEAD) h = -MAX_HEAD
   let f = damp(E.flux[e]!) + h * gain
-  if (f > 0) { if (da < MIN_FLOW || sa <= lo) f = 0 } else if (f < 0) { if (db < MIN_FLOW || sb <= lo) f = 0 }
+  if (f > 0) { if (da < minFlow || sa <= lo) f = 0 } else if (f < 0) { if (db < minFlow || sb <= lo) f = 0 }
   E.flux[e] = f
 }
 
@@ -294,6 +294,10 @@ export class WaterColumns {
   under: UnderSegments | null = null
   /** Void world (spec §3): water resting on the bottom of the volume leaves the world, credited to the sea account. */
   drainFloor = false
+  /** A segment shallower than this (1/SUB block) sends nothing: the retain option (WaterOptions.retain), MIN_FLOW by default. */
+  minFlow = MIN_FLOW
+  /** A column thinner than this shows no water (mirror, renderer): max(SUB / 16, minFlow). An edge between two such films does not keep a tile awake. */
+  shown = SHOWN
   edges: WaterEdges | null = null
   height = 0
   /** Bodies' level for a member ref (set by WaterBodies, Task 6): the surface the quiet test reads for it. */
@@ -467,27 +471,27 @@ export class WaterColumns {
 
   private accelerateAll(gain: number): void {
     const floor = this.floor, depth = this.depth, flux = this.flux, fall = this.falls, sx = this.sx, sz = this.sz, tx = this.tiles.tx
-    const dirty = this.tiles.dirty
+    const dirty = this.tiles.dirty, mf = this.minFlow
     for (let k = 0; k < this.list.length; k++) {
       const t = this.list.data[k]!, o = this.open[k]!
       const x0 = (t % tx) * TILE, z0 = Math.floor(t / tx) * TILE, x1 = x0 + TILE, z1 = z0 + TILE
       const xe = x1 < sx ? x1 : x1 - 1, ze = z1 < sz ? z1 : z1 - 1 // edges leave columns x < xe (+x), rows z < ze (+z)
       for (let z = z0; z < z1; z++) {
         const row = z * sx
-        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz) }
-        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz) }
+        for (let x = x0; x < xe; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz, mf) }
+        if (z < ze) for (let x = x0; x < x1; x++) { const c = x + row; accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz, mf) }
       }
       // A border edge stored in a tile that does not step is that tile's to publish: it must republish when the edge's moved
       // water changes, from any value to any other. Here it moved water at the last step; transferAll catches it moving now.
       if ((o & WEST) !== 0) for (let z = z0; z < z1; z++) {
         const c = x0 - 1 + z * sx
         if (moved(flux[c * 2]!) !== 0) dirty[t - 1] = 1
-        accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz)
+        accelerate(floor, depth, flux, fall, c * 2, c, c + 1, gain, 1, sx, sz, mf)
       }
       if ((o & NORTH) !== 0) for (let x = x0; x < x1; x++) {
         const c = x + (z0 - 1) * sx
         if (moved(flux[c * 2 + 1]!) !== 0) dirty[t - tx] = 1
-        accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz)
+        accelerate(floor, depth, flux, fall, c * 2 + 1, c, c + sx, gain, sx, sx, sz, mf)
       }
     }
   }
@@ -570,13 +574,13 @@ export class WaterColumns {
    * nothing. An edge stored in a tile that does not step that moved water marks it dirty.
    */
   private accelerateUnderAll(U: UnderSegments, gain: number): void {
-    const E = this.edges!, n = this.n, dirty = this.tiles.dirty, stepping = this.stepping
+    const E = this.edges!, n = this.n, dirty = this.tiles.dirty, stepping = this.stepping, mf = this.minFlow
     for (let k = 0; k < this.uT.length; k++) {
       const t = this.uT.data[k]!, e = this.uE.data[k]!, T = E.tiles[t]!, a = T.a[e]!, b = T.b[e]!
       const ma = a >= n && U.body[a - n]! >= 0, mb = b >= n && U.body[b - n]! >= 0
       if (ma || mb) { if (ma && mb) T.flux[e] = 0; continue } // inside a body nothing flows; a boundary edge is the body's
       if (stepping[t] === 0 && moved(T.flux[e]!) !== 0) dirty[t] = 1
-      accelerateUnder(T, e, n, this.floor, this.depth, U.floor, U.depth, gain)
+      accelerateUnder(T, e, n, this.floor, this.depth, U.floor, U.depth, gain, mf)
     }
   }
 
@@ -850,11 +854,11 @@ export class WaterColumns {
 
   /**
    * Plan decision 6: stepped tile k is live when one of its collected under edges moved FLUX_EPS or more, or when connected
-   * water across one of them (the higher side can send: at least MIN_FLOW deep, and one side shows) differs by more than
+   * water across one of them (the higher side can send: at least minFlow deep, and one side shows) differs by more than
    * HEAD_EPS. A body member shows its body's level and counts as deep.
    */
   private underLive(k: number): boolean {
-    const E = this.edges!, U = this.under!, n = this.n
+    const E = this.edges!, U = this.under!, n = this.n, mf = this.minFlow, shown = this.shown
     for (let j = this.uStart[k]!; j < this.uStart[k + 1]!; j++) {
       const L = E.tiles[this.uT.data[j]!]!, e = this.uE.data[j]!, f = L.flux[e]!
       if (f >= LOUD || -f >= LOUD) return true
@@ -865,7 +869,7 @@ export class WaterColumns {
       const sa = ma && this.bodyLevel ? this.bodyLevel(a) : (a < n ? this.floor[a]! : U.floor[a - n]!) * SUB + (a < n ? this.depth[a]! : U.depth[a - n]!)
       const sb = mb && this.bodyLevel ? this.bodyLevel(b) : (b < n ? this.floor[b]! : U.floor[b - n]!) * SUB + (b < n ? this.depth[b]! : U.depth[b - n]!)
       const up = sa > sb ? da : sb > sa ? db : da > db ? da : db
-      if (up >= MIN_FLOW && (da >= SHOWN || db >= SHOWN) && (sa - sb > HEAD_EPS || sb - sa > HEAD_EPS)) return true
+      if (up >= mf && (da >= shown || db >= shown) && (sa - sb > HEAD_EPS || sb - sa > HEAD_EPS)) return true
     }
     return false
   }
@@ -893,13 +897,13 @@ export class WaterColumns {
    * Scans `edges` edges in a line from column c (step `stride`; `axis` 0: +x edges, 1: +z edges). Live when an edge moved
    * FLUX_EPS or more, or when a run of connected water along the line spans more than HEAD_EPS: a slope that would fall
    * asleep before friction lets its flux build up. An edge connects its columns when the higher one could send (it is at
-   * least MIN_FLOW deep; the lower one never sends up, decision 5), or, level, when either could, unless both are films
-   * (under SHOWN): a film's level is never drawn, and near MIN_FLOW the integers can hold a film sloped forever. Visible
+   * least minFlow deep; the lower one never sends up, decision 5), or, level, when either could, unless both are films
+   * (under `shown`): a film's level is never drawn, and near minFlow the integers can hold a film sloped forever. Visible
    * water beside a film still counts, so it cannot stand frozen above it. Each run adds its fall to the tile's slope sums
    * (endRun).
    */
   private runLive(c: number, edges: number, stride: number, axis: number): boolean {
-    const floor = this.floor, depth = this.depth, flux = this.flux, line = this.line
+    const floor = this.floor, depth = this.depth, flux = this.flux, line = this.line, mf = this.minFlow, shown = this.shown
     let s = floor[c]! * SUB + depth[c]!, lo = s, hi = s, first = 0
     line[0] = s
     for (let i = 0; i < edges; i++, c += stride) {
@@ -908,7 +912,7 @@ export class WaterColumns {
       const b = c + stride, da = depth[c]!, db = depth[b]!, sb = floor[b]! * SUB + db
       line[i + 1] = sb
       const up = s > sb ? da : s < sb ? db : da > db ? da : db
-      if (up >= MIN_FLOW && (da >= SHOWN || db >= SHOWN)) {
+      if (up >= mf && (da >= shown || db >= shown)) {
         if (sb < lo) lo = sb
         else if (sb > hi) hi = sb
         if (hi - lo > HEAD_EPS) return true

@@ -5,14 +5,22 @@ import { KIND, SUB } from './constants.ts'
 export function quantize(s: number): number { return (s + SUB / 16) >> 5 }
 
 /**
+ * The quantized surface (eighths) the mirror draws for a segment on `floor` holding `depth`: nothing under `shown`. With
+ * shown = SUB / 16 this is quantize for any wet segment, since quantize already rounds a thinner film to its floor.
+ */
+export function mirrorQ(floor: number, depth: number, shown: number): number { return depth >= shown ? quantize(floor * SUB + depth) : floor * 8 }
+
+/**
  * Makes one segment's cells match its water (spec §4 The voxel mirror; 3d: bounded by `ceil`): full cells under the
  * quantized surface, a partial cell at it, air above where water was, and air in cells a risen floor left under it (from
  * min(lo, floor)). Walls, springs and pass cells are never written; nothing at or above `ceil` is touched. `lo`/`q` hold the segment's
  * mirror state at index i (WaterMirror's arrays for a top segment, UnderSegments.mirrorLo / mirrorQ for a lower one).
+ * A segment shallower than `shown` (WaterColumns.shown: SUB / 16, or the retain option above it) is drawn as dry.
  */
 export function mirrorRun(lo: Int16Array, q: Int32Array, i: number, x: number, z: number, floor: number, ceil: number, depth: number,
-  water: number, kind: Uint8Array, get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void): boolean {
-  const nq = depth > 0 ? quantize(floor * SUB + depth) : floor * 8
+  water: number, kind: Uint8Array, get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void,
+  shown = SUB / 16): boolean {
+  const nq = mirrorQ(floor, depth, shown)
   const oq = q[i]!, force = oq < 0, extent = force ? ~oq : oq
   const ol = lo[i]!
   if (!force && nq === oq && floor === ol) return false
@@ -67,8 +75,8 @@ export class WaterMirror {
    * old floor is never touched. `set` is a quiet write. Returns whether it wrote anything.
    */
   flush(c: number, x: number, z: number, floor: number, depth: number, water: number, kind: Uint8Array, height: number,
-    get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void): boolean {
-    return mirrorRun(this.lo, this.q, c, x, z, floor, height, depth, water, kind, get, set)
+    get: (x: number, y: number, z: number) => number, set: (x: number, y: number, z: number, v: number) => void, shown = SUB / 16): boolean {
+    return mirrorRun(this.lo, this.q, c, x, z, floor, height, depth, water, kind, get, set, shown)
   }
 
   mixState(mix: (v: number) => void): void {

@@ -22,6 +22,8 @@ export interface SimInitOptions {
   debugFluids?: boolean
   /** Awake water tiles (16 × 16 columns) stepped per tick, in tile order, round robin (integer ≥ 1). Default 1024. */
   waterTileCap?: number
+  /** Water a column keeps before it sends any on, and under which nothing is drawn (1/256 block, integer 4–256). Default 4 (1/64 block). */
+  waterRetain?: number
   /** Start with physics (gravity, water, region jobs) paused. */
   paused?: boolean
   /** Opted-in structural blocks only; count budgets and connected-fragment limits. */

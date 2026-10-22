@@ -35,6 +35,10 @@ describe('SimHost', () => {
     const { host } = setup({ debugFluids: true, waterTileCap: 7 })
     expect(host.simulation!.water.o).toMatchObject({ debug: true, tileCap: 7 })
   })
+  it('passes waterRetain to the water system only when given', () => {
+    expect(setup({ waterRetain: 32 }).host.simulation!.water.o.retain).toBe(32)
+    expect(setup().host.simulation!.water.o.retain).toBe(4)
+  })
   it('validates waterTileCap from the init options through the water system', () => {
     const { out } = setup({ waterTileCap: 0 })
     expect(out.some((m) => m.type === 'fatal' && /tileCap/.test(m.message))).toBe(true)

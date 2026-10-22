@@ -40,6 +40,9 @@ export function mergeTiles(a: readonly number[], b: readonly number[]): readonly
  * each swing moved the drawn shoreline a whole column back and forth.
  */
 export class WaterPublisher {
+  /** Shown from this depth and hidden below `hide`: SHOW_DEPTH / HIDE_DEPTH, raised to the retain option when it is deeper (nothing under retain is drawn). */
+  readonly show: number
+  readonly hide: number
   private readonly surface: Int32Array
   private readonly flux: Int16Array
   private readonly stamp: Int32Array
@@ -62,7 +65,9 @@ export class WaterPublisher {
   private stampZ = new Uint32Array(0)
   private gen = 0
 
-  constructor(b: WaterBuffers) {
+  constructor(b: WaterBuffers, retain = 0) {
+    this.show = Math.max(SHOW_DEPTH, retain)
+    this.hide = Math.max(HIDE_DEPTH, retain)
     this.surface = new Int32Array(b.surface)
     this.flux = new Int16Array(b.flux)
     this.stamp = new Int32Array(b.stamp)
@@ -80,6 +85,7 @@ export class WaterPublisher {
     const seq = ++this.seq, p = seq & 1, base = p * cols.n, T = cols.tiles, sx = cols.sx
     if (this.shown.length !== cols.n) this.shown = new Uint8Array(cols.n)
     const shown = this.shown, depth = cols.depth, floor = cols.floor, cflux = cols.flux, surface = this.surface, flux = this.flux
+    const show = this.show, hide = this.hide
     // A full barrier, not just a release store: no data store below may become visible before the stamp reads −1.
     Atomics.exchange(this.stamp, p, -1)
     for (const t of tiles) {
@@ -89,9 +95,10 @@ export class WaterPublisher {
         for (let c = x0 + z * sx, o = base + c, e = c + TILE; c < e; c++, o++) {
           const d = depth[c]!
           let on = shown[c]!
-          if (d >= SHOW_DEPTH) on = shown[c] = 1
-          else if (d < HIDE_DEPTH) on = shown[c] = 0
-          const s = floor[c]! * SUB + (on === 1 && d < SHOW_DEPTH ? SHOW_DEPTH : d)
+          if (d >= show) on = shown[c] = 1
+          else if (d < hide) on = shown[c] = 0
+          // A hidden column is published under the renderer's SHOW_DEPTH (only reachable when retain raised `show`).
+          const s = floor[c]! * SUB + (on === 1 ? (d < SHOW_DEPTH ? SHOW_DEPTH : d) : d < SHOW_DEPTH ? d : SHOW_DEPTH - 1)
           surface[o] = d > 0 ? s : ~s
           const f0 = cflux[2 * c]!, f1 = cflux[2 * c + 1]!
           const m0 = f0 >= 0 ? f0 >> FLUX_FP : -((-f0) >> FLUX_FP) | 0, m1 = f1 >= 0 ? f1 >> FLUX_FP : -((-f1) >> FLUX_FP) | 0
@@ -132,8 +139,8 @@ export class WaterPublisher {
       for (let z = z0; z < z0 + TILE; z++) for (let c = x0 + z * sx, e = c + TILE; c < e; c++) {
         for (let i = U.first[c]!; i >= 0; i = U.next[i]!) {
           const d = U.depth[i]!
-          if (d >= SHOW_DEPTH) U.shown[i] = 1
-          else if (d < HIDE_DEPTH) U.shown[i] = 0
+          if (d >= this.show) U.shown[i] = 1
+          else if (d < this.hide) U.shown[i] = 0
         }
       }
       // Water moved last step through each segment's +x / +z sides, summed over its edges (the dense edge for a top).
