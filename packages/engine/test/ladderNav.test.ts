@@ -15,6 +15,10 @@ describe('a world without climbable blocks', () => {
   it('gives the routeFuzz worlds the routes they had on 5845093, node for node', { timeout: 300_000 }, () => {
     expect(routeChecksum()).toBe(4292988158)
   })
+  it('a registry that knows a ladder, with none placed, gives the same routes for the same operations', { timeout: 300_000 }, () => {
+    expect(routeChecksum(40, 25, false, true)).toBe(4292988158)
+    expect(routeChecksum(40, 25, true, true)).toBe(routeChecksum(40, 25, true, false))
+  })
 })
 
 const STONE = 1, LADDER = 2

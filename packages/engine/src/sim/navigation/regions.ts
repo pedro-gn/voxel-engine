@@ -200,17 +200,12 @@ export class RegionBuild {
           this.charge(2 * P); this.phase = 'edges'; this.cursor = 0
         }
       } else if (this.phase === 'edges') {
-        const D = this.nav.dirs
-        if (this.cursor === this.count * D) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
-        const slot = Math.floor(this.cursor / D), d = this.cursor % D, pose = this.poses[slot]!, to = this.nav.neighbor(pose, d)
+        if (this.cursor === this.count * 4) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
+        const slot = this.cursor >> 2, d = this.cursor & 3
         this.cursor++
-        if (to < 0) continue
-        const target = this.nav.tileOfPose(to)
-        // A neighbour the region layer does not stand on (sand) is no edge and no crossing.
-        if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * D + d] = t; this.degree[t]!++ }; continue }
-        const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
-        if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; continue }
-        this.crossings.push({ slot, d, to, cost: this.nav.stepCost(pose, to, !this.relaxed && this.nav.wet(to)), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
+        this.edgeOf(slot, d)
+        // The ladder edges ride along with the last planar one, in the same step: a tile with no ladder costs what it did.
+        if (d === 3 && this.nav.dirs === 6) { this.edgeOf(slot, 4); this.edgeOf(slot, 5) }
       } else if (this.phase === 'exits') {
         const cr = this.crossings
         if (this.cursor < cr.length) { this.extend(cr[this.cursor++]!); continue }
@@ -245,6 +240,17 @@ export class RegionBuild {
       }
     }
     return Math.ceil(used / BUILD_WEIGHT)
+  }
+  /** Records edge `d` of `slot`: an edge inside the region, or a crossing out of it. */
+  private edgeOf(slot: number, d: number): void {
+    const L = this.nav.port.layout, D = this.nav.dirs, pose = this.poses[slot]!, to = this.nav.neighbor(pose, d)
+    if (to < 0) return
+    const target = this.nav.tileOfPose(to)
+    // A neighbour the region layer does not stand on (sand) is no edge and no crossing.
+    if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * D + d] = t; this.degree[t]!++ }; return }
+    const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
+    if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; return }
+    this.crossings.push({ slot, d, to, cost: this.nav.stepCost(pose, to, !this.relaxed && this.nav.wet(to)), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
   }
   private sortCrossings(): void {
     const n = this.crossings.length

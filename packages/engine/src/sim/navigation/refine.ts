@@ -23,7 +23,8 @@ export function descend(region: Region, field: Uint16Array | number, from: numbe
     let moved = -1
     for (let k = 0; k < region.dirs && moved < 0; k++) {
       const d = k === 0 ? face : k <= face ? k - 1 : k, t = region.next[slot * region.dirs + d]!
-      ops++
+      // A ladder edge is counted only where there is one: a region with no ladder costs what it did.
+      if (d < 4 || t >= 0) ops++
       if (t >= 0 && values[base + t]! + regionStepCost(region, pose, t, layout) === here && allowed(region.poses[t]!)) moved = t
     }
     ops++

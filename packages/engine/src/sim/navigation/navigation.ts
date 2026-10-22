@@ -607,19 +607,26 @@ export class PathSearch {
           const p = this.positions[this.expanding]!, y = (p / nav.plane) | 0, r = p - y * nav.plane, z = (r / nav.sx) | 0
           this.ex = r - z * nav.sx; this.ey = y; this.ez = z; this.eti = nav.tileOf(this.ex, y, z); nav.see(this.seen, this.eti)
         }
-        const to = nav.edge(this.ex, this.ey, this.ez, this.eti, this.direction)
-        if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
-        else if (to >= 0 && this.blocked?.has(to)) this.cut = true
-        else if (to >= 0 && (!this.reversible || nav.neighbor(to, this.direction ^ 1, this.seen) === this.positions[this.expanding]!)) {
-          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + (this.direction >= 4 ? nav.ladderCost : nav.surfaces ? nav.stepCost(this.positions[this.expanding]!, to) : 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0)), id = this.ids.get(to)
-          // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
-          if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
-        }
-        if (++this.direction === nav.dirs) this.expanding = -1
+        this.relax(this.direction)
+        // The ladder edges ride along with the last planar one, in the same operation: a world with no ladder in it spends
+        // exactly what it did before ladders existed, whatever its registry holds.
+        if (this.direction === 3 && nav.dirs === 6 && this.status === 'pending') { this.relax(4); if (this.status === 'pending') this.relax(5) }
+        if (++this.direction === 4) this.expanding = -1
       }
     }
     this.spent += used
     return used
+  }
+  /** Relaxes edge `d` of the pose being expanded. */
+  private relax(d: number): void {
+    const nav = this.nav, to = nav.edge(this.ex, this.ey, this.ez, this.eti, d)
+    if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
+    else if (to >= 0 && this.blocked?.has(to)) this.cut = true
+    else if (to >= 0 && (!this.reversible || nav.neighbor(to, d ^ 1, this.seen) === this.positions[this.expanding]!)) {
+      const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + (d >= 4 ? nav.ladderCost : nav.surfaces ? nav.stepCost(this.positions[this.expanding]!, to) : 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0)), id = this.ids.get(to)
+      // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
+      if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
+    }
   }
   mixState(mix: (n: number) => void): void {
     const numbers = (values: readonly number[]) => { mix(values.length); for (const n of values) mix(n) }

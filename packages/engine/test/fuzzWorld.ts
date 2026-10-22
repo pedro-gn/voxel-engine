@@ -11,9 +11,10 @@ export const FUZZ_LADDER = 2
 /**
  * Seeded 96 × 32 × 96 terrain: hills 4–9 high, three walls, and a cave tunnel whose stair entrance exists every other world.
  * `ladders`: after the terrain, ladders are sprinkled on wall faces (columns of 1–6 rungs in clear cells beside stone),
- * drawn from a second generator so the terrain stays the same.
+ * drawn from a second generator so the terrain stays the same. `ladderDef`: the registry knows a ladder (navigation then has
+ * six directions) even when none is placed.
  */
-export function fuzzWorld(seed: number, ladders = false) {
+export function fuzzWorld(seed: number, ladders = false, ladderDef = ladders) {
   const rng = new Pcg32(seed), layout = new Layout([SIDE, 32, SIDE]), solid = new Uint8Array(layout.voxelCount)
   const hills = Array.from({ length: 4 }, () => [rng.nextInt(SIDE), rng.nextInt(SIDE), 10 + rng.nextInt(30), 1 + rng.nextInt(5)] as const)
   for (let z = 0; z < SIDE; z++) for (let x = 0; x < SIDE; x++) {
@@ -49,7 +50,7 @@ export function fuzzWorld(seed: number, ladders = false) {
       }
     }
   }
-  const registry = new BlockRegistry(ladders ? [{ name: 'stone' }, { name: 'ladder', solid: false, climbable: true }] : [{ name: 'stone' }])
+  const registry = new BlockRegistry(ladderDef ? [{ name: 'stone' }, { name: 'ladder', solid: false, climbable: true }] : [{ name: 'stone' }])
   return { layout, rng, solid, port: { layout, registry, get: (x: number, y: number, z: number) => layout.inBounds(x, y, z) ? solid[layout.voxelIndex(x, y, z)]! : 0 } }
 }
 
