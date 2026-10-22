@@ -85,8 +85,16 @@ A world whose bottom is open: water, falling blocks, fragments and units that re
 _Avoid_: Sky world, no-floor mode
 
 **Block shape**:
-A block type's form other than the whole cube — slab, stair or post — drawn with its material's tiles and oriented by its voxel state; every system but drawing and light treats it as a full cell.
+A block type's form other than the whole cube — slab, stair, post or ladder — drawn with its material's tiles and oriented by its voxel state; every system but drawing and light treats it as its `solid` flag says (a full cell by default; a torch on a post or a ladder is not solid).
 _Avoid_: Model block, partial block
+
+**Climbable**:
+A non-solid, non-liquid block type units climb: its cell is a pose without a floor under it.
+_Avoid_: Scalable, rope block
+
+**Ladder**:
+A climbable block with the ladder shape: two rails and rungs 2/16 thick against the side its state names (the side holding its wall). It does not stop light. A rung is a pose with no floor; navigation adds an up and a down edge between rungs of one column (LADDER_COST each, LADDER_TICKS to climb, facing the wall), and the planar edges give the rest: step on from beside, step off at any rung, drop into the top of a shaft, climb off its top. A unit on a ladder never falls, and may dig or build the cell under its feet. Flow repairs climb and descend too; a shaft is one lane, so two units meeting head-on in one (or at its foot over a dead end) have the one on the ladder climb back out and wait beside the shaft's end, and a controlled walk that stands on a ladder without getting closer for a long while fails `traffic`. The engineering planner does not use ladder edges.
+_Avoid_: Stairs (a stair is a shape units walk on)
 
 **Layer cut**:
 The highest visible layer: everything above it is hidden and the cut layer's tops are drawn as solid, darker faces; the simulation is untouched.

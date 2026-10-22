@@ -1,8 +1,10 @@
 import type { ReservationTable } from './reservations.ts'
 
 export interface SpaceTimePort {
-  /** NavigationSystem.neighbor: the pose reached by planar direction d, or -1. */
+  /** NavigationSystem.neighbor: the pose reached by direction d (0–3 planar; 4 up, 5 down a ladder), or -1. */
   neighbor(p: number, d: number): number
+  /** NavigationSystem.dirs: 6 when ladders may be climbed (actions up and down), else 4 (absent: 4). */
+  dirs?: number
   /** Live pose policy for this unit. */
   allowed(p: number): boolean
   /** Body cells standing on pose p. */
@@ -55,7 +57,7 @@ export class SpaceTimeSearch {
   private readonly origin: [number, number, number]
   private readonly targetCoords: [number, number, number][]
   private readonly targetSet: ReadonlySet<number>
-  /** The route's own steps (start → targets[0] → targets[1] …) as pose * 4 + direction: they may be one-way. */
+  /** The route's own steps (start → targets[0] → targets[1] …) as pose * 8 + direction: they may be one-way. */
   private readonly routeSteps = new Set<number>()
   /** The current state id of each (pose, tick, stranded) key; a cheaper way there replaces it until the state is popped. */
   private readonly ids = new Map<number, number>()
@@ -81,17 +83,18 @@ export class SpaceTimeSearch {
   private readonly near = new Map<number, number>()
   private readonly open = new Map<number, boolean>()
   private expanding = -1
-  /** 0 is the wait, 1..4 the planar steps. */
+  /** 0 is the wait, 1..4 the planar steps, 5 and 6 up and down a ladder (only where one leads: see `step`). */
   private action = 0
+  private readonly dirs: number
   /** `toward` orients the lanes when there are no targets (a refuge): a pose ahead on the unit's own way. */
   constructor(port: SpaceTimePort, table: ReservationTable, owner: number, start: number, startTick: number, targets: readonly number[], radius = 8, maxOps = 4096, refuge?: (p: number) => boolean, avoid?: (p: number) => boolean, toward?: number) {
     this.port = port; this.table = table; this.owner = owner; this.start = start; this.startTick = startTick; this.targets = targets
-    this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.avoid = avoid; this.end = startTick + table.window
+    this.radius = radius; this.maxOps = maxOps; this.refuge = refuge; this.avoid = avoid; this.end = startTick + table.window; this.dirs = port.dirs ?? 4
     this.origin = port.coords(start); this.targetCoords = targets.map(p => port.coords(p)); this.targetSet = new Set(targets)
     for (let i = 0; i < targets.length; i++) {
       const a = i ? this.targetCoords[i - 1]! : this.origin, b = this.targetCoords[i]!, dx = b[0] - a[0], dz = b[2] - a[2]
-      const d = dx === 1 && !dz ? 0 : dx === -1 && !dz ? 1 : dz === 1 && !dx ? 2 : dz === -1 && !dx ? 3 : -1
-      if (d >= 0) this.routeSteps.add((i ? targets[i - 1]! : start) * 4 + d)
+      const dy = b[1] - a[1], d = dx === 1 && !dz ? 0 : dx === -1 && !dz ? 1 : dz === 1 && !dx ? 2 : dz === -1 && !dx ? 3 : !dx && !dz && this.dirs === 6 ? dy === 1 ? 4 : dy === -1 ? 5 : -1 : -1
+      if (d >= 0) this.routeSteps.add((i ? targets[i - 1]! : start) * 8 + d)
     }
     const last = this.targetCoords.at(-1) ?? (toward === undefined ? undefined : port.coords(toward)), dx = last ? last[0] - this.origin[0] : 0, dz = last ? last[2] - this.origin[2] : 0
     // Right of (dx, dz) is (-dz, dx); directions index DX = [1, -1, 0, 0], DZ = [0, 0, 1, -1].
@@ -120,7 +123,7 @@ export class SpaceTimeSearch {
     return c
   }
   private neighbor(p: number, d: number): number {
-    const key = p * 4 + d
+    const key = p * 8 + d
     let q = this.near.get(key)
     if (q === undefined) { q = this.port.neighbor(p, d); this.near.set(key, q) }
     return q
@@ -235,9 +238,9 @@ export class SpaceTimeSearch {
         const d = this.action - 1, q = this.neighbor(p, d)
         if (q >= 0 && this.inBox(q) && this.allowed(q) && !this.closed(q)) {
           // Back on the route, a state is free to end anywhere again; off it, a step it cannot take back strands it.
-          const stranded = this.targetSet.has(q) ? 0 : this.stranded[id] || !this.routeSteps.has(p * 4 + d) && this.neighbor(q, d ^ 1) !== p ? 1 : 0
-          let s = this.stepOf.get(p * 4 + d)
-          if (!s || s.q !== q) { s = { q, k: this.port.ticksOf(p, q), cells: this.port.stepCells(p, q) }; this.stepOf.set(p * 4 + d, s) }
+          const stranded = this.targetSet.has(q) ? 0 : this.stranded[id] || !this.routeSteps.has(p * 8 + d) && this.neighbor(q, d ^ 1) !== p ? 1 : 0
+          let s = this.stepOf.get(p * 8 + d)
+          if (!s || s.q !== q) { s = { q, k: this.port.ticksOf(p, q), cells: this.port.stepCells(p, q) }; this.stepOf.set(p * 8 + d, s) }
           const k = s.k
           if (t + k <= this.end) {
             const cells = s.cells
@@ -247,7 +250,9 @@ export class SpaceTimeSearch {
           }
         }
       }
-      if (++this.action === 5) this.expanding = -1
+      // The ladder moves are tried only from a pose a ladder leads up or down from, so a search where none does spends
+      // exactly the operations it would with four directions (mining review C1).
+      if (++this.action === 5 && (this.dirs < 6 || this.neighbor(p, 4) < 0 && this.neighbor(p, 5) < 0) || this.action === 7) this.expanding = -1
     }
     return used
   }

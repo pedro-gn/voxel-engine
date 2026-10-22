@@ -1,6 +1,6 @@
 import type { BlockRegistry } from '../../blocks/registry.ts'
 import type { Layout } from '../../world/layout.ts'
-import { AIR, voxelId } from '../../world/voxel.ts'
+import { AIR, voxelId, voxelState } from '../../world/voxel.ts'
 import { raycast } from '../../interact/raycast.ts'
 import type { Command, Vec3 } from '../commands.ts'
 import { NavigationSystem, surfaceCosts, type PathSearch } from '../navigation/navigation.ts'
@@ -67,6 +67,8 @@ interface Unit {
    * it was set, so being pushed back and forth does not count. Ages the unit's priority.
    */
   stuck: number; best: number; bestTarget: number
+  /** Ticks spent on a ladder since the unit last got closer to its target (mining review C1; 0 off ladders). */
+  stall: number
   /** A pending space-time repair, the route it rejoins and where and when it starts. */
   repair: SpaceTimeSearch | null; repairFrom: { path: readonly number[]; cursor: number; start: number; startTick: number; at: number } | null; repairAfter: number
   /** A repair plan: stand on path[i] through untils[i] before stepping on. Valid only for the path it was made for. */
@@ -136,6 +138,10 @@ interface TaskFailure { origin: number; policy: number; nav: number; tiles: Read
 interface Task { order: Order; i: number; pos: Vec3; p: number; expected: number; claim: number; added: number; reason?: WorkBlockReason; failures: Map<number, TaskFailure> }
 const MAX_TASKS = 256, MAX_AREA = 1 << 20, MAX_PARKS = 16, MAX_FAILURES = 32, MAX_PARKED_FAILURES = 1024, STALL_TICKS = 200, LEASE_TICKS = 200
 const WALK_SPEED = 64, WALK_LOOKAHEAD = 32, WALK_PROBES = 8
+/** Ticks of one ladder step, up or down one rung (its planning cost is LADDER_COST). */
+export const LADDER_TICKS = 12
+/** A unit's facing (1 +x, 3 −x, 0 +z, 2 −z) toward the wall of a ladder, by the ladder's state (0 +x, 1 +z, 2 −x, 3 −z). */
+const LADDER_FACING = [1, 0, 3, 2] as const
 /** Repairs started per tick, path nodes a repair may rejoin, and ticks without progress per point of aged priority. */
 const MAX_REPAIRS = 8, REPAIR_SPAN = 24, STUCK_STEP = 20
 /** While a unit with nothing to walk waits for its route or group field, repairs get what is left shifted right by this (an eighth). */
@@ -144,6 +150,16 @@ const REPAIR_SHARE_WAITING_SHIFT = 3
 const PREEMPT_DELAY = 8, YIELD_TICKS = 200
 /** Ticks before a unit that adopted a repair plan may repair again; ticks stuck before it falls back to detours and traffic blocks. */
 const REPAIR_COOLDOWN = 8, STUCK_LIMIT = 160
+/**
+ * Mining review C1: ticks a unit that backed out of a ladder shaft waits beside its end, beyond its climb out, before it
+ * plans again (the other unit climbs through meanwhile).
+ */
+const RETREAT_HOLD = 60
+/**
+ * Mining review C1: ticks a controlled walk may stand on a ladder without getting closer before it fails `traffic`, so the
+ * game decides again (two units that cannot pass in a shaft at all). Flat walks keep retrying (plan deviation D3).
+ */
+const LADDER_GIVE_UP = 4 * 160
 /** Ticks a repair may stay pending before it is dropped. */
 const REPAIR_TICKS = 4
 /** How far an idle unit may walk to clear someone's route when no refuge is in reach of one window. */
@@ -423,7 +439,8 @@ export class WorkerSystem {
     // searches over them go stale. It is no change of solid geometry: the landmark tables answer in bounds that hold under any
     // speeds (LandmarkTables' scales), so a road project does not retire them (accesses review M1).
     const speed = this.speeds !== null && this.speeds[a] !== this.speeds[b]
-    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || speed) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b], R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
+    const climb = R.climbable[a] !== R.climbable[b]
+    if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || speed || climb) { this.nav.invalidate(x, y, z, R.solid[a] !== R.solid[b] || climb, R.falls[a] !== R.falls[b]); this.worldRevision++; this.revision++ }
     else if (a !== b && !R.liquid[a] && !R.liquid[b]) this.revision++
   }
   invalidateAll(): void {
@@ -438,7 +455,7 @@ export class WorkerSystem {
     for (let i = 0; i < old.length; i++) {
       const a = voxelId(old[i]!), b = voxelId(value[i]!)
       // Liquid presence and kind are region geometry too (the head-cell and feet rules of NavigationSystem.regionStand).
-      if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || (R.liquid[a] || R.liquid[b]) && a !== b) return true
+      if (R.solid[a] !== R.solid[b] || R.structural[a] !== R.structural[b] || R.falls[a] !== R.falls[b] || R.climbable[a] !== R.climbable[b] || (R.liquid[a] || R.liquid[b]) && a !== b) return true
       if (this.speeds !== null && this.speeds[a] !== this.speeds[b]) return true
     }
     return false
@@ -493,6 +510,13 @@ export class WorkerSystem {
     if (u.y === 0) return !this.voidFloor
     if (u.y & 255) return false
     for (let z = (u.z - 96) >> 8; z <= (u.z + 95) >> 8; z++) for (let x = (u.x - 96) >> 8; x <= (u.x + 95) >> 8; x++) if (this.port.registry.solid[voxelId(this.port.get(x, (u.y >> 8) - 1, z))]) return true
+    // A unit on a ladder needs no floor: a feet cell its body overlaps is climbable.
+    if (this.nav.dirs === 6) for (let z = (u.z - 96) >> 8; z <= (u.z + 95) >> 8; z++) for (let x = (u.x - 96) >> 8; x <= (u.x + 95) >> 8; x++) if (this.nav.climbableAt(x, u.y >> 8, z)) return true
+    return false
+  }
+  /** Whether pose `to` is one of pose `from`'s edges (planar, or along a ladder). */
+  private adjacent(from: number, to: number): boolean {
+    for (let d = 0; d < this.nav.dirs; d++) if (this.nav.neighbor(from, d) === to) return true
     return false
   }
   private ringOf(o: Order, x: number, z: number): number { return Math.min(x - o.min[0], o.max[0] - x, z - o.min[2], o.max[2] - z) }
@@ -588,7 +612,7 @@ export class WorkerSystem {
     return { id, x, y, z, facing: 0, state: 'idle', tools: new Set(tools), stock,
       goal: null, search: null, path: [], cursor: 0, task: null, progress: 0, duration: 0, cells: [], motion: null, vy: 0, wait: 0, retry: 0, revision: -1,
       allowDig: false, buildBlock: 0, engineering: null, searchLimited: false, actions: [], actionCursor: 0, alternative: [], alternativeCost: 0, workPoses: [], validatedWorld: -1, validatedPose: [0, 0, 0], available: true, escape: [], exposed: 0, unsafeHere: false, wadingOut: false, stale: 0, progressAt: this.time, route: null, segment: null,
-      projection: null, conflict: null, stuck: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null,
+      projection: null, conflict: null, stuck: 0, stall: 0, best: 0, bestTarget: -1, repair: null, repairFrom: null, repairAfter: 0, schedule: null, yieldTo: 0, yieldUntil: 0, passUntil: 0, laned: null,
       controlled: false, intent: null, fallFrom: 0, speed: 1 }
   }
   /** Plan deviation 6: durable state only; navigation, searches, reservations, claims and failure histories are rebuilt. */
@@ -795,7 +819,8 @@ export class WorkerSystem {
       for (let yy = y + 2; yy < ty || beside && yy === ty; yy++) if (this.port.registry.solid[voxelId(this.port.get(x, yy, z))]) return false
       return true
     }
-    if (x === tx && z === tz) return false
+    // From a ladder, a unit works the cell under its feet (a shaft is dug and laddered top down).
+    if (x === tx && z === tz) return ty === y - 1 && this.nav.climbableAt(x, y, z)
     const origin: Vec3 = [x + .5, y + 1, z + .5], target: Vec3 = [tx + .5, ty + .5, tz + .5]
     const dir: Vec3 = [target[0] - origin[0], target[1] - origin[1], target[2] - origin[2]], distance = Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
     const hit = raycast(this.port.get, v => this.port.registry.solid[voxelId(v)] === 1, this.port.layout.size, origin, dir, distance)
@@ -804,7 +829,7 @@ export class WorkerSystem {
   private workGoals(u: Unit, t: Task, ignoreOccupancy = false): number[] {
     const out: number[] = [], [x, y, z] = t.pos, reach = t.order.kind === 'build' ? t.order.reach ?? this.buildReach : 1
     // Beside the target, from one above it down to `reach` below it; above its head, a build also reaches straight up.
-    for (const [dx, dz] of reach > 1 ? [...DIRS, [0, 0] as const] : DIRS) for (let yy = y - reach; yy <= y + 1; yy++) {
+    for (const [dx, dz] of reach > 1 || this.nav.dirs === 6 ? [...DIRS, [0, 0] as const] : DIRS) for (let yy = y - reach; yy <= y + 1; yy++) {
       const pos: Vec3 = [x + dx, yy, z + dz]
       if (!this.canWork(pos, t)) continue
       const p = this.port.layout.voxelIndex(...pos)
@@ -1058,6 +1083,8 @@ export class WorkerSystem {
     const [tx, ty, tz] = this.port.layout.voxelCoords(to), [sx, sy, sz] = start, y = sy / 256
     if (ty === y) return [sx + Math.trunc((tx * 256 + 128 - sx) * elapsed / ticks), sy, sz + Math.trunc((tz * 256 + 128 - sz) * elapsed / ticks)]
     const q = Math.min(256, Math.floor(elapsed * 256 / ticks))
+    // Along a ladder (same column): straight up or down, at an even pace.
+    if (this.nav.dirs === 6 && tx === sx >> 8 && tz === sz >> 8) return [sx + Math.trunc((tx * 256 + 128 - sx) * q / 256), sy + Math.trunc((ty * 256 - sy) * q / 256), sz + Math.trunc((tz * 256 + 128 - sz) * q / 256)]
     const hq = ty > y ? Math.max(0, q * 2 - 256) : ty < y ? Math.min(256, q * 2) : q
     const yq = ty > y ? Math.min(256, q * 2) : ty < y ? Math.max(0, q * 2 - 256) : q
     return [sx + Math.trunc((tx * 256 + 128 - sx) * hq / 256), sy + Math.trunc((ty * 256 - sy) * yq / 256), sz + Math.trunc((tz * 256 + 128 - sz) * hq / 256)]
@@ -1083,7 +1110,7 @@ export class WorkerSystem {
         if (ty === y && this.walkable(u, cells, y)) return this.beginMotion(u, p, cursor, cells)
       }
       // Neither in reach (another level): a route carries on from where the unit stands.
-      if (u.route && !DIRS.some((_, d) => this.nav.neighbor(here, d) === to)) { this.reseat(u, u.route, here); return false }
+      if (u.route && !this.adjacent(here, to)) { this.reseat(u, u.route, here); return false }
     }
     // A blocked next step needs traffic arbitration, not repeated long visibility probes; a repair plan goes node by node.
     if (u.wait || u.cursor < this.scheduled(u)) return this.beginMotion(u, to)
@@ -1106,7 +1133,7 @@ export class WorkerSystem {
   private beginMotion(u: Unit, to: number, cursor = u.cursor + 1, visibleCells?: number[]): boolean {
     const from = this.position(u), [x, y, z] = this.port.layout.voxelCoords(from), [tx, ty, tz] = this.port.layout.voxelCoords(to)
     if (!this.poseOk(u, [tx, ty, tz])) { this.block(u, 'unsafe'); return false }
-    if (!visibleCells && from !== to && !DIRS.some((_, d) => this.nav.neighbor(from, d) === to)) { this.block(u, 'target-changed'); return false }
+    if (!visibleCells && from !== to && !this.adjacent(from, to)) { this.block(u, 'target-changed'); return false }
     const start: [number, number, number] = [u.x, u.y, u.z]
     const flat = ty * 256 === u.y
     const ticks = this.stepTicks(start, to)
@@ -1132,11 +1159,16 @@ export class WorkerSystem {
     }
     // Owning the first tick now keeps projections made later this tick from claiming the cells it just took.
     for (let t = this.time + 1; t <= this.time + (flat ? 1 : ticks); t++) this.table.reserve(u.id, t, cells)
-    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area, world: this.dynamicWasBusy ? -1 : this.worldRevision, policy: this.policy, axis: flat && ticks === 4 ? this.axisStep(start, to) : -1 }; u.facing = tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
+    u.wait = 0; u.reason = undefined; u.motion = { from, to, cursor, start, flat, elapsed: 0, ticks, cells, area, world: this.dynamicWasBusy ? -1 : this.worldRevision, policy: this.policy, axis: flat && ticks === 4 ? this.axisStep(start, to) : -1 }; u.facing = tx === x && tz === z && ty !== y ? this.ladderFacing(to, u.facing) : tx !== x ? tx > x ? 1 : 3 : tz > z ? 0 : 2; u.state = 'walking'; this.dirty.add(u.id); return true
+  }
+  /** A climbing unit faces the wall its ladder hangs on (the ladder at `to`); `keep` when that cell holds no ladder. */
+  private ladderFacing(to: number, keep: number): number {
+    const v = this.port.get(...this.port.layout.voxelCoords(to))
+    return this.port.registry.climbable[voxelId(v)] ? LADDER_FACING[voxelState(v) & 3]! : keep
   }
   private stepTicks(start: readonly [number, number, number], to: number): number {
     const [tx, ty, tz] = this.port.layout.voxelCoords(to), y = start[1] >> 8
-    if (ty * 256 !== start[1]) return 4 + (ty > y ? 2 : y - ty)
+    if (ty * 256 !== start[1]) return this.nav.dirs === 6 && tx === start[0] >> 8 && tz === start[2] >> 8 ? LADDER_TICKS : 4 + (ty > y ? 2 : y - ty)
     const ticks = Math.max(1, Math.ceil(ceilSqrt((tx * 256 + 128 - start[0]) ** 2 + (tz * 256 + 128 - start[2]) ** 2) / WALK_SPEED))
     if (!this.speeds) return ticks
     const time = this.surfaceTime(start, tx, tz)
@@ -1235,7 +1267,7 @@ export class WorkerSystem {
     }
     // Sidestep attempts start from wait 0 (no nested yield) but failed ones still count toward the traffic block.
     const wait = u.wait
-    for (let d = 0; d < 4; d++) {
+    for (let d = 0; d < this.nav.dirs; d++) {
       const p = this.nav.neighbor(from, d)
       // A sidestep is a step the unit can take back: never a drop it cannot climb again.
       if (p < 0 || p === intended || this.occupied.has(p) || this.nav.neighbor(p, d ^ 1) !== from || !this.poseOk(u, this.port.layout.voxelCoords(p))) continue
@@ -1320,7 +1352,7 @@ export class WorkerSystem {
           const from = this.position(u)
           // A step off the path: the cursor stays, and the path resumes from wherever the unit then stands.
           if (dozing) this.sleepers.wake(u.id)
-          for (let d = 0; d < 4; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p, u.cursor)) break }
+          for (let d = 0; d < this.nav.dirs; d++) { const p = this.nav.neighbor(from, d); if (p >= 0 && this.poseOk(u, this.port.layout.voxelCoords(p)) && this.beginMotion(u, p, u.cursor)) break }
           continue
         }
         u.validatedWorld = this.worldRevision; u.validatedPose[0] = u.x; u.validatedPose[1] = u.y; u.validatedPose[2] = u.z
@@ -1465,10 +1497,13 @@ export class WorkerSystem {
       if (u.state === 'incapacitated') continue
       const target = u.task ? u.task.p : u.goal ?? -1
       if (target !== u.bestTarget) { u.bestTarget = target; u.best = 0x7fffffff }
-      if (target < 0 || u.state === 'working') u.stuck = 0
+      if (target < 0 || u.state === 'working') { u.stuck = 0; u.stall = 0 }
       else {
         const [x, y, z] = this.pose(u), [tx, ty, tz] = this.port.layout.voxelCoords(target), d = Math.abs(x - tx) + Math.abs(y - ty) + Math.abs(z - tz)
-        if (d < u.best) { u.best = d; u.stuck = 0 } else u.stuck++
+        if (d < u.best) { u.best = d; u.stuck = 0; u.stall = 0 } else { u.stuck++; if (this.nav.dirs === 6 && this.onLadder(u)) u.stall++ }
+        if (u.stall >= LADDER_GIVE_UP && u.controlled && u.intent?.kind === 'goTo' && !u.motion && this.onLadder(u)) {
+          this.sleepers.wake(u.id); this.resetRoute(u); u.stuck = 0; u.stall = 0; this.failIntent(u, 'traffic')
+        }
       }
       if (this.sleepers.dozing(u.id, this.time)) {
         // Asleep: no projection. `stuck` rose above as for any unit that did not get closer; a waiting step counts its wait
@@ -1828,6 +1863,53 @@ export class WorkerSystem {
       if (this.projecting(o)) { o.projection = null; this.project(o) } else { this.table.releaseFrom(id, this.time + 1); o.projection = null }
     }
   }
+  /** The poses a unit still has to walk: the end of its motion, then its path from the cursor. */
+  private ahead(u: Unit): Set<number> {
+    const out = new Set<number>(u.path.slice(u.cursor))
+    if (u.motion) out.add(u.motion.to)
+    return out
+  }
+  /** Whether the unit stands in a ladder cell. */
+  private onLadder(u: Unit): boolean {
+    const [x, y, z] = this.pose(u)
+    return this.port.registry.climbable[voxelId(this.port.get(x, y, z))] === 1
+  }
+  /**
+   * Mining review C1. A ladder shaft is one lane, and backing out of one takes longer than a repair's window (a rung is
+   * LADDER_TICKS), so two units meeting head-on in it, or at its foot over a dead end, never get past each other by
+   * repairs. When each one's remaining path runs through where the other stands and one of them stands on a ladder, that
+   * one — the one heading down when both do, else the higher id — climbs back out the way it came, along the ladder to its
+   * end and one step off it onto a pose off the other's path, and waits there RETREAT_HOLD ticks beyond its climb before
+   * planning again. Nothing changes where no ladder is climbable.
+   */
+  private ladderRetreat(u: Unit, o: Unit): boolean {
+    if (this.nav.dirs !== 6) return false
+    const pu = this.position(u), po = this.position(o)
+    if (!this.ahead(u).has(po) || !this.ahead(o).has(pu)) return false
+    const ready = (x: Unit) => !x.motion && !x.engineering && !x.actions[x.actionCursor] && (x.state === 'planning' || x.state === 'walking' || x.state === 'blocked') && this.onLadder(x)
+    const down = (x: Unit) => { const t = x.task ? x.task.p : x.goal; return t !== null && this.port.layout.voxelCoords(t)[1] < this.pose(x)[1] }
+    const order = [u, o].filter(ready).sort((a, b) => Number(down(b)) - Number(down(a)) || b.id - a.id)
+    for (const r of order) {
+      const other = r === u ? o : u, theirs = this.ahead(other), from = this.position(r), d = down(r) ? 4 : 5
+      const chain: number[] = []
+      for (let p = this.nav.neighbor(from, d); p >= 0 && chain.length < 64; p = this.nav.neighbor(p, d)) chain.push(p)
+      const end = chain.at(-1) ?? from
+      let off = -1
+      for (let k = 0; k < 4 && off < 0; k++) {
+        const q = this.nav.neighbor(end, k)
+        if (q >= 0 && q !== this.position(other) && !theirs.has(q) && !this.occupied.has(q) && this.poseOk(r, this.port.layout.voxelCoords(q))) off = q
+      }
+      if (off < 0) continue
+      this.sleepers.wake(r.id); this.sleepers.wake(other.id)
+      r.search?.cancel(); r.search = null; this.dropRoute(r); r.repair = null; r.repairFrom = null; r.schedule = null
+      r.path = [from, ...chain, off]; r.cursor = 1; r.conflict = null; r.wait = 0; r.stuck = 0; r.reason = undefined; r.state = 'planning'
+      r.retry = this.time + (chain.length + 1) * LADDER_TICKS + RETREAT_HOLD; r.repairAfter = r.retry; r.projection = null; this.dirty.add(r.id)
+      if (this.projecting(r)) this.project(r)
+      other.conflict = null; other.wait = 0
+      return true
+    }
+    return false
+  }
   /** An idle unit with nothing queued, the only kind asked to step aside. */
   private idleUnit(u: Unit): boolean { return u.state === 'idle' && u.goal === null && !u.task && !u.search && !u.motion && !u.engineering && u.path[u.cursor] === undefined && this.time >= u.retry }
   /**
@@ -1852,6 +1934,8 @@ export class WorkerSystem {
       if (!o || o === u) continue
       // Lanes, preemption and make-way may change o's plan or hold: a sleeping o wakes to carry it out.
       this.sleepers.wake(o.id)
+      // A ladder shaft is one lane, longer to back out of than a repair's window: one of the two climbs back out (C1).
+      if (this.ladderRetreat(u, o)) continue
       // Head-on: whichever of the two has a free lane to its right takes it, and both walk on.
       if (this.headOn(u, o) && (this.laneChange(u) || !o.repair && this.laneChange(o))) continue
       started++
@@ -2127,7 +2211,7 @@ export class WorkerSystem {
     const L = this.port.layout
     const at = (p: number): [number, number, number] => { if (p === start) return startPose; const [x, y, z] = L.voxelCoords(p); return [x * 256 + 128, y * 256, z * 256 + 128] }
     return {
-      neighbor: (p, d) => this.nav.neighbor(p, d), allowed: p => this.poseOk(u, L.voxelCoords(p)), coords: p => L.voxelCoords(p),
+      neighbor: (p, d) => this.nav.neighbor(p, d), dirs: this.nav.dirs, allowed: p => this.poseOk(u, L.voxelCoords(p)), coords: p => L.voxelCoords(p),
       cellsOf: p => this.body(...at(p)),
       stepCells: (a, b) => { const s = at(a), e = at(b); return e[1] === s[1] ? walkSweep(L, s, e) : this.verticalCells(b, this.stepTicks(s, b), s) },
       ticksOf: (a, b) => this.stepTicks(at(a), b), minStepTicks: this.minStepTicks,
@@ -2230,7 +2314,7 @@ export class WorkerSystem {
       const pr = u.projection
       mix(pr ? 1 : 0); if (pr) { mix(pr.cursor); numbers(pr.pose); mix(pr.t); mix(pr.end); mix(pr.first); mix(pr.stood ? 1 : 0); mix(pr.len); mix(pr.endAt) }
       mix(u.conflict ? 1 : 0); if (u.conflict) { mix(u.conflict.t); mix(u.conflict.owner) }
-      mix(u.stuck); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : []); mix(u.laned?.path === u.path ? u.laned.len : -1)
+      mix(u.stuck); if (u.stall) mix(u.stall); mix(u.best); mix(u.bestTarget); mix(u.repairAfter); mix(u.yieldTo); mix(u.yieldUntil); mix(u.passUntil); numbers(u.schedule?.path === u.path ? u.schedule.untils : []); mix(u.laned?.path === u.path ? u.laned.len : -1)
       mix(u.repair ? 1 : 0); u.repair?.mixState(mix)
       if (u.repairFrom) { mix(u.repairFrom.cursor); mix(u.repairFrom.start); mix(u.repairFrom.startTick); mix(u.repairFrom.at); mix(u.repairFrom.path === u.path ? 1 : 0) }
       mix(u.route ? 1 : 0)
