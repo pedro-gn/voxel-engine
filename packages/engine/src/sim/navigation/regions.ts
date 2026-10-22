@@ -1,6 +1,6 @@
 import type { Layout } from '../../world/layout.ts'
 import { voxelId } from '../../world/voxel.ts'
-import { COST_SCALE, WADE_COST, type NavigationSystem } from './navigation.ts'
+import { COST_SCALE, LADDER_COST, WADE_COST, type NavigationSystem } from './navigation.ts'
 import { IdHeap } from './heap.ts'
 
 export const UNREACHED = 0xffff
@@ -37,8 +37,10 @@ export interface Region {
    * (relaxed records too: a speed change is a geometry change); empty without surfaces.
    */
   flat: Uint16Array
-  /** forward edges: 4 per slot, slot of the target inside the region or -1 (edges leaving the region are exits) */
+  /** forward edges: `dirs` per slot, slot of the target inside the region or -1 (edges leaving the region are exits) */
   next: Int16Array
+  /** Edges per slot in `next`: the navigation's `dirs` (4, or 6 with ladders). */
+  dirs: number
   exits: Exit[]
   /** fields[e * poses.length + slot] = cost from slot to exits[e].from inside the region, UNREACHED if none */
   fields: Uint16Array
@@ -65,6 +67,8 @@ export const splitKey = (key: number): [region: number, e: number] => [Math.floo
  */
 export const regionStepCost = (r: Region, from: number, t: number, L: Layout): number => {
   const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(r.poses[t]! / plane), wet = r.wet[t] !== 0
+  // A same-column edge is a ladder's (planar edges always change column).
+  if (r.dirs === 6 && Math.abs(r.poses[t]! - from) === plane) return r.flat.length ? LADDER_COST * COST_SCALE : LADDER_COST
   if (!r.flat.length) return 4 + (ty > sy ? 2 : sy - ty) + (wet ? WADE_COST : 0)
   return (ty === sy ? r.flat[t]! : (4 + (ty > sy ? 2 : sy - ty)) * COST_SCALE) + (wet ? WADE_COST * COST_SCALE : 0)
 }
@@ -166,6 +170,7 @@ export class RegionBuild {
   }
   private cost(a: number, b: number): number {
     const ya = this.locals[a]! >> 8, yb = this.locals[b]! >> 8
+    if (this.nav.dirs === 6 && (this.locals[a]! & 255) === (this.locals[b]! & 255)) return this.nav.ladderCost
     if (!this.flat.length) return 4 + (yb > ya ? 2 : ya - yb) + (this.wet[b] ? WADE_COST : 0)
     return (ya === yb ? this.flat[b]! : (4 + (yb > ya ? 2 : ya - yb)) * COST_SCALE) + (this.wet[b] ? WADE_COST * COST_SCALE : 0)
   }
@@ -186,7 +191,7 @@ export class RegionBuild {
         if (region) { this.slots[c] = this.count; this.locals[this.count++] = c; this.sources |= sourceBits(c & 15, c >> 8, (c >> 4) & 15) }
         if (this.cursor === 4096) {
           const P = this.count
-          this.poses = new Int32Array(P); this.next = new Int16Array(P * 4).fill(-1); this.degree = new Int32Array(P)
+          this.poses = new Int32Array(P); this.next = new Int16Array(P * this.nav.dirs).fill(-1); this.degree = new Int32Array(P)
           for (let s = 0; s < P; s++) { const l = this.locals[s]!; this.poses[s] = L.voxelIndex(ox + (l & 15), oy + (l >> 8), oz + ((l >> 4) & 15)) }
           // Landmark tables read relaxed records: no water cost there keeps them a lower bound when water drains.
           this.wet = new Uint8Array(P); if (!this.relaxed) for (let s = 0; s < P; s++) this.wet[s] = this.nav.wet(this.poses[s]!) ? 1 : 0
@@ -195,13 +200,14 @@ export class RegionBuild {
           this.charge(2 * P); this.phase = 'edges'; this.cursor = 0
         }
       } else if (this.phase === 'edges') {
-        if (this.cursor === this.count * 4) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
-        const slot = this.cursor >> 2, d = this.cursor & 3, pose = this.poses[slot]!, to = this.nav.neighbor(pose, d)
+        const D = this.nav.dirs
+        if (this.cursor === this.count * D) { this.sortCrossings(); this.phase = 'exits'; this.cursor = 0; continue }
+        const slot = Math.floor(this.cursor / D), d = this.cursor % D, pose = this.poses[slot]!, to = this.nav.neighbor(pose, d)
         this.cursor++
         if (to < 0) continue
         const target = this.nav.tileOfPose(to)
         // A neighbour the region layer does not stand on (sand) is no edge and no crossing.
-        if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * 4 + d] = t; this.degree[t]!++ }; continue }
+        if (target === this.index) { const t = this.slots[localOf(L, to)]!; if (t >= 0) { this.next[slot * D + d] = t; this.degree[t]!++ }; continue }
         const [fx, fy, fz] = L.voxelCoords(pose), [tx, ty, tz] = L.voxelCoords(to)
         if (!this.relaxed && !this.nav.regionStand(tx, ty, tz)) { this.relaxes = true; continue }
         this.crossings.push({ slot, d, to, cost: this.nav.stepCost(pose, to, !this.relaxed && this.nav.wet(to)), target, sy: fy, ty, along: d < 2 ? fx : fz, across: d < 2 ? fz : fx })
@@ -221,7 +227,8 @@ export class RegionBuild {
           this.phase = 'fields'; this.charge(Math.ceil(this.fields.length / 64)); this.indexColumns(); this.field = 0; this.seed(); continue
         }
         const s = this.cursor++
-        for (let d = 0; d < 4; d++) { const t = this.next[s * 4 + d]!; if (t >= 0) this.rev[this.fill[t]!++] = s }
+        const D = this.nav.dirs
+        for (let d = 0; d < D; d++) { const t = this.next[s * D + d]!; if (t >= 0) this.rev[this.fill[t]!++] = s }
       } else if (this.phase === 'fields') {
         if (this.field === this.exits.length) { this.phase = 'done'; this.done = true; break }
         const P = this.count, f = this.field * P
@@ -251,12 +258,15 @@ export class RegionBuild {
    */
   private extend(c: Crossing): void {
     const runs = this.runs, first = runs[0]?.[0]
+    // A ladder crossing (up or down into the next level's tile) is a portal of its own.
+    if (c.d >= 4) { while (runs.length) this.closeRun(0); runs.push([c]); this.closeRun(0); return }
     if (first && (first.d !== c.d || first.target !== c.target || first.along !== c.along)) while (runs.length) this.closeRun(0)
     for (let i = 0; i < runs.length;) { if (runs[i]!.at(-1)!.across < c.across - 1) this.closeRun(i); else i++ }
     const up = c.d < 2 ? 2 : 0, down = up + 1
     const run = runs.find(r => {
       const last = r.at(-1)!
-      return last.across === c.across - 1 && this.next[last.slot * 4 + up] === c.slot && this.next[c.slot * 4 + down] === last.slot
+      const D = this.nav.dirs
+      return last.across === c.across - 1 && this.next[last.slot * D + up] === c.slot && this.next[c.slot * D + down] === last.slot
         && this.nav.neighbor(last.to, up) === c.to && this.nav.neighbor(c.to, down) === last.to
     })
     if (run) run.push(c); else runs.push([c])
@@ -290,8 +300,8 @@ export class RegionBuild {
     if (!this.done) throw new Error('region build is not done')
     if (this.built) return this.built
     const r: Region = this.count
-      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, wet: this.wet, flat: this.flat, next: this.next, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
-      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, wet: NO_WET, flat: NO_FLAT, next: NO_SLOTS, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
+      ? { index: this.index, epoch: this.epoch, cols: this.cols, colSlots: this.colSlots, poses: this.poses, wet: this.wet, flat: this.flat, next: this.next, dirs: this.nav.dirs, exits: this.exits, fields: this.fields, overflow: this.overflow, sources: this.sources, relaxed: this.relaxed, relaxes: this.relaxes, bytes: 0 }
+      : { index: this.index, epoch: this.epoch, cols: NO_COLS, colSlots: NO_SLOTS, poses: NO_POSES, wet: NO_WET, flat: NO_FLAT, next: NO_SLOTS, dirs: this.nav.dirs, exits: NO_EXITS, fields: NO_FIELDS, overflow: false, sources: 0, relaxed: this.relaxed, relaxes: false, bytes: 0 }
     r.bytes = RECORD_BYTES + (this.count ? r.cols.byteLength + r.colSlots.byteLength + r.poses.byteLength + r.wet.byteLength + r.flat.byteLength + r.next.byteLength + r.fields.byteLength + r.exits.reduce((n, x) => n + 48 + x.crossings.byteLength, 0) : 0)
     return this.built = r
   }
@@ -309,12 +319,12 @@ export function exitCosts(region: Region, pose: number, layout: Layout): number[
 
 /** Reverse Dijkstra inside the region from a set of poses; returns cost per slot (UNREACHED elsewhere). */
 export function reverseField(region: Region, targets: readonly number[], layout: Layout): Uint16Array {
-  const P = region.poses.length, out = new Uint16Array(P).fill(UNREACHED), heap = new IdHeap()
+  const P = region.poses.length, out = new Uint16Array(P).fill(UNREACHED), heap = new IdHeap(), D = region.dirs
   const rs = new Int32Array(P + 1)
-  for (let s = 0; s < P; s++) for (let d = 0; d < 4; d++) { const t = region.next[s * 4 + d]!; if (t >= 0) rs[t + 1]!++ }
+  for (let s = 0; s < P; s++) for (let d = 0; d < D; d++) { const t = region.next[s * D + d]!; if (t >= 0) rs[t + 1]!++ }
   for (let s = 0; s < P; s++) rs[s + 1]! += rs[s]!
   const rev = new Int32Array(rs[P]!), fill = rs.slice(0, P)
-  for (let s = 0; s < P; s++) for (let d = 0; d < 4; d++) { const t = region.next[s * 4 + d]!; if (t >= 0) rev[fill[t]!++] = s }
+  for (let s = 0; s < P; s++) for (let d = 0; d < D; d++) { const t = region.next[s * D + d]!; if (t >= 0) rev[fill[t]!++] = s }
   for (const p of targets) { const s = slotOf(region, p, layout); if (s >= 0 && out[s] !== 0) { out[s] = 0; heap.push(s, 0, 0) } }
   while (heap.size) {
     const g = heap.peekF(), s = heap.pop()

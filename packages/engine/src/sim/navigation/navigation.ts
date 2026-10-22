@@ -30,10 +30,15 @@ const RING = 2
 /** Prebuild stops while the region store is fuller than this share of its cap, so it never evicts what queries read. */
 const PREBUILD_FILL = 0.9
 interface Tile { epoch: number; slots: Int16Array; edges: Int32Array; used: number }
-/** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped. */
+/** Cost of one support edge: 4 per step, +2 for a climb, +1 per block dropped (a ladder edge costs LADDER_COST). */
 export const edgeCost = (L: Layout, from: number, to: number): number => { const plane = L.size[0] * L.size[2], sy = Math.floor(from / plane), ty = Math.floor(to / plane); return 4 + (ty > sy ? 2 : sy - ty) }
 /** Extra planning cost of a step onto a pose whose feet are in water: wading counts as about three steps, so routes keep to dry land unless going round is much longer. Walking speed is the same. */
 export const WADE_COST = 8
+/**
+ * Cost (unscaled) of one ladder edge, up or down one rung; its motion takes LADDER_TICKS. At least the heuristics' cost per
+ * block risen, so they stay admissible.
+ */
+export const LADDER_COST = 12
 /**
  * With surface speeds configured, every base cost (a step, a climb, a drop, wading) is multiplied by this, so a flat step
  * onto a block of speed s can cost round(4 × COST_SCALE / s) in whole numbers. Without surfaces costs stay unscaled.
@@ -116,6 +121,12 @@ export class NavigationSystem {
   readonly sx: number
   readonly plane: number
   /**
+   * Edges per pose: the four planar ones (+x −x +z −z), then up (4) and down (5) along a ladder when any block is
+   * climbable. A world without climbable blocks keeps four, and every edge, cost and route it had.
+   */
+  readonly dirs: 4 | 6
+  private readonly climbable: Uint8Array
+  /**
    * Bumped by every step and every edit or policy change. Between bumps nothing the live policy reads can change, so a
    * search may remember the poses it rejected for the rest of the pass.
    */
@@ -125,6 +136,7 @@ export class NavigationSystem {
     this.maxNodes = maxNodes; this.cacheLimit = cacheLimit
     this.sx = port.layout.size[0]; this.plane = port.layout.size[0] * port.layout.size[2]
     this.port = port; this.waterGroup = waterGroupOf(port.registry); this.tx = port.layout.size[0] >> 4; this.tz = port.layout.size[2] >> 4
+    this.dirs = port.registry.hasClimbable ? 6 : 4; this.climbable = port.registry.climbable
     this.revisions = new Uint32Array(this.tx * this.tz * (port.layout.size[1] >> 4)); this.flippy = new Uint8Array(this.revisions.length)
     this.inQueue = new Uint8Array(this.revisions.length); this.wetSince = new Int32Array(this.revisions.length).fill(-1)
     this.regions = new RegionStore(this, storeBytes)
@@ -226,6 +238,8 @@ export class NavigationSystem {
    */
   stepCost(from: number, to: number, wet = this.wet(to)): number {
     const plane = this.plane, sy = (from / plane) | 0, ty = (to / plane) | 0, S = this.surfaces
+    // Planar edges always change column: a same-column edge is a ladder's (never wet: its feet cell holds the ladder).
+    if (this.dirs === 6 && (to - from === plane || from - to === plane)) return this.ladderCost
     if (!S) return 4 + (ty > sy ? 2 : sy - ty) + (wet ? WADE_COST : 0)
     return (ty === sy ? this.flatCost(to) : (4 + (ty > sy ? 2 : sy - ty)) * COST_SCALE) + (wet ? WADE_COST * COST_SCALE : 0)
   }
@@ -236,8 +250,15 @@ export class NavigationSystem {
     const r = p - y * this.plane, z = (r / this.sx) | 0
     return S.flat[voxelId(this.port.get(r - z * this.sx, y - 1, z))]!
   }
+  /** A ladder edge's cost: LADDER_COST, × COST_SCALE with surfaces. */
+  get ladderCost(): number { return this.surfaces ? LADDER_COST * COST_SCALE : LADDER_COST }
+  /** Whether the cell holds a climbable block (false out of bounds). */
+  climbableAt(x: number, y: number, z: number): boolean {
+    return this.dirs === 6 && this.port.layout.inBounds(x, y, z) && this.climbable[voxelId(this.port.get(x, y, z))] === 1
+  }
+  /** Feet and head clear, on a solid floor (the world floor unless void) or with the feet in a climbable cell (a rung). */
   stand(x: number, y: number, z: number): boolean {
-    return this.clear(x, y, z) && this.clear(x, y + 1, z) && (y === 0 ? !this.voidFloor : this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1)
+    return this.clear(x, y, z) && this.clear(x, y + 1, z) && ((y === 0 ? !this.voidFloor : this.port.registry.solid[voxelId(this.port.get(x, y - 1, z))] === 1) || this.climbableAt(x, y, z))
   }
   /**
    * A pose of the region layer: it stands, not on a block that falls, not with liquid in the head cell, and not with a
@@ -247,7 +268,7 @@ export class NavigationSystem {
    */
   regionStand(x: number, y: number, z: number): boolean {
     const R = this.port.registry, feet = voxelId(this.port.get(x, y, z))
-    return this.stand(x, y, z) && (y === 0 || R.falls[voxelId(this.port.get(x, y - 1, z))] !== 1)
+    return this.stand(x, y, z) && (y === 0 || R.falls[voxelId(this.port.get(x, y - 1, z))] !== 1 || this.climbableAt(x, y, z))
       && !(R.liquid[feet] === 1 && (R.liquidGroup[feet] !== this.waterGroup || R.source[feet] === 1))
       && (y + 1 >= this.port.layout.size[1] || R.liquid[voxelId(this.port.get(x, y + 1, z))] !== 1)
   }
@@ -264,23 +285,27 @@ export class NavigationSystem {
     if (seen) this.see(seen, ti)
     return this.edge(x, y, z, ti, d)
   }
-  /** The support edge `d` of pose (x, y, z) in tile `ti`, or -1. */
+  /** The support edge `d` of pose (x, y, z) in tile `ti`, or -1: planar (0–3: flat, climb or drop), or along a ladder (4 up, 5 down; only when `dirs` is 6) onto a climbable pose. */
   edge(x: number, y: number, z: number, ti: number, d: number): number {
     const L = this.port.layout
     let tile = ti === this.lastTile ? this.last : this.tiles.get(ti)
     if (!tile || tile.epoch !== this.revisions[ti]) {
       if (!tile && this.tiles.size >= this.cacheLimit) this.tiles.delete(this.tiles.keys().next().value!)
-      tile = { epoch: this.revisions[ti]!, slots: new Int16Array(4096).fill(-1), edges: new Int32Array(1024).fill(UNSET), used: 0 }; this.tiles.set(ti, tile)
+      tile = { epoch: this.revisions[ti]!, slots: new Int16Array(4096).fill(-1), edges: new Int32Array(256 * this.dirs).fill(UNSET), used: 0 }; this.tiles.set(ti, tile)
     }
     this.lastTile = ti; this.last = tile
     const local = (x & 15) + ((z & 15) << 4) + ((y & 15) << 8)
     let slot = tile.slots[local]!
     if (slot < 0) {
       slot = tile.used++; tile.slots[local] = slot
-      if (slot * 4 === tile.edges.length) { const a = new Int32Array(tile.edges.length * 2).fill(UNSET); a.set(tile.edges); tile.edges = a }
+      if (slot * this.dirs === tile.edges.length) { const a = new Int32Array(tile.edges.length * 2).fill(UNSET); a.set(tile.edges); tile.edges = a }
     }
-    const off = slot * 4 + d
+    const off = slot * this.dirs + d
     if (tile.edges[off] !== UNSET) return tile.edges[off]!
+    if (d >= 4) {
+      const ny = d === 4 ? y + 1 : y - 1
+      return tile.edges[off] = this.climbableAt(x, ny, z) && this.stand(x, ny, z) ? L.voxelIndex(x, ny, z) : -1
+    }
     const nx = x + DX[d]!, nz = z + DZ[d]!
     let ny = -1
     if (this.stand(nx, y, nz)) ny = y
@@ -586,11 +611,11 @@ export class PathSearch {
         if (to >= 0 && this.region !== undefined && nav.tileOfPose(to) !== this.region) this.cut = true
         else if (to >= 0 && this.blocked?.has(to)) this.cut = true
         else if (to >= 0 && (!this.reversible || nav.neighbor(to, this.direction ^ 1, this.seen) === this.positions[this.expanding]!)) {
-          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + (nav.surfaces ? nav.stepCost(this.positions[this.expanding]!, to) : 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0)), id = this.ids.get(to)
+          const ty = (to / nav.plane) | 0, g = this.gs[this.expanding]! + (this.direction >= 4 ? nav.ladderCost : nav.surfaces ? nav.stepCost(this.positions[this.expanding]!, to) : 4 + (ty > this.ey ? 2 : this.ey - ty) + (nav.wet(to) ? WADE_COST : 0)), id = this.ids.get(to)
           // Cheap tests first: a pose already reached as cheaply needs no policy call, and a rejection holds for the pass.
           if (id === undefined ? this.admits(to) : g < this.gs[id]! && this.permits(to)) this.add(to, g, this.expanding, id)
         }
-        if (++this.direction === 4) this.expanding = -1
+        if (++this.direction === nav.dirs) this.expanding = -1
       }
     }
     this.spent += used

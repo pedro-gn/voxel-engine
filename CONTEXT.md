@@ -93,7 +93,7 @@ A non-solid, non-liquid block type units climb: its cell is a pose without a flo
 _Avoid_: Scalable, rope block
 
 **Ladder**:
-A climbable block with the ladder shape: two rails and rungs 2/16 thick against the side its state names (the side holding its wall). It does not stop light.
+A climbable block with the ladder shape: two rails and rungs 2/16 thick against the side its state names (the side holding its wall). It does not stop light. A rung is a pose with no floor; navigation adds an up and a down edge between rungs of one column (LADDER_COST each, LADDER_TICKS to climb, facing the wall), and the planar edges give the rest: step on from beside, step off at any rung, drop into the top of a shaft, climb off its top. A unit on a ladder never falls, and may dig or build the cell under its feet. Flow repairs and the engineering planner do not use ladder edges.
 _Avoid_: Stairs (a stair is a shape units walk on)
 
 **Layer cut**:

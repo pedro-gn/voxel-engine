@@ -295,8 +295,8 @@ export class RouteSearch {
     let slot = slotOf(r, last === undefined ? this.start : this.exitOf(last).to, L), steps = 0
     while (field[slot]! > 0) {
       let moved = false
-      for (let d = 0; d < 4 && !moved; d++) {
-        const t = r.next[slot * 4 + d]!
+      for (let d = 0; d < r.dirs && !moved; d++) {
+        const t = r.next[slot * r.dirs + d]!
         if (t >= 0 && field[t]! + regionStepCost(r, r.poses[slot]!, t, L) === field[slot]) { slot = t; moved = true }
       }
       steps++

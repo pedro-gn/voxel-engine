@@ -15,14 +15,14 @@ export function descend(region: Region, field: Uint16Array | number, from: numbe
   let slot = slotOf(region, from, layout), ops = 1
   if (slot < 0 || values[base + slot] === undefined) return { path, ops, ok: false, cut: false }
   let face = 0
-  if (exit) { const [fx, , fz] = layout.voxelCoords(exit.from), [tx, , tz] = layout.voxelCoords(exit.to); face = tx > fx ? 0 : tx < fx ? 1 : tz > fz ? 2 : 3 }
+  if (exit) { const [fx, fy, fz] = layout.voxelCoords(exit.from), [tx, ty, tz] = layout.voxelCoords(exit.to); face = tx > fx ? 0 : tx < fx ? 1 : tz > fz ? 2 : tz < fz ? 3 : ty > fy ? 4 : 5 }
   for (let steps = 0; values[base + slot]! > 0; steps++) {
     if (exit) { ops++; if (landing(exit, region.poses[slot]!) >= 0) return { path, ops, ok: true, cut: false } }
     if (steps === maxSteps) return { path, ops, ok: false, cut: true }
     const here = values[base + slot]!, pose = region.poses[slot]!
     let moved = -1
-    for (let k = 0; k < 4 && moved < 0; k++) {
-      const d = k === 0 ? face : k <= face ? k - 1 : k, t = region.next[slot * 4 + d]!
+    for (let k = 0; k < region.dirs && moved < 0; k++) {
+      const d = k === 0 ? face : k <= face ? k - 1 : k, t = region.next[slot * region.dirs + d]!
       ops++
       if (t >= 0 && values[base + t]! + regionStepCost(region, pose, t, layout) === here && allowed(region.poses[t]!)) moved = t
     }
