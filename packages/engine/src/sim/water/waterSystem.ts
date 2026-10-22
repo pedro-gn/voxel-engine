@@ -30,8 +30,10 @@ export interface WaterOptions {
   /** After every step, check Σ depth + sea against the running total and that no depth is negative; on failure log and rebuild. */
   debug: boolean
   /**
-   * The depth (1/SUB block) a segment keeps before it sends any water on, and under which the mirror and the publisher draw
-   * nothing. Integer, MIN_FLOW ≤ retain ≤ SUB. Default MIN_FLOW (1/64 block): films flow, and draw from SUB / 16 as before.
+   * The depth (1/SUB block) a segment keeps: only water above it flows out (once MIN_FLOW above it), nothing under it starts
+   * to be drawn (a drawn segment hides below retain − SUB / 32), and game rules (SystemContext.waterDepth / takeWater) read
+   * a segment under it as dry. Integer, MIN_FLOW ≤ retain ≤ SUB. Default MIN_FLOW (1/64 block): films flow, and draw from
+   * SUB / 16 as before.
    */
   retain: number
   /**
