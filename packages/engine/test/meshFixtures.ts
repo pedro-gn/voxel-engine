@@ -4,7 +4,7 @@ import { createSnapshot, type ChunkSnapshot } from '../src/world/reader.ts'
 import { AIR, FULL_SKY } from '../src/world/voxel.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { DecorationRegistry, defineDecoration } from '../src/render/decorations/defs.ts'
-import { TEST_BLOCKS, testRegistry } from './helpers.ts'
+import { SHAPED_TEST_BLOCKS, TEST_BLOCKS, testRegistry } from './helpers.ts'
 
 export function emptySnap(): ChunkSnapshot {
   const s = createSnapshot()
@@ -20,9 +20,10 @@ export function meshTables(): MeshTables {
 
 export const MEADOW = defineDecoration({ name: 'meadow', grass: {}, flowers: { chance: 1, patchScale: 12 } })
 
-/** Test registry with grass decorated by MEADOW (same block ids as testRegistry()). */
-export function decoratedMeshTables(decorations = [MEADOW]): MeshTables {
-  const reg = new BlockRegistry(TEST_BLOCKS.map((b) => (b.name === 'grass' ? { ...b, decoration: decorations[0]!.name } : b)))
+/** Test registry with grass decorated by MEADOW (same block ids as testRegistry()); `shaped` appends the shaped stone blocks. */
+export function decoratedMeshTables(decorations = [MEADOW], shaped = false): MeshTables {
+  const blocks = shaped ? [...TEST_BLOCKS, ...SHAPED_TEST_BLOCKS] : TEST_BLOCKS
+  const reg = new BlockRegistry(blocks.map((b) => (b.name === 'grass' ? { ...b, decoration: decorations[0]!.name } : b)))
   const deco = new DecorationRegistry(decorations, reg)
   return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))), deco.tables)
 }

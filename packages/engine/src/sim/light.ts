@@ -3,6 +3,7 @@ import type { ChunkStore } from '../world/chunkStore.ts'
 import { Layout } from '../world/layout.ts'
 import { voxelId } from '../world/voxel.ts'
 
+/** `opaque`: 1 for a block that stops light (`BlockRegistry.blocksLight`: opaque cubes, slabs, stairs). */
 export interface LightTables { opaque: Uint8Array; emits: Uint8Array }
 
 const SKY = 0

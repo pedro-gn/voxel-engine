@@ -25,10 +25,13 @@ export function unpackA(a: number) {
   }
 }
 
-/** Word B: texture layer(12) sky(4) block(4) quad w(6) quad h(6). */
-export function packB(layer: number, sky: number, block: number, w: number, h: number): number {
-  return (layer | (sky << 12) | (block << 16) | (w << 20) | (h << 26)) >>> 0
+/**
+ * Word B: texture layer(12) sky(4) block(4) fx(4) fy(4) fz(4). fx/fy/fz place a shaped block's corner between the integer
+ * grid points of word A, in sixteenths: the vertex sits at (x + fx/16, y + fy/16 − drop/16, z + fz/16).
+ */
+export function packB(layer: number, sky: number, block: number, fx = 0, fy = 0, fz = 0): number {
+  return (layer | (sky << 12) | (block << 16) | (fx << 20) | (fy << 24) | (fz << 28)) >>> 0
 }
 export function unpackB(b: number) {
-  return { layer: b & 4095, sky: (b >>> 12) & 15, block: (b >>> 16) & 15, w: (b >>> 20) & 63, h: (b >>> 26) & 63 }
+  return { layer: b & 4095, sky: (b >>> 12) & 15, block: (b >>> 16) & 15, fx: (b >>> 20) & 15, fy: (b >>> 24) & 15, fz: (b >>> 28) & 15 }
 }

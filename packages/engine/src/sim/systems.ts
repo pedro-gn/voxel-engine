@@ -21,8 +21,11 @@ export interface SystemUnits {
   goTo(id: number, pos: Vec3): void
   /** Digs `pos` from a work pose: `dug { voxel }` (no stock, no pile), or `failed`. */
   dig(id: number, pos: Vec3): void
-  /** Builds `voxel` at `pos` from a work pose, without stock: `built`, or `failed`. */
-  build(id: number, pos: Vec3, voxel: number): void
+  /**
+   * Builds `voxel` at `pos` from a work pose, without stock: `built`, or `failed`. `reach` (1..16) replaces the workers'
+   * `buildReach` for this one build (a roof piece one higher than the walls); throws a RangeError outside 1..16.
+   */
+  build(id: number, pos: Vec3, voxel: number, options?: { reach?: number }): void
   /** Ends the intent without an event. */
   stop(id: number): void
   /**

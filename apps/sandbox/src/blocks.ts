@@ -25,6 +25,12 @@ export const BLOCKS = [
   // Opt-in variants: existing materials and generator IDs retain their behavior.
   defineBlock({ name: 'structural_planks', textures: 'planks', collapses: true }),
   defineBlock({ name: 'structural_glass', textures: 'glass', layer: 'translucent', collapses: true }),
+  // Block shapes: the cubes' materials as slabs, stairs and posts (appended, as above).
+  defineBlock({ name: 'planks_slab', textures: 'planks', shape: 'slab' }),
+  defineBlock({ name: 'planks_stair', textures: 'planks', shape: 'stair' }),
+  defineBlock({ name: 'planks_post', textures: 'planks', shape: 'post' }),
+  defineBlock({ name: 'stone_slab', textures: 'stone', shape: 'slab' }),
+  defineBlock({ name: 'stone_stair', textures: 'stone', shape: 'stair' }),
 ]
 
 export const DECORATIONS = [

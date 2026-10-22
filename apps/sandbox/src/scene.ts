@@ -1,6 +1,6 @@
 import { isAppState } from './appState.ts'
 
-export const SCENES = ['world', 'diorama', 'terrain', 'flood', 'caves', 'collapse', 'workers', 'living', 'crowd', 'sky'] as const
+export const SCENES = ['world', 'diorama', 'terrain', 'flood', 'caves', 'collapse', 'workers', 'living', 'crowd', 'sky', 'shapes'] as const
 export type SceneName = typeof SCENES[number]
 
 /** `?scene=`: a known scene name, else the plain world. */

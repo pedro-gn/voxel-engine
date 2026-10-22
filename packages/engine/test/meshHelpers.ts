@@ -1,6 +1,6 @@
 import { expect } from 'vitest'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
-import { FACE_NORMALS, unpackA } from '../src/mesh/vertexFormat.ts'
+import { FACE_NORMALS, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 import { padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
 
 export { emptySnap, meshTables } from './meshFixtures.ts'
@@ -21,8 +21,8 @@ export function countByNormal(m: LayerMesh | null, normal: number): number {
 export function assertOutwardWinding(m: LayerMesh | null): void {
   if (!m) return
   const pos = (vi: number) => {
-    const a = unpackA(m.vertices[vi * 2]!)
-    return [a.x, a.y - a.drop / 16, a.z, a.normal] as const
+    const a = unpackA(m.vertices[vi * 2]!), b = unpackB(m.vertices[vi * 2 + 1]!)
+    return [a.x + b.fx / 16, a.y + b.fy / 16 - a.drop / 16, a.z + b.fz / 16, a.normal] as const
   }
   for (let t = 0; t < m.indices.length; t += 3) {
     const p0 = pos(m.indices[t]!), p1 = pos(m.indices[t + 1]!), p2 = pos(m.indices[t + 2]!)

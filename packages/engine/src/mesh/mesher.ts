@@ -4,6 +4,7 @@ import { meshOpaqueAndCutout } from './greedy.ts'
 import type { CutPlane } from './meshJob.ts'
 import { meshTranslucent } from './liquid.ts'
 import { QuadBuilder, type LayerMesh } from './quadBuilder.ts'
+import { meshShapes } from './shapes.ts'
 import type { MeshTables } from './tables.ts'
 
 export interface ChunkMeshData {
@@ -33,6 +34,7 @@ export class Mesher {
     this.grass.reset()
     this.flowers.reset()
     meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane)
+    meshShapes(snap, tables, this.opaque)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
     extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers, plane)
     return {

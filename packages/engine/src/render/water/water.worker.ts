@@ -3,9 +3,9 @@ import { WorldReader } from '../../world/reader.ts'
 import type { DrawnSurfaces } from './surfaceView.ts'
 import { WaterHost, type WaterRequest } from './waterHost.ts'
 
-/** Main thread → water worker. `opaque`: the registry's opaque table, for the light reader. */
+/** Main thread → water worker. `opaque`, `blocksLight`: the registry's tables, for the light reader. */
 export type ToWater =
-  | { type: 'init'; buffers: WorldBuffers; opaque: Uint8Array; pages: SharedArrayBuffer[]; stepHz: number; surfaces: DrawnSurfaces }
+  | { type: 'init'; buffers: WorldBuffers; opaque: Uint8Array; blocksLight: Uint8Array; pages: SharedArrayBuffer[]; stepHz: number; surfaces: DrawnSurfaces }
   | { type: 'page'; index: number; page: SharedArrayBuffer }
   | WaterRequest
 
@@ -20,7 +20,7 @@ let host: WaterHost | null = null
 scope.onmessage = (e) => {
   const m = e.data
   if (m.type === 'init') {
-    const r = new WorldReader(m.buffers, m.opaque)
+    const r = new WorldReader(m.buffers, m.opaque, m.blocksLight)
     m.pages.forEach((p, i) => r.addPage(i, p))
     reader = r
     // In the worker every publish arrives a main-thread turn late: a stale one catches up (SurfaceView.apply).

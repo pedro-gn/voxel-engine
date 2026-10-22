@@ -6,6 +6,7 @@ import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
 import { CUT_BIT, packA, packB } from './vertexFormat.ts'
 import type { CutPlane } from './meshJob.ts'
+import { faceLight } from './shapes.ts'
 
 /** Padded-index stride per world axis: x, y, z. */
 export const STRIDE = [1, 34 * 34, 34] as const
@@ -44,7 +45,7 @@ function emitQuad(
 ): void {
   const [d, u, v] = AXES[f]!
   const plane = (f & 1) === 0 ? s + 1 : s
-  const b = packB(tex, sky, blk, w, h)
+  const b = packB(tex, sky, blk)
   for (let c = 0; c < 4; c++) {
     pos[d] = plane
     pos[u] = c === 1 || c === 2 ? u0 + w : u0
@@ -75,7 +76,7 @@ export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: Qua
         const nid = voxelId(s.voxels[ni]!)
         if (t.opaque[nid]) continue
         if (layer === LAYER.CUTOUT && nid === id) continue
-        const l = s.light[ni]!
+        const l = t.hasShapes && t.shape[nid] !== 0 ? faceLight(s, t, ni) : s.light[ni]!
         const ao4 = faceAO(s, t, ni, f)
         const tex = t.faceLayers[id * 6 + f]!
         const cut = plane !== undefined && f === 2 && sl + 1 === plane.py && plane.covered[q[0]! + 1 + (q[2]! + 1) * 34] === 1 ? 1 : 0

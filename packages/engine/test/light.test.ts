@@ -4,7 +4,8 @@ import { createWorldBuffers } from '../src/world/buffers.ts'
 import { ChunkStore } from '../src/world/chunkStore.ts'
 import { AIR, blockLight, skyLight } from '../src/world/voxel.ts'
 import { BlockRegistry, defineBlock } from '../src/blocks/registry.ts'
-import { ID, TEST_BLOCKS, testRegistry } from './helpers.ts'
+import { Simulation } from '../src/sim/simulation.ts'
+import { ID, SHAPED_TEST_BLOCKS, TEST_BLOCKS, testRegistry } from './helpers.ts'
 
 const reg = testRegistry()
 function world(size: [number, number, number] = [64, 64, 64]) {
@@ -136,4 +137,44 @@ describe('LightEngine uniform emitter chunks', () => {
       expect(blockLight(store.getLight(32, 5, 5))).toBe(14)
     })
   }
+})
+
+describe('light under shapes', () => {
+  /** A Simulation, so the light tables are the ones it feeds its store and light engine. */
+  function simWorld() {
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks: [...TEST_BLOCKS, ...SHAPED_TEST_BLOCKS], seed: 1 })
+    const edit = (x: number, y: number, z: number, v: number) => {
+      const old = sim.store.getVoxel(x, y, z)
+      if (sim.store.setVoxel(x, y, z, v)) sim.light.onVoxelChanged(x, y, z, old, v)
+    }
+    return { sim, edit, sky: (x: number, y: number, z: number) => skyLight(sim.store.getLight(x, y, z)) }
+  }
+  /** A stone room, inside x/z 10..12, y 11..13, walls up to y 14; optionally a 3 × 3 slab roof at y 14. */
+  function room(set: (x: number, y: number, z: number, v: number) => void, withRoof: boolean) {
+    for (let x = 9; x <= 13; x++) for (let z = 9; z <= 13; z++) {
+      set(x, 10, z, ID.stone)
+      const inside = x > 9 && x < 13 && z > 9 && z < 13
+      for (let y = 11; y <= 14; y++) if (!inside) set(x, y, z, ID.stone)
+      if (inside && withRoof) set(x, 14, z, ID.stone_slab)
+    }
+  }
+  it('a slab roof shades the room below', () => {
+    const a = simWorld()
+    room((x, y, z, v) => a.sim.store.setVoxel(x, y, z, v), true)
+    a.sim.light.initialize()
+    expect(a.sky(11, 13, 11)).toBeLessThan(15)
+    const b = simWorld()
+    room((x, y, z, v) => b.sim.store.setVoxel(x, y, z, v), false)
+    b.sim.light.initialize()
+    expect(b.sky(11, 13, 11)).toBe(15)
+    for (let x = 10; x <= 12; x++) for (let z = 10; z <= 12; z++) b.edit(x, 14, z, ID.stone_slab)
+    b.sim.light.propagate()
+    expect(b.sky(11, 13, 11)).toBe(a.sky(11, 13, 11))
+  })
+  it('a post lets sky light through', () => {
+    const w = simWorld()
+    for (let y = 20; y < 30; y++) w.sim.store.setVoxel(5, y, 5, ID.stone_post)
+    w.sim.light.initialize()
+    expect(w.sky(5, 19, 5)).toBe(15)
+  })
 })

@@ -84,6 +84,10 @@ _Avoid_: Road speed, terrain cost, movement multiplier
 A world whose bottom is open: water, falling blocks, fragments and units that reach it leave the world.
 _Avoid_: Sky world, no-floor mode
 
+**Block shape**:
+A block type's form other than the whole cube — slab, stair or post — drawn with its material's tiles and oriented by its voxel state; every system but drawing and light treats it as a full cell.
+_Avoid_: Model block, partial block
+
 **Layer cut**:
 The highest visible layer: everything above it is hidden and the cut layer's tops are drawn as solid, darker faces; the simulation is untouched.
 _Avoid_: Slice, clipping, x-ray
