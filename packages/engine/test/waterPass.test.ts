@@ -4,7 +4,7 @@ import { KIND, SUB } from '../src/sim/water/constants.ts'
 import { waterKinds } from '../src/sim/water/rebuild.ts'
 import type { GameSystem, SystemContext } from '../src/sim/systems.ts'
 import { AIR } from '../src/world/voxel.ts'
-import { B, WATER_BLOCKS, run, settle, w, waterSim, type Fill } from './waterHelpers.ts'
+import { B, WATER_BLOCKS, lake, run, settle, w, waterSim, type Fill } from './waterHelpers.ts'
 
 /** A solid block water flows through (an open gate) and a solid wall (a closed one), after the water helper blocks. */
 const PASS_BLOCKS = [...WATER_BLOCKS, defineBlock({ name: 'pass', passesWater: true, textures: 'stone' }), defineBlock({ name: 'shut', textures: 'stone' })]
@@ -77,6 +77,21 @@ describe('blocks that pass water', () => {
     expect(got[2]).toBeGreaterThan(0)
     expect(got[3]).toBeGreaterThan(0)
     expect(s.water.total()).toBe(before)
+  })
+
+  it('a pass block placed in water keeps the water', () => {
+    const logs: string[] = []
+    const s = waterSim(lake(3), { blocks: PASS_BLOCKS, water: { debug: true }, log: (m) => logs.push(m) })
+    settle(s)
+    const before = s.water.total()
+    expect(before).toBe(10 * 10 * 3 * SUB)
+    s.submit(0, 1, { type: 'setBlock', pos: [5, 2, 5], voxel: PASS })
+    run(s, 50)
+    expect(s.store.getVoxel(5, 2, 5)).toBe(PASS)
+    expect(s.water.total()).toBe(before)
+    expect(s.water.column(5, 5).surface).toBeGreaterThan(3 * SUB) // the water stands through it
+    expect(s.water.check()).toEqual([])
+    expect(logs.filter((m) => m.includes('check failed'))).toEqual([])
   })
 
   it('closing a pass cell in water conserves the total', () => {

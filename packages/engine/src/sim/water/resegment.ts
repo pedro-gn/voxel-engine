@@ -34,7 +34,8 @@ function runAt(runs: Run[], y: number): Run {
  * One voxel write at cell y of a column (3d spec §5 Edits; plan design notes: Edits). `old`: the column's segments before
  * the write, bottom-up, the top last; `kindAfter(y)`: every cell's KIND after it. Volume is exact: the runs hold the old
  * water, minus what a command removed, plus what it placed.
- * - Water a command removes (overwritten by anything but a wall): the cell's share of its segment, as in 3c.
+ * - Water a command removes (overwritten by anything but a wall or a block water passes through): the cell's share of its
+ *   segment, as in 3c. A pass block placed in water leaves it there: it flows through as if the cell were air.
  * - A wall placed in a segment's cell y: the water below y stays below, the cell's own water is displaced, the water above
  *   goes to the run above. Displaced water in the top goes into the top run's depth and is reported (`topDisplaced`); in a
  *   lower segment it goes to the run above, else to the run below (over its capacity); a filled one-cell pocket sends it up.
@@ -51,7 +52,7 @@ export function resegment(old: readonly Seg[], height: number, kindAfter: (y: nu
     const s = old[k]!, isTop = k === old.length - 1
     const holds = y >= s.floor && y < s.ceil
     let d = s.depth
-    if (holds && oldKind === KIND.WATER && newKind !== KIND.WALL) {
+    if (holds && oldKind === KIND.WATER && newKind !== KIND.WALL && newKind !== KIND.PASS) {
       d = Math.max(0, d - Math.min(SUB, Math.max(0, s.floor * SUB + d - y * SUB)))
     }
     if (holds && newKind === KIND.WALL && oldKind !== KIND.WALL) {
