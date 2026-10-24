@@ -89,8 +89,12 @@ export function stairsSnap(): ChunkSnapshot {
 const LOG = 8
 
 /** `TEST_BLOCKS` with meadow grass and a log; `opts` turns on the leaves' tone and fringe (Tasks 3–4 of SP16). */
-function canopyTables(_opts: { tone?: boolean; fringe?: boolean }): MeshTables {
-  const blocks: BlockDef[] = TEST_BLOCKS.map((b) => (b.name === 'grass' ? { ...b, decoration: MEADOW.name } : b))
+function canopyTables(opts: { tone?: boolean; fringe?: boolean }): MeshTables {
+  const leaves = (b: BlockDef): BlockDef => ({
+    ...b,
+    ...(opts.tone && { tone: { dark: [0.45, 0.6, 0.5], light: [1.25, 1.2, 0.95] } as const }),
+  })
+  const blocks: BlockDef[] = TEST_BLOCKS.map((b) => (b.name === 'grass' ? { ...b, decoration: MEADOW.name } : b.name === 'leaves' ? leaves(b) : b))
   blocks.push({ name: 'log', textures: { top: 'log_top', side: 'log_side', bottom: 'log_top' } })
   const reg = new BlockRegistry(blocks)
   const deco = new DecorationRegistry([MEADOW], reg)

@@ -37,6 +37,8 @@ export interface VisualsOptions {
   texture: THREE.DataArrayTexture
   /** Per texture-array layer: blocks spanned by one texture repeat (engine `textureScale` option). */
   textureScales?: Float32Array
+  /** Per texture-array layer leaf tones (BlockRegistry.toneLayers), only when the registry has tone blocks. */
+  tone?: { dark: Float32Array; light: Float32Array; jitter: Float32Array }
   layout: Layout
   registry: BlockRegistry
   /** The orbit camera's distance to its target; sets how far shadows reach. */
@@ -83,7 +85,7 @@ export class Visuals {
     o.renderer.shadowMap.enabled = true
     o.renderer.shadowMap.type = THREE.PCFShadowMap
     this.lights = createLightUniforms()
-    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false, ...(o.regionChunks !== undefined && { region: o.regionChunks }) })
+    this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales, o.tone ? { tone: o.tone } : {}), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false, ...(o.regionChunks !== undefined && { region: o.regionChunks }) })
     o.scene.add(this.chunks.group)
     const dm = createDecorationMaterials(o.decorations, this.lights, o.grassMask)
     this.decoRadius = dm.radius

@@ -417,6 +417,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const visuals = new Visuals({
     renderer, scene, camera, backend, texture: tex.texture, layout, registry,
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
+    ...(registry.hasTone && { tone: registry.toneLayers(tex.layerOf) }),
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     grassMask,

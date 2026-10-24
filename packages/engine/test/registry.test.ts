@@ -112,3 +112,46 @@ it('names the simulated water: the first liquid that is not a spring', () => {
   expect(waterGroupOf(reg)).toBe(2)
   expect(waterGroupOf(new BlockRegistry([defineBlock({ name: 'stone' })]))).toBe(0)
 })
+
+describe('tone', () => {
+  const TONE = { dark: [0.4, 0.6, 0.4], light: [1.2, 1.3, 1] } as const
+  it('registry: tone requires a cutout cube', () => {
+    expect(() => new BlockRegistry([{ name: 'x', textures: 't', tone: { dark: [1, 1, 1], light: [1, 1, 1] } }])).toThrow(/tone/)
+    expect(() => new BlockRegistry([{ name: 'x', textures: 't', layer: 'cutout', shape: 'slab', tone: TONE }])).toThrow(/tone/)
+    expect(() => new BlockRegistry([{ name: 'x', textures: 't', layer: 'cutout', render: false, tone: TONE }])).toThrow(/tone/)
+    expect(() => new BlockRegistry([{ name: 'x', textures: 't', layer: 'translucent', tone: TONE }])).toThrow(/tone/)
+    const r = new BlockRegistry([{ name: 'stone' }, { name: 'leaves', layer: 'cutout', tone: TONE }])
+    expect(r.hasTone).toBe(true)
+    expect([...r.tone]).toEqual([0, 0, 1])
+    expect(testRegistry().hasTone).toBe(false)
+    expect(testRegistry().tone.every((v) => v === 0)).toBe(true)
+  })
+  it('registry: two tone blocks sharing a texture must agree', () => {
+    expect(() => new BlockRegistry([
+      { name: 'a', textures: 'leaves', layer: 'cutout', tone: TONE },
+      { name: 'b', textures: 'leaves', layer: 'cutout', tone: { ...TONE, jitter: 0.1 } },
+    ])).toThrow(/tone/)
+    expect(() => new BlockRegistry([
+      { name: 'a', textures: 'leaves', layer: 'cutout', tone: TONE },
+      { name: 'b', textures: { top: 'leaves', side: 'x', bottom: 'x' }, layer: 'cutout', tone: { dark: [0.4, 0.6, 0.4], light: [1.2, 1.3, 1], jitter: 0.035 } },
+    ])).not.toThrow()
+  })
+  it('registry: tone limits texture layers to 256', () => {
+    const many = Array.from({ length: 257 }, (_, i) => ({ name: `b${i}` }))
+    expect(() => new BlockRegistry([...many, { name: 'leaves', layer: 'cutout', tone: TONE }])).toThrow(/tone/)
+    expect(() => new BlockRegistry([...many.slice(0, 254), { name: 'leaves', layer: 'cutout', tone: TONE }])).not.toThrow()
+    expect(() => new BlockRegistry(many)).not.toThrow() // no tone block, no limit
+  })
+  it('registry: toneLayers holds each tone layer\'s tints and identity elsewhere', () => {
+    const r = new BlockRegistry([{ name: 'stone' }, { name: 'leaves', layer: 'cutout', tone: TONE }])
+    const layerOf = new Map(r.textureNames().map((n, i) => [n, i + 1]))
+    const t = r.toneLayers(layerOf)
+    expect(t.jitter.length).toBe(3)
+    expect([...t.dark.subarray(3, 6)]).toEqual([1, 1, 1]) // stone (layer 1)
+    expect([...t.light.subarray(3, 6)]).toEqual([1, 1, 1])
+    expect(t.jitter[1]).toBe(0)
+    expect([...t.dark.subarray(6, 9)].map((v) => +v.toFixed(4))).toEqual([0.4, 0.6, 0.4]) // leaves (layer 2)
+    expect([...t.light.subarray(6, 9)].map((v) => +v.toFixed(4))).toEqual([1.2, 1.3, 1])
+    expect(t.jitter[2]).toBeCloseTo(0.035)
+  })
+})

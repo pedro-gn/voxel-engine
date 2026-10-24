@@ -1,10 +1,10 @@
 import { LAYER } from '../blocks/registry.ts'
 import { padIndex, type ChunkSnapshot } from '../world/reader.ts'
-import { voxelId } from '../world/voxel.ts'
+import { voxelId, voxelState } from '../world/voxel.ts'
 import { flipDiagonal, vertexAO } from './ao.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
 import type { MeshTables } from './tables.ts'
-import { CUT_BIT, packA, packB } from './vertexFormat.ts'
+import { CUT_BIT, packA, packB, toneLayer } from './vertexFormat.ts'
 import type { CutPlane } from './meshJob.ts'
 import { faceLight } from './shapes.ts'
 
@@ -57,8 +57,26 @@ function emitQuad(
   out.push(qa, qb, flip, REVERSE[f]!)
 }
 
-/** `plane`: a layer cut through the chunk; a top face it creates (an opaque block lay on it) is flagged CUT_BIT and never merges with others. */
-export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: QuadBuilder, cutout: QuadBuilder, mask: Int32Array, plane?: CutPlane): void {
+/** A 2-bit hash of a world cell: the tone jitter of a tone block there (BlockDef.tone), so neighbours differ slightly. */
+export function toneJitter(x: number, y: number, z: number): number {
+  let h = Math.imul(x, 0x8da6b343) ^ Math.imul(y, 0xd8163841) ^ Math.imul(z, 0xcb1ab31f)
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d)
+  h ^= h >>> 12
+  return (h >>> 7) & 3
+}
+
+/** The layer field of a tone block's face: its texture layer, the voxel's tone level and the cell's jitter. */
+export function toneTex(tex: number, v: number, wx: number, wy: number, wz: number): number {
+  return toneLayer(tex, voxelState(v) & 3, toneJitter(wx, wy, wz))
+}
+
+/**
+ * `plane`: a layer cut through the chunk; a top face it creates (an opaque block lay on it) is flagged CUT_BIT and never merges with others.
+ * `ox, oy, oz`: the chunk's world origin, hashed into a tone block's jitter.
+ */
+export function meshOpaqueAndCutout(
+  s: ChunkSnapshot, t: MeshTables, opaque: QuadBuilder, cutout: QuadBuilder, mask: Int32Array, plane?: CutPlane, ox = 0, oy = 0, oz = 0,
+): void {
   const q = [0, 0, 0]
   for (let f = 0; f < 6; f++) {
     const [d, u, v] = AXES[f]!
@@ -81,7 +99,8 @@ export function meshOpaqueAndCutout(s: ChunkSnapshot, t: MeshTables, opaque: Qua
         const tex = t.faceLayers[id * 6 + f]!
         const cut = plane !== undefined && f === 2 && sl + 1 === plane.py && plane.covered[q[0]! + 1 + (q[2]! + 1) * 34] === 1 ? 1 : 0
         if (layer === LAYER.CUTOUT) {
-          emitQuad(cutout, f, sl, uu, vv, 1, 1, tex, ao4, l & 15, l >> 4, cut)
+          const ct = t.hasTone && t.tone![id] ? toneTex(tex, s.voxels[pi]!, ox + q[0]!, oy + q[1]!, oz + q[2]!) : tex
+          emitQuad(cutout, f, sl, uu, vv, 1, 1, ct, ao4, l & 15, l >> 4, cut)
           continue
         }
         mask[uu + vv * 32] = 1 + (tex | (ao4 << 12) | ((l & 15) << 20) | ((l >> 4) << 24) | (cut << 28))

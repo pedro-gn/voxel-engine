@@ -33,7 +33,7 @@ export class Mesher {
     this.liquid.reset()
     this.grass.reset()
     this.flowers.reset()
-    meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane)
+    meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane, ox, oy, oz)
     meshShapes(snap, tables, this.opaque)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
     extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers, plane)

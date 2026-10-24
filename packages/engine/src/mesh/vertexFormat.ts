@@ -35,3 +35,12 @@ export function packB(layer: number, sky: number, block: number, fx = 0, fy = 0,
 export function unpackB(b: number) {
   return { layer: b & 4095, sky: (b >>> 12) & 15, block: (b >>> 16) & 15, fx: (b >>> 20) & 15, fy: (b >>> 24) & 15, fz: (b >>> 28) & 15 }
 }
+
+/**
+ * The layer field of a tone block's cutout vertex (BlockDef.tone; only in a world with tone blocks, which hold at most
+ * 256 texture layers): the texture layer in bits 0–7, the voxel's tone level (state & 3) in bits 8–9 and a 2-bit hash of
+ * its world cell in bits 10–11. Level 0 with jitter 0 is the plain layer.
+ */
+export function toneLayer(layer: number, level: number, jitter: number): number {
+  return layer | (level << 8) | (jitter << 10)
+}

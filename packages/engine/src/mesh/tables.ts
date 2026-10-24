@@ -19,6 +19,10 @@ export interface MeshTables {
   blocksLight: Uint8Array
   /** False when no block has a shape: the shaped-cell pass is skipped. */
   hasShapes: boolean
+  /** 1 for a block with a leaf tone (BlockDef.tone): its cutout vertices carry tone bits (vertexFormat.ts toneLayer). */
+  tone?: Uint8Array
+  /** True when any block has a tone; false or absent skips every tone branch. */
+  hasTone?: boolean
   deco: DecorationTables
 }
 
@@ -28,5 +32,6 @@ export function meshTablesFrom(registry: BlockRegistry, faceLayers: Uint16Array,
     liquidGroup: registry.liquidGroup, source: registry.source, faceLayers, deco,
     shape: registry.shape, blocksLight: registry.blocksLight, hasShapes: registry.shape.some((c) => c !== 0),
     waterGroup: waterGroupOf(registry),
+    tone: registry.tone, hasTone: registry.hasTone,
   }
 }
