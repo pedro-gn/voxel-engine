@@ -11,6 +11,7 @@ const WORKLOADS = {
   surface: { snap: surfaceSnap, tables: meshTables, gated: true },
   roofs: { snap: roofsSnap, tables: shapedMeshTables, gated: true },
   canopy: { snap: () => canopySnap().snap, tables: () => canopySnap().tables, gated: true },
+  'canopy tone+fringe': { snap: () => canopySnap().snap, tables: () => canopySnap({ tone: true, fringe: true }).tables, gated: true },
   'all stairs': { snap: stairsSnap, tables: shapedMeshTables, gated: false },
 } as const
 type Name = keyof typeof WORKLOADS

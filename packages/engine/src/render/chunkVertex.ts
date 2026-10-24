@@ -43,6 +43,11 @@ export interface ToneTables { dark: Vec4Table; light: Vec4Table }
 export interface ChunkVertexOptions {
   /** Decode the cutout stream's tone bits and return the face's tint. */
   tone?: ToneTables
+  /**
+   * Decode fringe strips (vertexFormat.ts FRINGE_BIT): a strip's position is biased by +1 and its UV comes from its
+   * corner bits. Branch-free: both decodings are mixed by the bit.
+   */
+  fringe?: boolean
 }
 
 /**
@@ -69,7 +74,10 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   const fy = b.shiftRight(uint(24)).bitAnd(uint(15)).toFloat().div(16)
   const fz = b.shiftRight(uint(28)).bitAnd(uint(15)).toFloat().div(16)
 
-  const local = vec3(px.add(fx), py.add(fy).sub(drop.div(16)), pz.add(fz))
+  /** 1 on a fringe strip's vertex (ChunkVertexOptions.fringe), else 0. */
+  const fringe = opts.fringe ? a.shiftRight(uint(31)).bitAnd(uint(1)).toFloat() : undefined
+  const grid = vec3(px.add(fx), py.add(fy).sub(drop.div(16)), pz.add(fz))
+  const local = fringe ? grid.sub(fringe) : grid
   // Chunk-centred; a batched chunk adds its translation here (an unbatched mesh's model matrix carries it instead).
   const position = local.sub(16).add(batchOffset())
   const normal = select(nIdx.equal(uint(0)), vec3(1, 0, 0),
@@ -84,7 +92,14 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   const proj = select(axis.equal(uint(0)), vec2(world.z, world.y), select(axis.equal(uint(1)), vec2(world.x, world.z), vec2(world.x, world.y)))
   const uvRaw = scales ? proj.div(scales.element(layerBits.toInt())) : proj
   const flip = FLIP_U.reduce<ReturnType<typeof nIdx.equal>>((acc, on, f) => (on ? acc.or(nIdx.equal(uint(f))) : acc), bool(false) as unknown as ReturnType<typeof nIdx.equal>)
-  const uv = vec2(select(flip, uvRaw.x.negate(), uvRaw.x), uvRaw.y)
+  const uvFace = vec2(select(flip, uvRaw.x.negate(), uvRaw.x), uvRaw.y)
+  let uv: ReturnType<typeof vec2> = uvFace
+  if (fringe) {
+    // A strip's UV from its corner: u = 1 on corners 1 and 2 (c ^ c >> 1), v = 1 on corners 2 and 3 (c >> 1).
+    const corner = a.shiftRight(uint(23)).bitAnd(uint(3))
+    const cornerUv = vec2(corner.bitXor(corner.shiftRight(uint(1))).bitAnd(uint(1)).toFloat(), corner.shiftRight(uint(1)).toFloat())
+    uv = mix(uvFace, cornerUv, fringe) as unknown as ReturnType<typeof vec2>
+  }
   const aoF = select(ao.equal(uint(0)), float(AO_CURVE[0]!),
     select(ao.equal(uint(1)), float(AO_CURVE[1]!), select(ao.equal(uint(2)), float(AO_CURVE[2]!), float(AO_CURVE[3]!))))
 
@@ -101,6 +116,8 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
     position,
     /** The leaf-tone multiplier of a cutout face (ChunkVertexOptions.tone), undefined without tone tables. */
     tint,
+    /** 1 on a fringe strip (ChunkVertexOptions.fringe), undefined without the option. */
+    fringe: fringe ? varying(fringe) : undefined,
     normal: varying(normal),
     uv: varying(uv),
     layer: varying(layer),

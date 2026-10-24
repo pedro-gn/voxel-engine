@@ -155,3 +155,28 @@ describe('tone', () => {
     expect(t.jitter[2]).toBeCloseTo(0.035)
   })
 })
+
+describe('fringe', () => {
+  it('registry: fringe needs a cutout cube, and its texture joins the texture list', () => {
+    expect(() => new BlockRegistry([{ name: 'x', fringe: { texture: 'f' } }])).toThrow(/fringe/)
+    expect(() => new BlockRegistry([{ name: 'x', layer: 'cutout', shape: 'post', fringe: { texture: 'f' } }])).toThrow(/fringe/)
+    expect(() => new BlockRegistry([{ name: 'x', layer: 'cutout', fringe: { texture: 'f', width: 0 } }])).toThrow(/fringe/)
+    expect(() => new BlockRegistry([{ name: 'x', layer: 'cutout', fringe: { texture: 'f', hang: 1.5 } }])).toThrow(/fringe/)
+    const r = new BlockRegistry([{ name: 'stone' }, { name: 'leaves', layer: 'cutout', fringe: { texture: 'leaf_fringe', width: 0.34 } }])
+    expect(r.textureNames()).toEqual(['stone', 'leaves', 'leaf_fringe'])
+    expect(r.hasFringe).toBe(true)
+    expect([...r.fringeWidth]).toEqual([0, 0, 5]) // 0.34 → 5/16
+    expect([...r.fringeHang]).toEqual([0, 0, 7])
+    expect([...r.fringeLayers(new Map([['stone', 1], ['leaves', 2], ['leaf_fringe', 3]]))]).toEqual([0, 0, 3])
+    expect(testRegistry().hasFringe).toBe(false)
+  })
+  it('registry: a tone block\'s fringe texture carries its tone', () => {
+    const tone = { dark: [0.5, 0.5, 0.5], light: [1, 1, 1] } as const
+    expect(() => new BlockRegistry([
+      { name: 'leaves', layer: 'cutout', tone, fringe: { texture: 'fr' } },
+      { name: 'vine', textures: 'fr', layer: 'cutout' },
+    ])).toThrow(/tone/)
+    const r = new BlockRegistry([{ name: 'leaves', layer: 'cutout', tone, fringe: { texture: 'fr' } }])
+    expect([...r.toneLayers(new Map([['leaves', 1], ['fr', 2]])).dark.subarray(6, 9)]).toEqual([0.5, 0.5, 0.5])
+  })
+})

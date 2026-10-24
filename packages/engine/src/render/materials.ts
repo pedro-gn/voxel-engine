@@ -14,6 +14,8 @@ export interface ChunkMaterials {
 export interface ChunkMaterialOptions {
   /** Per texture-layer leaf tones (BlockRegistry.toneLayers); given only when the registry has tone blocks. */
   tone?: { dark: Float32Array; light: Float32Array; jitter: Float32Array }
+  /** The registry has fringe blocks (BlockRegistry.hasFringe): the cutout material decodes strips, which cast no shadow. */
+  fringe?: boolean
 }
 
 /** The per-layer tone tables as two vec4 uniform arrays: (dark rgb, jitter) and (light rgb, 0). */
@@ -35,7 +37,8 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
   const tone = opts.tone ? toneTables(opts.tone) : undefined
   function build(mode: 'opaque' | 'cutout' | 'translucent', liquid = false): VoxelNodeMaterial {
     const toned = mode === 'cutout' && tone !== undefined
-    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, toned ? { tone } : {})
+    const fringed = mode === 'cutout' && opts.fringe === true
+    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, { ...(toned && { tone }), ...(fringed && { fringe: true }) })
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
     const albedo = texture(tex, v.uv).depth(v.layer.add(0.5).toInt())
@@ -43,6 +46,11 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     const shaded = albedo.rgb.mul(mix(float(1), float(CUT_SHADE), v.cut))
     const rgb = v.tint ? shaded.mul(v.tint) : shaded
     if (toned) m.userData.tone = true
+    if (fringed && v.fringe) {
+      m.userData.fringe = true
+      // Strips add no shadow shell (spec §9): the shadow pass discards their fragments.
+      m.maskShadowNode = v.fringe.lessThan(0.5)
+    }
     voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: rgb }, lights)
     if (mode === 'opaque') {
       m.colorNode = vec4(rgb, 1)

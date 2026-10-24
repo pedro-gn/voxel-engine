@@ -1,5 +1,6 @@
 import { InstanceBuilder, extractDecorations } from '../render/decorations/extract.ts'
 import type { ChunkSnapshot } from '../world/reader.ts'
+import { meshFringe } from './fringe.ts'
 import { meshOpaqueAndCutout } from './greedy.ts'
 import type { CutPlane } from './meshJob.ts'
 import { meshTranslucent } from './liquid.ts'
@@ -34,6 +35,7 @@ export class Mesher {
     this.grass.reset()
     this.flowers.reset()
     meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane, ox, oy, oz)
+    if (tables.hasFringe) meshFringe(snap, tables, this.cutout, plane, ox, oy, oz)
     meshShapes(snap, tables, this.opaque)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
     extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers, plane)

@@ -93,12 +93,14 @@ function canopyTables(opts: { tone?: boolean; fringe?: boolean }): MeshTables {
   const leaves = (b: BlockDef): BlockDef => ({
     ...b,
     ...(opts.tone && { tone: { dark: [0.45, 0.6, 0.5], light: [1.25, 1.2, 0.95] } as const }),
+    ...(opts.fringe && { fringe: { texture: 'leaves_fringe' } }),
   })
   const blocks: BlockDef[] = TEST_BLOCKS.map((b) => (b.name === 'grass' ? { ...b, decoration: MEADOW.name } : b.name === 'leaves' ? leaves(b) : b))
   blocks.push({ name: 'log', textures: { top: 'log_top', side: 'log_side', bottom: 'log_top' } })
   const reg = new BlockRegistry(blocks)
   const deco = new DecorationRegistry([MEADOW], reg)
-  return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))), deco.tables)
+  const layerOf = new Map(reg.textureNames().map((n, i) => [n, i + 1]))
+  return meshTablesFrom(reg, reg.faceLayers(layerOf), deco.tables, reg.fringeLayers(layerOf))
 }
 
 /**

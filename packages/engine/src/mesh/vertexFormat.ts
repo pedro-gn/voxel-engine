@@ -3,7 +3,7 @@ export const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
   [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
 ]
 
-/** Word A: x(6) y(6) z(6) normal(3) ao(2) corner(2) drop(5) cut(1) reserved(1). */
+/** Word A: x(6) y(6) z(6) normal(3) ao(2) corner(2) drop(5) cut(1) fringe(1). */
 export function packA(x: number, y: number, z: number, normal: number, ao: number, corner: number, drop = 0): number {
   return (x | (y << 6) | (z << 12) | (normal << 18) | (ao << 21) | (corner << 23) | (drop << 25)) >>> 0
 }
@@ -15,6 +15,14 @@ export const LIQUID_DEEP = 1
 
 /** Word A bit 30: a top face created by the layer cut (spec §4), drawn a little darker. */
 export const CUT_BIT = 1 << 30
+/**
+ * Word A bit 31: a fringe strip (BlockDef.fringe), decoded by the cutout material only. Its x/y/z are biased by +1 (the
+ * decoder subtracts 1, so a strip may reach below local 0), its sub-cell offset is in word B's fx/fy/fz, and its UV
+ * comes from the corner bits (u = 1 on corners 1 and 2, v = 1 on corners 2 and 3) instead of the world projection.
+ * Set it with `(a | FRINGE_BIT) >>> 0`.
+ */
+export const FRINGE_BIT = 1 << 31
+
 /** How much of its colour a cut face keeps. */
 export const CUT_SHADE = 0.72
 

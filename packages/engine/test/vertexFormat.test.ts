@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AO_CURVE, flipDiagonal, vertexAO } from '../src/mesh/ao.ts'
 import * as THREE from 'three/webgpu'
-import { CUT_BIT, packA, packB, toneLayer, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { CUT_BIT, FRINGE_BIT, packA, packB, toneLayer, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 import { createChunkMaterials } from '../src/render/materials.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
 
@@ -17,6 +17,15 @@ describe('vertex format', () => {
     expect(max & CUT_BIT).toBe(0)
     expect(unpackA((max | CUT_BIT) >>> 0)).toEqual(unpackA(max))
     expect(unpackA((packA(0, 0, 0, 0, 0, 0, 0) | CUT_BIT) >>> 0)).toEqual({ x: 0, y: 0, z: 0, normal: 0, ao: 0, corner: 0, drop: 0 })
+  })
+  it('keeps the fringe bit clear of every other field of word A', () => {
+    const max = (packA(63, 63, 63, 7, 3, 3, 31) | CUT_BIT) >>> 0
+    expect(max & FRINGE_BIT).toBe(0)
+    expect(CUT_BIT & FRINGE_BIT).toBe(0)
+    const marked = (max | FRINGE_BIT) >>> 0
+    expect(marked).toBeGreaterThan(0x7fffffff) // stored unsigned
+    expect(unpackA(marked)).toEqual(unpackA(max))
+    expect(marked & CUT_BIT).toBe(CUT_BIT)
   })
   it('round-trips word B at its limits', () => {
     expect(unpackB(packB(4095, 15, 15, 15, 8, 1))).toEqual({ layer: 4095, sky: 15, block: 15, fx: 15, fy: 8, fz: 1 })
@@ -60,5 +69,20 @@ describe('tone layer bits (cutout stream of a world with tone blocks)', () => {
     expect((toned.cutout as unknown as { userData: { tone?: boolean } }).userData.tone).toBe(true)
     expect((plain.cutout as unknown as { userData: { tone?: boolean } }).userData.tone).toBeUndefined()
     expect((toned.opaque as unknown as { userData: { tone?: boolean } }).userData.tone).toBeUndefined()
+  })
+})
+
+describe('fringe decode (cutout material)', () => {
+  it('only the cutout material changes, and its strips cast no shadow', () => {
+    const tex = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1)
+    const lights = createLightUniforms()
+    const plain = createChunkMaterials(tex, lights)
+    const fringed = createChunkMaterials(tex, lights, undefined, { fringe: true })
+    const ud = (m: unknown) => (m as { userData: { fringe?: boolean } }).userData.fringe
+    expect(ud(fringed.cutout)).toBe(true)
+    expect(ud(plain.cutout)).toBeUndefined()
+    expect(ud(fringed.opaque)).toBeUndefined()
+    expect((fringed.cutout as unknown as { maskShadowNode: unknown }).maskShadowNode).toBeTruthy()
+    expect((plain.cutout as unknown as { maskShadowNode: unknown }).maskShadowNode).toBeNull()
   })
 })
