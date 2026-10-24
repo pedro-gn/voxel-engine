@@ -34,8 +34,8 @@ export class Mesher {
     this.liquid.reset()
     this.grass.reset()
     this.flowers.reset()
-    meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane, ox, oy, oz)
-    if (tables.hasFringe) meshFringe(snap, tables, this.cutout, plane, ox, oy, oz)
+    // The fringe pass runs only when the cutout pass drew a face of a fringe block (none in most chunks).
+    if (meshOpaqueAndCutout(snap, tables, this.opaque, this.cutout, this.mask, plane, ox, oy, oz)) meshFringe(snap, tables, this.cutout, plane, ox, oy, oz)
     meshShapes(snap, tables, this.opaque)
     meshTranslucent(snap, tables, this.translucent, this.liquid)
     extractDecorations(snap, tables, ox, oy, oz, this.grass, this.flowers, plane)

@@ -54,6 +54,7 @@ export class FallingCubes {
       const id = c.voxel & 0xfff
       const l = cubeLight(light, c.x, c.y, c.z)
       this.pos.setXYZ(i, c.x, c.y, c.z)
+      // The plain face layers: a falling tone block (BlockDef.tone) draws untinted and without fringe.
       this.info.setXYZW(i, this.faceLayers[id * 6 + 2]!, this.faceLayers[id * 6]!, this.faceLayers[id * 6 + 3]!, (l & 15) * 16 + (l >> 4))
     })
     this.pos.needsUpdate = true

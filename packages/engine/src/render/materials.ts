@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu'
 import { float, mix, texture, uniformArray, vec4 } from 'three/tsl'
 import { CUT_SHADE } from '../mesh/vertexFormat.ts'
-import { chunkVertex, type ToneTables } from './chunkVertex.ts'
+import { FRINGE_LOD_BIAS, chunkVertex, fringeSampleUv, type ToneTables } from './chunkVertex.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
 export interface ChunkMaterials {
@@ -41,7 +41,11 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, { ...(toned && { tone }), ...(fringed && { fringe: true }) })
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
-    const albedo = texture(tex, v.uv).depth(v.layer.add(0.5).toInt())
+    // Fringe strips sample their mask at mip 0 with v clamped inside its first and last rows (chunkVertex.ts fringeVRange).
+    const sample = fringed && v.fringe
+      ? texture(tex, fringeSampleUv(v.uv, v.fringe, tex.image.height)).bias(v.fringe.mul(FRINGE_LOD_BIAS))
+      : texture(tex, v.uv)
+    const albedo = sample.depth(v.layer.add(0.5).toInt())
     // Faces created by the layer cut read a little darker than the ground (spec §4). Branch-free (no select()).
     const shaded = albedo.rgb.mul(mix(float(1), float(CUT_SHADE), v.cut))
     const rgb = v.tint ? shaded.mul(v.tint) : shaded

@@ -3,15 +3,16 @@ import { describe, expect, it } from 'vitest'
 import type { ChunkMeshData } from '../src/mesh/mesher.ts'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { FACE, packA } from '../src/mesh/vertexFormat.ts'
+import { CHUNK_SPHERE_RADIUS } from '../src/render/chunkCull.ts'
 import { ChunkMeshes } from '../src/render/chunkMeshes.ts'
 import { LayerCut } from '../src/render/layerCut.ts'
 import type { ChunkMaterials } from '../src/render/materials.ts'
 import { Layout } from '../src/world/layout.ts'
 
-function setup(batched = false): ChunkMeshes {
+function setup(batched = false, fringeReach?: number): ChunkMeshes {
   const m = () => new THREE.MeshBasicMaterial()
   const mats = { opaque: m(), cutout: m(), translucent: m(), liquid: m() } as unknown as ChunkMaterials
-  return new ChunkMeshes(new Layout([64, 64, 64]), mats, { batched })
+  return new ChunkMeshes(new Layout([64, 64, 64]), mats, { batched, ...(fringeReach !== undefined && { fringeReach }) })
 }
 
 /** One +Y quad at cell (1, 1, 1). */
@@ -56,6 +57,25 @@ describe('ChunkMeshes', () => {
     cm.apply(2, data(null, quad()))
     cm.remove(2)
     expect(cm.meshCount).toBe(0)
+  })
+  it('a fringe reach grows chunk and region bounds by the reach; without it they stay as they were', () => {
+    const plain = setup()
+    plain.apply(0, data(null, quad()))
+    const pg = (plain.group.getObjectByName('chunk-0-opaque') as THREE.Mesh).geometry
+    expect(pg.boundingSphere!.radius).toBe(CHUNK_SPHERE_RADIUS)
+    expect(pg.boundingBox!.max.x).toBe(16)
+    const cm = setup(false, 0.5)
+    cm.apply(0, data(null, quad()))
+    const g = (cm.group.getObjectByName('chunk-0-opaque') as THREE.Mesh).geometry
+    expect(g.boundingSphere!.radius).toBe(CHUNK_SPHERE_RADIUS + 0.5)
+    expect([g.boundingBox!.min.y, g.boundingBox!.max.y]).toEqual([-16.5, 16.5])
+    const regionBox = (b: ChunkMeshes) => {
+      b.apply(0, { ...data(null, null), cutout: quad() })
+      return (b.group.getObjectByProperty('isBatchedMesh', true) as THREE.BatchedMesh).boundingBox!
+    }
+    expect(regionBox(setup(true)).min.toArray()).toEqual([0, 0, 0])
+    const wide = regionBox(setup(true, 0.5))
+    expect([wide.min.x, wide.min.y, wide.max.y]).toEqual([-0.5, -0.5, 64.5])
   })
   it('hides per-chunk meshes above the layer cut and shows them again when it is cleared, also at Infinity', () => {
     const cm = setup()

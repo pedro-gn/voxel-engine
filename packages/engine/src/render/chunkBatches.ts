@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
-import { buildDrawList, frustumPlanes, type GeometryRecord, type InstanceRecord } from './chunkCull.ts'
+import { buildDrawList, chunkSphereRadius, frustumPlanes, type GeometryRecord, type InstanceRecord } from './chunkCull.ts'
 import { geometryOf } from './chunkMeshes.ts'
 import type { LayerCut } from './layerCut.ts'
 import { boxInRange, type Vec3Like } from './viewDistance.ts'
@@ -86,6 +86,8 @@ export interface ChunkBatchOptions {
   /** Initial vertex and index capacity per chunk slot. Default VERTICES_PER_SLOT / INDICES_PER_SLOT. */
   verticesPerSlot?: number
   indicesPerSlot?: number
+  /** How far fringe strips poke out of a chunk, in blocks (BlockRegistry.fringeReach): chunk spheres and region boxes grow by it. Default 0. */
+  reach?: number
 }
 
 /** The packed vertex attribute, read as an integer vector in the shader (never converted to float). */
@@ -193,6 +195,8 @@ export class ChunkBatches {
   private readonly region: number
   private readonly verticesPerSlot: number
   private readonly indicesPerSlot: number
+  private readonly reach: number
+  private readonly radius: number
   private readonly frustum = new THREE.Frustum()
   private readonly projView = new THREE.Matrix4()
   private readonly planes = new Float64Array(24)
@@ -209,6 +213,8 @@ export class ChunkBatches {
     this.region = options.region ?? REGION
     this.verticesPerSlot = options.verticesPerSlot ?? VERTICES_PER_SLOT
     this.indicesPerSlot = options.indicesPerSlot ?? INDICES_PER_SLOT
+    this.reach = options.reach ?? 0
+    this.radius = chunkSphereRadius(this.reach)
     this.group.name = `elovox-chunks-${name}-batched`
   }
 
@@ -233,7 +239,7 @@ export class ChunkBatches {
   }
 
   set(ci: number, cx: number, cy: number, cz: number, lm: LayerMesh): void {
-    const geometry = geometryOf(lm)
+    const geometry = geometryOf(lm, this.reach)
     const vertices = lm.vertices.length / 2, indices = lm.indices.length
     const e = this.entries.get(ci)
     if (e) {
@@ -334,6 +340,7 @@ export class ChunkBatches {
     // Whole-batch culling uses the region's full box; per-chunk culling happens inside the batch, on the CPU.
     const x0 = Math.floor(cx / this.region) * this.region * 32, z0 = Math.floor(cz / this.region) * this.region * 32
     bm.boundingBox = new THREE.Box3(new THREE.Vector3(x0, 0, z0), new THREE.Vector3(x0 + rw * 32, L.cy * 32, z0 + rd * 32))
+    if (this.reach > 0) bm.boundingBox.expandByScalar(this.reach) // fringe strips poke out of the region's chunks
     bm.boundingSphere = bm.boundingBox.getBoundingSphere(new THREE.Sphere())
     // Trap 3: the renderer's sort reads geometry.boundingSphere (Renderer._projectObject), not the object's.
     bm.geometry.boundingBox = bm.boundingBox.clone()
@@ -381,7 +388,7 @@ export class ChunkBatches {
     this.frustum.setFromProjectionMatrix(this.projView, camera.coordinateSystem, (camera as { reversedDepth?: boolean }).reversedDepth ?? false)
     frustumPlanes(this.frustum, this.planes)
     const n = buildDrawList(b._instanceInfo, b._geometryInfo, batch.centres, this.planes, this.eye, this.range, 4,
-      b._multiDrawStarts, b._multiDrawCounts, b._indirectTexture.image.data as unknown as Uint32Array, this.cut?.top ?? Infinity)
+      b._multiDrawStarts, b._multiDrawCounts, b._indirectTexture.image.data as unknown as Uint32Array, this.cut?.top ?? Infinity, this.radius)
     b._multiDrawCount = n
     b._multiDrawBytesPerElement = 4 // the batch index is a Uint32Array (newBatch)
     b._indirectTexture.needsUpdate = true

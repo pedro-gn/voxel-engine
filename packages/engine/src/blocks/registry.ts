@@ -39,7 +39,8 @@ export interface BlockDef {
    * Leafy fringe (off by default): the mesher adds thin alpha-cut strips on the block's convex silhouette edges — an
    * edge of an exposed face where the cell beyond the edge and the cell diagonal to it are both neither opaque nor the
    * same block. A strip lies in its face's plane and reaches `width` blocks out (`hang` when it points down), quantised
-   * to sixteenths (1/16–1; defaults 5/16 and 7/16). `texture` is a mask drawn across the strip: u along the edge, v from
+   * to sixteenths (1/16–1; defaults 5/16 and 7/16; `width` ≤ 1/2 and `width + hang` ≤ 1, so the strips of two blocks one
+ * free cell apart never overlap). `texture` is a mask drawn across the strip: u along the edge, v from
    * the block edge (v = 0, the image's bottom row) to the strip's outer edge (v = 1, its top row). Strips are lit like
    * their face, take the block's tone, cast no shadow and are neither picked nor collided. Same validity as `tone`.
    */
@@ -110,6 +111,8 @@ export class BlockRegistry {
   readonly fringeWidth: Uint8Array
   /** A fringe block's down-pointing strip reach, in sixteenths. */
   readonly fringeHang: Uint8Array
+  /** The largest strip reach of any fringe block, in blocks (0 without fringe): how far strips poke out of their chunk. */
+  readonly fringeReach: number
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
   /** Per id: its fringe texture, or null. */
@@ -170,6 +173,9 @@ export class BlockRegistry {
         if (typeof d.fringe.texture !== 'string' || d.fringe.texture === '') throw new Error(`block "${d.name}": fringe needs a texture`)
         this.fringeWidth[id] = sixteenths(d.name, 'width', d.fringe.width, DEFAULT_FRINGE_WIDTH)
         this.fringeHang[id] = sixteenths(d.name, 'hang', d.fringe.hang, DEFAULT_FRINGE_HANG)
+        // Two blocks one free cell apart: their facing strips meet in that cell's plane and must not overlap (z-fight).
+        if (2 * this.fringeWidth[id]! > 16) throw new RangeError(`block "${d.name}": fringe width must be at most 1/2 block`)
+        if (this.fringeWidth[id]! + this.fringeHang[id]! > 16) throw new RangeError(`block "${d.name}": fringe width + hang must be at most 1 block`)
       }
       this.fringeTex.push(d.fringe?.texture ?? null)
       if (d.shape !== undefined) {
@@ -206,6 +212,9 @@ export class BlockRegistry {
     this.hasClimbable = this.climbable.includes(1)
     this.hasTone = this.tone.includes(1)
     this.hasFringe = this.fringeWidth.some((w) => w !== 0)
+    let reach = 0
+    for (let id = 0; id < this.count; id++) reach = Math.max(reach, this.fringeWidth[id]!, this.fringeHang[id]!)
+    this.fringeReach = reach / 16
     if (this.hasTone) this.checkToneTextures()
     all.forEach((d, id) => {
       if (!this.liquid[id]) return

@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { BlockRegistry, type BlockDef } from '../src/blocks/registry.ts'
-import { toneJitter } from '../src/mesh/greedy.ts'
+import { meshOpaqueAndCutout, toneJitter } from '../src/mesh/greedy.ts'
 import { Mesher } from '../src/mesh/mesher.ts'
 import { applyCut, type CutPlane } from '../src/mesh/meshJob.ts'
-import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
+import { QuadBuilder, type LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { meshTablesFrom, type MeshTables } from '../src/mesh/tables.ts'
 import { FRINGE_BIT, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 import type { ChunkSnapshot } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
-import { ID, TEST_BLOCKS } from './helpers.ts'
+import { ID, SHAPED_TEST_BLOCKS, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, emptySnap, put } from './meshHelpers.ts'
 
-function tablesWith(leaves: Partial<BlockDef>): { tables: MeshTables; reg: BlockRegistry; layerOf: Map<string, number> } {
-  const reg = new BlockRegistry(TEST_BLOCKS.map((b) => (b.name === 'leaves' ? { ...b, ...leaves } : b)))
+function tablesWith(leaves: Partial<BlockDef>, extra: BlockDef[] = []): { tables: MeshTables; reg: BlockRegistry; layerOf: Map<string, number> } {
+  const reg = new BlockRegistry([...TEST_BLOCKS.map((b) => (b.name === 'leaves' ? { ...b, ...leaves } : b)), ...extra])
   const layerOf = new Map(reg.textureNames().map((n, i) => [n, i + 1]))
   return { tables: meshTablesFrom(reg, reg.faceLayers(layerOf), undefined, reg.fringeLayers(layerOf)), reg, layerOf }
 }
@@ -87,9 +87,9 @@ describe('fringe', () => {
     expect(Math.max(...side.map((x) => x.y))).toBe(6 + 5 / 16)
     expect(side.every((x) => x.x === 6)).toBe(true)
     // Custom widths, quantised to sixteenths.
-    const wide = tablesWith({ fringe: { texture: 'fringe', width: 0.5, hang: 0.75 } }).tables
+    const wide = tablesWith({ fringe: { texture: 'fringe', width: 0.375, hang: 0.625 } }).tables
     const w = meshed(s, wide).v.filter((x) => x.fringe && x.normal === 0)
-    expect([Math.min(...w.map((x) => x.y)), Math.max(...w.map((x) => x.y))]).toEqual([5 - 0.75, 6.5])
+    expect([Math.min(...w.map((x) => x.y)), Math.max(...w.map((x) => x.y))]).toEqual([5 - 0.625, 6.375])
   })
 
   it('a strip at local 0 decodes to a negative coordinate', () => {
@@ -146,6 +146,47 @@ describe('fringe', () => {
     for (let x = 4; x < 7; x++) for (let y = 10; y < 12; y++) for (let z = 4; z < 7; z++) put(open, x, y, z, ID.leaves)
     const p2 = applyCut(open, 0, 11, tables.blocksLight)
     expect(Math.max(...meshed(open, tables, p2).v.map((x) => x.y))).toBe(12 + 5 / 16)
+  })
+
+  it('no strip rises above the cut plane where the cut removed the diagonal', () => {
+    // The reviewer's repro: a leaf on the cut layer, a leaf above it diagonally (+z); the cut removes the upper leaf.
+    const s = emptySnap()
+    put(s, 5, 7, 5, ID.leaves)
+    put(s, 5, 8, 6, ID.leaves)
+    const plane = applyCut(s, 0, 7, tables.blocksLight)
+    const above = meshed(s, tables, plane).v.filter((x) => x.fringe && x.y > 8)
+    // The +z face's up strip existed only because the cut removed its diagonal: gone. The other three side faces' up
+    // strips are the uncut world's too (nothing above them was cut) and stay, as for a crown that ends at the cut layer.
+    expect(above.filter((x) => x.normal === 4)).toEqual([])
+    expect(above.length / 2).toBe(3)
+  })
+
+  it('no strip grows into a shaped block (slab, stair) beyond the edge or diagonal to it', () => {
+    const shaped = tablesWith({ fringe: { texture: 'fringe' } }, SHAPED_TEST_BLOCKS).tables
+    const slab = emptySnap()
+    put(slab, 5, 5, 5, ID.leaves)
+    put(slab, 6, 4, 5, ID.stone_slab) // diagonal to the leaf's bottom face's +x edge and its +x face's bottom edge
+    expect((({ faces, strips }) => [faces, strips])(meshed(slab, shaped))).toEqual([6, 22])
+    const stair = emptySnap()
+    put(stair, 5, 5, 5, ID.leaves)
+    put(stair, 6, 5, 5, ID.stone_stair) // beyond the +x edge of the top, bottom, +z and -z faces
+    expect((({ faces, strips }) => [faces, strips])(meshed(stair, shaped))).toEqual([6, 20])
+  })
+
+  it('the cutout pass reports whether it emitted a face of a fringe block (the fringe pass runs only then)', () => {
+    const run = (s: ChunkSnapshot, t = tables) => meshOpaqueAndCutout(s, t, new QuadBuilder(), new QuadBuilder(), new Int32Array(1024))
+    const leaf = emptySnap()
+    put(leaf, 5, 5, 5, ID.leaves)
+    expect(run(leaf)).toBe(true)
+    expect(run(leaf, tablesWith({}).tables)).toBe(false) // no fringe in the world
+    const torch = emptySnap()
+    put(torch, 5, 5, 5, ID.torch)
+    put(torch, 9, 5, 5, ID.stone)
+    expect(run(torch)).toBe(false) // cutout faces, but none of a fringe block
+    const buried = emptySnap()
+    for (let x = 4; x < 7; x++) for (let y = 4; y < 7; y++) for (let z = 4; z < 7; z++) put(buried, x, y, z, ID.stone)
+    put(buried, 5, 5, 5, ID.leaves)
+    expect(run(buried)).toBe(false) // a fringe block with no exposed face
   })
 
   it('fringe strips carry tone bits like the face', () => {

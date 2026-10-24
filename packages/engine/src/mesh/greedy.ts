@@ -73,11 +73,14 @@ export function toneTex(tex: number, v: number, wx: number, wy: number, wz: numb
 /**
  * `plane`: a layer cut through the chunk; a top face it creates (an opaque block lay on it) is flagged CUT_BIT and never merges with others.
  * `ox, oy, oz`: the chunk's world origin, hashed into a tone block's jitter.
+ * Returns true when it emitted a face of a fringe block (BlockDef.fringe): only then has the fringe pass anything to do.
  */
 export function meshOpaqueAndCutout(
   s: ChunkSnapshot, t: MeshTables, opaque: QuadBuilder, cutout: QuadBuilder, mask: Int32Array, plane?: CutPlane, ox = 0, oy = 0, oz = 0,
-): void {
+): boolean {
   const q = [0, 0, 0]
+  const fringeWidth = t.hasFringe ? t.fringeWidth : undefined
+  let fringeFace = false
   for (let f = 0; f < 6; f++) {
     const [d, u, v] = AXES[f]!
     const nOff = ((f & 1) === 0 ? 1 : -1) * STRIDE[d as 0 | 1 | 2]
@@ -101,6 +104,7 @@ export function meshOpaqueAndCutout(
         if (layer === LAYER.CUTOUT) {
           const ct = t.hasTone && t.tone![id] ? toneTex(tex, s.voxels[pi]!, ox + q[0]!, oy + q[1]!, oz + q[2]!) : tex
           emitQuad(cutout, f, sl, uu, vv, 1, 1, ct, ao4, l & 15, l >> 4, cut)
+          if (fringeWidth !== undefined && fringeWidth[id] !== 0) fringeFace = true
           continue
         }
         mask[uu + vv * 32] = 1 + (tex | (ao4 << 12) | ((l & 15) << 20) | ((l >> 4) << 24) | (cut << 28))
@@ -126,4 +130,5 @@ export function meshOpaqueAndCutout(
       }
     }
   }
+  return fringeFace
 }

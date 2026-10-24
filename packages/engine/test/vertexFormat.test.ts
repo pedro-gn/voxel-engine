@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AO_CURVE, flipDiagonal, vertexAO } from '../src/mesh/ao.ts'
 import * as THREE from 'three/webgpu'
 import { CUT_BIT, FRINGE_BIT, packA, packB, toneLayer, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { FRINGE_LOD_BIAS, fringeVRange } from '../src/render/chunkVertex.ts'
 import { createChunkMaterials } from '../src/render/materials.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
 
@@ -84,5 +85,54 @@ describe('fringe decode (cutout material)', () => {
     expect(ud(fringed.opaque)).toBeUndefined()
     expect((fringed.cutout as unknown as { maskShadowNode: unknown }).maskShadowNode).toBeTruthy()
     expect((plain.cutout as unknown as { maskShadowNode: unknown }).maskShadowNode).toBeNull()
+  })
+  it('strips sample the mask clamped to its first and last texel rows, at mip 0 (no wrap, no mip blend)', () => {
+    expect(fringeVRange(16)).toEqual([0.5 / 16, 1 - 0.5 / 16])
+    expect(FRINGE_LOD_BIAS).toBeLessThanOrEqual(-16) // drives any auto LOD of a 2^16 tile to level 0
+    const tex = new THREE.DataArrayTexture(new Uint8Array(4 * 16 * 16), 16, 16, 1)
+    const lights = createLightUniforms()
+    type N = { isNode?: boolean; isTextureNode?: boolean; value?: unknown; biasNode?: N | null; uvNode?: N | null; method?: string; getChildren(): Iterable<N> }
+    /** Every node reachable from a material's colorNode. */
+    const nodesOf = (m: unknown): N[] => {
+      const seen = new Set<N>(), stack = [(m as { colorNode: N }).colorNode]
+      while (stack.length) {
+        const n = stack.pop()!
+        if (seen.has(n)) continue
+        seen.add(n)
+        for (const c of n.getChildren()) stack.push(c)
+      }
+      return [...seen]
+    }
+    // The albedo sample: the texture node with a layer (depth); bias() also links back to its unbiased base node.
+    const samples = (m: unknown) => nodesOf(m).filter((n) => n.isTextureNode === true && n.value === tex && (n as { depthNode?: unknown }).depthNode)
+    const constsUnder = (root: N): number[] => {
+      const out: number[] = [], seen = new Set<N>(), stack = [root]
+      while (stack.length) {
+        const n = stack.pop()!
+        if (seen.has(n)) continue
+        seen.add(n)
+        if ((n as { isConstNode?: boolean }).isConstNode) out.push((n as unknown as { value: number }).value)
+        for (const c of n.getChildren()) stack.push(c)
+      }
+      return out
+    }
+    const clampsUnder = (root: N) => { const all: N[] = []; const seen = new Set<N>(), st = [root]; while (st.length) { const n = st.pop()!; if (seen.has(n)) continue; seen.add(n); if (n.method === 'clamp') all.push(n); for (const c of n.getChildren()) st.push(c) } return all }
+    const fringed = samples(createChunkMaterials(tex, lights, undefined, { fringe: true }).cutout)
+    expect(fringed.length).toBeGreaterThan(0)
+    for (const t of fringed) {
+      expect(t.biasNode).toBeTruthy()
+      const clamps = clampsUnder(t.uvNode!)
+      expect(clamps.length).toBe(1)
+      expect(constsUnder(clamps[0]!)).toEqual(expect.arrayContaining([0.5 / 16, 1 - 0.5 / 16]))
+    }
+    // Without fringe (and on the fringe world's opaque material) the sample is untouched.
+    const plainMats = createChunkMaterials(tex, lights)
+    const fringedOpaque = createChunkMaterials(tex, lights, undefined, { fringe: true }).opaque
+    for (const m of [plainMats.cutout, plainMats.opaque, fringedOpaque]) {
+      for (const t of samples(m)) {
+        expect(t.biasNode ?? null).toBeNull()
+        expect(clampsUnder(t.uvNode!).length).toBe(0)
+      }
+    }
   })
 })

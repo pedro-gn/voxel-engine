@@ -179,4 +179,20 @@ describe('fringe', () => {
     const r = new BlockRegistry([{ name: 'leaves', layer: 'cutout', tone, fringe: { texture: 'fr' } }])
     expect([...r.toneLayers(new Map([['leaves', 1], ['fr', 2]])).dark.subarray(6, 9)]).toEqual([0.5, 0.5, 0.5])
   })
+  it('registry: strips of two leaves one free cell apart cannot overlap (2·width ≤ 1, width + hang ≤ 1)', () => {
+    const leaf = (fringe: { width?: number; hang?: number }) => () =>
+      new BlockRegistry([{ name: 'leaves', layer: 'cutout', fringe: { texture: 'f', ...fringe } }])
+    expect(leaf({ width: 9 / 16 })).toThrow(/fringe width/)
+    expect(leaf({ width: 8 / 16, hang: 9 / 16 })).toThrow(/fringe width \+ hang/)
+    expect(leaf({ width: 8 / 16, hang: 8 / 16 })).not.toThrow()
+    expect(leaf({ width: 1 / 16, hang: 15 / 16 })).not.toThrow()
+  })
+  it('registry: fringeReach is the largest strip reach in blocks, 0 without fringe', () => {
+    expect(testRegistry().fringeReach).toBe(0)
+    expect(new BlockRegistry([{ name: 'leaves', layer: 'cutout', fringe: { texture: 'f' } }]).fringeReach).toBe(7 / 16)
+    expect(new BlockRegistry([
+      { name: 'leaves', layer: 'cutout', fringe: { texture: 'f', width: 0.5, hang: 0.25 } },
+      { name: 'vine', layer: 'cutout', fringe: { texture: 'f', width: 0.25, hang: 0.375 } },
+    ]).fringeReach).toBe(0.5)
+  })
 })

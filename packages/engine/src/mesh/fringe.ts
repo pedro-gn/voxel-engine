@@ -15,6 +15,8 @@ const EDGE_REVERSE = new Uint8Array(24)
 const EDGE_VERT = new Uint8Array(24)
 /** Per face: padded offset to the cell in front. */
 const FRONT_OFF = new Int32Array(6)
+/** Per face: offset to the column in front in CutPlane.covered (x + z × PAD); 0 for the top and bottom faces. */
+const FRONT_COL = new Int32Array(6)
 /**
  * Per reach w (1..16, in sixteenths) × face × edge × corner: what the corner adds to the cell's packed words. `A` adds
  * to (x + 1) | (y + 1) << 6 | (z + 1) << 12 (fields never leave 0..63, so the signed sum packs exactly) and carries the
@@ -28,6 +30,7 @@ for (let f = 0; f < 6; f++) {
   const [d, u, v] = AXES[f]!
   const ns = (f & 1) === 0 ? 1 : -1
   FRONT_OFF[f] = ns * STRIDE[d as 0 | 1 | 2]
+  FRONT_COL[f] = d === 0 ? ns : d === 2 ? ns * PAD : 0
   let k = 0
   for (const [a, b] of [[u, v], [v, u]] as const) {
     for (const sg of [1, -1]) {
@@ -63,18 +66,21 @@ const qb = new Uint32Array(4)
  * The fringe pass (BlockDef.fringe), after the cutout pass, into the same cutout builder. For each exposed face of a
  * fringe block (the face test of meshOpaqueAndCutout: the cell in front is neither opaque nor the same block), each of
  * its 4 edges gets a strip when the cell beyond the edge, in the face's plane, and the cell diagonal to it (beyond the
- * edge, one step out along the normal) are both neither opaque nor the same block: a convex silhouette edge. The strip
+ * edge, one step out along the normal) are both neither opaque, shaped (a slab, stair, post or ladder) nor the same
+ * block: a convex silhouette edge. The strip
  * lies in the face's plane, reaches out `fringeWidth` sixteenths (`fringeHang` when it points down), and carries the
  * face's light, the block's tone and no occlusion. Its vertices are FRINGE_BIT vertices (vertexFormat.ts).
  *
- * `plane`: the layer cut. The snapshot is already cut (meshJob.ts applyCut); a cell of the cut layer that had something
- * above it grows no strip up through the cut, and its strips on a created top face take CUT_BIT like the face.
+ * `plane`: the layer cut. The snapshot is already cut (meshJob.ts applyCut); a cell of the cut layer grows no strip up
+ * through the cut when the cell above it or the diagonal cell above held something before the cut (so nothing rises
+ * above the plane that the uncut world would not show), and its strips on a created top face take CUT_BIT like the face.
+ * Mesher calls this only when the cutout pass emitted a face of a fringe block (meshOpaqueAndCutout's result).
  * `ox, oy, oz`: the chunk's world origin, for the tone jitter.
  */
 export function meshFringe(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, plane?: CutPlane, ox = 0, oy = 0, oz = 0): void {
   if (!t.hasFringe) return
   const width = t.fringeWidth!, hang = t.fringeHang!, layers = t.fringeLayers!
-  const vox = s.voxels, light = s.light, opaque = t.opaque
+  const vox = s.voxels, light = s.light, opaque = t.opaque, shape = t.shape
   for (let y = 0; y < 32; y++) for (let z = 0; z < 32; z++) {
     const row = padIndex(1, y + 1, z + 1)
     for (let x = 0; x < 32; x++) {
@@ -82,26 +88,29 @@ export function meshFringe(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, pl
       const v = vox[pi]!
       const id = voxelId(v)
       if (width[id] === 0) continue
-      const covered = plane !== undefined && y + 1 === plane.py ? plane.covered[x + 1 + (z + 1) * PAD]! : 0
-      const fl = layers[id]!
-      const tex = t.hasTone && t.tone![id] ? toneTex(fl, v, ox + x, oy + y, oz + z) : fl
+      const cutRow = plane !== undefined && y + 1 === plane.py
+      const col = x + 1 + (z + 1) * PAD
+      const covered = cutRow ? plane.covered[col]! : 0
+      let tex = -1 // the strips' layer field, computed at the first exposed face
       const cellA = (x + 1) | ((y + 1) << 6) | ((z + 1) << 12)
       const wSide = width[id]! * 24, wDown = hang[id]! * 24
       for (let f = 0; f < 6; f++) {
         const ni = pi + FRONT_OFF[f]!
         const nid = voxelId(vox[ni]!)
         if (opaque[nid] || nid === id) continue
+        if (tex < 0) tex = t.hasTone && t.tone![id] ? toneTex(layers[id]!, v, ox + x, oy + y, oz + z) : layers[id]!
         const l = t.hasShapes && t.shape[nid] !== 0 ? faceLight(s, t, ni) : light[ni]!
         const bFace = packB(tex, l & 15, l >> 4)
         const flags = FRINGE_BIT | (f === 2 && covered === 1 ? CUT_BIT : 0)
         for (let e = f * 4; e < f * 4 + 4; e++) {
           const bi = pi + EDGE_OFF[e]!
           const beyond = voxelId(vox[bi]!)
-          if (opaque[beyond] || beyond === id) continue
+          if (opaque[beyond] || beyond === id || shape[beyond]) continue
           const diag = voxelId(vox[bi + FRONT_OFF[f]!]!)
-          if (opaque[diag] || diag === id) continue
+          if (opaque[diag] || diag === id || shape[diag]) continue
           const vert = EDGE_VERT[e]!
-          if (vert === 1 && covered !== 0) continue // would poke up through the layer cut
+          // Up through the layer cut: only where the cut removed neither the cell above nor the diagonal above.
+          if (vert === 1 && cutRow && (covered !== 0 || plane.covered[col + FRONT_COL[f]!] !== 0)) continue
           const ci = ((vert === 2 ? wDown : wSide) + e) * 4
           for (let c = 0; c < 4; c++) {
             qa[c] = ((cellA + CORNER_A[ci + c]!) | flags) >>> 0

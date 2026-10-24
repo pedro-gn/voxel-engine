@@ -1,4 +1,4 @@
-import { attribute, bool, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelWorldMatrix, select, textureLoad, textureSize, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { attribute, bool, clamp, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelWorldMatrix, select, textureLoad, textureSize, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
 import type * as THREE from 'three/webgpu'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
@@ -48,6 +48,30 @@ export interface ChunkVertexOptions {
    * corner bits. Branch-free: both decodings are mixed by the bit.
    */
   fringe?: boolean
+}
+
+/**
+ * The v range a fringe strip samples its mask in, for a `tile`-texel tile: the centres of the first and last texel rows.
+ * The mask is not vertically tileable (attached row opaque, tip row mostly clear) and the texture array wraps, so a
+ * strip clamped here never blends its tip with its attached row.
+ */
+export function fringeVRange(tile: number): [number, number] {
+  return [0.5 / tile, 1 - 0.5 / tile]
+}
+
+/**
+ * LOD bias of a fringe strip's sample: drives any automatic level to mip 0, where fringeVRange holds (a coarser mip
+ * would average the tip and attached rows again, and fill in the lobes).
+ */
+export const FRINGE_LOD_BIAS = -16
+
+/**
+ * A cutout fragment's sampling UV: unchanged for faces, v clamped to fringeVRange(tile) for strips. Branch-free (mixed
+ * by the interpolated fringe varying, 0 or 1 across a whole quad). Pair it with `.bias(fringe × FRINGE_LOD_BIAS)`.
+ */
+export function fringeSampleUv(uv: ReturnType<typeof varying<'vec2'>>, fringe: ReturnType<typeof varying<'float'>>, tile: number): ReturnType<typeof vec2> {
+  const [lo, hi] = fringeVRange(tile)
+  return vec2(uv.x, mix(uv.y, clamp(uv.y, float(lo), float(hi)), fringe))
 }
 
 /**
