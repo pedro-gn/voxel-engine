@@ -16,6 +16,7 @@ import { columnsIn } from './sim/simHost.ts'
 import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
+import type { VoxelBody, VoxelBodyCell } from './render/voxelBody.ts'
 import { FallingTrack } from './render/fallingTrack.ts'
 import { FragmentTrack } from './render/fragmentTrack.ts'
 import type { ChunkMeshData } from './mesh/mesher.ts'
@@ -206,6 +207,13 @@ export interface Engine {
     clear(): void
   }
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
+  /**
+   * Meshes `cells` (world cell + full voxel) with the engine's mesher into a movable body drawn like the world — same
+   * faces, leaf tone, fringe, culling between its own blocks, UVs and the world's light at this moment — and adds its
+   * `object` to the scene over the cells. Liquids and decorations are dropped. Throws RangeError on no cells or a box
+   * wider than 32 cells per axis. See VoxelBody for moving (pivot), the light ease and dispose.
+   */
+  voxelBody(cells: readonly VoxelBodyCell[]): VoxelBody
   /** AABB-vs-voxel collision over the ghost-aware world (a predicted edit collides at once). Pure geometry: no dt or gravity. */
   readonly collision: Collision
   readonly terrain: {
@@ -861,6 +869,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
 
   const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
+    voxelBody: cells => visuals.voxelBody(cells, tables, world.getLight),
     firstPerson, get cameraMode() { return cameraMode }, setCameraMode, get underwater() { return underwaterFade.amount },
     terrain: {
       get initial() { return initialGen },
