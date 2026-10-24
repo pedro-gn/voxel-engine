@@ -4,12 +4,13 @@
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { Mesher } from '../src/mesh/mesher.ts'
-import { meshTables, roofsSnap, shapedMeshTables, stairsSnap, surfaceSnap } from './surface.ts'
+import { canopySnap, meshTables, roofsSnap, shapedMeshTables, stairsSnap, surfaceSnap } from './surface.ts'
 
 const LIMIT_MS = 3, WARMUP = 300, RUNS = 500
 const WORKLOADS = {
   surface: { snap: surfaceSnap, tables: meshTables, gated: true },
   roofs: { snap: roofsSnap, tables: shapedMeshTables, gated: true },
+  canopy: { snap: () => canopySnap().snap, tables: () => canopySnap().tables, gated: true },
   'all stairs': { snap: stairsSnap, tables: shapedMeshTables, gated: false },
 } as const
 type Name = keyof typeof WORKLOADS
