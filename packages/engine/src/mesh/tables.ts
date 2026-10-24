@@ -30,6 +30,8 @@ export interface MeshTables {
   /** Per id: strip reach in sixteenths (0 without fringe), and the reach of strips that point down. */
   fringeWidth?: Uint8Array
   fringeHang?: Uint8Array
+  /** Per id: 1 when side faces grow sideways strips on their vertical edges. */
+  fringeSides?: Uint8Array
   deco: DecorationTables
 }
 
@@ -44,6 +46,6 @@ export function meshTablesFrom(
     waterGroup: waterGroupOf(registry),
     tone: registry.tone, hasTone: registry.hasTone,
     hasFringe: registry.hasFringe, fringeLayers: fringeLayers ?? new Uint16Array(registry.count),
-    fringeWidth: registry.fringeWidth, fringeHang: registry.fringeHang,
+    fringeWidth: registry.fringeWidth, fringeHang: registry.fringeHang, fringeSides: registry.fringeSides,
   }
 }

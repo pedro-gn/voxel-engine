@@ -51,6 +51,8 @@ export interface BlockFringe {
   texture: string
   width?: number
   hang?: number
+  /** Strips on a side face's vertical edges, reaching sideways (default true); false keeps only up, down and top/bottom-face strips. */
+  sides?: boolean
 }
 
 /** Fringe reach defaults, in sixteenths of a block. */
@@ -111,6 +113,8 @@ export class BlockRegistry {
   readonly fringeWidth: Uint8Array
   /** A fringe block's down-pointing strip reach, in sixteenths. */
   readonly fringeHang: Uint8Array
+  /** Per id: 1 when its side faces grow sideways strips on their vertical edges (BlockFringe.sides, default on). */
+  readonly fringeSides: Uint8Array
   /** The largest strip reach of any fringe block, in blocks (0 without fringe): how far strips poke out of their chunk. */
   readonly fringeReach: number
   private readonly ids = new Map<string, number>()
@@ -140,6 +144,7 @@ export class BlockRegistry {
     this.tone = new Uint8Array(this.count)
     this.fringeWidth = new Uint8Array(this.count)
     this.fringeHang = new Uint8Array(this.count)
+    this.fringeSides = new Uint8Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -173,6 +178,7 @@ export class BlockRegistry {
         if (typeof d.fringe.texture !== 'string' || d.fringe.texture === '') throw new Error(`block "${d.name}": fringe needs a texture`)
         this.fringeWidth[id] = sixteenths(d.name, 'width', d.fringe.width, DEFAULT_FRINGE_WIDTH)
         this.fringeHang[id] = sixteenths(d.name, 'hang', d.fringe.hang, DEFAULT_FRINGE_HANG)
+        this.fringeSides[id] = d.fringe.sides === false ? 0 : 1
         // Two blocks one free cell apart: their facing strips meet in that cell's plane and must not overlap (z-fight).
         if (2 * this.fringeWidth[id]! > 16) throw new RangeError(`block "${d.name}": fringe width must be at most 1/2 block`)
         if (this.fringeWidth[id]! + this.fringeHang[id]! > 16) throw new RangeError(`block "${d.name}": fringe width + hang must be at most 1 block`)

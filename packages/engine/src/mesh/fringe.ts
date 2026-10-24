@@ -79,7 +79,7 @@ const qb = new Uint32Array(4)
  */
 export function meshFringe(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, plane?: CutPlane, ox = 0, oy = 0, oz = 0): void {
   if (!t.hasFringe) return
-  const width = t.fringeWidth!, hang = t.fringeHang!, layers = t.fringeLayers!
+  const width = t.fringeWidth!, hang = t.fringeHang!, layers = t.fringeLayers!, sides = t.fringeSides
   const vox = s.voxels, light = s.light, opaque = t.opaque, shape = t.shape
   for (let y = 0; y < 32; y++) for (let z = 0; z < 32; z++) {
     const row = padIndex(1, y + 1, z + 1)
@@ -94,6 +94,7 @@ export function meshFringe(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, pl
       let tex = -1 // the strips' layer field, computed at the first exposed face
       const cellA = (x + 1) | ((y + 1) << 6) | ((z + 1) << 12)
       const wSide = width[id]! * 24, wDown = hang[id]! * 24
+      const sideways = sides === undefined || sides[id] === 1
       for (let f = 0; f < 6; f++) {
         const ni = pi + FRONT_OFF[f]!
         const nid = voxelId(vox[ni]!)
@@ -109,6 +110,7 @@ export function meshFringe(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, pl
           const diag = voxelId(vox[bi + FRONT_OFF[f]!]!)
           if (opaque[diag] || diag === id || shape[diag]) continue
           const vert = EDGE_VERT[e]!
+          if (vert === 0 && !sideways && f !== 2 && f !== 3) continue // a side face's vertical edge
           // Up through the layer cut: only where the cut removed neither the cell above nor the diagonal above.
           if (vert === 1 && cutRow && (covered !== 0 || plane.covered[col + FRONT_COL[f]!] !== 0)) continue
           const ci = ((vert === 2 ? wDown : wSide) + e) * 4

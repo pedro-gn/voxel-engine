@@ -55,6 +55,18 @@ describe('fringe', () => {
     assertOutwardWinding(r.m.cutout)
   })
 
+  it('sides: false drops the sideways strips of side faces, keeping their up and down strips and the top/bottom faces\' strips', () => {
+    const noSides = tablesWith({ fringe: { texture: 'fringe', sides: false } }).tables
+    const s = emptySnap()
+    put(s, 5, 5, 5, ID.leaves)
+    const r = meshed(s, noSides)
+    // 24 − 4 side faces × 2 vertical edges
+    expect([r.faces, r.strips]).toEqual([6, 16])
+    const sideways = r.v.filter((x) => x.fringe && x.normal !== 2 && x.normal !== 3 && x.y >= 5 && x.y <= 6 && (x.x < 5 || x.x > 6 || x.z < 5 || x.z > 6))
+    expect(sideways).toEqual([])
+    assertOutwardWinding(r.m.cutout)
+  })
+
   it('no strip between leaves or on concave edges', () => {
     const s = emptySnap()
     for (let x = 5; x < 8; x++) put(s, x, 5, 5, ID.leaves)
