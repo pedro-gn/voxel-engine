@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
-import { CHUNK_SPHERE_RADIUS, buildDrawList, frustumPlanes, sphereInFrustum } from '../src/render/chunkCull.ts'
+import { CHUNK_SPHERE_RADIUS, buildDrawList, chunkSphereRadius, frustumPlanes, sphereInFrustum } from '../src/render/chunkCull.ts'
 
 function frustumOf(camera: THREE.PerspectiveCamera): THREE.Frustum {
   camera.updateMatrixWorld()
@@ -43,6 +43,21 @@ describe('chunkCull', () => {
     expect([...indirect.subarray(0, 2)]).toEqual([0, 3])
     expect(buildDrawList(instances, geometries, centres, planes, eye, 300, 4, starts, counts, indirect)).toBe(1) // the far one is out of range
     expect(indirect[0]).toBe(0)
+  })
+  it('a fringe reach widens the chunk sphere: a chunk whose strips poke into view is drawn', () => {
+    expect(chunkSphereRadius()).toBe(CHUNK_SPHERE_RADIUS)
+    expect(chunkSphereRadius(0.5)).toBe(CHUNK_SPHERE_RADIUS + 0.5)
+    // One real plane (x >= 0), five that pass everything; the chunk centre lies 28.3 outside it (a width-1 corner strip).
+    const planes = new Float64Array(24)
+    planes.set([1, 0, 0, 0])
+    for (let i = 1; i < 6; i++) planes[i * 4 + 3] = 1e9
+    const instances = [{ active: true, visible: true, geometryIndex: 0 }]
+    const geometries = [{ start: 0, count: 6 }]
+    const centres = Float32Array.from([-28.3, 16, 16])
+    const starts = new Int32Array(1), counts = new Int32Array(1), indirect = new Uint32Array(1)
+    const eye = { x: 0, y: 16, z: 16 }
+    expect(buildDrawList(instances, geometries, centres, planes, eye, Infinity, 4, starts, counts, indirect)).toBe(0)
+    expect(buildDrawList(instances, geometries, centres, planes, eye, Infinity, 4, starts, counts, indirect, Infinity, chunkSphereRadius(1))).toBe(1)
   })
   it('reads geometry ranges at cull time, so a compaction between passes is seen', () => {
     const planes = frustumPlanes(frustumOf(cam()))

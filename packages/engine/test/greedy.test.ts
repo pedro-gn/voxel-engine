@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { meshOpaqueAndCutout } from '../src/mesh/greedy.ts'
+import { meshOpaqueAndCutout, toneJitter } from '../src/mesh/greedy.ts'
 import { applyCut, type CutPlane } from '../src/mesh/meshJob.ts'
 import { QuadBuilder } from '../src/mesh/quadBuilder.ts'
-import { CUT_BIT, FACE, unpackA } from '../src/mesh/vertexFormat.ts'
+import { CUT_BIT, FACE, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 import { PAD, padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
-import { packLight } from '../src/world/voxel.ts'
-import { ID } from './helpers.ts'
+import { packLight, packVoxel } from '../src/world/voxel.ts'
+import { BlockRegistry } from '../src/blocks/registry.ts'
+import { meshTablesFrom } from '../src/mesh/tables.ts'
+import { ID, TEST_BLOCKS } from './helpers.ts'
 import { assertOutwardWinding, countByNormal, emptySnap, meshTables, put } from './meshHelpers.ts'
 
 const tables = meshTables()
@@ -146,5 +148,49 @@ describe('cutout faces', () => {
     const m = mesh(s)
     expect(m.oq).toBe(6)
     expect(m.cq).toBe(5)
+  })
+})
+
+describe('tone', () => {
+  const reg = new BlockRegistry(TEST_BLOCKS.map((b) => (b.name === 'leaves' ? { ...b, tone: { dark: [0.5, 0.6, 0.5], light: [1.2, 1.2, 1] } } : b)))
+  const toned = meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
+  function meshToned(s: ChunkSnapshot, ox = 0, oy = 0, oz = 0) {
+    const o = new QuadBuilder(), c = new QuadBuilder()
+    meshOpaqueAndCutout(s, toned, o, c, new Int32Array(1024), undefined, ox, oy, oz)
+    return c.build()!
+  }
+  it("greedy: a tone leaf's cutout vertices carry state & 3 and a position jitter in layer bits 8–11", () => {
+    const s = emptySnap()
+    put(s, 3, 4, 5, packVoxel(ID.leaves, 2 | 4)) // state bit 2 is not tone
+    put(s, 10, 4, 5, ID.torch)
+    const m = meshToned(s)
+    const leafLayer = toned.faceLayers[ID.leaves * 6]!, torchLayer = toned.faceLayers[ID.torch * 6]!
+    let leaves = 0, torches = 0
+    for (let i = 0; i < m.vertices.length; i += 2) {
+      const bits = unpackB(m.vertices[i + 1]!).layer
+      if ((bits & 0xff) === leafLayer) {
+        leaves++
+        expect(bits >> 8 & 3).toBe(2)
+        expect(bits >> 10).toBe(toneJitter(3, 4, 5))
+      } else {
+        torches++
+        expect(bits).toBe(torchLayer) // a non-tone cutout block: bits 8–11 = 0
+      }
+    }
+    expect([leaves, torches]).toEqual([24, 24])
+    // The jitter hashes the world cell: the chunk origin moves it.
+    const moved = meshToned(s, 32, 0, 64)
+    expect(unpackB(moved.vertices[1]!).layer >> 10).toBe(toneJitter(35, 4, 69))
+  })
+  it('the jitter is a 2-bit hash that varies between neighbours', () => {
+    const seen = new Set<number>()
+    for (let x = 0; x < 8; x++) for (let z = 0; z < 8; z++) {
+      const j = toneJitter(x, 7, z)
+      expect(j).toBeGreaterThanOrEqual(0)
+      expect(j).toBeLessThanOrEqual(3)
+      seen.add(j)
+    }
+    expect(seen.size).toBe(4)
+    expect(toneJitter(-5, 3, -9)).toBe(toneJitter(-5, 3, -9))
   })
 })

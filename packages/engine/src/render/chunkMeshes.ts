@@ -3,14 +3,15 @@ import type { ChunkMeshData } from '../mesh/mesher.ts'
 import type { LayerMesh } from '../mesh/quadBuilder.ts'
 import type { Layout } from '../world/layout.ts'
 import { CUTOUT_INDICES_PER_SLOT, CUTOUT_VERTICES_PER_SLOT, ChunkBatches } from './chunkBatches.ts'
+import { chunkSphereRadius } from './chunkCull.ts'
 import type { ChunkMaterials } from './materials.ts'
 import type { LayerCut } from './layerCut.ts'
 import { chunkInRange, type Vec3Like } from './viewDistance.ts'
 
 export const LAYERS = ['opaque', 'cutout', 'translucent', 'liquid'] as const
-const SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 16 * Math.sqrt(3) + 0.5)
 
-export function geometryOf(m: LayerMesh): THREE.BufferGeometry {
+/** `reach`: how far fringe strips poke out of the chunk, in blocks (BlockRegistry.fringeReach); the bounds grow by it. */
+export function geometryOf(m: LayerMesh, reach = 0): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry()
   const packed = new THREE.BufferAttribute(m.vertices, 2)
   packed.gpuType = THREE.IntType // integer attribute: read as uvec2 in the shader, never converted to float
@@ -19,8 +20,9 @@ export function geometryOf(m: LayerMesh): THREE.BufferGeometry {
   // Alias the same attribute object (no extra memory); the shader still reads `packed`.
   g.setAttribute('position', packed)
   g.setIndex(new THREE.BufferAttribute(m.indices, 1))
-  g.boundingSphere = SPHERE.clone()
-  g.boundingBox = new THREE.Box3(new THREE.Vector3(-16, -16, -16), new THREE.Vector3(16, 16, 16))
+  const h = 16 + reach
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), chunkSphereRadius(reach))
+  g.boundingBox = new THREE.Box3(new THREE.Vector3(-h, -h, -h), new THREE.Vector3(h, h, h))
   return g
 }
 
@@ -33,11 +35,14 @@ export interface ChunkMeshesOptions {
   threeCull?: boolean
   /** Chunk columns per region batch side (ChunkBatches REGION by default). */
   region?: number
+  /** How far fringe strips poke out of a chunk, in blocks (BlockRegistry.fringeReach); chunk and region bounds grow by it. Default 0. */
+  fringeReach?: number
 }
 
 export class ChunkMeshes {
   readonly group = new THREE.Group()
   private readonly layout: Layout
+  private readonly reach: number
   private readonly owned: ChunkMaterials
   private readonly materials: Record<Layer, THREE.Material>
   /** Per chunk, one mesh slot per layer; a batched layer's slot stays null. */
@@ -49,15 +54,16 @@ export class ChunkMeshes {
   /** The cut's y at the last visibility pass (undefined: never applied). */
   private cutY: number | null | undefined = null
 
-  constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region }: ChunkMeshesOptions = {}) {
+  constructor(layout: Layout, materials: ChunkMaterials, { batched = false, threeCull = false, region, fringeReach = 0 }: ChunkMeshesOptions = {}) {
     this.layout = layout
+    this.reach = fringeReach
     this.owned = materials
     this.materials = { ...materials }
     this.group.name = 'elovox-chunks'
     if (batched) {
       for (const name of ['opaque', 'cutout'] as const) {
         const b = new ChunkBatches(layout, this.materials[name], name, true, {
-          threeCull, ...(region !== undefined && { region }),
+          threeCull, ...(region !== undefined && { region }), ...(fringeReach > 0 && { reach: fringeReach }),
           ...(name === 'cutout' && { verticesPerSlot: CUTOUT_VERTICES_PER_SLOT, indicesPerSlot: CUTOUT_INDICES_PER_SLOT }),
         })
         this.batches[name] = b
@@ -158,7 +164,7 @@ export class ChunkMeshes {
         if (existing) { this.group.remove(existing); existing.geometry.dispose(); slots![k] = null }
         return
       }
-      const geo = geometryOf(lm)
+      const geo = geometryOf(lm, this.reach)
       if (existing) {
         existing.geometry.dispose()
         existing.geometry = geo

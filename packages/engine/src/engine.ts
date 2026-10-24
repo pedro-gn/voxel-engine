@@ -391,7 +391,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const tex = await buildTextureArray(o.textures, registry.textureNames(), tileSize)
   tex.texture.anisotropy = renderer.getMaxAnisotropy()
   const faceLayers = registry.faceLayers(tex.layerOf)
-  const tables = meshTablesFrom(registry, faceLayers, decorations.tables)
+  const tables = meshTablesFrom(registry, faceLayers, decorations.tables, registry.fringeLayers(tex.layerOf))
   const highlight = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
     new THREE.LineBasicNodeMaterial({ color: 0x1b1f24 }),
@@ -417,6 +417,8 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const visuals = new Visuals({
     renderer, scene, camera, backend, texture: tex.texture, layout, registry,
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
+    ...(registry.hasTone && { tone: registry.toneLayers(tex.layerOf) }),
+    ...(registry.hasFringe && { fringe: true }),
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     grassMask,

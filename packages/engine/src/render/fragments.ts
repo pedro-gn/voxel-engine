@@ -35,6 +35,7 @@ export class FragmentMeshes {
       let group = this.bodies.get(id)
       if (!group) {
         group = new THREE.Group(); group.name = `fragment-${id}`
+        // Fragments draw a block's plain face layers: a tone block (BlockDef.tone) bursts untinted and without fringe.
         for (const data of fragmentGeometry(frame.birth, this.layout, this.registry, this.faceLayers, light)) {
           const g = new THREE.BufferGeometry()
           g.setAttribute('position', new THREE.BufferAttribute(data.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3))
