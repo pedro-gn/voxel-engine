@@ -75,6 +75,15 @@ describe('buildBodyMeshData', () => {
     expect(new Set(cutout.map((v) => (v.layer >> 8) & 3))).toEqual(new Set([2]))
   })
 
+  it('a face against a dark solid world cell borrows the brightest light around that cell (review I1)', () => {
+    const below = [LOG_A[0], LOG_A[1] - 1, LOG_A[2]] // dirt under the log: light 0, its side neighbours sky 12
+    // World light: solid cells (the dirt and the body's own stone "logs") hold 0; the ground row and below sky 12; above, full sky.
+    const solid = new Set([below.join(), ...cells.filter((c) => (c.voxel & 0xfff) === ID.stone).map((c) => [c.x, c.y, c.z].join())])
+    const light = (x: number, y: number, z: number) => (solid.has([x, y, z].join()) ? 0 : y <= below[1] ? packLight(12, 0) : FULL_SKY)
+    const { data } = buildBodyMeshData(cells, tables, light)
+    expect(new Set(verts(data.opaque, [0, 0, 0]).filter((v) => v.normal === FACE.NY && v.x === 0).map((v) => v.sky))).toEqual(new Set([12]))
+  })
+
   it('matches the same cells meshed in their world chunk (tone jitter, fringe variants, every vertex)', () => {
     const { data, origin } = buildBodyMeshData(cells.slice(0, 3), tables, () => FULL_SKY)
     const s = emptySnap() // chunk (1, 0, 2): origin (32, 0, 64)

@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu'
 import { Mesher, type ChunkMeshData } from '../mesh/mesher.ts'
 import type { MeshTables } from '../mesh/tables.ts'
 import { createSnapshot, padIndex } from '../world/reader.ts'
-import { AIR, FULL_SKY, voxelId } from '../world/voxel.ts'
+import { AIR, blockLight, FULL_SKY, skyLight, voxelId } from '../world/voxel.ts'
 import { geometryOf } from './chunkMeshes.ts'
 
 /** One voxel of a body: its world cell and its full voxel (id and state). */
@@ -60,7 +60,7 @@ export function buildBodyMeshData(cells: readonly VoxelBodyCell[], tables: MeshT
   snap.light.fill(FULL_SKY)
   // The light of the cells in front of every face: the box plus its 1-cell border (padded index = cell − origin + 1).
   for (let y = y0 - 1; y <= y1 + 1; y++) for (let z = z0 - 1; z <= z1 + 1; z++) for (let x = x0 - 1; x <= x1 + 1; x++) {
-    snap.light[padIndex(x - x0 + 1, y - y0 + 1, z - z0 + 1)] = getLight(x, y, z)
+    snap.light[padIndex(x - x0 + 1, y - y0 + 1, z - z0 + 1)] = lightAround(getLight, x, y, z)
   }
   for (const c of cells) {
     const id = voxelId(c.voxel)
@@ -70,6 +70,23 @@ export function buildBodyMeshData(cells: readonly VoxelBodyCell[], tables: MeshT
   const data = mesher.mesh(snap, tables, x0, y0, z0)
   return { data: { ...data, liquid: null, grass: null, flowers: null }, origin: [x0, y0, z0] }
 }
+
+/**
+ * The light a body face takes from the world cell in front of it. A solid world cell holds light 0 — in the world the
+ * face against it was hidden — so it lends the brightest light of its six neighbours instead (review I1: the base log's
+ * bottom face would otherwise rotate into view near-black as the tree tips).
+ */
+function lightAround(getLight: (x: number, y: number, z: number) => number, x: number, y: number, z: number): number {
+  const l = getLight(x, y, z)
+  if (l !== 0) return l
+  let best = 0
+  for (const [dx, dy, dz] of SIX) {
+    const n = getLight(x + dx, y + dy, z + dz)
+    if (skyLight(n) + blockLight(n) > skyLight(best) + blockLight(best)) best = n
+  }
+  return best
+}
+const SIX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const
 
 export interface VoxelBodyDeps {
   tables: MeshTables
@@ -123,7 +140,7 @@ export function createVoxelBody(cells: readonly VoxelBodyCell[], deps: VoxelBody
     max: [x1, y1, z1],
     get ease() { return ease },
     set ease(v: number) {
-      ease = Math.min(1, Math.max(0, v))
+      ease = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0
       for (const m of meshes) m.userData.ease = ease
     },
     pivot(x, y, z) {
