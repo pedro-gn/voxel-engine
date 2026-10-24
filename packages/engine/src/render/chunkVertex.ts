@@ -100,7 +100,9 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
 
   /** 1 on a fringe strip's vertex (ChunkVertexOptions.fringe), else 0. */
   const fringe = opts.fringe ? a.shiftRight(uint(31)).bitAnd(uint(1)).toFloat() : undefined
-  const grid = vec3(px.add(fx), py.add(fy).sub(drop.div(16)), pz.add(fz))
+  // A strip's drop bits carry its variant (fringe.ts fringeVariant), not a drop.
+  const dropY = fringe ? drop.mul(float(1).sub(fringe)) : drop
+  const grid = vec3(px.add(fx), py.add(fy).sub(dropY.div(16)), pz.add(fz))
   const local = fringe ? grid.sub(fringe) : grid
   // Chunk-centred; a batched chunk adds its translation here (an unbatched mesh's model matrix carries it instead).
   const position = local.sub(16).add(batchOffset())
@@ -121,7 +123,12 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   if (fringe) {
     // A strip's UV from its corner: u = 1 on corners 1 and 2 (c ^ c >> 1), v = 1 on corners 2 and 3 (c >> 1).
     const corner = a.shiftRight(uint(23)).bitAnd(uint(3))
-    const cornerUv = vec2(corner.bitXor(corner.shiftRight(uint(1))).bitAnd(uint(1)).toFloat(), corner.shiftRight(uint(1)).toFloat())
+    const cu = corner.bitXor(corner.shiftRight(uint(1))).bitAnd(uint(1)).toFloat()
+    // The variant: bit 2 mirrors u, bits 0–1 shift it by quarters (the mask wraps along u).
+    const variant = a.shiftRight(uint(25)).bitAnd(uint(7))
+    const mirror = variant.shiftRight(uint(2)).toFloat()
+    const u = mix(cu, float(1).sub(cu), mirror).add(variant.bitAnd(uint(3)).toFloat().mul(0.25))
+    const cornerUv = vec2(u, corner.shiftRight(uint(1)).toFloat())
     uv = mix(uvFace, cornerUv, fringe) as unknown as ReturnType<typeof vec2>
   }
   const aoF = select(ao.equal(uint(0)), float(AO_CURVE[0]!),

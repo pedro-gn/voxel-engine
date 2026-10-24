@@ -20,7 +20,7 @@ function tablesWith(leaves: Partial<BlockDef>, extra: BlockDef[] = []): { tables
 const { tables, layerOf } = tablesWith({ fringe: { texture: 'fringe' } })
 const mesher = new Mesher()
 
-interface Vert { x: number; y: number; z: number; normal: number; corner: number; ao: number; layer: number; sky: number; fringe: boolean }
+interface Vert { x: number; y: number; z: number; normal: number; corner: number; ao: number; layer: number; sky: number; fringe: boolean; variant: number }
 
 /** Every vertex of a cutout mesh, positions decoded as the cutout material does (a fringe vertex is biased by +1). */
 function verts(m: LayerMesh | null): Vert[] {
@@ -30,9 +30,10 @@ function verts(m: LayerMesh | null): Vert[] {
     const a = unpackA(m.vertices[i]!), b = unpackB(m.vertices[i + 1]!)
     const fringe = (m.vertices[i]! & FRINGE_BIT) !== 0
     const bias = fringe ? 1 : 0
+    // A strip's drop bits carry its variant (fringeVariant), not a drop: the decoder ignores them for position.
     out.push({
-      x: a.x + b.fx / 16 - bias, y: a.y + b.fy / 16 - a.drop / 16 - bias, z: a.z + b.fz / 16 - bias,
-      normal: a.normal, corner: a.corner, ao: a.ao, layer: b.layer, sky: b.sky, fringe,
+      x: a.x + b.fx / 16 - bias, y: a.y + b.fy / 16 - (fringe ? 0 : a.drop / 16) - bias, z: a.z + b.fz / 16 - bias,
+      normal: a.normal, corner: a.corner, ao: a.ao, layer: b.layer, sky: b.sky, fringe, variant: fringe ? a.drop : 0,
     })
   }
   return out
@@ -53,6 +54,36 @@ describe('fringe', () => {
     expect([r.faces, r.strips]).toEqual([6, 24])
     expect(r.m.cutout!.vertices.length / 8).toBe(6 + 24)
     assertOutwardWinding(r.m.cutout)
+  })
+
+  it('sides: false drops the sideways strips of side faces, keeping their up and down strips and the top/bottom faces\' strips', () => {
+    const noSides = tablesWith({ fringe: { texture: 'fringe', sides: false } }).tables
+    const s = emptySnap()
+    put(s, 5, 5, 5, ID.leaves)
+    const r = meshed(s, noSides)
+    // 24 − 4 side faces × 2 vertical edges
+    expect([r.faces, r.strips]).toEqual([6, 16])
+    const sideways = r.v.filter((x) => x.fringe && x.normal !== 2 && x.normal !== 3 && x.y >= 5 && x.y <= 6 && (x.x < 5 || x.x > 6 || x.z < 5 || x.z > 6))
+    expect(sideways).toEqual([])
+    assertOutwardWinding(r.m.cutout)
+  })
+
+  it('each strip carries a variant (u offset and mirror) from its cell and edge, the same on its four corners', () => {
+    const s = emptySnap()
+    for (let x = 3; x < 13; x++) put(s, x, 5, 5, ID.leaves)
+    const r = meshed(s)
+    const strips: number[] = []
+    for (let i = 0; i < r.v.length; i += 4) {
+      const q = r.v.slice(i, i + 4)
+      if (!q[0]!.fringe) continue
+      expect(new Set(q.map((v) => v.variant)).size).toBe(1)
+      expect(q[0]!.variant).toBe(q[0]!.variant & 7)
+      strips.push(q[0]!.variant)
+    }
+    expect(new Set(strips).size).toBeGreaterThan(4) // spread over the 8 variants along a 10-block row
+    expect(meshed(s).v.map((v) => v.variant)).toEqual(r.v.map((v) => v.variant)) // deterministic
+    // the world origin feeds the hash: the same chunk elsewhere gets other variants
+    expect(meshed(s, tables, undefined, 32, 0, 0).v.map((v) => v.variant)).not.toEqual(r.v.map((v) => v.variant))
   })
 
   it('no strip between leaves or on concave edges', () => {
