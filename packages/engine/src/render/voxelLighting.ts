@@ -60,11 +60,18 @@ export function createLightUniforms(): LightUniforms {
   }
 }
 
-export interface VoxelSurface { normal: N; sky: N; blk: N; ao: N; albedo: N }
+export interface VoxelSurface {
+  normal: N; sky: N; blk: N; ao: N; albedo: N
+  /**
+   * The view-space normal, when `normal` is already the world normal of a rotated object (a voxel body): three's
+   * transformNormalToView would apply the model's normal matrix a second time. Default: transformNormalToView(normal).
+   */
+  normalView?: N
+}
 
 /** Wires the voxel light terms into a material. `normal` is in world space. */
 export function voxelLit(m: VoxelNodeMaterial, s: VoxelSurface, lights: LightUniforms): void {
-  m.normalNode = transformNormalToView(s.normal)
+  m.normalNode = s.normalView ?? transformNormalToView(s.normal)
   m.receivedShadowPositionNode = positionWorld.add(s.normal.mul(SHADOW_NORMAL_OFFSET))
   m.receivedShadowNode = Fn(([shadow]: [N]) => {
     const fade = smoothstep(lights.shadowFar.mul(0.85), lights.shadowFar, positionView.length())
