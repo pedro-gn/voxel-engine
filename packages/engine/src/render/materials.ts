@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu'
-import { float, mix, texture, uniformArray, vec4 } from 'three/tsl'
+import { cameraViewMatrix, float, mix, texture, uniformArray, vec4 } from 'three/tsl'
 import { CUT_SHADE } from '../mesh/vertexFormat.ts'
 import { FRINGE_LOD_BIAS, chunkVertex, fringeSampleUv, type ToneTables } from './chunkVertex.ts'
+import { belowCut } from './layerCut.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
 export interface ChunkMaterials {
@@ -33,12 +34,34 @@ function toneTables(t: NonNullable<ChunkMaterialOptions['tone']>): ToneTables {
  * everywhere. `opts.tone` changes the cutout material only: it decodes the cutout stream's tone bits and tints the face.
  */
 export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightUniforms, layerScales?: Float32Array, opts: ChunkMaterialOptions = {}): ChunkMaterials {
+  const build = materialBuilder(tex, lights, layerScales, opts, false)
+  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent'), liquid: build('translucent', true) }
+}
+
+export interface BodyMaterials {
+  opaque: VoxelNodeMaterial
+  cutout: VoxelNodeMaterial
+  translucent: VoxelNodeMaterial
+}
+
+/**
+ * The chunk materials' body variant (voxelBody.ts), with the same arguments as createChunkMaterials: object-space UVs
+ * shifted by `object.userData.uvOrigin` (Vector3), the axis normal rotated with the object, the baked light eased
+ * towards open sky by `object.userData.ease` (0..1), and the layer cut in the colour and shadow passes (a moving body
+ * crosses it anywhere). Shared by every body; `userData.body` marks them.
+ */
+export function createBodyMaterials(tex: THREE.DataArrayTexture, lights: LightUniforms, layerScales?: Float32Array, opts: ChunkMaterialOptions = {}): BodyMaterials {
+  const build = materialBuilder(tex, lights, layerScales, opts, true)
+  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent') }
+}
+
+function materialBuilder(tex: THREE.DataArrayTexture, lights: LightUniforms, layerScales: Float32Array | undefined, opts: ChunkMaterialOptions, body: boolean) {
   const scales = layerScales && layerScales.some((s) => s !== 1) ? uniformArray(Array.from(layerScales), 'float') : undefined
   const tone = opts.tone ? toneTables(opts.tone) : undefined
-  function build(mode: 'opaque' | 'cutout' | 'translucent', liquid = false): VoxelNodeMaterial {
+  return function build(mode: 'opaque' | 'cutout' | 'translucent', liquid = false): VoxelNodeMaterial {
     const toned = mode === 'cutout' && tone !== undefined
     const fringed = mode === 'cutout' && opts.fringe === true
-    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, { ...(toned && { tone }), ...(fringed && { fringe: true }) })
+    const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, { ...(toned && { tone }), ...(fringed && { fringe: true }), ...(body && { body: true }) })
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
     // Fringe strips sample their mask at mip 0 with v clamped inside its first and last rows (chunkVertex.ts fringeVRange).
@@ -55,7 +78,15 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
       // Strips add no shadow shell (spec §9): the shadow pass discards their fragments.
       m.maskShadowNode = v.fringe.lessThan(0.5)
     }
-    voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: rgb }, lights)
+    if (body) {
+      m.userData.body = true
+      // A body's cells above the layer cut are hidden in colour and in the shadow map (falling.ts does the same).
+      m.maskNode = belowCut()
+      m.maskShadowNode = m.maskShadowNode ? (m.maskShadowNode as ReturnType<typeof belowCut>).and(belowCut()) : belowCut()
+    }
+    // A body's normal is already rotated into world space: give the view-space one directly (no second model rotation).
+    const normalView = body ? cameraViewMatrix.mul(vec4(v.normal, 0)).xyz.normalize() : undefined
+    voxelLit(m, { normal: v.normal, sky: v.sky, blk: v.blk, ao: v.ao, albedo: rgb, ...(normalView && { normalView }) }, lights)
     if (mode === 'opaque') {
       m.colorNode = vec4(rgb, 1)
       // Internal voxel faces are culled. Back-face shadow casting (three's default)
@@ -72,5 +103,4 @@ export function createChunkMaterials(tex: THREE.DataArrayTexture, lights: LightU
     }
     return m
   }
-  return { opaque: build('opaque'), cutout: build('cutout'), translucent: build('translucent'), liquid: build('translucent', true) }
 }

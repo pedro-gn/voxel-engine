@@ -1,4 +1,5 @@
-import { attribute, bool, clamp, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelWorldMatrix, select, textureLoad, textureSize, uint, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { attribute, bool, clamp, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelNormalMatrix, modelWorldMatrix, select, textureLoad, textureSize, uint, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { Vector3 } from 'three/webgpu'
 import type * as THREE from 'three/webgpu'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
@@ -28,6 +29,9 @@ const batchOffset = Fn((_: unknown, builder: { object?: THREE.Object3D }) => {
   return textureLoad(mat, ivec2(j.mod(msize).add(3), j.div(msize))).xyz
 })
 
+/** A body mesh without `userData.uvOrigin` projects as if its frame sat at the world origin. */
+const NO_ORIGIN = new Vector3()
+
 /** Loose TSL node type for the optional per-layer scale table (a `uniformArray` of floats). */
 type ScaleTable = { element(i: unknown): ReturnType<typeof float> }
 /** Loose TSL node type for a per-layer `uniformArray` of vec4s. */
@@ -48,6 +52,13 @@ export interface ChunkVertexOptions {
    * corner bits. Branch-free: both decodings are mixed by the bit.
    */
   fringe?: boolean
+  /**
+   * A movable voxel body (voxelBody.ts), not a chunk: UVs are projected from the object-space position plus the body's
+   * `object.userData.uvOrigin` (a Vector3: the world point of the mesh frame's origin when the body was cut out), so they
+   * stay glued to the blocks as the body moves; the axis normal is rotated by the model's normal matrix (world space);
+   * and `object.userData.ease` (0..1, default 0) blends the baked light towards open sky (sky → 1, block light → 0).
+   */
+  body?: boolean
 }
 
 /**
@@ -105,7 +116,8 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   const grid = vec3(px.add(fx), py.add(fy).sub(dropY.div(16)), pz.add(fz))
   const local = fringe ? grid.sub(fringe) : grid
   // Chunk-centred; a batched chunk adds its translation here (an unbatched mesh's model matrix carries it instead).
-  const position = local.sub(16).add(batchOffset())
+  // A body is always a plain Mesh: no batch offset.
+  const position = opts.body ? local.sub(16) : local.sub(16).add(batchOffset())
   const normal = select(nIdx.equal(uint(0)), vec3(1, 0, 0),
     select(nIdx.equal(uint(1)), vec3(-1, 0, 0),
       select(nIdx.equal(uint(2)), vec3(0, 1, 0),
@@ -114,7 +126,10 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   const axis = nIdx.shiftRight(uint(1))
   // Project the WORLD position, not the chunk-local one: chunk origins are multiples of 32, so this is identical at
   // scale 1, and a non-integer texture scale stays continuous across chunk borders.
-  const world = modelWorldMatrix.mul(vec4(position, 1)).xyz
+  // A body projects its object-space position shifted by where its frame sat in the world when it was cut out, so a
+  // body's faces read the very UVs the standing blocks had, and keep them while it moves.
+  const uvOrigin = opts.body ? uniform(new Vector3()).onObjectUpdate(({ object }) => (object?.userData.uvOrigin as Vector3 | undefined) ?? NO_ORIGIN) : undefined
+  const world = uvOrigin ? position.add(uvOrigin) : modelWorldMatrix.mul(vec4(position, 1)).xyz
   const proj = select(axis.equal(uint(0)), vec2(world.z, world.y), select(axis.equal(uint(1)), vec2(world.x, world.z), vec2(world.x, world.y)))
   const uvRaw = scales ? proj.div(scales.element(layerBits.toInt())) : proj
   const flip = FLIP_U.reduce<ReturnType<typeof nIdx.equal>>((acc, on, f) => (on ? acc.or(nIdx.equal(uint(f))) : acc), bool(false) as unknown as ReturnType<typeof nIdx.equal>)
@@ -143,17 +158,24 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
     tint = varying(mix(dark.xyz, light.xyz, level).mul(float(1).add(dark.w.mul(j.div(1.5).sub(1)))))
   }
 
+  // A body: the normal rotated with the object (world space), the baked light eased towards open sky.
+  const ease = opts.body ? uniform(0).onObjectUpdate(({ object }) => (object?.userData.ease as number | undefined) ?? 0) : undefined
+  const worldNormal = opts.body ? modelNormalMatrix.mul(normal).normalize() : normal
+  const skyOut = ease ? mix(sky, float(1), ease) : sky
+  const blkOut = ease ? blk.mul(float(1).sub(ease)) : blk
+
   return {
     position,
     /** The leaf-tone multiplier of a cutout face (ChunkVertexOptions.tone), undefined without tone tables. */
     tint,
     /** 1 on a fringe strip (ChunkVertexOptions.fringe), undefined without the option. */
     fringe: fringe ? varying(fringe) : undefined,
-    normal: varying(normal),
+    /** World-space face normal (a body's is rotated by its model matrix; a chunk's axis normal already is). */
+    normal: varying(worldNormal),
     uv: varying(uv),
     layer: varying(layer),
-    sky: varying(sky),
-    blk: varying(blk),
+    sky: varying(skyOut),
+    blk: varying(blkOut),
     // Liquid vertices carry flags in their ao bits (LIQUID_DEEP), not occlusion: their AO is always 1.
     ao: liquid ? float(1) : varying(aoF),
     cut: liquid ? float(0) : varying(cut),

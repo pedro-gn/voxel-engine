@@ -13,7 +13,9 @@ import { ChunkMeshes } from './chunkMeshes.ts'
 import { FallingCubes } from './falling.ts'
 import type { FallingCube } from './fallingTrack.ts'
 import { SunLights } from './lighting.ts'
-import { createChunkMaterials } from './materials.ts'
+import { createBodyMaterials, createChunkMaterials, type BodyMaterials } from './materials.ts'
+import type { MeshTables } from '../mesh/tables.ts'
+import { createVoxelBody, type VoxelBody, type VoxelBodyCell } from './voxelBody.ts'
 import { PostPipeline, TONE_MAPPING } from './post.ts'
 import {
   DEFAULT_EFFECTS, DEFAULT_QUALITY, DEFAULT_WATER, SUPPORT, mergeEffects, mergeQuality, mergeWater, resolveEffects,
@@ -81,6 +83,9 @@ export class Visuals {
   private readonly fragments: FragmentMeshes
   private decoStats = { instances: 0, draws: 0 }
   private readonly warned = new Set<string>()
+  /** Built on the first voxelBody() call: a world that never asks for a body never creates them. */
+  private bodyMaterials: BodyMaterials | null = null
+  private readonly bodies = new Set<VoxelBody>()
 
   constructor(o: VisualsOptions) {
     this.o = o
@@ -145,6 +150,15 @@ export class Visuals {
   }
   drawFragments(frames: readonly FragmentFrame[], light: (x: number, y: number, z: number) => number): void { this.fragments.set(frames, light) }
 
+  /** A movable body over `cells`, drawn like the world (engine.voxelBody); `getLight` is the main thread's light copy. */
+  voxelBody(cells: readonly VoxelBodyCell[], tables: MeshTables, getLight: (x: number, y: number, z: number) => number): VoxelBody {
+    const o = this.o
+    this.bodyMaterials ??= createBodyMaterials(o.texture, this.lights, o.textureScales, { ...(o.tone && { tone: o.tone }), ...(o.fringe && { fringe: true }) })
+    const body = createVoxelBody(cells, { tables, getLight, materials: this.bodyMaterials, parent: o.scene, reach: o.registry.fringeReach, onDispose: b => this.bodies.delete(b) })
+    this.bodies.add(body)
+    return body
+  }
+
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
 
@@ -205,6 +219,8 @@ export class Visuals {
     this.o.scene.remove(this.falling.mesh)
     this.falling.dispose()
     this.o.scene.remove(this.fragments.group); this.fragments.dispose()
+    for (const b of [...this.bodies]) b.dispose()
+    if (this.bodyMaterials) for (const m of Object.values(this.bodyMaterials)) m.dispose()
     this.o.scene.remove(this.waterSurface.group)
     this.waterSurface.dispose()
     this.water.dispose()
