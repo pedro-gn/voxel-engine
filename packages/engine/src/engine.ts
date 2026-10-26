@@ -21,7 +21,7 @@ import { FallingTrack } from './render/fallingTrack.ts'
 import { FragmentTrack } from './render/fragmentTrack.ts'
 import type { ChunkMeshData } from './mesh/mesher.ts'
 import { SimClock, stepAlpha } from './render/simClock.ts'
-import { SurfaceMirror } from './render/water/surfaceMirror.ts'
+import { SurfaceMirror, type WaterSample } from './render/water/surfaceMirror.ts'
 import { WaterHost, type WaterReply } from './render/water/waterHost.ts'
 import { WaterLink } from './render/water/waterLink.ts'
 import type { ToWater } from './render/water/water.worker.ts'
@@ -207,6 +207,12 @@ export interface Engine {
     clear(): void
   }
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
+  /**
+   * The water drawn at column (x, z), as the renderer last showed it: surface and depth (blocks), flow (0 still, 1 a gentle
+   * drift, 2.5 a steep run), white water (0–15) and the falls hanging from it; null when dry. Read-only and cheap (a few
+   * array reads), for sound and effects that follow the water.
+   */
+  waterAt(x: number, z: number): WaterSample | null
   /**
    * Meshes `cells` (world cell + full voxel) with the engine's mesher into a movable body drawn like the world — same
    * faces, leaf tone, fringe, culling between its own blocks, UVs and the world's light at this moment — and adds its
@@ -870,6 +876,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
     voxelBody: cells => visuals.voxelBody(cells, tables, world.getLight),
+    waterAt: (x, z) => surfaceMirror.sample(x, z),
     firstPerson, get cameraMode() { return cameraMode }, setCameraMode, get underwater() { return underwaterFade.amount },
     terrain: {
       get initial() { return initialGen },
