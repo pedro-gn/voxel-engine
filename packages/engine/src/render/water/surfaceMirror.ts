@@ -15,6 +15,13 @@ export interface SurfaceSource {
 }
 
 const ROW = 128
+
+/**
+ * The drawn top water of one column, as the renderer shows it (sound, effects): its surface (blocks), depth (blocks), the
+ * ripples' flow speed (0 still, 1 a gentle drift, 2.5 a steep run: quantizeFlow), white water (0–15) and the curtains
+ * (falls) hanging from it.
+ */
+export interface WaterSample { surface: number; depth: number; flow: number; white: number; falls: number }
 const PER_SUB = 1 / SUB
 function byIndex(a: number, b: number): number { return a - b }
 
@@ -103,6 +110,21 @@ export class SurfaceMirror implements SurfaceSource {
     if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
     const c = x + z * this.sx, v = this.surfaces.value[c * RANKS]!
     return shows(v, this.floor[c]!) ? v * PER_SUB : null
+  }
+
+  /** The drawn top water at column (x, z) (rank 0, the chunk column's own surface); null when dry, hidden or outside. */
+  sample(x: number, z: number): WaterSample | null {
+    if (x < 0 || z < 0 || x >= this.sx || z >= this.sz) return null
+    const d = this.data[0]![(x >> 5) + (z >> 5) * this.cx]
+    if (!d) return null
+    const lx = x & 31, lz = z & 31, o = (lx + lz * 32) * 4, packed = d.info[o + 3]!
+    if (packed < 0) return null
+    const surface = this.surfaceAt(x, z)
+    if (surface === null) return null
+    const cs = d.curtains
+    let falls = 0
+    for (let k = 0; k < cs.count; k++) if (cs.info[k * 4] === lx && cs.info[k * 4 + 1] === lz) falls++
+    return { surface, depth: d.info[o + 2]!, flow: Math.hypot(d.info[o]!, d.info[o + 1]!), white: Math.floor(packed / 256), falls }
   }
 
   /** As SurfaceView.surfaceNear, from the drawn surfaces. */

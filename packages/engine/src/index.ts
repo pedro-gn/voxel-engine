@@ -5,6 +5,7 @@ export { SaveError, checkSystemSections, type Manifest, type SaveErrorCode } fro
 export type { LoadedSave } from './persist/package.ts'
 export { MemoryStore, type SaveStore } from './persist/store.ts'
 export type { SlotInfo } from './persist/worker.ts'
+export type { WaterSample } from './render/water/surfaceMirror.ts'
 export { EngineError } from './errors.ts'
 export { BlockRegistry, LAYER, defineBlock, type BlockDef, type BlockFringe, type BlockTone, type RenderLayer } from './blocks/registry.ts'
 export { ladderState, postState, slabState, stairState, turnShapeState, type BlockShape, type Facing, type PostAxis } from './blocks/shapes.ts'

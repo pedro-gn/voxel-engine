@@ -60,4 +60,31 @@ describe('SurfaceMirror (4a-r2 #2)', () => {
     // The world must reach the layered path: some layer-1 column data exists.
     expect(Array.from({ length: ref.ccCount }, (_, cc) => ref.column(cc, 1)).some(Boolean)).toBe(true)
   }, 120_000)
+
+  it('sample(): the drawn top water of a column (surface, depth, flow, white, falls), null where none is drawn', () => {
+    const w = gateWorld()
+    w.edges.ensure(w.cols, w.under, 32)
+    const light = () => 0xff
+    const pub = new WaterPublisher(w.buffers.water)
+    const mirror = new SurfaceMirror(SIZE, w.buffers.water)
+    const host = new WaterHost(SIZE, w.buffers.water, light, 20, mirror.surfaces)
+    const all = Array.from({ length: w.cols.tiles.count }, (_, t) => t)
+    let wet = 0, moving = 0, falls = 0
+    for (let tick = 0; tick < 24; tick++) {
+      const water = pub.publish(all, w.cols, { under: w.under, edges: w.edges, height: 32 })!
+      mirror.copy(host.handle({ type: 'apply', id: tick + 1, shown: 0, entries: [{ tick, water, relight: [] }] }))
+      w.step()
+    }
+    for (let z = 0; z < SIZE[2]; z++) for (let x = 0; x < SIZE[0]; x++) {
+      const s = mirror.sample(x, z), at = mirror.surfaceAt(x, z)
+      if (!s) { expect([x, z, at === null || mirror.column((x >> 5) + (z >> 5) * mirror.cx)?.info[((x & 31) + (z & 31) * 32) * 4 + 3]! < 0]).toEqual([x, z, true]); continue }
+      expect([x, z, s.surface]).toEqual([x, z, at])
+      expect(s.depth).toBeGreaterThan(0); expect(s.white).toBeGreaterThanOrEqual(0); expect(s.white).toBeLessThanOrEqual(15)
+      expect([0, 1, 2.5].some(f => Math.abs(s.flow - f) < 1e-6)).toBe(true)
+      wet++; if (s.flow > 0) moving++; falls += s.falls
+    }
+    expect(wet).toBeGreaterThan(0)
+    expect(moving + falls).toBeGreaterThan(0)
+    expect([mirror.sample(-1, 0), mirror.sample(0, SIZE[2])]).toEqual([null, null])
+  }, 60_000)
 })
