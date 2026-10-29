@@ -4,7 +4,7 @@ import type { Layout } from '../world/layout.ts'
 import type { BlockRegistry } from '../blocks/registry.ts'
 import { FragmentMeshes } from './fragments.ts'
 import type { FragmentFrame } from './fragmentTrack.ts'
-import { AtmosphereController, type Atmosphere } from './atmosphere.ts'
+import { AtmosphereController, resolveBlockLight, type Atmosphere } from './atmosphere.ts'
 import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
 import type { GrassMask } from './decorations/grassMask.ts'
@@ -236,6 +236,8 @@ export class Visuals {
     this.water.applyAtmosphere(a)
     const t = a.shadow.tint, k = a.shadow.strength
     this.lights.shadowColor.value.setRGB(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k, THREE.LinearSRGBColorSpace)
+    const bl = resolveBlockLight(a.blockLight), c = bl.color, i = bl.intensity
+    this.lights.torchColor.value.setRGB(c[0] * i, c[1] * i, c[2] * i, THREE.LinearSRGBColorSpace)
   }
 
   private syncWater(): void {

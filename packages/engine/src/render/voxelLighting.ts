@@ -47,6 +47,7 @@ export class VoxelNodeMaterial extends THREE.MeshLambertNodeMaterial {
 export interface LightUniforms {
   /** Direct-light multiplier inside full shadow: mix(white, atmosphere.shadow.tint, strength). */
   shadowColor: N
+  /** Block light's colour × strength (Atmosphere.blockLight, written by Visuals.applyAtmosphere). */
   torchColor: N
   /** Distance from the camera at which shadows have faded out (Deviation 6). */
   shadowFar: N

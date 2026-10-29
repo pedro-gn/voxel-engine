@@ -15,6 +15,25 @@ export interface Atmosphere {
   fog: { color: Rgb; followHorizon: number; near: number; far: number; heightFalloff: number }
   shadow: { strength: number; tint: Rgb }
   grade: { exposure: number; saturation: number; contrast: number; highlights: Rgb; shadows: Rgb }
+  /**
+   * The colour and strength of block light (`emits`), keyed by time of day like the rest: e.g. subtle by day, warm at
+   * night. Absent means DEFAULT_BLOCK_LIGHT (resolveBlockLight). Every resolved atmosphere carries it.
+   */
+  blockLight?: { color: Rgb; intensity: number }
+}
+
+/** Today's constant block-light look: a warm orange at full strength. */
+export const DEFAULT_BLOCK_LIGHT: { readonly color: Rgb; readonly intensity: number } = Object.freeze({ color: Object.freeze([1, 0.72, 0.42] as const), intensity: 1 })
+
+/** The block light an atmosphere asks for; a missing one is DEFAULT_BLOCK_LIGHT. Returns a fresh object. */
+export function resolveBlockLight(b?: Atmosphere['blockLight']): { color: [number, number, number]; intensity: number } {
+  const v = b ?? DEFAULT_BLOCK_LIGHT
+  return { color: [v.color[0], v.color[1], v.color[2]], intensity: v.intensity }
+}
+
+/** `a` with its blockLight filled in, so atmospheres built without one still merge and blend. */
+function withBlockLight(a: Atmosphere): Atmosphere {
+  return a.blockLight ? a : { ...a, blockLight: DEFAULT_BLOCK_LIGHT }
 }
 
 type InputOf<T> = { [K in keyof T]?: T[K] extends Rgb ? string : T[K] extends number ? number : InputOf<T[K]> }
@@ -50,6 +69,7 @@ const RANGES: Readonly<Record<string, readonly [number, number]>> = {
   'atmosphere.grade.exposure': [0, Infinity],
   'atmosphere.grade.saturation': [0, Infinity],
   'atmosphere.grade.contrast': [0, Infinity],
+  'atmosphere.blockLight.intensity': [0, Infinity],
 }
 
 function mergeNode(base: unknown, input: unknown, path: string): unknown {
@@ -70,7 +90,7 @@ function mergeNode(base: unknown, input: unknown, path: string): unknown {
 
 /** Validates, clamps and merges `input` over `base`. Throws (naming the field) on bad input; never mutates. */
 export function resolveAtmosphere(base: Atmosphere, input: AtmosphereInput): Atmosphere {
-  const out = mergeNode(base, input, 'atmosphere') as Atmosphere
+  const out = mergeNode(withBlockLight(base), input, 'atmosphere') as Atmosphere
   // Unchanged sub-objects are shared with `base`, so copy before fixing up.
   if (out.fog.far < out.fog.near + 1) out.fog = { ...out.fog, far: out.fog.near + 1 }
   return out
@@ -92,7 +112,7 @@ function lerpNode(a: unknown, b: unknown, t: number, key: string): unknown {
 export function lerpAtmosphere(a: Atmosphere, b: Atmosphere, t: number): Atmosphere {
   if (t <= 0) return a
   if (t >= 1) return b
-  return lerpNode(a, b, t, '') as Atmosphere
+  return lerpNode(withBlockLight(a), withBlockLight(b), t, '') as Atmosphere
 }
 
 const RAD = Math.PI / 180
@@ -116,6 +136,7 @@ const TEMPLATE: Atmosphere = {
   fog: { color: BLACK, followHorizon: 0, near: 0, far: 1, heightFalloff: 0 },
   shadow: { strength: 1, tint: BLACK },
   grade: { exposure: 1, saturation: 1, contrast: 1, highlights: BLACK, shadows: BLACK },
+  blockLight: DEFAULT_BLOCK_LIGHT,
 }
 
 // Values are first guesses, tuned at the visual checkpoints (spec §3).

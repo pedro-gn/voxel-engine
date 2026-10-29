@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  AtmosphereController, DAY_KEYFRAMES, PRESETS, hexToLinear, lerpAngle, lerpAtmosphere, resolveAtmosphere, sunDirection, sunVisibility,
+  AtmosphereController, DAY_KEYFRAMES, PRESETS, hexToLinear, lerpAngle, lerpAtmosphere, resolveAtmosphere, resolveBlockLight, sunDirection, sunVisibility,
 } from '../src/render/atmosphere.ts'
 
 describe('colours', () => {
@@ -75,6 +75,18 @@ describe('lerpAtmosphere', () => {
     const mid = lerpAtmosphere(PRESETS.open, PRESETS.sunset, 0.5)
     expect(mid.sun.elevation).toBeCloseTo((PRESETS.open.sun.elevation + PRESETS.sunset.sun.elevation) / 2)
     expect(mid.fog.color[0]).toBeCloseTo((PRESETS.open.fog.color[0] + PRESETS.sunset.fog.color[0]) / 2)
+  })
+  it('lerpAtmosphere blends blockLight', () => {
+    const a = resolveAtmosphere(PRESETS.open, { blockLight: { intensity: 0.5 } })
+    const b = resolveAtmosphere(PRESETS.open, { blockLight: { intensity: 1.5 } })
+    expect(lerpAtmosphere(a, b, 0.5).blockLight!.intensity).toBeCloseTo(1)
+    // An atmosphere built by hand without blockLight blends from the default.
+    const { blockLight: _, ...bare } = PRESETS.open
+    expect(lerpAtmosphere(bare, b, 0.5).blockLight!.intensity).toBeCloseTo(1.25)
+  })
+  it('a missing blockLight reads as the default', () => {
+    expect(resolveBlockLight(undefined)).toEqual({ color: [1, 0.72, 0.42], intensity: 1 })
+    expect(resolveBlockLight(PRESETS.open.blockLight)).toEqual({ color: [1, 0.72, 0.42], intensity: 1 })
   })
 })
 
