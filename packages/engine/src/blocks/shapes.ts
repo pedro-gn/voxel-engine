@@ -1,8 +1,8 @@
 /** A block type's form other than the whole cube. */
-export type BlockShape = 'slab' | 'stair' | 'post' | 'ladder'
+export type BlockShape = 'slab' | 'stair' | 'post' | 'ladder' | 'roof'
 /** Shape codes as stored in `BlockRegistry.shape`; 0 is the whole cube. */
-export const SHAPE = { CUBE: 0, SLAB: 1, STAIR: 2, POST: 3, LADDER: 4 } as const
-export const SHAPE_CODE: Record<BlockShape, number> = { slab: SHAPE.SLAB, stair: SHAPE.STAIR, post: SHAPE.POST, ladder: SHAPE.LADDER }
+export const SHAPE = { CUBE: 0, SLAB: 1, STAIR: 2, POST: 3, LADDER: 4, ROOF: 5 } as const
+export const SHAPE_CODE: Record<BlockShape, number> = { slab: SHAPE.SLAB, stair: SHAPE.STAIR, post: SHAPE.POST, ladder: SHAPE.LADDER, roof: SHAPE.ROOF }
 
 /** A horizontal direction: 0 +x, 1 +z, 2 −x, 3 −z; one quarter turn adds 1 (+x → +z). */
 export type Facing = 0 | 1 | 2 | 3
@@ -24,11 +24,15 @@ export function postState(axis: PostAxis): number { return POST_AXES.indexOf(axi
 /** A ladder's voxel state: the side it hangs on (the side holding its wall), as a stair's facing. */
 export function ladderState(facing: Facing): number { return facing & 3 }
 
-/** Turns a shaped voxel's state by quarter turns (negative turns allowed): stairs and ladders turn their facing, beams swap x/z on odd turns, slabs stay. */
+/**
+ * Turns a shaped voxel's state by quarter turns (negative turns allowed): stairs, ladders and roofs turn their facing
+ * (bits 0–1; a roof keeps its kind in bits 2–3, an apex stays), beams swap x/z on odd turns, slabs stay.
+ */
 export function turnShapeState(shape: BlockShape, state: number, quarterTurns: number): number {
   if (!Number.isInteger(quarterTurns)) throw new RangeError(`quarter turns must be an integer: ${quarterTurns}`)
   const q = ((quarterTurns % 4) + 4) % 4
-  if (shape === 'stair' || shape === 'ladder') return (state & ~3) | (((state & 3) + q) & 3)
+  if (shape === 'roof' && ((state >> 2) & 3) === 2) return state // an apex has no facing
+  if (shape === 'stair' || shape === 'ladder' || shape === 'roof') return (state & ~3) | (((state & 3) + q) & 3)
   if (shape === 'post' && (q & 1) === 1 && (state === 1 || state === 2)) return 3 - state
   return state
 }
@@ -110,8 +114,11 @@ const LADDER_X: Box[] = [
 ]
 const LADDER_BOXES: readonly (readonly Box[])[] = [0, 1, 2, 3].map((f) => Object.freeze(LADDER_X.map((b) => Object.freeze(turnBox(b, f)) as Box)))
 
-/** The non-overlapping boxes a shaped voxel draws; `form` is read only for stairs. Shared, frozen arrays. */
+const NO_BOXES: readonly Box[] = Object.freeze([])
+
+/** The non-overlapping boxes a shaped voxel draws; `form` is read only for stairs. Shared, frozen arrays. A roof draws no boxes (blocks/roofs.ts roofFaces). */
 export function shapeBoxes(code: number, state: number, form: StairForm): readonly Box[] {
+  if (code === SHAPE.ROOF) return NO_BOXES
   if (code === SHAPE.STAIR) {
     const i = form.kind === 'straight' ? 0 : (form.kind === 'outer' ? 1 : 5) + form.side
     return STAIR_BOXES[state & 7]![i]!

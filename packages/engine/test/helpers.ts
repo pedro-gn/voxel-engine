@@ -34,3 +34,15 @@ export function ladderRegistry(): BlockRegistry {
 }
 
 export const LADDER_ID = { ladder: 11, torch_post: 12 } as const
+
+/** Two roof blocks (a tile and a thatch on stone and dirt tiles), appended after the shaped blocks by `roofRegistry()` (ids 11–12). */
+export const ROOF_TEST_BLOCKS: BlockDef[] = [
+  defineBlock({ name: 'tile_roof', textures: 'stone', shape: 'roof' }),
+  defineBlock({ name: 'thatch_roof', textures: 'dirt', shape: 'roof' }),
+]
+
+export function roofRegistry(): BlockRegistry {
+  return new BlockRegistry([...TEST_BLOCKS, ...SHAPED_TEST_BLOCKS, ...ROOF_TEST_BLOCKS])
+}
+
+export const ROOF_ID = { tile_roof: 11, thatch_roof: 12 } as const

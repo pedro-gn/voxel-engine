@@ -1,4 +1,5 @@
 import { MAX_BLOCK_ID } from '../world/voxel.ts'
+import { ROOF_REACH } from './roofs.ts'
 import { SHAPE, SHAPE_CODE, type BlockShape } from './shapes.ts'
 
 export type RenderLayer = 'opaque' | 'cutout' | 'translucent' | 'liquid'
@@ -95,7 +96,7 @@ export class BlockRegistry {
   readonly liquidGroup: Uint16Array
   /** `SHAPE` code per id; 0 for whole cubes. */
   readonly shape: Uint8Array
-  /** 1 when the block stops sky and block light: opaque cubes, slabs and stairs. */
+  /** 1 when the block stops sky and block light: opaque cubes, slabs, stairs and roofs. */
   readonly blocksLight: Uint8Array
   /** 1 for a climbable block (a ladder). */
   readonly climbable: Uint8Array
@@ -115,7 +116,7 @@ export class BlockRegistry {
   readonly fringeHang: Uint8Array
   /** Per id: 1 when its side faces grow sideways strips on their vertical edges (BlockFringe.sides, default on). */
   readonly fringeSides: Uint8Array
-  /** The largest strip reach of any fringe block, in blocks (0 without fringe): how far strips poke out of their chunk. */
+  /** How far geometry pokes out of its cell, in blocks: the largest fringe strip reach, or ROOF_REACH with a roof block (0 without either). */
   readonly fringeReach: number
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
@@ -192,7 +193,7 @@ export class BlockRegistry {
       }
       this.layer[id] = d.render === false ? LAYER.NONE : d.shape !== undefined ? LAYER.SHAPE : LAYER_CODE[layer]
       this.opaque[id] = d.shape === undefined && (d.opaque ?? layer === 'opaque') ? 1 : 0
-      this.blocksLight[id] = this.opaque[id] || this.shape[id] === SHAPE.SLAB || this.shape[id] === SHAPE.STAIR ? 1 : 0
+      this.blocksLight[id] = this.opaque[id] || this.shape[id] === SHAPE.SLAB || this.shape[id] === SHAPE.STAIR || this.shape[id] === SHAPE.ROOF ? 1 : 0
       this.solid[id] = (d.solid ?? !liquid) ? 1 : 0 // liquids default to non-solid
       if (d.collapses && (falls || liquid || d.source !== undefined || this.solid[id] !== 1)) {
         throw new Error(`block "${d.name}": collapses requires a solid, non-liquid block without falls or source`)
@@ -220,7 +221,8 @@ export class BlockRegistry {
     this.hasFringe = this.fringeWidth.some((w) => w !== 0)
     let reach = 0
     for (let id = 0; id < this.count; id++) reach = Math.max(reach, this.fringeWidth[id]!, this.fringeHang[id]!)
-    this.fringeReach = reach / 16
+    // Roof geometry reaches past its cell too (eaves across, ridge and apex caps up): bounds grow by the same reach.
+    this.fringeReach = Math.max(reach / 16, this.shape.includes(SHAPE.ROOF) ? ROOF_REACH : 0)
     if (this.hasTone) this.checkToneTextures()
     all.forEach((d, id) => {
       if (!this.liquid[id]) return

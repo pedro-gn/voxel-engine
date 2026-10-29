@@ -4,6 +4,7 @@ import { PAD, padIndex, type ChunkSnapshot } from '../world/reader.ts'
 import { voxelId, voxelState } from '../world/voxel.ts'
 import { AXES, REVERSE } from './greedy.ts'
 import type { QuadBuilder } from './quadBuilder.ts'
+import { meshRoofCell } from './roofs.ts'
 import type { MeshTables } from './tables.ts'
 import { packA, packB } from './vertexFormat.ts'
 
@@ -83,7 +84,8 @@ const FORMS: readonly StairForm[] = [{ kind: 'straight' }, ...([0, 1, 2, 3] as c
  */
 const SIDE_COVER: Int8Array[] = []
 function fillSideCover(): void {
-  for (let state = 0; state < 16; state++) SIDE_COVER[SHAPE.LADDER * 16 + state] = new Int8Array(6) // a ladder covers nothing
+  // A ladder and a roof cover nothing (a roof's sides depend on its form and reach past its cell).
+  for (const code of [SHAPE.LADDER, SHAPE.ROOF]) for (let state = 0; state < 16; state++) SIDE_COVER[code * 16 + state] = new Int8Array(6)
   for (const code of [SHAPE.SLAB, SHAPE.STAIR, SHAPE.POST]) for (let state = 0; state < 16; state++) {
     const sides = [15, 15, 15, 15, 15, 15]
     for (const form of code === SHAPE.STAIR ? FORMS : [STRAIGHT]) coverOf(shapeBoxes(code, state, form)).forEach((c, f) => { sides[f]! &= c })
@@ -163,6 +165,7 @@ function shapeCell(s: ChunkSnapshot, t: MeshTables, out: QuadBuilder, pi: number
   const v = s.voxels[pi]!
   const id = voxelId(v)
   const code = t.shape[id]!, state = voxelState(v)
+  if (code === SHAPE.ROOF) { meshRoofCell(s, t, pi, lx, ly, lz, out); return }
   curPi = pi
   const cellA = packA(lx, ly, lz, 0, 0, 0)
   const form = code === SHAPE.STAIR ? stairForm(state, stairAt) : STRAIGHT

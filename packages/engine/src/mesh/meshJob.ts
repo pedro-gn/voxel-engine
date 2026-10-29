@@ -11,7 +11,7 @@ const UP = 2
 
 /**
  * The layer cut through one chunk (spec §4): `py` is the padded y of the cut layer; `covered[px + pz × PAD]` is what lay on
- * top of each cut-layer cell before the cut: 0 air, 1 a covering block — an opaque cube, a slab or a stair (its top face is
+ * top of each cut-layer cell before the cut: 0 air, 1 a covering block — an opaque cube, a slab, a stair or a roof (its top face is
  * created by the cut) — 2 anything else (glass, leaves, a post).
  */
 export interface CutPlane { py: number; covered: Uint8Array }
