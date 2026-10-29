@@ -1,6 +1,7 @@
-import { attribute, bool, clamp, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelNormalMatrix, modelWorldMatrix, select, textureLoad, textureSize, uint, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { attribute, bool, clamp, drawIndex, float, Fn, instanceIndex, int, ivec2, mix, modelNormalMatrix, modelWorldMatrix, select, textureLoad, textureSize, uint, uniform, uniformArray, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { Vector3 } from 'three/webgpu'
 import type * as THREE from 'three/webgpu'
+import { ROOF_NORMALS } from '../blocks/roofs.ts'
 import { AO_CURVE } from '../mesh/ao.ts'
 import { LIQUID_DEEP } from '../mesh/vertexFormat.ts'
 import { FLIP_U } from './faceUv.ts'
@@ -85,6 +86,17 @@ export function fringeSampleUv(uv: ReturnType<typeof varying<'vec2'>>, fringe: R
   return vec2(uv.x, mix(uv.y, clamp(uv.y, float(lo), float(hi)), fringe))
 }
 
+/** Loose TSL node type for a `uniformArray` of vec3s. */
+type Vec3Table = { element(i: unknown): ReturnType<typeof vec3> }
+
+/** The roof normal table (blocks/roofs.ts ROOF_NORMALS) as uniform arrays: the unit normals and their texture faces. */
+function roofTables(): { n: Vec3Table; uv: ScaleTable } {
+  return {
+    n: uniformArray(ROOF_NORMALS.map((r) => new Vector3(r.n[0], r.n[1], r.n[2])), 'vec3') as unknown as Vec3Table,
+    uv: uniformArray(ROOF_NORMALS.map((r) => r.uvFace), 'float') as unknown as ScaleTable,
+  }
+}
+
 /**
  * TSL nodes decoded from the packed 8-byte chunk vertex (sub-project 1 format; spec §5 of the core spec).
  * `scales`, when given, holds one entry per texture-array layer: how many blocks one repeat of that texture spans.
@@ -111,19 +123,30 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
 
   /** 1 on a fringe strip's vertex (ChunkVertexOptions.fringe), else 0. */
   const fringe = opts.fringe ? a.shiftRight(uint(31)).bitAnd(uint(1)).toFloat() : undefined
-  // A strip's drop bits carry its variant (fringe.ts fringeVariant), not a drop.
-  const dropY = fringe ? drop.mul(float(1).sub(fringe)) : drop
+  /**
+   * 1 on a tilted roof vertex (vertexFormat.ts TILT_NORMAL, normal code 6: bits 1 and 2 of the code), else 0. Its drop
+   * bits index the roof normal table and its position is biased by +1. Never on liquid vertices. Branch-free (no select()).
+   */
+  const tilt = liquid ? undefined : a.shiftRight(uint(19)).bitAnd(a.shiftRight(uint(20))).bitAnd(uint(1)).toFloat()
+  const roof = tilt ? roofTables() : undefined
+  const dropIdx = a.shiftRight(uint(25)).bitAnd(uint(31)).toInt()
+  // A strip's drop bits carry its variant (fringe.ts fringeVariant), a tilted vertex's its normal index: not a drop.
+  const notDrop = fringe && tilt ? fringe.add(tilt) : fringe ?? tilt
+  const dropY = notDrop ? drop.mul(float(1).sub(notDrop)) : drop
   const grid = vec3(px.add(fx), py.add(fy).sub(dropY.div(16)), pz.add(fz))
-  const local = fringe ? grid.sub(fringe) : grid
+  const local = notDrop ? grid.sub(notDrop) : grid
   // Chunk-centred; a batched chunk adds its translation here (an unbatched mesh's model matrix carries it instead).
   // A body is always a plain Mesh: no batch offset.
   const position = opts.body ? local.sub(16) : local.sub(16).add(batchOffset())
-  const normal = select(nIdx.equal(uint(0)), vec3(1, 0, 0),
+  const axisNormal = select(nIdx.equal(uint(0)), vec3(1, 0, 0),
     select(nIdx.equal(uint(1)), vec3(-1, 0, 0),
       select(nIdx.equal(uint(2)), vec3(0, 1, 0),
         select(nIdx.equal(uint(3)), vec3(0, -1, 0),
           select(nIdx.equal(uint(4)), vec3(0, 0, 1), vec3(0, 0, -1))))))
-  const axis = nIdx.shiftRight(uint(1))
+  // A tilted roof vertex reads its normal and its texture face from the roof tables, mixed in by the 0/1 tilt factor.
+  const normal = tilt && roof ? mix(axisNormal, roof.n.element(dropIdx), tilt) : axisNormal
+  const uvIdx = tilt && roof ? mix(nIdx.toFloat(), roof.uv.element(dropIdx), tilt).add(0.5).toUint() : nIdx
+  const axis = uvIdx.shiftRight(uint(1))
   // Project the WORLD position, not the chunk-local one: chunk origins are multiples of 32, so this is identical at
   // scale 1, and a non-integer texture scale stays continuous across chunk borders.
   // A body projects its object-space position shifted by where its frame sat in the world when it was cut out, so a
@@ -132,7 +155,7 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
   const world = uvOrigin ? position.add(uvOrigin) : modelWorldMatrix.mul(vec4(position, 1)).xyz
   const proj = select(axis.equal(uint(0)), vec2(world.z, world.y), select(axis.equal(uint(1)), vec2(world.x, world.z), vec2(world.x, world.y)))
   const uvRaw = scales ? proj.div(scales.element(layerBits.toInt())) : proj
-  const flip = FLIP_U.reduce<ReturnType<typeof nIdx.equal>>((acc, on, f) => (on ? acc.or(nIdx.equal(uint(f))) : acc), bool(false) as unknown as ReturnType<typeof nIdx.equal>)
+  const flip = FLIP_U.reduce<ReturnType<typeof nIdx.equal>>((acc, on, f) => (on ? acc.or(uvIdx.equal(uint(f))) : acc), bool(false) as unknown as ReturnType<typeof nIdx.equal>)
   const uvFace = vec2(select(flip, uvRaw.x.negate(), uvRaw.x), uvRaw.y)
   let uv: ReturnType<typeof vec2> = uvFace
   if (fringe) {

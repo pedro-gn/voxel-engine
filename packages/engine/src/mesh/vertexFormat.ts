@@ -26,11 +26,25 @@ export const FRINGE_BIT = 1 << 31
 /** How much of its colour a cut face keeps. */
 export const CUT_SHADE = 0.72
 
-export function unpackA(a: number) {
-  return {
-    x: a & 63, y: (a >>> 6) & 63, z: (a >>> 12) & 63, normal: (a >>> 18) & 7,
-    ao: (a >>> 21) & 3, corner: (a >>> 23) & 3, drop: (a >>> 25) & 31,
-  }
+/**
+ * Word A normal code of a tilted roof vertex (blocks/roofs.ts): its normal is `ROOF_NORMALS[drop bits]` (no drop is
+ * applied) and its x/y/z are stored + TILT_BIAS, so a roof's overhang may reach below a chunk's local 0. Codes 0–5 are the
+ * axis faces; 7 is unused.
+ */
+export const TILT_NORMAL = 6
+export const TILT_BIAS = 1
+
+/** Word A of a tilted roof vertex at integer grid point (x, y, z) (−1..62), its sub-cell offset in word B as for shapes. */
+export function packTilted(x: number, y: number, z: number, normalIndex: number, corner: number): number {
+  return packA(x + TILT_BIAS, y + TILT_BIAS, z + TILT_BIAS, TILT_NORMAL, 0, corner, normalIndex)
+}
+
+/** Word A's fields; a tilted vertex (TILT_NORMAL) decodes its biased position back, drop 0, and its normal index as `tilt`. */
+export function unpackA(a: number): { x: number; y: number; z: number; normal: number; ao: number; corner: number; drop: number; tilt?: number } {
+  const normal = (a >>> 18) & 7, drop = (a >>> 25) & 31
+  const x = a & 63, y = (a >>> 6) & 63, z = (a >>> 12) & 63, ao = (a >>> 21) & 3, corner = (a >>> 23) & 3
+  if (normal === TILT_NORMAL) return { x: x - TILT_BIAS, y: y - TILT_BIAS, z: z - TILT_BIAS, normal, ao, corner, drop: 0, tilt: drop }
+  return { x, y, z, normal, ao, corner, drop }
 }
 
 /**

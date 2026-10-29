@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AO_CURVE, flipDiagonal, vertexAO } from '../src/mesh/ao.ts'
 import * as THREE from 'three/webgpu'
-import { CUT_BIT, FRINGE_BIT, packA, packB, toneLayer, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { CUT_BIT, FRINGE_BIT, TILT_NORMAL, packA, packB, packTilted, toneLayer, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
 import { FRINGE_LOD_BIAS, fringeVRange } from '../src/render/chunkVertex.ts'
 import { createChunkMaterials } from '../src/render/materials.ts'
 import { createLightUniforms } from '../src/render/voxelLighting.ts'
@@ -27,6 +27,11 @@ describe('vertex format', () => {
     expect(marked).toBeGreaterThan(0x7fffffff) // stored unsigned
     expect(unpackA(marked)).toEqual(unpackA(max))
     expect(marked & CUT_BIT).toBe(CUT_BIT)
+  })
+  it('round-trips a tilted roof vertex: position biased by +1, the normal index in the drop bits', () => {
+    expect(TILT_NORMAL).toBe(6)
+    expect(unpackA(packTilted(-1, 0, 62, 31, 2))).toEqual({ x: -1, y: 0, z: 62, normal: TILT_NORMAL, ao: 0, corner: 2, drop: 0, tilt: 31 })
+    expect(unpackA(packTilted(33, -1, 5, 0, 0))).toEqual({ x: 33, y: -1, z: 5, normal: TILT_NORMAL, ao: 0, corner: 0, drop: 0, tilt: 0 })
   })
   it('round-trips word B at its limits', () => {
     expect(unpackB(packB(4095, 15, 15, 15, 8, 1))).toEqual({ layer: 4095, sky: 15, block: 15, fx: 15, fy: 8, fz: 1 })

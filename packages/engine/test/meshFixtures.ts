@@ -4,7 +4,7 @@ import { createSnapshot, type ChunkSnapshot } from '../src/world/reader.ts'
 import { AIR, FULL_SKY } from '../src/world/voxel.ts'
 import { BlockRegistry } from '../src/blocks/registry.ts'
 import { DecorationRegistry, defineDecoration } from '../src/render/decorations/defs.ts'
-import { SHAPED_TEST_BLOCKS, TEST_BLOCKS, testRegistry } from './helpers.ts'
+import { SHAPED_TEST_BLOCKS, TEST_BLOCKS, roofRegistry, testRegistry } from './helpers.ts'
 
 export function emptySnap(): ChunkSnapshot {
   const s = createSnapshot()
@@ -15,6 +15,12 @@ export function emptySnap(): ChunkSnapshot {
 
 export function meshTables(): MeshTables {
   const reg = testRegistry()
+  return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
+}
+
+/** Mesh tables of `roofRegistry()` (the test blocks, the shaped stone blocks and two roof blocks). */
+export function roofMeshTables(): MeshTables {
+  const reg = roofRegistry()
   return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))))
 }
 

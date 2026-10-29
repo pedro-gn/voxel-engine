@@ -15,7 +15,7 @@ export interface MeshTables {
   faceLayers: Uint16Array
   /** `SHAPE` code per id (blocks/shapes.ts); 0 for whole cubes. */
   shape: Uint8Array
-  /** 1 when a block stops light: opaque cubes, slabs and stairs. Their own cells hold no light. */
+  /** 1 when a block stops light: opaque cubes, slabs, stairs and roofs. Their own cells hold no light. */
   blocksLight: Uint8Array
   /** False when no block has a shape: the shaped-cell pass is skipped. */
   hasShapes: boolean
