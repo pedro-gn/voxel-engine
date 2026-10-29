@@ -88,6 +88,16 @@ describe('roof cells in the chunk mesh', () => {
     expect(qs.filter((q) => q.tilted && q.n[1] > 0).every((q) => q.sky === 15)).toBe(true)
   })
 
+  it('no trim pokes into a solid shaped neighbour; the side is closed', () => {
+    // A slope facing +x at (5, 10, 5), a stone post on its right (+z).
+    const s = emptySnap()
+    put(s, 5, 10, 5, slope(0))
+    put(s, 5, 10, 6, ID.stone_post)
+    const qs = quads(mesher.mesh(s, tables).opaque)
+    expect(qs.filter((q) => q.pts.some((p) => p[2] === 6 + 2 / 16))).toEqual([]) // no barge board 2/16 into the post's cell
+    expect(qs.some((q) => q.n[2] === 1 && q.pts.every((p) => p[2] === 6) && q.pts.some((p) => p[0] > 5 && p[1] > 10))).toBe(true)
+  })
+
   it('a ridge closes its end against a roof that is not a ridge on its axis', () => {
     // A ridge facing +z runs along x; its end at x = 6 against (6, 10, 5).
     const endFaces = (nb: number) => {

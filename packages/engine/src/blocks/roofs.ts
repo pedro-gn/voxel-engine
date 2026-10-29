@@ -37,7 +37,9 @@ export type RoofCorner = 'straight' | 'outer' | 'inner'
  * `trimLeft` / `trimRight`: a straight slope or a ridge with air (no roof, no solid block) on that side (left = facing + 3, right = facing + 1)
  * gets one continuous tilted board along that edge (a gable's barge board). `endLeft` / `endRight`: a ridge whose
  * neighbour along its line on that side is not a ridge on the same axis closes that end with its profile (always with
- * a trim; also against an apex or a slope, which do not continue its line).
+ * a trim; also against an apex or a slope, which do not continue its line); a straight slope against a solid block
+ * (`ROOF_SOLID`) on that side closes it with its profile, no trim: the shingles' side, the eave board's end and the
+ * strip the rows rise above the cell.
  */
 export interface RoofForm {
   readonly corner: RoofCorner
@@ -64,8 +66,9 @@ const DX = [1, 0, -1, 0] as const
 const DZ = [0, 1, 0, -1] as const
 
 /**
- * What a form lookup returns for a cell holding a solid (opaque) block that is not a roof: no trim on that side (the
- * roof edge is closed by the block), still no roof neighbour. −1 stays "air or a non-solid block".
+ * What a form lookup returns for a cell holding a block that is not a roof but closes a roof's side: an opaque cube or a
+ * shaped block (slab, stair, post, ladder). No trim on that side, the side closed by its profile, still no roof
+ * neighbour. −1 stays "air or a see-through cube" (leaves, glass).
  */
 export const ROOF_SOLID = -2
 
@@ -75,7 +78,7 @@ const slopeAt = (dx: number, dz: number): number => { const s = curAt(dx, 0, dz)
 
 /**
  * The form code of a roof cell (see `roofForm`); `at(dx, dy, dz)` returns the roof state of the cell at that offset,
- * `ROOF_SOLID` when it holds an opaque block that is not roof-shaped, or −1 otherwise (air, a see-through block). Reads the 4 horizontal neighbours and the cell in front one
+ * `ROOF_SOLID` when it holds an opaque cube or a shaped block that is not a roof, or −1 otherwise (air, a see-through block). Reads the 4 horizontal neighbours and the cell in front one
  * level down.
  */
 export function roofFormCode(state: number, at: (dx: number, dy: number, dz: number) => number): number {
@@ -95,7 +98,7 @@ export function roofFormCode(state: number, at: (dx: number, dy: number, dz: num
   curAt = () => -1
   if (sf.kind === 'outer') return formCode(1, sf.side, eave, false, false)
   if (sf.kind === 'inner') return formCode(2, sf.side, false, false, false)
-  return formCode(0, f, eave, trimLeft, trimRight)
+  return formCode(0, f, eave, trimLeft, trimRight, sl === ROOF_SOLID, sr === ROOF_SOLID)
 }
 
 /**
@@ -217,11 +220,26 @@ const profileX = (px: number, hint: V3): Poly[] => under([
   poly(hint, P(px, 0, 8), P(px, 0, 16), P(px, 16 + KICK, 16), P(px, 8 + LIFT, 8)),
 ])
 
-function slopeStraight(hasEave: boolean, trimLeft: boolean, trimRight: boolean): Poly[] {
+/**
+ * A straight slope's side at z = zs closed by a solid block (s = −1 left, +1 right): the rows' profile (the wedge and the
+ * shingles; the second row's rises 2 above the cell, seen over a one-block neighbour) and the eave board's end.
+ */
+function closedSide(zs: number, s: number, hasEave: boolean): Poly[] {
+  const out = P(0, 0, s), o = -ROOF_OVERHANG
+  return under([
+    poly(out, P(0, 0, zs), P(8, 0, zs), P(8, 8 + KICK, zs), P(0, LIFT, zs)),
+    poly(out, P(8, 0, zs), P(16, 0, zs), P(16, 16 + KICK, zs), P(8, 8 + LIFT, zs)),
+    ...(hasEave ? [poly(out, P(o, o, zs), P(0, 0, zs), P(0, BOARD, zs), P(o, o + BOARD, zs))] : []),
+  ])
+}
+
+function slopeStraight(hasEave: boolean, trimLeft: boolean, trimRight: boolean, closeLeft = false, closeRight = false): Poly[] {
   const ps = [bottom(), ...backX(16 + KICK), ...rows(0, 16)]
   if (hasEave) ps.push(...eave(0, 16))
   if (trimLeft) ps.push(...trimSide(0, -1, hasEave))
+  else if (closeLeft) ps.push(...closedSide(0, -1, hasEave))
   if (trimRight) ps.push(...trimSide(16, 1, hasEave))
+  else if (closeRight) ps.push(...closedSide(16, 1, hasEave))
   return ps
 }
 
@@ -377,13 +395,15 @@ function cullOf(pts: readonly V3[], n: V3): number {
 /** Geometry key: the kind, facing and the parts of the form that change the polygons. */
 function geomKey(state: number, code: number): number {
   const k = kindCode(state), f = state & 3
-  const key = (kind: number, fc: number, c: number, m: number, e: number, l: number, r: number) => ((((((kind * 4 + fc) * 3 + c) * 2 + m) * 2 + e) * 2 + l) * 2 + r)
+  // `ends`: a straight slope's sides closed against a solid block (bit 0 left, bit 1 right).
+  const key = (kind: number, fc: number, c: number, m: number, e: number, l: number, r: number, ends = 0) =>
+    ((((((kind * 4 + fc) * 3 + c) * 2 + m) * 2 + e) * 2 + l) * 2 + r) * 4 + ends
   if (k === APEX) return key(APEX, 0, 0, 0, 0, 0, 0)
   const e = (code >> 4) & 1, l = (code >> 5) & 1, r = (code >> 6) & 1
   // A ridge's open ends: the corner and mirror slots (always 0 for a ridge) hold them; a trim implies its end.
   if (k === RIDGE) return key(RIDGE, f, (code >> 7) & 1 | l, ((code >> 8) & 1) | r, 0, l, r)
   const c = Math.min(2, code & 3), rel = (((code >> 2) & 3) - f) & 3
-  if (c === 0 || (rel !== 1 && rel !== 3)) return key(SLOPE, f, 0, 0, e, l, r)
+  if (c === 0 || (rel !== 1 && rel !== 3)) return key(SLOPE, f, 0, 0, e, l, r, (l ? 0 : (code >> 7) & 1) | (r ? 0 : (code >> 7) & 2))
   return c === 1 ? key(SLOPE, f, 1, rel === 3 ? 1 : 0, e, 0, 0) : key(SLOPE, f, 2, rel === 3 ? 1 : 0, 0, 0, 0)
 }
 
@@ -393,7 +413,7 @@ function build(state: number, code: number): Placed[] {
   const tl = (code & 32) !== 0, tr = (code & 64) !== 0, e = (code & 16) !== 0
   if (k === RIDGE) return place(ridge(tl, tr, (code & 128) !== 0, (code & 256) !== 0), false, f)
   const c = Math.min(2, code & 3), rel = (((code >> 2) & 3) - f) & 3
-  if (c === 0 || (rel !== 1 && rel !== 3)) return place(slopeStraight(e, tl, tr), false, f)
+  if (c === 0 || (rel !== 1 && rel !== 3)) return place(slopeStraight(e, tl, tr, (code & 128) !== 0, (code & 256) !== 0), false, f)
   return place(c === 1 ? slopeOuter(e) : slopeInner(), rel === 3, f)
 }
 

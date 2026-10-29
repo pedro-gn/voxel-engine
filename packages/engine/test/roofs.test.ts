@@ -69,6 +69,16 @@ describe('roof shape', () => {
     expect(roofForm(roofState('ridge', 1), at)).toMatchObject({ trimLeft: false, endLeft: true, trimRight: true, endRight: true })
   })
 
+  it('closes its side against a solid block: eave end and the strip above the cell', () => {
+    // A slope facing +x with a one-block chimney on its right (+z) and air on its left (−z).
+    const at = (dx: number, dy: number, dz: number) => (dx === 0 && dy === 0 && dz === 1 ? ROOF_SOLID : -1)
+    const form = roofForm(roofState('slope', 0), at)
+    expect(form).toMatchObject({ corner: 'straight', eave: true, trimLeft: true, trimRight: false })
+    const onSide = roofFaces(roofState('slope', 0), form).filter((f) => f.pts.every((p) => p[2] === 16))
+    expect(onSide.some((f) => f.pts.some((p) => p[0] < 0))).toBe(true) // the eave board's end
+    expect(onSide.some((f) => f.pts.some((p) => p[1] > 16))).toBe(true) // the shingle strip above the chimney
+  })
+
   it('faces stay within the overhang and normals fit the table', () => {
     expect(ROOF_OVERHANG).toBe(6)
     expect(ROOF_NORMALS.length).toBeLessThanOrEqual(32)

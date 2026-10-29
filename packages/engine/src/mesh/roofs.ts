@@ -63,10 +63,13 @@ let curVoxels: Uint16Array = new Uint16Array(0)
 let curShape: Uint8Array = new Uint8Array(0)
 let curPi = 0
 let curOpaque: Uint8Array = new Uint8Array(0)
-/** A neighbour's roof state for `roofFormCode`, `ROOF_SOLID` for an opaque block, or −1. One shared closure, no allocation per cell. */
+/**
+ * A neighbour's roof state for `roofFormCode`, `ROOF_SOLID` for an opaque cube or any other shaped block (no trim pokes
+ * into a slab, stair, post or ladder), or −1. One shared closure, no allocation per cell.
+ */
 const roofAt = (dx: number, dy: number, dz: number): number => {
   const v = curVoxels[curPi + dx + dz * PAD + dy * PAD * PAD]!, id = voxelId(v)
-  return curShape[id] === SHAPE.ROOF ? voxelState(v) : curOpaque[id] ? ROOF_SOLID : -1
+  return curShape[id] === SHAPE.ROOF ? voxelState(v) : curOpaque[id] || curShape[id] !== 0 ? ROOF_SOLID : -1
 }
 
 /** Packed faces by (state, form code), filled on first use. */
