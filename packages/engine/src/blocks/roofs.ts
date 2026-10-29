@@ -98,7 +98,15 @@ export interface RoofFace {
   readonly pts: readonly (readonly [number, number, number])[]
   readonly normal: number
   readonly cull: number
+  readonly texture: RoofTexture
 }
+
+/**
+ * Which of the block's textures a roof polygon wears: `side` for the shingle boards, `bottom` for the underlay (the
+ * body's sides and bottom, soffits, gable trims), `top` for the caps (hip, ridge and apex). One texture for all three
+ * draws the whole roof in it.
+ */
+export type RoofTexture = 'top' | 'side' | 'bottom'
 
 /** A roof face normal and the axis face (0..5) whose texture projection the face uses: rows along the eave on slopes. */
 export interface RoofNormal { readonly n: readonly [number, number, number]; readonly uvFace: number }
@@ -106,14 +114,18 @@ export interface RoofNormal { readonly n: readonly [number, number, number]; rea
 // ---- geometry, in a canonical frame: a slope's high side is +x; a corner's second high side is +z --------------------
 
 type V3 = [number, number, number]
-interface Poly { pts: V3[]; hint: V3 }
+/** A canonical polygon: its corners, a rough outward direction (fixes the winding) and its texture (default the side's). */
+interface Poly { pts: V3[]; hint: V3; tex?: RoofTexture }
 const P = (x: number, y: number, z: number): V3 => [x, y, z]
 const poly = (hint: V3, ...pts: V3[]): Poly => ({ pts, hint })
 const NX: V3 = [-1, 0, 0], PX: V3 = [1, 0, 0], NY: V3 = [0, -1, 0], PY: V3 = [0, 1, 0], NZ: V3 = [0, 0, -1], PZ: V3 = [0, 0, 1]
 /** Up the slope toward +x (board tops, 45° tops), and down toward +x (undersides). */
 const UPX: V3 = [-1, 1, 0], DNX: V3 = [1, -1, 0]
 /** x ↔ z (a corner's second half); winding is fixed later from the hint. */
-const swap = (p: Poly): Poly => ({ pts: p.pts.map(([x, y, z]) => P(z, y, x)), hint: [p.hint[2], p.hint[1], p.hint[0]] })
+const swap = (p: Poly): Poly => ({ ...p, pts: p.pts.map(([x, y, z]) => P(z, y, x)), hint: [p.hint[2], p.hint[1], p.hint[0]] })
+/** Polygons drawn with the block's bottom texture (the underlay: the body, soffits, trims) or top texture (caps). */
+const under = (ps: Poly[]): Poly[] => ps.map((p) => ({ ...p, tex: 'bottom' }))
+const capped = (ps: Poly[]): Poly[] => ps.map((p) => ({ ...p, tex: 'top' }))
 /** Quarter turns about the cell centre, +x → +z. */
 function turn(p: Poly, q: number): Poly {
   let pts = p.pts, hint = p.hint
@@ -121,7 +133,7 @@ function turn(p: Poly, q: number): Poly {
     pts = pts.map(([x, y, z]) => P(16 - z, y, x))
     hint = [-hint[2], hint[1], hint[0]]
   }
-  return { pts, hint }
+  return { ...p, pts, hint }
 }
 const turnAll = (ps: Poly[], q: number): Poly[] => ps.map((p) => turn(p, q))
 
@@ -149,7 +161,7 @@ function eave(z0: number, z1: number): Poly[] {
   return [
     poly(UPX, P(o, o + BOARD, z0), P(0, BOARD, z0), P(0, BOARD, z1), P(o, o + BOARD, z1)),
     poly(NX, P(o, o, z0), P(o, o + BOARD, z0), P(o, o + BOARD, z1), P(o, o, z1)),
-    poly(DNX, P(o, o, z0), P(0, 0, z0), P(0, 0, z1), P(o, o, z1)),
+    ...under([poly(DNX, P(o, o, z0), P(0, 0, z0), P(0, 0, z1), P(o, o, z1))]),
   ]
 }
 
@@ -172,20 +184,20 @@ function trimSide(zs: number, s: number, hasEave: boolean): Poly[] {
     ps.push(poly(inn, P(o, o + BOARD, zs), P(0, BOARD, zs), P(0, TRIM_H, zs), P(o, o + TRIM_H, zs)))
     ps.push(poly(NX, P(o, o, zs), P(o, o, zo), P(o, o + TRIM_H, zo), P(o, o + TRIM_H, zs)))
   }
-  return ps
+  return under(ps)
 }
 
-const bottom = (): Poly => poly(NY, P(0, 0, 0), P(16, 0, 0), P(16, 0, 16), P(0, 0, 16))
+const bottom = (): Poly => ({ ...poly(NY, P(0, 0, 0), P(16, 0, 0), P(16, 0, 16), P(0, 0, 16)), tex: 'bottom' })
 /** The +x side of a cell, full, and the strip above it up to the last row's top. */
-const backX = (top = 16): Poly[] => [
+const backX = (top = 16): Poly[] => under([
   poly(PX, P(16, 0, 0), P(16, 16, 0), P(16, 16, 16), P(16, 0, 16)),
   ...(top > 16 ? [poly(PX, P(16, 16, 0), P(16, top, 0), P(16, top, 16), P(16, 16, 16))] : []),
-]
+])
 /** The shingle profile (y up to the rows' tops, rising along z) on the plane x = px, facing `hint`. */
-const profileX = (px: number, hint: V3): Poly[] => [
+const profileX = (px: number, hint: V3): Poly[] => under([
   poly(hint, P(px, 0, 0), P(px, 0, 8), P(px, 8 + KICK, 8), P(px, LIFT, 0)),
   poly(hint, P(px, 0, 8), P(px, 0, 16), P(px, 16 + KICK, 16), P(px, 8 + LIFT, 8)),
-]
+])
 
 function slopeStraight(hasEave: boolean, trimLeft: boolean, trimRight: boolean): Poly[] {
   const ps = [bottom(), ...backX(16 + KICK), ...rows(0, 16)]
@@ -207,7 +219,7 @@ function hipCap(ta: number, tb: number, base: number, lowEnd: boolean, highEnd: 
   ]
   if (lowEnd) ps.push(poly([-1, 0, -1], B1(ta), E1(ta), C(ta), E2(ta)), poly([-1, 0, -1], B1(ta), E2(ta), B2(ta)))
   if (highEnd) ps.push(poly([1, 0, 1], B1(tb), E1(tb), C(tb), E2(tb)), poly([1, 0, 1], B1(tb), E2(tb), B2(tb)))
-  return ps
+  return capped(ps)
 }
 
 /** Outer (hip) corner: y = min(x, z); half A (z ≥ x) rises along x, half B (x ≥ z) along z; a cap along the hip. */
@@ -224,7 +236,7 @@ function slopeOuter(hasEave: boolean): Poly[] {
     a.push(
       poly(UPX, P(o, o + BOARD, o), P(0, BOARD, 0), P(0, BOARD, 16), P(o, o + BOARD, 16)),
       poly(NX, P(o, o, o), P(o, o + BOARD, o), P(o, o + BOARD, 16), P(o, o, 16)),
-      poly(DNX, P(o, o, o), P(0, 0, 0), P(0, 0, 16), P(o, o, 16)),
+      ...under([poly(DNX, P(o, o, o), P(0, 0, 0), P(0, 0, 16), P(o, o, 16))]),
     )
   }
   return [bottom(), ...a, ...a.map(swap), ...hipCap(hasEave ? -4 : 0, 16, 0, hasEave, true)]
@@ -247,18 +259,20 @@ function slopeInner(): Poly[] {
 /** Ridge (canonical facing 0): halves rise from x = 0 and x = 16 to the line x = 8 past the cell top; a cap on the line. */
 function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
   const half: Poly[] = [
-    poly(NX, P(0, 0, 0), P(0, 16, 0), P(0, 16, 16), P(0, 0, 16)),
+    ...under([poly(NX, P(0, 0, 0), P(0, 16, 0), P(0, 16, 16), P(0, 0, 16))]),
     poly(NX, P(0, 16, 0), P(0, 16 + LIFT, 0), P(0, 16 + LIFT, 16), P(0, 16, 16)),
     poly(UPX, P(0, 16 + LIFT, 0), P(8, 16 + 8 + KICK, 0), P(8, 16 + 8 + KICK, 16), P(0, 16 + LIFT, 16)),
     // The cap's half: its 45° top and its side down into the shingles.
-    poly(UPX, P(4, 26, 0), P(8, 30, 0), P(8, 30, 16), P(4, 26, 16)),
-    poly(NX, P(4, 22, 0), P(4, 26, 0), P(4, 26, 16), P(4, 22, 16)),
+    ...capped([
+      poly(UPX, P(4, 26, 0), P(8, 30, 0), P(8, 30, 16), P(4, 26, 16)),
+      poly(NX, P(4, 22, 0), P(4, 26, 0), P(4, 26, 16), P(4, 22, 16)),
+    ]),
   ]
-  const mirrorX = (p: Poly): Poly => ({ pts: p.pts.map(([x, y, z]) => P(16 - x, y, z)), hint: [-p.hint[0], p.hint[1], p.hint[2]] })
+  const mirrorX = (p: Poly): Poly => ({ ...p, pts: p.pts.map(([x, y, z]) => P(16 - x, y, z)), hint: [-p.hint[0], p.hint[1], p.hint[2]] })
   const ps = [bottom(), ...half, ...half.map(mirrorX)]
   const side = (zs: number, s: number): Poly[] => {
     const zo = zs + s * TRIM_W, out = P(0, 0, s), inn = P(0, 0, -s)
-    return [
+    return under([
       poly(out, P(0, 0, zs), P(16, 0, zs), P(16, 16, zs), P(0, 16, zs)),
       poly(out, P(0, 16, zs), P(16, 16, zs), P(8, 24, zs)),
       poly(out, P(0, 16, zo), P(8, 24, zo), P(8, 30, zo), P(0, 22, zo)),
@@ -269,7 +283,7 @@ function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
       poly([-1, -1, 0], P(16, 16, zs), P(8, 24, zs), P(8, 24, zo), P(16, 16, zo)),
       poly(inn, P(0, 20, zs), P(8, 26, zs), P(8, 30, zs), P(0, 22, zs)),
       poly(inn, P(8, 26, zs), P(16, 20, zs), P(16, 22, zs), P(8, 30, zs)),
-    ]
+    ])
   }
   if (trimLeft) ps.push(...side(0, -1))
   if (trimRight) ps.push(...side(16, 1))
@@ -279,26 +293,26 @@ function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
 /** Apex: four quarter-slopes from the cell's top edges to (8, 24, 8), hip caps on the diagonals and a small cap block. */
 function apex(): Poly[] {
   const quarter: Poly[] = [
-    poly(NX, P(0, 0, 0), P(0, 16, 0), P(0, 16, 16), P(0, 0, 16)),
+    ...under([poly(NX, P(0, 0, 0), P(0, 16, 0), P(0, 16, 16), P(0, 0, 16))]),
     poly(NX, P(0, 16, 0), P(0, 16 + LIFT, 0), P(0, 16 + LIFT, 16), P(0, 16, 16)),
     poly(UPX, P(0, 16 + LIFT, 0), P(8, 16 + 8 + KICK, 8), P(0, 16 + LIFT, 16)),
     ...hipCap(0, 8, 16, false, false),
   ]
-  const cap: Poly[] = [
+  const cap: Poly[] = capped([
     poly(PY, P(5, 31, 5), P(11, 31, 5), P(11, 31, 11), P(5, 31, 11)),
     poly(NX, P(5, 23, 5), P(5, 31, 5), P(5, 31, 11), P(5, 23, 11)),
-  ]
+  ])
   return [bottom(), ...[0, 1, 2, 3].flatMap((q) => turnAll(quarter, q)), cap[0]!, ...[0, 1, 2, 3].map((q) => turn(cap[1]!, q))]
 }
 
 // ---- placing, normals, cache -------------------------------------------------------------------------------------
 
-interface Placed { pts: V3[]; n: V3; cull: number }
+interface Placed { pts: V3[]; n: V3; cull: number; tex: RoofTexture }
 
 /** Mirrors z (a corner turned the other way), turns by `q`, orders each polygon counter-clockwise about its hint. */
 function place(ps: Poly[], mirror: boolean, q: number): Placed[] {
   return ps.map((p0) => {
-    let p = mirror ? { pts: p0.pts.map(([x, y, z]) => P(x, y, 16 - z)), hint: [p0.hint[0], p0.hint[1], -p0.hint[2]] as V3 } : p0
+    let p = mirror ? { ...p0, pts: p0.pts.map(([x, y, z]) => P(x, y, 16 - z)), hint: [p0.hint[0], p0.hint[1], -p0.hint[2]] as V3 } : p0
     p = turn(p, q)
     let pts = p.pts
     const n = newell(pts)
@@ -306,7 +320,7 @@ function place(ps: Poly[], mirror: boolean, q: number): Placed[] {
     const len = Math.hypot(n[0], n[1], n[2])
     if (len === 0) throw new Error('roof: degenerate polygon')
     const u: V3 = [n[0] / len, n[1] / len, n[2] / len]
-    return { pts, n: u, cull: cullOf(pts, u) }
+    return { pts, n: u, cull: cullOf(pts, u), tex: p.tex ?? 'side' }
   })
 }
 
@@ -389,6 +403,7 @@ for (const [key, list] of placedByKey) {
     pts: Object.freeze(p.pts.map((q) => Object.freeze(q) as readonly [number, number, number])),
     normal: normalIndex.get(nKey(p.n))!,
     cull: p.cull,
+    texture: p.tex,
   }))))
 }
 

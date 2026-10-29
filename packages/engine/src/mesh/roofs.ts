@@ -1,4 +1,4 @@
-import { ROOF_NORMALS, roofFacesOf, roofFormCode, type RoofFace } from '../blocks/roofs.ts'
+import { roofFacesOf, roofFormCode, type RoofFace } from '../blocks/roofs.ts'
 import { SHAPE } from '../blocks/shapes.ts'
 import { PAD, type ChunkSnapshot } from '../world/reader.ts'
 import { voxelId, voxelState } from '../world/voxel.ts'
@@ -10,9 +10,10 @@ import { packA, packB, packTilted } from './vertexFormat.ts'
 /** Padded-index offset of the cell each face looks into: +x −x +y −y +z −z. */
 const N_OFF = [1, -1, PAD * PAD, -PAD * PAD, PAD, -PAD] as const
 const NO_CULL = 255
+const TEX_FACE = { top: 2, side: 0, bottom: 3 } as const
 
 /**
- * Per face, 10 words: its cull face (NO_CULL: never), its texture face (ROOF_NORMALS uvFace), then per corner word A
+ * Per face, 10 words: its cull face (NO_CULL: never), the face whose texture layer it wears (2 top, 0 side, 3 bottom), then per corner word A
  * for a cell at the origin (TILT_NORMAL, the normal index, the corner's whole-block offset, biased) and word B's
  * fx/fy/fz. A triangle repeats its last corner.
  */
@@ -25,7 +26,7 @@ function packedOf(faces: readonly RoofFace[]): Uint32Array {
   faces.forEach((f, i) => {
     const o = i * STRIDE
     out[o] = f.cull < 0 ? NO_CULL : f.cull
-    out[o + 1] = ROOF_NORMALS[f.normal]!.uvFace
+    out[o + 1] = TEX_FACE[f.texture]
     for (let c = 0; c < 4; c++) {
       const [x, y, z] = f.pts[Math.min(c, f.pts.length - 1)]!
       out[o + 2 + c] = packTilted(Math.floor(x / 16), Math.floor(y / 16), Math.floor(z / 16), f.normal, c)
@@ -54,8 +55,8 @@ const qb = new Uint32Array(4)
 /**
  * One roof cell's quads into the opaque stream (blocks/roofs.ts): its form from the roof cells around it, then every
  * polygon as a tilted quad (a triangle repeats a corner), lit by the light around the roof's own cell (`faceLight`),
- * tiled by its texture face, AO 0, never layer-cut-flagged. A polygon lying on a cell side is dropped against an opaque
- * neighbour.
+ * in the block's top, side or bottom texture (`RoofFace.texture`; projected as the normal's `uvFace`), AO 0, never
+ * layer-cut-flagged. A polygon lying on a cell side is dropped against an opaque neighbour.
  */
 export function meshRoofCell(s: ChunkSnapshot, t: MeshTables, pi: number, x: number, y: number, z: number, out: QuadBuilder): void {
   const v = s.voxels[pi]!
