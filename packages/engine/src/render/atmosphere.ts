@@ -17,7 +17,9 @@ export interface Atmosphere {
   grade: { exposure: number; saturation: number; contrast: number; highlights: Rgb; shadows: Rgb }
   /**
    * The colour and strength of block light (`emits`), keyed by time of day like the rest: e.g. subtle by day, warm at
-   * night. Absent means DEFAULT_BLOCK_LIGHT (resolveBlockLight). Every resolved atmosphere carries it.
+   * night. Absent means DEFAULT_BLOCK_LIGHT (resolveBlockLight). Every resolved atmosphere carries it. As with every
+   * atmosphere colour, the input is a `'#rrggbb'` sRGB string and the resolved value linear RGB (the default, linear
+   * [1, .72, .42], is about `'#ffddad'`).
    */
   blockLight?: { color: Rgb; intensity: number }
 }
