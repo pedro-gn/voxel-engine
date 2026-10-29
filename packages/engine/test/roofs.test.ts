@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ROOF_NORMALS, ROOF_OVERHANG, ROOF_REACH, roofFaces, roofForm, roofKindOf, roofState, type RoofForm, type RoofKind,
+  ROOF_NORMALS, ROOF_OVERHANG, ROOF_REACH, ROOF_SOLID, roofFaces, roofForm, roofKindOf, roofState, type RoofForm, type RoofKind,
 } from '../src/blocks/roofs.ts'
 import { turnShapeState, type Facing } from '../src/blocks/shapes.ts'
 
@@ -58,6 +58,15 @@ describe('roof shape', () => {
     const ring = new Map<string, number>()
     for (let x = 0; x < 3; x++) for (let z = 0; z < 3; z++) if (x !== 1 || z !== 1) ring.set(`${x},0,${z}`, roofState('slope', inward(x, z, 3)))
     expect(formAt(ring, '2,0,2')).toMatchObject({ corner: 'outer', trimLeft: false, trimRight: false })
+  })
+
+  it('trims only toward open air, not against a solid block', () => {
+    expect(ROOF_SOLID).toBe(-2)
+    // A lone slope facing +z (left = +x, right = −x): a chimney (solid, not a roof) on its left, air on its right.
+    const at = (dx: number, dy: number, dz: number) => (dx === 1 && dy === 0 && dz === 0 ? ROOF_SOLID : -1)
+    expect(roofForm(roofState('slope', 1), at)).toMatchObject({ corner: 'straight', trimLeft: false, trimRight: true })
+    // A ridge against a solid block keeps its closed end but no barge board there.
+    expect(roofForm(roofState('ridge', 1), at)).toMatchObject({ trimLeft: false, endLeft: true, trimRight: true, endRight: true })
   })
 
   it('faces stay within the overhang and normals fit the table', () => {

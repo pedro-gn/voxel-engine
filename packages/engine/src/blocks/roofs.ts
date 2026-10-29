@@ -34,7 +34,7 @@ export type RoofCorner = 'straight' | 'outer' | 'inner'
 /**
  * A roof cell's drawn form, derived from its neighbours (`roofForm`). `side`: a corner's second high side (a straight
  * piece's own facing). `eave`: a slope with no roof in front of it one level down hangs its lowest row past the cell.
- * `trimLeft` / `trimRight`: a straight slope or a ridge with no roof on that side (left = facing + 3, right = facing + 1)
+ * `trimLeft` / `trimRight`: a straight slope or a ridge with air (no roof, no solid block) on that side (left = facing + 3, right = facing + 1)
  * gets one continuous tilted board along that edge (a gable's barge board). `endLeft` / `endRight`: a ridge whose
  * neighbour along its line on that side is not a ridge on the same axis closes that end with its profile (always with
  * a trim; also against an apex or a slope, which do not continue its line).
@@ -63,13 +63,19 @@ const FORMS: readonly RoofForm[] = Array.from({ length: ROOF_FORM_CODES }, (_, c
 const DX = [1, 0, -1, 0] as const
 const DZ = [0, 1, 0, -1] as const
 
+/**
+ * What a form lookup returns for a cell holding a solid (opaque) block that is not a roof: no trim on that side (the
+ * roof edge is closed by the block), still no roof neighbour. −1 stays "air or a non-solid block".
+ */
+export const ROOF_SOLID = -2
+
 let curAt: (dx: number, dy: number, dz: number) => number = () => -1
 /** A same-level neighbour's slope facing for `stairForm`, or −1 (ridges and apexes are not slopes for corners). */
 const slopeAt = (dx: number, dz: number): number => { const s = curAt(dx, 0, dz); return s >= 0 && kindCode(s) === SLOPE ? s & 3 : -1 }
 
 /**
- * The form code of a roof cell (see `roofForm`); `at(dx, dy, dz)` returns the roof state of the cell at that offset, or
- * −1 when it holds no roof-shaped block (whatever its id). Reads the 4 horizontal neighbours and the cell in front one
+ * The form code of a roof cell (see `roofForm`); `at(dx, dy, dz)` returns the roof state of the cell at that offset,
+ * `ROOF_SOLID` when it holds an opaque block that is not roof-shaped, or −1 otherwise (air, a see-through block). Reads the 4 horizontal neighbours and the cell in front one
  * level down.
  */
 export function roofFormCode(state: number, at: (dx: number, dy: number, dz: number) => number): number {
@@ -77,7 +83,8 @@ export function roofFormCode(state: number, at: (dx: number, dy: number, dz: num
   if (k === APEX) return 0
   const l = (f + 3) & 3, r = (f + 1) & 3
   const sl = at(DX[l]!, 0, DZ[l]!), sr = at(DX[r]!, 0, DZ[r]!)
-  const trimLeft = sl < 0, trimRight = sr < 0
+  // A trim only toward open air: against a solid block the edge is closed (and its side face culled).
+  const trimLeft = sl === -1, trimRight = sr === -1
   if (k === RIDGE) {
     const continues = (n: number) => n >= 0 && kindCode(n) === RIDGE && ((n ^ f) & 1) === 0
     return formCode(0, f, false, trimLeft, trimRight, !continues(sl), !continues(sr))
@@ -93,7 +100,7 @@ export function roofFormCode(state: number, at: (dx: number, dy: number, dz: num
 
 /**
  * A roof cell's form from its neighbours, by shape: corners by Minecraft's stair rule (`stairForm`) over same-level
- * slopes, an eave when no roof lies in front one level down, a trim on a straight slope's or ridge's open side. `at` as
+ * slopes, an eave when no roof lies in front one level down, a trim on a straight slope's or ridge's side open to air. `at` as
  * `roofFormCode`. Returns shared frozen objects.
  */
 export function roofForm(state: number, at: (dx: number, dy: number, dz: number) => number): RoofForm {

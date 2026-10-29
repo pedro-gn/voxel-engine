@@ -1,4 +1,4 @@
-import { ROOF_FORM_CODES, ROOF_NORMALS, roofFacesOf, roofFormCode, type RoofFace } from '../blocks/roofs.ts'
+import { ROOF_FORM_CODES, ROOF_NORMALS, ROOF_SOLID, roofFacesOf, roofFormCode, type RoofFace } from '../blocks/roofs.ts'
 import { SHAPE } from '../blocks/shapes.ts'
 import { PAD, type ChunkSnapshot } from '../world/reader.ts'
 import { voxelId, voxelState } from '../world/voxel.ts'
@@ -62,10 +62,11 @@ function packedOf(faces: readonly RoofFace[]): Uint32Array {
 let curVoxels: Uint16Array = new Uint16Array(0)
 let curShape: Uint8Array = new Uint8Array(0)
 let curPi = 0
-/** A neighbour's roof state for `roofFormCode`, or −1. One shared closure, no allocation per cell. */
+let curOpaque: Uint8Array = new Uint8Array(0)
+/** A neighbour's roof state for `roofFormCode`, `ROOF_SOLID` for an opaque block, or −1. One shared closure, no allocation per cell. */
 const roofAt = (dx: number, dy: number, dz: number): number => {
-  const v = curVoxels[curPi + dx + dz * PAD + dy * PAD * PAD]!
-  return curShape[voxelId(v)] === SHAPE.ROOF ? voxelState(v) : -1
+  const v = curVoxels[curPi + dx + dz * PAD + dy * PAD * PAD]!, id = voxelId(v)
+  return curShape[id] === SHAPE.ROOF ? voxelState(v) : curOpaque[id] ? ROOF_SOLID : -1
 }
 
 /** Packed faces by (state, form code), filled on first use. */
@@ -88,6 +89,7 @@ export function meshRoofCell(s: ChunkSnapshot, t: MeshTables, pi: number, x: num
   const id = voxelId(v), state = voxelState(v)
   curVoxels = s.voxels
   curShape = t.shape
+  curOpaque = t.opaque
   curPi = pi
   const code = roofFormCode(state, roofAt), ci = (state & 15) * ROOF_FORM_CODES + code
   const faces = packedByCode[ci] ??= packedOf(roofFacesOf(state, code))
