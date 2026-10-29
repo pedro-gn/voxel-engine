@@ -35,7 +35,9 @@ export type RoofCorner = 'straight' | 'outer' | 'inner'
  * A roof cell's drawn form, derived from its neighbours (`roofForm`). `side`: a corner's second high side (a straight
  * piece's own facing). `eave`: a slope with no roof in front of it one level down hangs its lowest row past the cell.
  * `trimLeft` / `trimRight`: a straight slope or a ridge with no roof on that side (left = facing + 3, right = facing + 1)
- * gets one continuous tilted board along that edge (a gable's barge board).
+ * gets one continuous tilted board along that edge (a gable's barge board). `endLeft` / `endRight`: a ridge whose
+ * neighbour along its line on that side is not a ridge on the same axis closes that end with its profile (always with
+ * a trim; also against an apex or a slope, which do not continue its line).
  */
 export interface RoofForm {
   readonly corner: RoofCorner
@@ -43,14 +45,19 @@ export interface RoofForm {
   readonly eave: boolean
   readonly trimLeft: boolean
   readonly trimRight: boolean
+  readonly endLeft: boolean
+  readonly endRight: boolean
 }
 
 const CORNERS: readonly RoofCorner[] = ['straight', 'outer', 'inner']
-/** Form code: corner (bits 0–1) | side << 2 | eave << 4 | trimLeft << 5 | trimRight << 6. */
-const formCode = (corner: number, side: number, eave: boolean, trimLeft: boolean, trimRight: boolean): number =>
-  corner | (side << 2) | (eave ? 16 : 0) | (trimLeft ? 32 : 0) | (trimRight ? 64 : 0)
-const FORMS: readonly RoofForm[] = Array.from({ length: 128 }, (_, c) => Object.freeze({
+/** How many form codes there are. */
+export const ROOF_FORM_CODES = 512
+/** Form code: corner (bits 0–1) | side << 2 | eave << 4 | trimLeft << 5 | trimRight << 6 | endLeft << 7 | endRight << 8. */
+const formCode = (corner: number, side: number, eave: boolean, trimLeft: boolean, trimRight: boolean, endLeft = false, endRight = false): number =>
+  corner | (side << 2) | (eave ? 16 : 0) | (trimLeft ? 32 : 0) | (trimRight ? 64 : 0) | (endLeft ? 128 : 0) | (endRight ? 256 : 0)
+const FORMS: readonly RoofForm[] = Array.from({ length: ROOF_FORM_CODES }, (_, c) => Object.freeze({
   corner: CORNERS[Math.min(2, c & 3)]!, side: ((c >> 2) & 3) as Facing, eave: (c & 16) !== 0, trimLeft: (c & 32) !== 0, trimRight: (c & 64) !== 0,
+  endLeft: (c & 128) !== 0, endRight: (c & 256) !== 0,
 }))
 
 const DX = [1, 0, -1, 0] as const
@@ -69,8 +76,12 @@ export function roofFormCode(state: number, at: (dx: number, dy: number, dz: num
   const k = kindCode(state), f = state & 3
   if (k === APEX) return 0
   const l = (f + 3) & 3, r = (f + 1) & 3
-  const trimLeft = at(DX[l]!, 0, DZ[l]!) < 0, trimRight = at(DX[r]!, 0, DZ[r]!) < 0
-  if (k === RIDGE) return formCode(0, f, false, trimLeft, trimRight)
+  const sl = at(DX[l]!, 0, DZ[l]!), sr = at(DX[r]!, 0, DZ[r]!)
+  const trimLeft = sl < 0, trimRight = sr < 0
+  if (k === RIDGE) {
+    const continues = (n: number) => n >= 0 && kindCode(n) === RIDGE && ((n ^ f) & 1) === 0
+    return formCode(0, f, false, trimLeft, trimRight, !continues(sl), !continues(sr))
+  }
   const eave = at(-DX[f]!, -1, -DZ[f]!) < 0
   curAt = at
   const sf = stairForm(f, slopeAt)
@@ -256,8 +267,11 @@ function slopeInner(): Poly[] {
   return [bottom(), ...a, ...a.map(swap), valley]
 }
 
-/** Ridge (canonical facing 0): halves rise from x = 0 and x = 16 to the line x = 8 past the cell top; a cap on the line. */
-function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
+/**
+ * Ridge (canonical facing 0): halves rise from x = 0 and x = 16 to the line x = 8 past the cell top; a cap on the line.
+ * An open end draws the profile (the cell side and the triangle above it); a trimmed end adds the barge board.
+ */
+function ridge(trimLeft: boolean, trimRight: boolean, endLeft: boolean, endRight: boolean): Poly[] {
   const half: Poly[] = [
     ...under([poly(NX, P(0, 0, 0), P(0, 16, 0), P(0, 16, 16), P(0, 0, 16))]),
     poly(NX, P(0, 16, 0), P(0, 16 + LIFT, 0), P(0, 16 + LIFT, 16), P(0, 16, 16)),
@@ -270,11 +284,22 @@ function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
   ]
   const mirrorX = (p: Poly): Poly => ({ ...p, pts: p.pts.map(([x, y, z]) => P(16 - x, y, z)), hint: [-p.hint[0], p.hint[1], p.hint[2]] })
   const ps = [bottom(), ...half, ...half.map(mirrorX)]
-  const side = (zs: number, s: number): Poly[] => {
+  const side = (zs: number, s: number, trim: boolean): Poly[] => {
     const zo = zs + s * TRIM_W, out = P(0, 0, s), inn = P(0, 0, -s)
-    return under([
+    const end = [
       poly(out, P(0, 0, zs), P(16, 0, zs), P(16, 16, zs), P(0, 16, zs)),
       poly(out, P(0, 16, zs), P(16, 16, zs), P(8, 24, zs)),
+    ]
+    // Without a trim board in front, the shingle rows' and the cap's ends close the profile.
+    if (!trim) return under([
+      ...end,
+      poly(out, P(0, 16, zs), P(8, 24, zs), P(8, 8 + 16 + KICK, zs), P(0, 16 + LIFT, zs)),
+      poly(out, P(8, 24, zs), P(16, 16, zs), P(16, 16 + LIFT, zs), P(8, 8 + 16 + KICK, zs)),
+      poly(out, P(4, 23, zs), P(8, 26, zs), P(8, 30, zs), P(4, 26, zs)),
+      poly(out, P(8, 26, zs), P(12, 23, zs), P(12, 26, zs), P(8, 30, zs)),
+    ])
+    return under([
+      ...end,
       poly(out, P(0, 16, zo), P(8, 24, zo), P(8, 30, zo), P(0, 22, zo)),
       poly(out, P(8, 24, zo), P(16, 16, zo), P(16, 22, zo), P(8, 30, zo)),
       poly(UPX, P(0, 22, zs), P(8, 30, zs), P(8, 30, zo), P(0, 22, zo)),
@@ -285,8 +310,8 @@ function ridge(trimLeft: boolean, trimRight: boolean): Poly[] {
       poly(inn, P(8, 26, zs), P(16, 20, zs), P(16, 22, zs), P(8, 30, zs)),
     ])
   }
-  if (trimLeft) ps.push(...side(0, -1))
-  if (trimRight) ps.push(...side(16, 1))
+  if (endLeft || trimLeft) ps.push(...side(0, -1, trimLeft))
+  if (endRight || trimRight) ps.push(...side(16, 1, trimRight))
   return ps
 }
 
@@ -348,7 +373,8 @@ function geomKey(state: number, code: number): number {
   const key = (kind: number, fc: number, c: number, m: number, e: number, l: number, r: number) => ((((((kind * 4 + fc) * 3 + c) * 2 + m) * 2 + e) * 2 + l) * 2 + r)
   if (k === APEX) return key(APEX, 0, 0, 0, 0, 0, 0)
   const e = (code >> 4) & 1, l = (code >> 5) & 1, r = (code >> 6) & 1
-  if (k === RIDGE) return key(RIDGE, f, 0, 0, 0, l, r)
+  // A ridge's open ends: the corner and mirror slots (always 0 for a ridge) hold them; a trim implies its end.
+  if (k === RIDGE) return key(RIDGE, f, (code >> 7) & 1 | l, ((code >> 8) & 1) | r, 0, l, r)
   const c = Math.min(2, code & 3), rel = (((code >> 2) & 3) - f) & 3
   if (c === 0 || (rel !== 1 && rel !== 3)) return key(SLOPE, f, 0, 0, e, l, r)
   return c === 1 ? key(SLOPE, f, 1, rel === 3 ? 1 : 0, e, 0, 0) : key(SLOPE, f, 2, rel === 3 ? 1 : 0, 0, 0, 0)
@@ -358,7 +384,7 @@ function build(state: number, code: number): Placed[] {
   const k = kindCode(state), f = state & 3
   if (k === APEX) return place(apex(), false, 0)
   const tl = (code & 32) !== 0, tr = (code & 64) !== 0, e = (code & 16) !== 0
-  if (k === RIDGE) return place(ridge(tl, tr), false, f)
+  if (k === RIDGE) return place(ridge(tl, tr, (code & 128) !== 0, (code & 256) !== 0), false, f)
   const c = Math.min(2, code & 3), rel = (((code >> 2) & 3) - f) & 3
   if (c === 0 || (rel !== 1 && rel !== 3)) return place(slopeStraight(e, tl, tr), false, f)
   return place(c === 1 ? slopeOuter(e) : slopeInner(), rel === 3, f)
@@ -375,7 +401,7 @@ function uvFaceOf(n: V3): number {
 }
 
 const placedByKey = new Map<number, Placed[]>()
-for (let state = 0; state < 12; state++) for (let code = 0; code < 128; code++) {
+for (let state = 0; state < 12; state++) for (let code = 0; code < ROOF_FORM_CODES; code++) {
   if ((code & 3) === 3) continue
   const key = geomKey(state, code)
   if (!placedByKey.has(key)) placedByKey.set(key, build(state, code))
@@ -407,14 +433,14 @@ for (const [key, list] of placedByKey) {
   }))))
 }
 
-const facesByCode: (readonly RoofFace[] | undefined)[] = new Array(16 * 128)
+const facesByCode: (readonly RoofFace[] | undefined)[] = new Array(16 * ROOF_FORM_CODES)
 /** A roof cell's polygons for a form code (`roofFormCode`). Shared frozen arrays. */
 export function roofFacesOf(state: number, code: number): readonly RoofFace[] {
-  const i = (state & 15) * 128 + (code & 127)
+  const i = (state & 15) * ROOF_FORM_CODES + (code & (ROOF_FORM_CODES - 1))
   return facesByCode[i] ??= facesByKey.get(geomKey(state, code))!
 }
 
 /** A roof cell's polygons for its state and drawn form. Shared frozen arrays, cached per (kind, facing, form). */
 export function roofFaces(state: number, form: RoofForm): readonly RoofFace[] {
-  return roofFacesOf(state, formCode(CORNERS.indexOf(form.corner), form.side, form.eave, form.trimLeft, form.trimRight))
+  return roofFacesOf(state, formCode(CORNERS.indexOf(form.corner), form.side, form.eave, form.trimLeft, form.trimRight, form.endLeft, form.endRight))
 }

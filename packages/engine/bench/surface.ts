@@ -8,7 +8,7 @@ import { BlockRegistry, type BlockDef } from '../src/blocks/registry.ts'
 import { DecorationRegistry } from '../src/render/decorations/defs.ts'
 import { meshTablesFrom, type MeshTables } from '../src/mesh/tables.ts'
 import { decoratedMeshTables, emptySnap, MEADOW } from '../test/meshFixtures.ts'
-import { ID, ROOF_ID, TEST_BLOCKS } from '../test/helpers.ts'
+import { ID, ROOF_ID, ROOF_TEST_BLOCKS, SHAPED_TEST_BLOCKS, TEST_BLOCKS } from '../test/helpers.ts'
 
 export { decoratedMeshTables as meshTables } from '../test/meshFixtures.ts'
 
@@ -82,6 +82,13 @@ export function roofsSnap(): ChunkSnapshot {
  * the meadow decoration (its grass instances are gated by the surface and roofs workloads; here they would hide the roofs).
  */
 export { roofMeshTables as roofKitTables } from '../test/meshFixtures.ts'
+
+/** The roof kit's tables with the grass decorated by the meadow: a meadow chunk with houses pays grass and roofs both. */
+export function roofKitMeadowTables(): MeshTables {
+  const reg = new BlockRegistry([...TEST_BLOCKS, ...SHAPED_TEST_BLOCKS, ...ROOF_TEST_BLOCKS].map((b) => (b.name === 'grass' ? { ...b, decoration: MEADOW.name } : b)))
+  const deco = new DecorationRegistry([MEADOW], reg)
+  return meshTablesFrom(reg, reg.faceLayers(new Map(reg.textureNames().map((n, i) => [n, i + 1]))), deco.tables)
+}
 
 /** A 5 × 5 house of stone walls (3 high from y) under a roof of `roof` at y + 3 and y + 4: a hip, or a gable along x or z. */
 function kitHouse(s: ChunkSnapshot, x0: number, y: number, z0: number, form: 'hip' | 'gable x' | 'gable z', roof: number): void {

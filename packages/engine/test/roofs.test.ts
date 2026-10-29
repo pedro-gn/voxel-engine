@@ -32,7 +32,7 @@ describe('roof shape', () => {
     for (const k of ['0,0,0', '2,0,0', '0,0,2', '2,0,2']) expect(formAt(ring, k).corner).toBe('outer')
     for (const k of ['1,0,0', '0,0,1', '2,0,1', '1,0,2']) expect(formAt(ring, k).corner).toBe('straight')
     // The lookup knows states only (a thatch slope beside a tile slope reads the same): the corner forms as before.
-    expect(formAt(ring, '0,0,0')).toEqual({ corner: 'outer', side: 0, eave: true, trimLeft: false, trimRight: false })
+    expect(formAt(ring, '0,0,0')).toEqual({ corner: 'outer', side: 0, eave: true, trimLeft: false, trimRight: false, endLeft: false, endRight: false })
     // A ridge on the high side is not a slope: no corner.
     const withRidge = new Map(ring)
     withRidge.set('0,0,1', roofState('ridge', 0))
@@ -67,7 +67,9 @@ describe('roof shape', () => {
     const lo = -16 * ROOF_REACH, hi = 16 + 16 * ROOF_REACH
     const forms: RoofForm[] = []
     for (const corner of ['straight', 'outer', 'inner'] as const) for (const side of [0, 1, 2, 3] as const) {
-      for (const eave of [false, true]) for (const trimLeft of [false, true]) for (const trimRight of [false, true]) forms.push({ corner, side, eave, trimLeft, trimRight })
+      for (const eave of [false, true]) for (const trimLeft of [false, true]) for (const trimRight of [false, true]) {
+        for (const endLeft of [false, true]) for (const endRight of [false, true]) forms.push({ corner, side, eave, trimLeft, trimRight, endLeft, endRight })
+      }
     }
     const seen = new Set<readonly unknown[]>(), bad: string[] = []
     for (const kind of ['slope', 'ridge', 'apex'] as RoofKind[]) for (const f of [0, 1, 2, 3] as const) for (const form of forms) {

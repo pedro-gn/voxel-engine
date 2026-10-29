@@ -5,6 +5,7 @@ import { applyCut } from '../src/mesh/meshJob.ts'
 import { Mesher } from '../src/mesh/mesher.ts'
 import type { LayerMesh } from '../src/mesh/quadBuilder.ts'
 import { TILT_NORMAL, unpackA, unpackB } from '../src/mesh/vertexFormat.ts'
+import { padIndex } from '../src/world/reader.ts'
 import { packVoxel } from '../src/world/voxel.ts'
 import { ID, ROOF_ID, roofRegistry } from './helpers.ts'
 import { assertOutwardWinding, emptySnap, normalOf, put, roofMeshTables } from './meshHelpers.ts'
@@ -13,7 +14,7 @@ const tables = roofMeshTables()
 const mesher = new Mesher()
 const slope = (f: Facing, id: number = ROOF_ID.tile_roof) => packVoxel(id, roofState('slope', f))
 
-interface Quad { pts: [number, number, number][]; n: readonly [number, number, number]; tilted: boolean }
+interface Quad { pts: [number, number, number][]; n: readonly [number, number, number]; tilted: boolean; sky: number }
 function quads(m: LayerMesh | null): Quad[] {
   const out: Quad[] = []
   if (!m) return out
@@ -23,7 +24,7 @@ function quads(m: LayerMesh | null): Quad[] {
       const a = unpackA(m.vertices[i + k * 2]!), b = unpackB(m.vertices[i + k * 2 + 1]!)
       pts.push([a.x + b.fx / 16, a.y + b.fy / 16 - a.drop / 16, a.z + b.fz / 16])
     }
-    out.push({ pts, n: normalOf(m.vertices[i]!), tilted: unpackA(m.vertices[i]!).normal === TILT_NORMAL })
+    out.push({ pts, n: normalOf(m.vertices[i]!), tilted: unpackA(m.vertices[i]!).normal === TILT_NORMAL, sky: unpackB(m.vertices[i + 1]!).sky })
   }
   return out
 }
@@ -74,5 +75,30 @@ describe('roof cells in the chunk mesh', () => {
     expect(Math.max(...ys)).toBeLessThanOrEqual(11 + ROOF_REACH)
     // The eave rows are still drawn: their tilted boards between y 10 and 11.
     expect(quads(m).filter((q) => q.tilted && q.n[1] > 0 && q.pts.every((p) => p[1] >= 10 && p[1] <= 11 + 2 / 16)).length).toBeGreaterThan(0)
+  })
+
+  it("faces looking into a dark room take its light; boards keep the roof cell's", () => {
+    const s = emptySnap()
+    put(s, 5, 10, 5, slope(0))
+    s.light[padIndex(6, 11, 6)] = 0 // the roof cell holds no light, as the sim stores it
+    s.light[padIndex(6, 10, 6)] = 0 // the dark room under it
+    const qs = quads(mesher.mesh(s, tables).opaque)
+    const bottom = qs.filter((q) => q.n[1] === -1 && q.pts.every((p) => p[1] === 10))
+    expect(bottom.map((q) => q.sky)).toEqual([0])
+    expect(qs.filter((q) => q.tilted && q.n[1] > 0).every((q) => q.sky === 15)).toBe(true)
+  })
+
+  it('a ridge closes its end against a roof that is not a ridge on its axis', () => {
+    // A ridge facing +z runs along x; its end at x = 6 against (6, 10, 5).
+    const endFaces = (nb: number) => {
+      const s = emptySnap()
+      put(s, 5, 10, 5, packVoxel(ROOF_ID.tile_roof, roofState('ridge', 1)))
+      put(s, 6, 10, 5, nb)
+      return quads(mesher.mesh(s, tables).opaque).filter((q) => q.n[0] === 1 && q.pts.every((p) => p[0] === 6) && q.pts.some((p) => p[1] > 11.4)).length
+    }
+    expect(endFaces(packVoxel(ROOF_ID.tile_roof, roofState('apex')))).toBeGreaterThan(0)
+    expect(endFaces(slope(0))).toBeGreaterThan(0)
+    expect(endFaces(slope(2))).toBeGreaterThan(0)
+    expect(endFaces(packVoxel(ROOF_ID.tile_roof, roofState('ridge', 3)))).toBe(0)
   })
 })
