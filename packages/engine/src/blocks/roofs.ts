@@ -392,9 +392,11 @@ for (const [key, list] of placedByKey) {
   }))))
 }
 
+const facesByCode: (readonly RoofFace[] | undefined)[] = new Array(16 * 128)
 /** A roof cell's polygons for a form code (`roofFormCode`). Shared frozen arrays. */
 export function roofFacesOf(state: number, code: number): readonly RoofFace[] {
-  return facesByKey.get(geomKey(state, code))!
+  const i = (state & 15) * 128 + (code & 127)
+  return facesByCode[i] ??= facesByKey.get(geomKey(state, code))!
 }
 
 /** A roof cell's polygons for its state and drawn form. Shared frozen arrays, cached per (kind, facing, form). */

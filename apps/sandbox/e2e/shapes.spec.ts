@@ -15,6 +15,10 @@ test('the shapes scene: slabs, stairs, posts and roofs mesh without errors', asy
   const stair = await page.evaluate(() => { const e = (window as W).__elovox!.engine; return e.world.get(25, 9, 6) })
   expect(stair & 0xfff).toBe(await page.evaluate(() => (window as W).__elovox!.engine.blocks.id('planks_stair')))
   expect(stair >>> 12).toBe(3 | 4)
+  // A roof voxel: the tile gable's ridge, its kind (1 = ridge) in bits 2–3 and its facing (+z) in bits 0–1.
+  const ridge = await page.evaluate(() => (window as W).__elovox!.engine.world.get(4, 13, 24))
+  expect(ridge & 0xfff).toBe(await page.evaluate(() => (window as W).__elovox!.engine.blocks.id('roof_tile')))
+  expect(ridge >>> 12).toBe((1 << 2) | 1)
   await page.evaluate(() => (window as W).__elovox!.engine.atmosphere.setTimeOfDay(0.4))
   await page.waitForTimeout(1500)
   await page.locator('canvas').screenshot({ path: 'test-results/shapes.png' })

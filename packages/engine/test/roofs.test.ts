@@ -95,3 +95,17 @@ describe('roof shape', () => {
     expect(seen.size).toBeGreaterThan(40)
   })
 })
+
+describe('roofs in the public API', () => {
+  it('exports the roof helpers from both entries', { timeout: 30_000 }, async () => {
+    const client = await import('@elovox/engine')
+    const sim = await import('@elovox/engine/sim-worker')
+    for (const entry of [client, sim] as Record<string, unknown>[]) {
+      for (const name of ['roofState', 'roofKindOf']) expect(typeof entry[name]).toBe('function')
+    }
+    expect((sim as unknown as { roofKindOf(s: number): string }).roofKindOf((sim as unknown as { roofState(k: string, f: number): number }).roofState('ridge', 1))).toBe('ridge')
+    type Exported = [import('@elovox/engine').RoofKind, import('@elovox/engine/sim-worker').RoofKind]
+    const sample: Exported = ['apex', 'slope']
+    expect(sample).toHaveLength(2)
+  })
+})

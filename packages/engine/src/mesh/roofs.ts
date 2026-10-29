@@ -45,6 +45,9 @@ const roofAt = (dx: number, dy: number, dz: number): number => {
   return curShape[voxelId(v)] === SHAPE.ROOF ? voxelState(v) : -1
 }
 
+/** Packed faces by (state, form code), filled on first use. */
+const packedByCode: (Uint32Array | undefined)[] = new Array(16 * 128)
+
 const qa = new Uint32Array(4)
 const qb = new Uint32Array(4)
 
@@ -60,7 +63,8 @@ export function meshRoofCell(s: ChunkSnapshot, t: MeshTables, pi: number, x: num
   curVoxels = s.voxels
   curShape = t.shape
   curPi = pi
-  const faces = packedOf(roofFacesOf(state, roofFormCode(state, roofAt)))
+  const code = roofFormCode(state, roofAt), ci = (state & 15) * 128 + code
+  const faces = packedByCode[ci] ??= packedOf(roofFacesOf(state, code))
   const l = faceLight(s, t, pi)
   const cellA = packA(x, y, z, 0, 0, 0)
   for (let k = 0; k < faces.length; k += STRIDE) {

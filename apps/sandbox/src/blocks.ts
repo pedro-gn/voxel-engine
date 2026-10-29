@@ -31,6 +31,9 @@ export const BLOCKS = [
   defineBlock({ name: 'planks_post', textures: 'planks', shape: 'post' }),
   defineBlock({ name: 'stone_slab', textures: 'stone', shape: 'slab' }),
   defineBlock({ name: 'stone_stair', textures: 'stone', shape: 'stair' }),
+  // Roofs (the roof shape): a tile and a thatch on existing tiles, appended as above.
+  defineBlock({ name: 'roof_tile', textures: 'sandstone_red', shape: 'roof' }),
+  defineBlock({ name: 'roof_thatch', textures: 'sand', shape: 'roof' }),
 ]
 
 export const DECORATIONS = [

@@ -1,4 +1,5 @@
 // Vitest-free benchmark fixture shared by mesher.bench.ts and mesher.node.ts.
+import { roofState } from '../src/blocks/roofs.ts'
 import { postState, slabState, stairState, type Facing } from '../src/blocks/shapes.ts'
 import { valueNoise2 } from '../src/sim/generator.ts'
 import { padIndex, type ChunkSnapshot } from '../src/world/reader.ts'
@@ -7,7 +8,7 @@ import { BlockRegistry, type BlockDef } from '../src/blocks/registry.ts'
 import { DecorationRegistry } from '../src/render/decorations/defs.ts'
 import { meshTablesFrom, type MeshTables } from '../src/mesh/tables.ts'
 import { decoratedMeshTables, emptySnap, MEADOW } from '../test/meshFixtures.ts'
-import { ID, TEST_BLOCKS } from '../test/helpers.ts'
+import { ID, ROOF_ID, TEST_BLOCKS } from '../test/helpers.ts'
 
 export { decoratedMeshTables as meshTables } from '../test/meshFixtures.ts'
 
@@ -73,6 +74,60 @@ export function roofsSnap(): ChunkSnapshot {
   }
   for (let x = 18; x < 31; x++) { set(s, x, 28, 2, packVoxel(ID.stone_post, postState('x'))); set(s, x, 28, 8, packVoxel(ID.stone_post, postState('x'))) }
   for (let z = 2; z <= 8; z++) set(s, 24, 29, z, packVoxel(ID.stone_post, postState('z')))
+  return s
+}
+
+/**
+ * The roof kit's tables: the test blocks, the shaped stone blocks (ids 8–10) and the two roof blocks (ids 11–12), without
+ * the meadow decoration (its grass instances are gated by the surface and roofs workloads; here they would hide the roofs).
+ */
+export { roofMeshTables as roofKitTables } from '../test/meshFixtures.ts'
+
+/** A 5 × 5 house of stone walls (3 high from y) under a roof of `roof` at y + 3 and y + 4: a hip, or a gable along x or z. */
+function kitHouse(s: ChunkSnapshot, x0: number, y: number, z0: number, form: 'hip' | 'gable x' | 'gable z', roof: number): void {
+  for (let lx = 0; lx < 5; lx++) for (let lz = 0; lz < 5; lz++) {
+    if (lx > 0 && lx < 4 && lz > 0 && lz < 4) continue
+    for (let h = 0; h < 3; h++) set(s, x0 + lx, y + h, z0 + lz, ID.stone)
+  }
+  const at = (lx: number, h: number, lz: number, state: number) => set(s, x0 + lx, y + h, z0 + lz, packVoxel(roof, state))
+  if (form === 'hip') {
+    for (let k = 0; k < 2; k++) {
+      const n = 5 - 2 * k
+      for (let lz = 0; lz < n; lz++) for (let lx = 0; lx < n; lx++) {
+        if (lx > 0 && lx < n - 1 && lz > 0 && lz < n - 1) continue
+        at(k + lx, 3 + k, k + lz, roofState('slope', inward(lx, lz, n)))
+      }
+    }
+    at(2, 4, 2, roofState('apex'))
+    return
+  }
+  // A gable: the ridge along x (rows facing ±z) or, turned, along z; log-wall triangles at the two gable ends.
+  const along = form === 'gable x'
+  const put = (u: number, h: number, v: number, state: number) => (along ? at(u, h, v, state) : at(v, h, u, state))
+  for (let u = 0; u < 5; u++) {
+    put(u, 3, 0, roofState('slope', along ? 1 : 0)); put(u, 3, 4, roofState('slope', along ? 3 : 2))
+    put(u, 4, 1, roofState('slope', along ? 1 : 0)); put(u, 4, 3, roofState('slope', along ? 3 : 2))
+    put(u, 4, 2, roofState('ridge', along ? 1 : 0))
+  }
+  for (const u of [0, 4]) for (let v = 1; v < 4; v++) (along ? set(s, x0 + u, y + 3, z0 + v, ID.stone) : set(s, x0 + v, y + 3, z0 + u, ID.stone))
+}
+
+/**
+ * The roof kit chunk: a grass floor and 25 houses on a 6-column grid, hip and gable roofs (both ridge directions) in
+ * the tile and the thatch block alternately — 625 roof cells of slopes, hip and valley-free corners, ridges and apexes.
+ */
+export function roofKitSnap(): ChunkSnapshot {
+  const s = emptySnap()
+  for (let pz = 0; pz < 34; pz++) for (let px = 0; px < 34; px++) for (let py = 0; py < 3; py++) {
+    const i = padIndex(px, py, pz)
+    s.voxels[i] = py < 2 ? ID.stone : ID.grass
+    s.light[i] = 0
+  }
+  const forms = ['hip', 'gable x', 'gable z'] as const
+  for (let gz = 0; gz < 5; gz++) for (let gx = 0; gx < 5; gx++) {
+    const k = gx + gz * 5
+    kitHouse(s, 1 + gx * 6, 2, 1 + gz * 6, forms[k % 3]!, k % 2 === 0 ? ROOF_ID.tile_roof : ROOF_ID.thatch_roof)
+  }
   return s
 }
 
