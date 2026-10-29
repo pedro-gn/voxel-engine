@@ -17,6 +17,7 @@ import type { AtmosphereController } from './render/atmosphere.ts'
 import type { Effects, Quality, WaterInput, WaterParams } from './render/settings.ts'
 import { Visuals } from './render/visuals.ts'
 import type { VoxelBody, VoxelBodyCell } from './render/voxelBody.ts'
+import type { VoxelLitMaterial, VoxelLitOptions } from './render/voxelLitMaterial.ts'
 import { FallingTrack } from './render/fallingTrack.ts'
 import { FragmentTrack } from './render/fragmentTrack.ts'
 import type { ChunkMeshData } from './mesh/mesher.ts'
@@ -220,6 +221,14 @@ export interface Engine {
    * wider than 32 cells per axis. See VoxelBody for moving (pivot), the light ease and dispose.
    */
   voxelBody(cells: readonly VoxelBodyCell[]): VoxelBody
+  /**
+   * A material for the game's meshes lit like the world: the chunk lighting (sun gated by sky light, shadows, sky
+   * ambient, block light in the atmosphere's colour) from the voxel cell the mesh stands in. Instanced (default): each
+   * instance reads its light from the `voxelLight` attribute, written by setVoxelLight(mesh, i, world.getLight(…)).
+   * `{ instanced: false }`: one light for the whole material, set by setMaterialVoxelLight. Light is not refreshed by
+   * the engine: write it again when the cell's light changes (its chunk remeshes).
+   */
+  createVoxelLitMaterial(opts?: VoxelLitOptions): VoxelLitMaterial
   /** AABB-vs-voxel collision over the ghost-aware world (a predicted edit collides at once). Pure geometry: no dt or gravity. */
   readonly collision: Collision
   readonly terrain: {
@@ -876,6 +885,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const api: Engine = {
     scene, camera, renderer, blocks: registry, layout, controls, world,
     voxelBody: cells => visuals.voxelBody(cells, tables, world.getLight),
+    createVoxelLitMaterial: opts => visuals.voxelLitMaterial(opts),
     waterAt: (x, z) => surfaceMirror.sample(x, z),
     firstPerson, get cameraMode() { return cameraMode }, setCameraMode, get underwater() { return underwaterFade.amount },
     terrain: {

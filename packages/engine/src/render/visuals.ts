@@ -24,6 +24,7 @@ import {
 import { cameraFar, shadowReach } from './viewDistance.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
+import { createVoxelLitMaterial, type VoxelLitMaterial, type VoxelLitOptions } from './voxelLitMaterial.ts'
 import { WaterMaterial } from './water.ts'
 import type { LayerCut } from './layerCut.ts'
 import type { SurfaceSource } from './water/surfaceMirror.ts'
@@ -158,6 +159,9 @@ export class Visuals {
     this.bodies.add(body)
     return body
   }
+
+  /** A material for meshes lit like the world, over this scene's light uniforms (engine.createVoxelLitMaterial). */
+  voxelLitMaterial(opts?: VoxelLitOptions): VoxelLitMaterial { return createVoxelLitMaterial(this.lights, opts) }
 
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
