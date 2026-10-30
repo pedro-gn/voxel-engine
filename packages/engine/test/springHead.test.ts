@@ -22,12 +22,12 @@ const SPRING_TOP = 2
 describe('spring head', () => {
   it('spring with head 2 in a closed 3×3 stone basin stops at 2 blocks', () => {
     const sim = waterSim(springBasin, { blocks: headed(2) })
-    // A still lake never rests flat in integers (constants.ts HEAD_EPS): the spring tops its column up to the head while the
-    // lake still ripples, so the surface settles a few 1/SUB above it — under UNIT / 4, far below one mirror level.
+    // A still lake never rests flat in integers (constants.ts HEAD_EPS): it settles within UNIT / 4 of the head, far below
+    // one mirror level, on either side (a wide pool still creeps up from just below it).
     const near = (): void => {
       for (let z = 1; z <= 3; z++) for (let x = 1; x <= 3; x++) {
         const d = sim.water.column(x, z).surface - (SPRING_TOP + 2) * SUB
-        expect(d >= 0 && d <= UNIT / 4, `column ${x},${z}: ${d}`).toBe(true)
+        expect(Math.abs(d) <= UNIT / 4, `column ${x},${z}: ${d}`).toBe(true)
       }
     }
     run(sim, 2000)
@@ -38,6 +38,27 @@ describe('spring head', () => {
     expect(sim.water.cols.total()).toBe(total) // the spring stopped
   })
 
+  it('a dammed pool settles at the head whatever the flow: pools 1×3, 3×3, 6×6, flows 0, 7, 15, heads 2 and 8', () => {
+    // Momentum carries the inflow on after the spring's own column reaches the head; the pool must not settle high.
+    const bad: string[] = []
+    for (const [wz, wx] of [[1, 3], [3, 3], [6, 6]] as const) for (const flow of [0, 7, 15]) for (const h of [2, 8]) {
+      // Interior x 1–wx, z 1–wz on a stone floor (y 0), walls to y 20; the spring on the floor in the corner (1, 1, 1).
+      const fill: Fill = (x, y, z) => {
+        if (x === 1 && y === 1 && z === 1) return spring(flow)
+        if (x > wx + 1 || z > wz + 1) return AIR
+        if (y === 0 || ((x === 0 || z === 0 || x === wx + 1 || z === wz + 1) && y <= 20)) return B.stone
+        return AIR
+      }
+      const sim = waterSim(fill, { blocks: headed(h) })
+      run(sim, 6000)
+      for (let z = 1; z <= wz; z++) for (let x = 1; x <= wx; x++) {
+        const d = sim.water.column(x, z).surface - (SPRING_TOP + h) * SUB
+        if (Math.abs(d) > UNIT / 4) bad.push(`${wz}×${wx} flow ${flow} head ${h} column ${x},${z}: ${d}`)
+      }
+    }
+    expect(bad).toEqual([])
+  })
+
   it('spring without head keeps filling', () => {
     const sim = waterSim(springBasin)
     run(sim, 2000)
@@ -45,9 +66,10 @@ describe('spring head', () => {
   })
 
   it('head-capped spring in an open channel still emits its full rate', () => {
-    // A 1-wide channel along x at z = 5: the spring (flow 3) sits on stone at x = 1, y = 9; the floor steps down one block
-    // per column to y = 2 at x = 8; x = 9 has no floor, so the water falls to the bottom of a void world and leaves.
-    const FLOW = 3
+    // A 1-wide channel along x at z = 5: the spring (flow 7, 1 block per step: half a head of 2, the most it lets through)
+    // sits on stone at x = 1, y = 9; the floor steps down one block per column to y = 2 at x = 8; x = 9 has no floor, so
+    // the water falls to the bottom of a void world and leaves.
+    const FLOW = 7
     const fill: Fill = (x, y, z) => {
       if (x === 1 && z === 5) return y < 9 ? B.stone : y === 9 ? spring(FLOW) : AIR
       if (x >= 2 && x <= 8 && z === 5) return y < 10 - x ? B.stone : AIR
@@ -86,7 +108,9 @@ describe('spring head', () => {
     source[B.spring] = 1
     head[B.spring] = 2
     const get = (x: number, y: number, z: number): number => (x === 5 && y === 3 && z === 5 ? spring(4) : AIR)
-    for (let i = 0; i < 3; i++) cy.runSprings(cols, under, layout, get, source, () => {}, head)
+    cy.runSprings(cols, under, layout, get, source, () => {}, head)
+    expect(under.depth[low]).toBe(2 * SUB - 5) // half the room each step
+    for (let i = 0; i < 10; i++) cy.runSprings(cols, under, layout, get, source, () => {}, head)
     expect([under.depth[low], cy.sea]).toEqual([2 * SUB, -10])
   })
 
