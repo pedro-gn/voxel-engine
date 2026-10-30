@@ -52,11 +52,12 @@ export class WaterCycle {
 
   /**
    * Each spring adds its rate to the segment resting on it (its floor is the spring's top: the top segment or a lower one,
-   * plan decision 10), at most what the sea holds when the world has a sea level, and at most a lower segment's room; the
-   * sea pays for it. `filled(i)` hears of a lower segment it filled. A position that no longer holds a spring is forgotten.
+   * plan decision 10), at most what the sea holds when the world has a sea level, at most a lower segment's room, and, for a
+   * spring with a head (`head`: blocks per id, 0 = none), at most what brings that segment to `head` blocks deep; the sea
+   * pays for it. `filled(i)` hears of a lower segment it filled. A position that no longer holds a spring is forgotten.
    */
   runSprings(cols: WaterColumns, under: UnderSegments, layout: Layout, get: (x: number, y: number, z: number) => number, source: Uint8Array,
-    filled: (i: number) => void): void {
+    filled: (i: number) => void, head: Uint8Array | null = null): void {
     for (const s of this.springs) {
       const [x, y, z] = layout.voxelCoords(s)
       const v = get(x, y, z)
@@ -70,6 +71,8 @@ export class WaterCycle {
       let rate = SPRING_RATES[(v >>> 12) & 15]! * SPRING_SCALE
       if (this.seaLevel > 0) rate = Math.min(rate, Math.max(0, this.sea))
       if (low >= 0) rate = Math.min(rate, Math.max(0, under.cap(low) - under.depth[low]!))
+      const h = head === null ? 0 : head[v & 0xfff]!
+      if (h > 0) rate = Math.min(rate, h * SUB - (low < 0 ? cols.depth[c]! : under.depth[low]!))
       if (rate <= 0) continue
       if (low < 0) cols.depth[c] = cols.depth[c]! + rate
       else {

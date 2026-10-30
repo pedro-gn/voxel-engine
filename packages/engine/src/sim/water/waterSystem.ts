@@ -413,7 +413,8 @@ export class WaterSystem {
     this.spreadDisplaced()
     this.steps++
     const cy = this.cycle
-    cy.runSprings(this.cols, this.under, this.layout, this.get, this.port.registry.source, (i) => this.bodies.seed(i))
+    const reg = this.port.registry
+    cy.runSprings(this.cols, this.under, this.layout, this.get, reg.source, (i) => this.bodies.seed(i), reg.springHead)
     cy.sea += this.cols.step(this.o.tileCap, cy.seaLevel > 0 ? cy.mask : null, cy.seaLevel * SUB)
     const every = this.o.lossEvery
     if (every > 0 && this.steps % every === 0) this.lose()
