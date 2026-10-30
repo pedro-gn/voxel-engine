@@ -124,8 +124,8 @@ export interface RoofFace {
 
 /**
  * Which of the block's textures a roof polygon wears: `side` for the shingle boards, `bottom` for the underlay (the
- * body's sides and bottom, soffits, gable trims), `top` for the caps (hip, ridge and apex). One texture for all three
- * draws the whole roof in it.
+ * body's sides and bottom, soffits), `top` for the caps (hip, ridge and apex) and the gable trims (barge boards: the
+ * roof's edge reads in its own material, not the wall's). One texture for all three draws the whole roof in it.
  */
 export type RoofTexture = 'top' | 'side' | 'bottom'
 
@@ -205,7 +205,8 @@ function trimSide(zs: number, s: number, hasEave: boolean): Poly[] {
     ps.push(poly(inn, P(o, o + BOARD, zs), P(0, BOARD, zs), P(0, TRIM_H, zs), P(o, o + TRIM_H, zs)))
     ps.push(poly(NX, P(o, o, zs), P(o, o, zo), P(o, o + TRIM_H, zo), P(o, o + TRIM_H, zs)))
   }
-  return under(ps)
+  // The wedge's side wears the underlay (the gable, as below the roof line); the trim board wears the caps' texture.
+  return [...under(ps.slice(0, 1)), ...capped(ps.slice(1))]
 }
 
 const bottom = (): Poly => ({ ...poly(NY, P(0, 0, 0), P(16, 0, 0), P(16, 0, 16), P(0, 0, 16)), tex: 'bottom' })
@@ -323,8 +324,8 @@ function ridge(trimLeft: boolean, trimRight: boolean, endLeft: boolean, endRight
       poly(out, P(4, 23, zs), P(8, 26, zs), P(8, 30, zs), P(4, 26, zs)),
       poly(out, P(8, 26, zs), P(12, 23, zs), P(12, 26, zs), P(8, 30, zs)),
     ])
-    return under([
-      ...end,
+    // The barge board wears the caps' texture (the roof's own material), never the underlay the gable below it wears.
+    return [...under(end), ...capped([
       poly(out, P(0, 16, zo), P(8, 24, zo), P(8, 30, zo), P(0, 22, zo)),
       poly(out, P(8, 24, zo), P(16, 16, zo), P(16, 22, zo), P(8, 30, zo)),
       poly(UPX, P(0, 22, zs), P(8, 30, zs), P(8, 30, zo), P(0, 22, zo)),
@@ -333,7 +334,7 @@ function ridge(trimLeft: boolean, trimRight: boolean, endLeft: boolean, endRight
       poly([-1, -1, 0], P(16, 16, zs), P(8, 24, zs), P(8, 24, zo), P(16, 16, zo)),
       poly(inn, P(0, 20, zs), P(8, 26, zs), P(8, 30, zs), P(0, 22, zs)),
       poly(inn, P(8, 26, zs), P(16, 20, zs), P(16, 22, zs), P(8, 30, zs)),
-    ])
+    ])]
   }
   if (endLeft || trimLeft) ps.push(...side(0, -1, trimLeft))
   if (endRight || trimRight) ps.push(...side(16, 1, trimRight))

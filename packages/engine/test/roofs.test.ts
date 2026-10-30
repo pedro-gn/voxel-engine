@@ -130,3 +130,19 @@ describe('roofs in the public API', () => {
     expect(sample).toHaveLength(2)
   })
 })
+
+describe('roof textures (user request 2026-10-30)', () => {
+  const form = (o: Partial<RoofForm>): RoofForm => ({ corner: 'straight', side: 0, eave: true, trimLeft: false, trimRight: false, endLeft: false, endRight: false, ...o })
+  it('a gable trim wears the caps texture (the roof material); the gable below it the underlay', () => {
+    const bare = roofFaces(roofState('slope', 0), form({}))
+    const trimmed = roofFaces(roofState('slope', 0), form({ trimLeft: true }))
+    expect(bare.some(f => f.texture === 'top')).toBe(false)
+    expect(trimmed.filter(f => f.texture === 'top').length).toBeGreaterThan(0)
+    expect(trimmed.filter(f => f.texture === 'bottom').length).toBe(bare.filter(f => f.texture === 'bottom').length + 1)
+  })
+  it("a ridge's barge board wears the caps texture; its open end the underlay", () => {
+    const end = roofFaces(roofState('ridge', 0), form({ eave: false, endLeft: true }))
+    const trimmed = roofFaces(roofState('ridge', 0), form({ eave: false, trimLeft: true, endLeft: true }))
+    expect(trimmed.filter(f => f.texture === 'top').length).toBeGreaterThan(end.filter(f => f.texture === 'top').length)
+  })
+})
