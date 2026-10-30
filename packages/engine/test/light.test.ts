@@ -139,6 +139,20 @@ describe('LightEngine uniform emitter chunks', () => {
   }
 })
 
+describe('render:false emitters', () => {
+  it('a render:false block that emits lights its neighbours', () => {
+    const reg3 = new BlockRegistry([...TEST_BLOCKS, defineBlock({ name: 'lantern_prop', render: false, opaque: false, solid: false, emits: 14 })])
+    const id = TEST_BLOCKS.length + 1
+    const store = new ChunkStore({ buffers: createWorldBuffers([64, 64, 64]), opaque: reg3.opaque })
+    const light = new LightEngine(store, { opaque: reg3.opaque, emits: reg3.emits })
+    light.initialize()
+    store.setVoxel(10, 20, 10, id)
+    light.onVoxelChanged(10, 20, 10, AIR, id)
+    light.propagate()
+    expect(blockLight(store.getLight(11, 20, 10))).toBe(13)
+  })
+})
+
 describe('light under shapes', () => {
   /** A Simulation, so the light tables are the ones it feeds its store and light engine. */
   function simWorld() {

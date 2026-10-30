@@ -4,7 +4,7 @@ import type { Layout } from '../world/layout.ts'
 import type { BlockRegistry } from '../blocks/registry.ts'
 import { FragmentMeshes } from './fragments.ts'
 import type { FragmentFrame } from './fragmentTrack.ts'
-import { AtmosphereController, type Atmosphere } from './atmosphere.ts'
+import { AtmosphereController, resolveBlockLight, type Atmosphere } from './atmosphere.ts'
 import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
 import type { GrassMask } from './decorations/grassMask.ts'
@@ -24,6 +24,7 @@ import {
 import { cameraFar, shadowReach } from './viewDistance.ts'
 import { Sky } from './sky.ts'
 import { createLightUniforms, type LightUniforms } from './voxelLighting.ts'
+import { createVoxelLitMaterial, type VoxelLitMaterial, type VoxelLitOptions } from './voxelLitMaterial.ts'
 import { WaterMaterial } from './water.ts'
 import type { LayerCut } from './layerCut.ts'
 import type { SurfaceSource } from './water/surfaceMirror.ts'
@@ -159,6 +160,9 @@ export class Visuals {
     return body
   }
 
+  /** A material for meshes lit like the world, over this scene's light uniforms (engine.createVoxelLitMaterial). */
+  voxelLitMaterial(opts?: VoxelLitOptions): VoxelLitMaterial { return createVoxelLitMaterial(this.lights, opts) }
+
   /** How far the water surface is between the previous and the current water step (0–1). */
   setWaterAlpha(a: number): void { waterAlpha.value = a }
 
@@ -236,6 +240,8 @@ export class Visuals {
     this.water.applyAtmosphere(a)
     const t = a.shadow.tint, k = a.shadow.strength
     this.lights.shadowColor.value.setRGB(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k, THREE.LinearSRGBColorSpace)
+    const bl = resolveBlockLight(a.blockLight), c = bl.color, i = bl.intensity
+    this.lights.torchColor.value.setRGB(c[0] * i, c[1] * i, c[2] * i, THREE.LinearSRGBColorSpace)
   }
 
   private syncWater(): void {

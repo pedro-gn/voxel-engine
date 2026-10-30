@@ -47,6 +47,7 @@ export class VoxelNodeMaterial extends THREE.MeshLambertNodeMaterial {
 export interface LightUniforms {
   /** Direct-light multiplier inside full shadow: mix(white, atmosphere.shadow.tint, strength). */
   shadowColor: N
+  /** Block light's colour × strength (Atmosphere.blockLight, written by Visuals.applyAtmosphere). */
   torchColor: N
   /** Distance from the camera at which shadows have faded out (Deviation 6). */
   shadowFar: N
@@ -69,8 +70,14 @@ export interface VoxelSurface {
   normalView?: N
 }
 
-/** Wires the voxel light terms into a material. `normal` is in world space. */
-export function voxelLit(m: VoxelNodeMaterial, s: VoxelSurface, lights: LightUniforms): void {
+/** A node material voxelLit can wire: the chunk materials (VoxelNodeMaterial) and the mesh one (VoxelLitMaterial). */
+export type VoxelLitTarget = THREE.NodeMaterial & { emissiveNode: THREE.Node | null }
+
+/**
+ * Wires the voxel light terms into a material. `normal` is in world space. The material must also light through
+ * VoxelLightingModel over the same `sky` (its setupLightingModel), as VoxelNodeMaterial and VoxelLitMaterial do.
+ */
+export function voxelLit(m: VoxelLitTarget, s: VoxelSurface, lights: LightUniforms): void {
   m.normalNode = s.normalView ?? transformNormalToView(s.normal)
   m.receivedShadowPositionNode = positionWorld.add(s.normal.mul(SHADOW_NORMAL_OFFSET))
   m.receivedShadowNode = Fn(([shadow]: [N]) => {
