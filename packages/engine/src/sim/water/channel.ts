@@ -1,4 +1,4 @@
-import { FLUX_FP, FRICTION_SHIFT, GAIN, SPRING_RATES, SPRING_SCALE } from './constants.ts'
+import { FLUX_FP, FRICTION_SHIFT, GAIN, MAX_HEAD, SPRING_RATES, SPRING_SCALE } from './constants.ts'
 
 /**
  * Open-channel maths for generators that lay out rivers at rest (world-gen river diagnosis R1). Flow here is driven by the
@@ -19,4 +19,13 @@ export function springRate(flow: number): number {
  */
 export function channelFall(q: number): number {
   return ((q + 1) * (1 << FLUX_FP)) / (GAIN * (1 << FRICTION_SHIFT))
+}
+
+/**
+ * The steady flow (1/SUB block per step) an edge carries under a surface difference `head` (1/SUB block, sender over
+ * receiver): the inverse of channelFall — nothing under its dead band (channelFall(0)), and a head over MAX_HEAD pours
+ * no faster (a fall, the island's edge). A column sends at most its depth over the retain in all, whatever its edges ask.
+ */
+export function edgeFlow(head: number): number {
+  return Math.max(0, (Math.min(head, MAX_HEAD) * GAIN * (1 << FRICTION_SHIFT)) / (1 << FLUX_FP) - 1)
 }

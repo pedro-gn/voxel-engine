@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { channelFall, springRate, SUB } from '../src/sim/runSimWorker.ts'
-import { SPRING_RATES, SPRING_SCALE } from '../src/sim/water/constants.ts'
+import { channelFall, edgeFlow, springRate, SUB } from '../src/sim/runSimWorker.ts'
+import { MAX_HEAD, SPRING_RATES, SPRING_SCALE } from '../src/sim/water/constants.ts'
 import { defineGenerator } from '../src/sim/generator.ts'
 import { Simulation } from '../src/sim/simulation.ts'
 import { createWorldBuffers } from '../src/world/buffers.ts'
@@ -39,6 +39,12 @@ describe('channelFall', () => {
   it('springRate is the spring table scaled to sub per step', () => {
     for (let f = 0; f < 16; f++) expect(springRate(f)).toBe(SPRING_RATES[f]! * SPRING_SCALE)
     expect(SUB).toBe(256)
+  })
+
+  it('edgeFlow inverts channelFall, with a dead band and the MAX_HEAD clamp', () => {
+    for (const q of [0, 1, 7.5, 21, 64, 300]) expect(edgeFlow(channelFall(q))).toBeCloseTo(q, 9)
+    expect(edgeFlow(channelFall(0) / 2)).toBe(0)
+    expect(edgeFlow(MAX_HEAD * 3)).toBe(edgeFlow(MAX_HEAD))
   })
 
   it('matches the steady surface fall of flat channels 1, 3 and 5 lanes wide', () => {
