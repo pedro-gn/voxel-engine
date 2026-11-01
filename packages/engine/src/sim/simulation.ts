@@ -64,6 +64,8 @@ export interface TickResult {
   water: WaterTick | null
   /** Game system publications of this tick, in system order; absent when none published. */
   systems?: SystemPublication[]
+  /** A frozen step (Simulation.setFrozen): commands applied, no time passed; `tick` is the last completed tick. */
+  frozen?: true
 }
 
 const DX = [1, -1, 0, 0, 0, 0]
@@ -89,6 +91,7 @@ export class Simulation {
   private readonly commandTypes: { has(type: string): boolean }
   private collapseWrite = false
   private isPaused = false
+  private isFrozen = false
   private isVoid = false
   private readonly jobCap: number
 
@@ -212,6 +215,16 @@ export class Simulation {
   /** True while physics (gravity, water, region jobs) is stopped. Rules, random ticks, light and the water mirror still run. */
   get paused(): boolean { return this.isPaused }
   setPaused(paused: boolean): void { this.isPaused = paused }
+
+  /**
+   * True while the game is frozen (a game pause): step() runs a frozen step that applies commands, runs the neighbour
+   * rules they trigger, relights, flushes the water mirror and lets game systems publish, but does not advance the tick
+   * and runs nothing time-driven. Not saved; restore() leaves it false.
+   */
+  get frozen(): boolean { return this.isFrozen }
+  setFrozen(frozen: boolean): void { this.isFrozen = frozen }
+  /** What a frozen step would do: pending commands or neighbour notifications. */
+  get hasFrozenWork(): boolean { return this.pending.length > 0 || this.neighborHead < this.neighbors.length }
 
   submit(clientId: number, seq: number, cmd: Command): void {
     this.pending.push({ tick: this.tick, clientId, seq, cmd })
@@ -341,6 +354,7 @@ export class Simulation {
   }
 
   step(): TickResult {
+    if (this.isFrozen) return this.frozenStep()
     const t = this.tick
     this.gravity.landed = []
     const acks: Ack[] = []
@@ -350,27 +364,7 @@ export class Simulation {
       this.rng.reseed(hash32(this.seed, t))
       this.systems?.start()
       // 1. commands
-      const cmds = this.pending.sort(compareStamped)
-      this.pending = []
-      for (const c of cmds) {
-        // Commands arrive from postMessage, so the value may not be an object at all.
-        const err = typeof c.cmd !== 'object' || c.cmd === null
-          ? 'command must be an object'
-          : validateCommand(c.cmd, this.layout, this.registry.count, this.commandTypes)
-        if (err) { acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: err }); continue }
-        // Log before applying: a handler that writes and then throws has still changed the world,
-        // and replaying the log re-runs the same handler to the same partial effect.
-        this.appendLog(c)
-        try {
-          this.applyCommand(c.cmd)
-          acks.push({ clientId: c.clientId, seq: c.seq, ok: true })
-        } catch (e) {
-          if (e instanceof WorldFullError) throw e // out of memory is fatal, not a bad command
-          const msg = e instanceof Error ? e.message : String(e)
-          this.log(`command error type=${c.cmd.type} tick=${t}: ${msg}`)
-          acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: msg })
-        }
-      }
+      this.applyPending(t, acks)
       if (!this.isPaused) this.workers?.beforePhysics()
       // 2. neighbour notifications and scheduled updates, under the work cap.
       // Scheduled updates are drained one at a time so the notifications they cause share the budget.
@@ -421,6 +415,62 @@ export class Simulation {
   }
 
   /**
+   * A step while frozen: commands (validated, logged and acked as in a tick), the neighbour notifications under the work
+   * cap, game system publications, light, the water mirror and commit. No scheduled updates, random ticks, physics,
+   * collapse, worker units or system ticks, and the tick does not advance: the result reports the last completed tick.
+   */
+  private frozenStep(): TickResult {
+    const t = this.tick
+    this.gravity.landed = []
+    const acks: Ack[] = []
+    let publications: SystemPublication[] = []
+    let dirtyChunks: number[] = []
+    try {
+      this.rng.reseed(hash32(this.seed, t))
+      this.systems?.start()
+      this.applyPending(t, acks)
+      this.processNeighbors(this.workCap)
+      // Before commit, as in a tick: a publish that writes still has its chunks closed.
+      if (this.systems) publications = this.systems.publish()
+      this.light.propagate()
+      this.physics('water mirror', () => { this.water.flush() })
+    } finally {
+      dirtyChunks = this.store.commit()
+    }
+    const ws = this.water.stats(), jobs = this.jobs.size
+    const physics = { waterTiles: ws.tiles, waterColumns: ws.columns, waterBodies: ws.bodies, waterLayersHidden: ws.layersHidden, jobs, busy: ws.tiles > 0 || jobs > 0 || this.gravity.count > 0 || this.collapse.busy || (this.workers?.busy ?? false),
+      ...(this.collapse.enabled && { collapse: this.collapse.stats() }) }
+    const events = this.events
+    this.events = []
+    return { tick: t - 1, frozen: true, dirtyChunks, events, acks, falling: this.gravity.snapshot(), landed: [], physics, water: this.water.published, ...(publications.length > 0 && { systems: publications }) }
+  }
+
+  /** Applies the pending commands in stamp order: validated, logged before applying, acked. */
+  private applyPending(t: number, acks: Ack[]): void {
+    const cmds = this.pending.sort(compareStamped)
+    this.pending = []
+    for (const c of cmds) {
+      // Commands arrive from postMessage, so the value may not be an object at all.
+      const err = typeof c.cmd !== 'object' || c.cmd === null
+        ? 'command must be an object'
+        : validateCommand(c.cmd, this.layout, this.registry.count, this.commandTypes)
+      if (err) { acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: err }); continue }
+      // Log before applying: a handler that writes and then throws has still changed the world,
+      // and replaying the log re-runs the same handler to the same partial effect.
+      this.appendLog(c)
+      try {
+        this.applyCommand(c.cmd)
+        acks.push({ clientId: c.clientId, seq: c.seq, ok: true })
+      } catch (e) {
+        if (e instanceof WorldFullError) throw e // out of memory is fatal, not a bad command
+        const msg = e instanceof Error ? e.message : String(e)
+        this.log(`command error type=${c.cmd.type} tick=${t}: ${msg}`)
+        acks.push({ clientId: c.clientId, seq: c.seq, ok: false, error: msg })
+      }
+    }
+  }
+
+  /**
    * The state a save needs, taken between two ticks (spec §4–5): the regions whose revision differs from `since` (all when
    * null) and every section. Navigation, light and publication state are not included: restore() rebuilds them.
    */
@@ -456,6 +506,7 @@ export class Simulation {
     const chunks = this.finishGenerate()
     this.tick = s.tick
     this.isPaused = s.paused
+    this.isFrozen = false
     const section = (name: SectionName): Packed | null => { const b = s.sections[name]; return b ? unpack(b) : null }
     const sched = section('scheduler')
     if (sched) {
