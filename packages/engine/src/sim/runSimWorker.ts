@@ -19,6 +19,8 @@ export type { BlockCallback, BlockRules, CommandHandler, RuleContext, RulesModul
 export { defineGenerator } from './generator.ts'
 export type { GeneratorConfig, GeneratorContext, GeneratorInfo, GeneratorModule } from './generator.ts'
 export type { WaterOptions } from './water/waterSystem.ts'
+export { channelFall, edgeFlow, springRate } from './water/channel.ts'
+export { SUB } from '../world/waterBuffers.ts'
 export type { FallingBodyState, Landing } from './gravity.ts'
 export { testGenerator } from './testGenerator.ts'
 export { AIR, packVoxel, voxelId, voxelState, withState } from '../world/voxel.ts'

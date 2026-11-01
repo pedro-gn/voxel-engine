@@ -23,6 +23,11 @@ export interface BlockDef {
   collapses?: boolean
   /** Makes this liquid block a spring of the named liquid: it counts as full and injects that liquid every fluid step. */
   source?: string
+  /**
+   * A spring's head, in blocks (integer 1–15; needs `source`): the spring adds nothing while the water resting on it is
+   * `head` blocks deep or more, and at most what brings it to that depth. Without it a spring adds its full rate forever.
+   */
+  head?: number
   /** Draws the block as a slab, stair, post or ladder oriented by its voxel state; every system but drawing and light treats it as `solid` says (a full cell by default). */
   shape?: BlockShape
   /** Units climb it: a cell holding it is a pose without a floor, joined to the climbable cells above and below. Needs `solid: false` and no `liquid`. */
@@ -92,6 +97,8 @@ export class BlockRegistry {
   readonly hasCollapse: boolean
   /** 1 for a spring (a liquid with `source`). */
   readonly source: Uint8Array
+  /** A spring's head in blocks (BlockDef.head); 0 = no head. */
+  readonly springHead: Uint8Array
   /** The base liquid's id for a liquid or a spring; 0 for every other block. */
   readonly liquidGroup: Uint16Array
   /** `SHAPE` code per id; 0 for whole cubes. */
@@ -137,6 +144,7 @@ export class BlockRegistry {
     this.collapses = new Uint8Array(this.count)
     this.structural = new Uint8Array(this.count)
     this.source = new Uint8Array(this.count)
+    this.springHead = new Uint8Array(this.count)
     this.liquidGroup = new Uint16Array(this.count)
     this.shape = new Uint8Array(this.count)
     this.blocksLight = new Uint8Array(this.count)
@@ -162,6 +170,11 @@ export class BlockRegistry {
       const falls = d.falls ?? false
       if (falls && liquid) throw new Error(`block "${d.name}": falls cannot be combined with liquid`)
       if (d.source !== undefined && !liquid) throw new Error(`block "${d.name}": source needs liquid: true`)
+      if (d.head !== undefined) {
+        if (d.source === undefined) throw new Error(`block "${d.name}": head needs source`)
+        if (!Number.isInteger(d.head) || d.head < 1 || d.head > 15) throw new RangeError(`block "${d.name}": head must be an integer 1–15`)
+        this.springHead[id] = d.head
+      }
       this.falls[id] = falls ? 1 : 0
       const layer: RenderLayer = d.layer ?? (liquid ? 'liquid' : 'opaque')
       if (layer === 'liquid' && !liquid) throw new Error(`block "${d.name}": layer "liquid" needs liquid: true`)
