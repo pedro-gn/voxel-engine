@@ -117,6 +117,8 @@ export class SimClock {
  * surface leaves the previous step when `tick` is due and reaches the published one a tick later, as the next comes in.
  */
 export function stepAlpha(due: number, tick: number): number {
+  // No arrival yet (a freeze before the first tick): nothing moves, so the published step shows as it is.
+  if (Number.isNaN(due)) return 1
   const a = due - tick
   return a >= 1 ? 1 : a > 0 ? a : 0
 }

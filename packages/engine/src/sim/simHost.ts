@@ -68,6 +68,8 @@ export class SimHost {
   private timer: unknown = null
   /** Acks for commands rejected at the boundary; delivered with the next tick's acks. */
   private rejected: Ack[] = []
+  /** Frozen: a water republish (a resync, a regeneration, a terrain change) waits for a frozen step to flush it. */
+  private flushOwed = false
   private pool: GenPool | null = null
   private blocks: BlockDef[] = []
   private seed = 0
@@ -220,6 +222,7 @@ export class SimHost {
       }
       case 'waterResync':
         this.sim?.water.republishAll()
+        this.flushOwed = true
         return
       case 'snapshot': {
         // Messages arrive between pumps, so this is always between two ticks; a pooled regeneration lands atomically too.
@@ -251,7 +254,7 @@ export class SimHost {
       // Frozen: no time is owed; a frozen step runs only when a command (or what it set off) waits.
       this.acc = 0
       this.last = now
-      if (this.sim.hasFrozenWork || this.rejected.length > 0) this.runTick()
+      if (this.sim.hasFrozenWork || this.rejected.length > 0 || this.flushOwed) { this.flushOwed = false; this.runTick() }
       if (this.running) this.timer = this.clock.setTimeout(() => this.pump(), this.stepMs)
       return
     }
@@ -274,6 +277,7 @@ export class SimHost {
   private setTerrain(id: number, doc: unknown): void {
     const sim = this.sim
     if (!sim) return
+    this.flushOwed = true
     try {
       sim.configure(this.modules.generator, doc)
     } catch (e) {
@@ -365,6 +369,7 @@ export class SimHost {
     if (!sim) return
     try {
       const dirtyChunks = sim.replaceColumns(cols)
+      this.flushOwed = true
       this.post({ type: 'regenerated', id, ok: true, dirtyChunks, ms: this.clock.now() - t0, slotsUsed: sim.store.slotsUsed() })
     } catch (e) {
       if (e instanceof FragmentOverlapError) this.post({ type: 'regenerated', id, ok: false, message: e.message })

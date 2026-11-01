@@ -199,6 +199,18 @@ describe('SimHost', () => {
       expect(s.host.simulation!.tick).toBe(0)
     })
 
+    it('a water resync while frozen is flushed by one frozen step', () => {
+      const s = setup()
+      s.host.handle({ type: 'start' })
+      s.host.handle({ type: 'setFrozen', frozen: true })
+      run(s, 200)
+      s.host.handle({ type: 'waterResync' })
+      run(s, 1000)
+      const t = s.ticks()
+      expect(t).toHaveLength(1)
+      expect(t[0]).toMatchObject({ type: 'tick', frozen: true })
+    })
+
     it('no catch-up after a freeze', () => {
       const s = setup()
       s.host.handle({ type: 'start' })
