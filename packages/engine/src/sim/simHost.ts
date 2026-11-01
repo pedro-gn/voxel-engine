@@ -55,7 +55,13 @@ export class SimHost {
   private sim: Simulation | null = null
   /** Latched by a fatal: nothing is accepted or ticked afterwards. */
   private dead = false
+  /** The nominal tick length, 1000 / tickHz. */
+  private baseStepMs = 50
+  /** The tick length now: baseStepMs / speed. */
   private stepMs = 50
+  private speed = 1
+  /** Asked before init: applied to the simulation it creates. */
+  private frozen = false
   private running = false
   private acc = 0
   private last = 0
@@ -89,7 +95,8 @@ export class SimHost {
         try {
           const tickHz = msg.options.tickHz ?? 20
           if (!(tickHz > 0) || !Number.isFinite(tickHz)) throw new RangeError(`tickHz must be a finite number > 0, got ${tickHz}`)
-          this.stepMs = 1000 / tickHz
+          this.baseStepMs = 1000 / tickHz
+          this.stepMs = this.baseStepMs / this.speed
           this.sim = new Simulation({
             buffers: msg.buffers, blocks: msg.blocks, rules: this.modules.rules, seed: msg.seed,
             workCap: msg.options.workCap, randomTicksPerChunk: msg.options.randomTicksPerChunk, maxPages: msg.options.maxPages,
@@ -107,6 +114,7 @@ export class SimHost {
             log: (message) => this.post({ type: 'log', message }),
           })
           this.sim.setPaused(msg.options.paused === true)
+          this.sim.setFrozen(this.frozen)
           this.blocks = msg.blocks
           this.seed = msg.seed
           this.terrain = msg.terrain
@@ -120,6 +128,7 @@ export class SimHost {
             }
             const t0 = this.clock.now()
             const chunks = this.sim.restore(msg.restore)
+            this.sim.setFrozen(this.frozen) // restore() leaves the simulation unfrozen
             const L = this.sim.layout
             this.ready = true
             this.post({ type: 'ready', chunks, slotsUsed: this.sim.store.slotsUsed(), genMs: this.clock.now() - t0, columns: L.cx * L.cz, void: this.sim.voidWorld })
@@ -186,6 +195,29 @@ export class SimHost {
       case 'setPaused':
         this.sim?.setPaused(msg.paused === true)
         return
+      case 'setFrozen': {
+        const frozen = msg.frozen === true
+        if (frozen === this.frozen) return
+        this.frozen = frozen
+        this.sim?.setFrozen(frozen)
+        // A frozen spell is not owed ticks: the clock starts over from now.
+        this.acc = 0
+        this.last = this.clock.now()
+        return
+      }
+      case 'setSpeed': {
+        const speed = msg.speed
+        if (!(Number.isFinite(speed) && speed > 0 && speed <= 4)) return
+        this.speed = speed
+        this.stepMs = this.baseStepMs / speed
+        // The time already owed carries over, but never more than one tick of the new length.
+        this.acc = Math.min(this.acc, this.stepMs)
+        if (this.running) {
+          this.clock.clearTimeout(this.timer)
+          this.timer = this.clock.setTimeout(() => this.pump(), Math.max(0, this.stepMs - this.acc))
+        }
+        return
+      }
       case 'waterResync':
         this.sim?.water.republishAll()
         return
@@ -215,6 +247,14 @@ export class SimHost {
   pump(): void {
     if (this.dead || !this.running || !this.sim) return
     const now = this.clock.now()
+    if (this.sim.frozen) {
+      // Frozen: no time is owed; a frozen step runs only when a command (or what it set off) waits.
+      this.acc = 0
+      this.last = now
+      if (this.sim.hasFrozenWork || this.rejected.length > 0) this.runTick()
+      if (this.running) this.timer = this.clock.setTimeout(() => this.pump(), this.stepMs)
+      return
+    }
     this.acc += now - this.last
     this.last = now
     let n = 0

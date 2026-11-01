@@ -96,6 +96,32 @@ describe('SimClock', () => {
   })
 })
 
+describe('SimClock.setTickMs', () => {
+  it('setTickMs keeps the drawn tick', () => {
+    const c = new SimClock(50)
+    const who = {}
+    c.hold(who, 1e9)
+    for (let t = 0; t <= 100; t++) c.arrive(t, t * 50)
+    let now = 5000, prev = c.advance(now)
+    expect(prev).toBeCloseTo(100, 6)
+    c.setTickMs(25)
+    expect(c.tickMs).toBe(25)
+    const steps: number[] = []
+    for (let t = 101; t <= 300; t++) {
+      c.arrive(t, 5000 + (t - 100) * 25)
+      for (; now + FRAME <= 5000 + (t - 100) * 25; now += FRAME) {
+        const d = c.advance(now + FRAME)
+        expect(d).toBeGreaterThanOrEqual(prev)
+        expect(d - prev).toBeLessThanOrEqual((1.5 * FRAME) / 25 + 1e-9) // no jump: at most the fast slew over real speed
+        steps.push(d - prev)
+        prev = d
+      }
+    }
+    expect(steps.at(-1)!).toBeCloseTo(FRAME / 25, 6) // the new rate
+    expect(prev).toBeGreaterThan(298)
+  })
+})
+
 describe('stepAlpha', () => {
   it('is the fraction of the step after tick `tick` the clock has reached, held to 0..1', () => {
     expect(stepAlpha(9.5, 10)).toBe(0)

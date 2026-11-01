@@ -103,6 +103,24 @@ export interface EngineOptions {
   persistWorker?: () => Worker
 }
 
+/** Game time (engine.time): the game pause and the speed. Neither is saved: a boot starts unfrozen at speed 1. */
+export interface EngineTime {
+  /**
+   * The game pause: the tick stops (nothing time-driven runs: units, physics, scheduled and random ticks, system ticks);
+   * commands still apply and game systems still publish. Not saved; a boot starts unfrozen. Beside physics.paused, which
+   * keeps the tick running.
+   */
+  readonly frozen: boolean
+  /** Throws a TypeError if `frozen` is not a boolean. */
+  setFrozen(frozen: boolean): void
+  /** Ticks run `speed` times as often as tickHz. */
+  readonly speed: number
+  /** Throws a RangeError unless `speed` is finite and 0 < speed <= 4. */
+  setSpeed(speed: number): void
+  /** The nominal tick length now: 1000 / (tickHz × speed) ms. */
+  readonly stepMs: number
+}
+
 /** What a save cost: compressed bytes of the package, blobs and regions actually written, the sim's stall and the wall time. */
 export interface SaveResult { bytes: number; blobsWritten: number; regionsWritten: number; simStallMs: number; totalMs: number }
 
@@ -246,6 +264,8 @@ export interface Engine {
     readonly paused: boolean
     setPaused(paused: boolean): void
   }
+  /** Game time: the game pause (freeze) and the speed. */
+  readonly time: EngineTime
   submit(cmd: Command): number
   /**
    * Saves the world to `slot` (spec §5): the sim stops between two ticks to copy what changed since this engine last saved
@@ -632,6 +652,17 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
         resolveReady(m.chunks.length)
         break
       case 'tick':
+        if (m.frozen) {
+          // A frozen step: its commands applied, no time passed. Nothing drawn on the sim clock moves, and no tick is told.
+          slotsUsed = m.slotsUsed
+          markTick(m, CLIENT_ID, ghosts, markDirty)
+          waterLink.submit(m.tick, m.water, relightRanges(m.dirtyChunks), false, performance.now())
+          physicsStats = m.physics
+          for (const a of m.acks) events.emit('ack', a)
+          for (const ev of m.events) events.emit('event', ev)
+          if (m.systems) for (const p of m.systems) events.emit('system', { name: p.name, tick: m.tick, payload: p.payload })
+          break
+        }
         lastTick = m.tick
         lastTickMs = m.tickMs
         slotsUsed = m.slotsUsed
@@ -838,6 +869,27 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     },
   }
 
+  let frozen = false, speed = 1
+  const time: EngineTime = {
+    get frozen() { return frozen },
+    setFrozen(f: boolean) {
+      if (typeof f !== 'boolean') throw new TypeError(`time.setFrozen expects a boolean, got ${typeof f}`)
+      if (f === frozen) return
+      frozen = f
+      if (!halted) sim.postMessage({ type: 'setFrozen', frozen: f } satisfies ToSim)
+    },
+    get speed() { return speed },
+    setSpeed(s: number) {
+      if (typeof s !== 'number' || !Number.isFinite(s) || !(s > 0) || s > 4) throw new RangeError(`time.setSpeed expects a finite number with 0 < speed <= 4, got ${String(s)}`)
+      if (s === speed) return
+      speed = s
+      // Everything on the main thread drawn between ticks follows the shared clock (falling cubes, fragments, water).
+      clock.setTickMs(tickMs / s)
+      if (!halted) sim.postMessage({ type: 'setSpeed', speed: s } satisfies ToSim)
+    },
+    get stepMs() { return tickMs / speed },
+  }
+
   // ---- saves ----
   /** Per slot this engine wrote or booted from: the manifest it knows and the region revisions the next save diffs against. */
   const baselines = new Map<string, { created: string; revisions: Uint32Array }>()
@@ -898,6 +950,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       ),
     },
     physics,
+    time,
     get workers() { return latestWorkers },
     get voidWorld() { return voidWorld },
     // A staged mesh is accepted but not drawn until its fragment sources release together.

@@ -68,6 +68,10 @@ _Avoid_: Render distance, chunk radius, LOD
 A game's own simulation code, run by the engine once per tick after the worker units step, with its own commands (`name:`), save section (`system:name`) and per-tick publication.
 _Avoid_: Plugin, mod, script
 
+**Freeze**:
+The game pause (`engine.time.setFrozen`): the tick stops and nothing time-driven runs, but commands still apply and game systems still publish. Not saved. Unlike the physics pause (`physics.setPaused`, the editor's), which keeps the tick, rules and random ticks running.
+_Avoid_: Pause (ambiguous with the physics pause), suspend
+
 **Controlled unit**:
 A worker unit owned by a game system: never given work by the engine, driven by one intent at a time (walk, dig or build), reporting what happened to it. Its digs keep nothing.
 _Avoid_: Player unit, NPC

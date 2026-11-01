@@ -1,5 +1,5 @@
 export { ENGINE_VERSION } from './version.ts'
-export { createEngine, type Engine, type EngineEvents, type EngineOptions, type EngineStats, type SaveResult } from './engine.ts'
+export { createEngine, type Engine, type EngineEvents, type EngineOptions, type EngineStats, type EngineTime, type SaveResult } from './engine.ts'
 export { openSave } from './persist/client.ts'
 export { SaveError, checkSystemSections, type Manifest, type SaveErrorCode } from './persist/manifest.ts'
 export type { LoadedSave } from './persist/package.ts'

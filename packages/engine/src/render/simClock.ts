@@ -18,7 +18,7 @@ export const RESYNC = 4
  * snaps to the estimate (nothing on screen would show the jump).
  */
 export class SimClock {
-  readonly tickMs: number
+  private ms: number
   /** Arrivals of the last WINDOW ms: (time, arrival − tick × tickMs). */
   private readonly arrivals: { at: number; s: number }[] = []
   /** Their maximum: the latency the clock aims for. */
@@ -32,7 +32,28 @@ export class SimClock {
   newest = Number.NEGATIVE_INFINITY
 
   /** `tickMs`: the sim's nominal tick length. */
-  constructor(tickMs: number) { this.tickMs = tickMs }
+  constructor(tickMs: number) { this.ms = tickMs }
+
+  /** The tick length the clock runs at (setTickMs). */
+  get tickMs(): number { return this.ms }
+
+  /**
+   * The sim's tick length changed (engine.time.setSpeed). The estimate starts over at the new length, from the tick shown
+   * last: what is drawn goes on from there at the new rate, never back, never jumping ahead.
+   */
+  setTickMs(ms: number): void {
+    if (!(Number.isFinite(ms) && ms > 0)) throw new RangeError(`tickMs must be a finite number > 0, got ${ms}`)
+    if (ms === this.ms) return
+    this.ms = ms
+    this.arrivals.length = 0
+    if (Number.isFinite(this.shown) && !Number.isNaN(this.offset)) {
+      this.offset = this.frameAt - this.shown * ms
+      this.latency = this.offset
+    } else {
+      this.offset = Number.NaN
+      this.latency = Number.NaN
+    }
+  }
 
   /** The (fractional) tick the last `advance` showed. */
   get due(): number { return this.shown }
