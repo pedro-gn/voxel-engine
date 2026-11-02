@@ -168,4 +168,60 @@ describe('SimHost', () => {
     expect(setup({ paused: true }).host.simulation!.paused).toBe(true)
     expect(setup().host.simulation!.paused).toBe(false)
   })
+
+  describe('freeze and speed', () => {
+    /** Pumps every 10 ms of fake time for `ms`. */
+    const run = (s: ReturnType<typeof setup>, ms: number) => { const end = s.clock.t + ms; while (s.clock.t < end) { s.clock.t += 10; s.host.pump() } }
+
+    it('speed 2 runs twice the ticks', () => {
+      const one = setup()
+      one.host.handle({ type: 'start' })
+      run(one, 1000)
+      expect(one.ticks()).toHaveLength(20)
+      const two = setup()
+      two.host.handle({ type: 'setSpeed', speed: 2 })
+      two.host.handle({ type: 'start' })
+      run(two, 1000)
+      expect(two.ticks()).toHaveLength(40)
+    })
+
+    it('frozen posts only on work', () => {
+      const s = setup()
+      s.host.handle({ type: 'start' })
+      s.host.handle({ type: 'setFrozen', frozen: true })
+      run(s, 1000)
+      expect(s.ticks()).toHaveLength(0)
+      s.host.handle({ type: 'submit', clientId: 0, seq: 1, cmd: { type: 'setBlock', pos: [1, 1, 1], voxel: ID.stone } })
+      run(s, 200)
+      const t = s.ticks()
+      expect(t).toHaveLength(1)
+      expect(t[0]).toMatchObject({ type: 'tick', frozen: true, tick: -1, acks: [{ clientId: 0, seq: 1, ok: true }] })
+      expect(s.host.simulation!.tick).toBe(0)
+    })
+
+    it('a water resync while frozen is flushed by one frozen step', () => {
+      const s = setup()
+      s.host.handle({ type: 'start' })
+      s.host.handle({ type: 'setFrozen', frozen: true })
+      run(s, 200)
+      s.host.handle({ type: 'waterResync' })
+      run(s, 1000)
+      const t = s.ticks()
+      expect(t).toHaveLength(1)
+      expect(t[0]).toMatchObject({ type: 'tick', frozen: true })
+    })
+
+    it('no catch-up after a freeze', () => {
+      const s = setup()
+      s.host.handle({ type: 'start' })
+      run(s, 100)
+      const before = s.ticks().length
+      s.host.handle({ type: 'setFrozen', frozen: true })
+      run(s, 10_000)
+      s.host.handle({ type: 'setFrozen', frozen: false })
+      run(s, 50)
+      expect(s.ticks().length - before).toBeLessThanOrEqual(1)
+      expect(s.out.some((m) => m.type === 'log' && /dropped/.test(m.message))).toBe(false)
+    })
+  })
 })

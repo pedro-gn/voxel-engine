@@ -62,12 +62,13 @@ interface Tracked {
  */
 export class FallingTrack {
   private readonly bodies = new Map<number, Tracked>()
-  private readonly tickMs: number
   private readonly clock: SimClock
 
-  /** `tickMs`: the sim's nominal tick length. `clock`: the sim clock to draw on (fed by update, advanced by frame). */
+  /**
+   * `tickMs`: the sim's nominal tick length. `clock`: the sim clock to draw on (fed by update, advanced by frame); the track
+   * follows its tick length (SimClock.setTickMs).
+   */
   constructor(tickMs: number, clock = new SimClock(tickMs)) {
-    this.tickMs = tickMs
     this.clock = clock
   }
 
@@ -112,7 +113,7 @@ export class FallingTrack {
         const land = b.samples[b.samples.length - 1]!.y
         const meshIn = applied(b.landing.chunk) >= b.landing.version
         if (meshIn && y !== land && !b.rush) {
-          const cap = (RUSH_CAP * 512) / this.tickMs
+          const cap = (RUSH_CAP * 512) / this.clock.tickMs
           b.rush = { y, at: now, speed: Math.min(cap, Math.max((y - land) / RUSH_MS, 0)) }
         }
         if (b.rush) y = Math.min(y, Math.max(land, b.rush.y - b.rush.speed * (now - b.rush.at)))

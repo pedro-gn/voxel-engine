@@ -53,6 +53,10 @@ export type ToSim =
   | { type: 'regenerate'; id: number; rect: TerrainRect }
   /** Stops or resumes physics (gravity, water, region jobs). Rules, random ticks, light and the water mirror keep running. */
   | { type: 'setPaused'; paused: boolean }
+  /** Freezes or resumes the game (Simulation.setFrozen): frozen, the tick stops and only commands apply (frozen steps). */
+  | { type: 'setFrozen'; frozen: boolean }
+  /** Ticks run `speed` times as often as tickHz (validated by the engine: finite, 0 < speed <= 4). */
+  | { type: 'setSpeed'; speed: number }
   /** Main thread: generation worker `index` died. */
   | { type: 'genLost'; index: number }
   /** Main thread: the water view starts over (its worker was respawned); the next publish lists every tile. */
@@ -65,7 +69,9 @@ export type FromSim =
   /** `genMs`: wall time of the initial generation, light pass included. `columns`: chunk columns generated. */
   /** `void`: the generator declared a void world (spec §3). */
   | { type: 'ready'; chunks: number[]; slotsUsed: number; genMs: number; columns: number; void: boolean }
-  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; systems?: SystemPublication[]; slotsUsed: number; tickMs: number }
+  | { type: 'tick'; tick: number; dirtyChunks: number[]; events: SimEvent[]; acks: Ack[]; falling: FallingBodyState[]; landed: Landing[]; collapse?: CollapseTick; workers?: WorkerTick; physics: { waterTiles: number; waterColumns: number; waterBodies: number; waterLayersHidden: number; jobs: number; busy: boolean; collapse?: CollapseStats }; water: WaterTick | null; systems?: SystemPublication[]; slotsUsed: number; tickMs: number
+    /** A frozen step: commands applied, no time passed; `tick` is the last completed tick (nothing drawn moves). */
+    frozen?: true }
   | { type: 'log'; message: string }
   | { type: 'terrain'; id: number; ok: true }
   | { type: 'terrain'; id: number; ok: false; message: string }

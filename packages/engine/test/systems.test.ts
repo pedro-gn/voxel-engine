@@ -97,6 +97,17 @@ describe('game systems', () => {
     expect(ticks).toBe(1)
   })
 
+  it('publish-only while frozen', () => {
+    let state = 0, ticks = 0
+    const sim = make([{ name: 'a', version: 1, tick: () => { ticks++ }, command: () => { state++ }, snapshot: () => null, publish: () => ({ state }) }])
+    sim.setFrozen(true)
+    const r = submit(sim, { type: 'a:x' })
+    expect(r.frozen).toBe(true)
+    expect(r.acks[0]).toMatchObject({ ok: true })
+    expect(r.systems).toEqual([{ name: 'a', payload: { state: 1 } }])
+    expect(ticks).toBe(0)
+  })
+
   it('units are unavailable without workers', () => {
     let error = ''
     const sim = make([{ name: 'a', version: 1, tick: c => { try { c.units.spawn([1, 4, 1]) } catch (e) { error = (e as Error).message } }, snapshot: () => null }], false)

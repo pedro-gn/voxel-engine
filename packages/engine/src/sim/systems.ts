@@ -77,13 +77,13 @@ export interface GameSystem<State = unknown, Pub = unknown> {
   init?(ctx: SystemContext): void
   /** Loading a save, instead of init. */
   restore?(ctx: SystemContext, state: State): void
-  /** Once per tick, after the units step (not while physics is paused). */
+  /** Once per tick, after the units step (not while physics is paused, nor while the simulation is frozen). */
   tick(ctx: SystemContext): void
   /** A command whose type starts with `name:` (never an engine command, so its fields read directly); throw an Error to refuse it. */
   command?(ctx: SystemContext, cmd: CustomCommand): void
   /** JSON-serializable state for the save (plan deviation D1). */
   snapshot(): State
-  /** Posted to the main thread with this tick; undefined posts nothing. */
+  /** Posted to the main thread with this tick, and after the commands of a frozen step; undefined posts nothing. */
   publish?(ctx: SystemContext): Pub | undefined
 }
 
@@ -143,13 +143,19 @@ export class SystemRunner {
   tick(events: readonly UnitEvent[]): SystemPublication[] {
     this.events = events
     for (const e of this.entries) call(e, 'tick', () => e.sys.tick(e.ctx))
+    const out = this.publish()
+    this.events = []
+    return out
+  }
+
+  /** Every system's `publish`, without `tick`: what a frozen step posts (Simulation.setFrozen). */
+  publish(): SystemPublication[] {
     const out: SystemPublication[] = []
     for (const e of this.entries) {
       if (!e.sys.publish) continue
       const payload = call(e, 'publish', () => e.sys.publish!(e.ctx))
       if (payload !== undefined) out.push({ name: e.sys.name, payload })
     }
-    this.events = []
     return out
   }
 

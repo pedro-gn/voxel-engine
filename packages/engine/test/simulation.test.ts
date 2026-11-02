@@ -365,3 +365,74 @@ describe('region jobs and pause', () => {
     expect(steps).toBe(1)
   })
 })
+
+describe('freeze', () => {
+  const at10 = () => { const sim = makeSim(); for (let i = 0; i < 10; i++) sim.step(); return sim }
+
+  it('frozen step keeps the tick and stamps commands at it', () => {
+    const sim = at10()
+    sim.setFrozen(true)
+    expect(sim.frozen).toBe(true)
+    sim.submit(1, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.stone })
+    expect(sim.hasFrozenWork).toBe(true)
+    const a = sim.step(), b = sim.step()
+    expect(sim.tick).toBe(10)
+    expect([a.frozen, a.tick, b.frozen, b.tick]).toEqual([true, 9, true, 9])
+    expect(sim.store.getVoxel(5, 5, 5)).toBe(ID.stone)
+    expect([...a.acks, ...b.acks]).toEqual([{ clientId: 1, seq: 0, ok: true }])
+    expect(a.workers).toBeUndefined()
+    expect(sim.commandLog.map(c => c.tick)).toEqual([10])
+    expect(sim.hasFrozenWork).toBe(false)
+  })
+
+  it('frozen step runs no time', () => {
+    let randomCalls = 0
+    const r = defineRules({
+      blocks: {
+        grass: { onRandomTick() { randomCalls++ } },
+        spawner: { onScheduledTick(ctx, x, y, z) { ctx.set(x, y + 1, z, ctx.id('stone')) } },
+      },
+      commands: { kick(ctx, cmd) { const [x, y, z] = (cmd as unknown as { pos: [number, number, number] }).pos; ctx.schedule(x, y, z, 2) } },
+    })
+    const blocks = [...TEST_BLOCKS, defineBlock({ name: 'spawner' }), defineBlock({ name: 'gravel', falls: true })]
+    const sim = new Simulation({ buffers: createWorldBuffers([64, 64, 64]), blocks, rules: r, seed: 5 })
+    const spawner = sim.registry.id('spawner'), gravel = sim.registry.id('gravel')
+    sim.submit(1, 0, { type: 'fillRegion', min: [0, 0, 0], max: [31, 31, 31], voxel: ID.grass })
+    sim.submit(1, 1, { type: 'setBlock', pos: [40, 10, 40], voxel: spawner })
+    for (let i = 0; i < 9; i++) sim.step()
+    sim.submit(1, 2, { type: 'kick', pos: [40, 10, 40] }) // at tick 9: due 11
+    sim.submit(1, 3, { type: 'setBlock', pos: [50, 60, 50], voxel: gravel })
+    sim.step()
+    expect(sim.tick).toBe(10)
+    expect(randomCalls).toBeGreaterThan(0)
+    const falling = sim.gravity.snapshot()
+    expect(falling).toHaveLength(1)
+    const calls = randomCalls, work = sim.pendingWork
+    sim.setFrozen(true)
+    for (let i = 0; i < 20; i++) expect(sim.step().frozen).toBe(true)
+    expect(sim.tick).toBe(10)
+    expect(randomCalls).toBe(calls)
+    expect(sim.gravity.snapshot()).toEqual(falling)
+    expect(sim.pendingWork).toBe(work)
+    expect(sim.store.getVoxel(40, 11, 40)).toBe(AIR)
+    sim.setFrozen(false)
+    const r10 = sim.step()
+    expect([r10.tick, r10.frozen]).toEqual([10, undefined])
+    expect(sim.store.getVoxel(40, 11, 40)).toBe(AIR)
+    expect(sim.step().tick).toBe(11)
+    expect(sim.store.getVoxel(40, 11, 40)).toBe(ID.stone)
+  })
+
+  it('frozen snapshot keeps frozen-step edits', () => {
+    const sim = at10()
+    sim.setFrozen(true)
+    sim.submit(1, 0, { type: 'setBlock', pos: [5, 5, 5], voxel: ID.stone })
+    sim.step()
+    const s = sim.snapshot(null)
+    expect(s.tick).toBe(10)
+    const copy = makeSim()
+    copy.restore({ tick: s.tick, paused: s.paused, regions: s.regions, sections: Object.fromEntries(s.sections.map(x => [x.name, x.bytes])) })
+    expect(copy.store.getVoxel(5, 5, 5)).toBe(ID.stone)
+    expect([copy.tick, copy.frozen]).toEqual([10, false])
+  })
+})
