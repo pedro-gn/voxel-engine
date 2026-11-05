@@ -189,6 +189,10 @@ export function chunkVertex(scales?: ScaleTable, liquid = false, opts: ChunkVert
 
   return {
     position,
+    /** The vertex's undisplaced world position (vertex stage); a body's is its object position plus its uvOrigin. */
+    world,
+    /** The vertex's texture-array layer as an int (vertex stage; the tone bits stripped). */
+    layerIndex: layerBits.toInt(),
     /** The leaf-tone multiplier of a cutout face (ChunkVertexOptions.tone), undefined without tone tables. */
     tint,
     /** 1 on a fringe strip (ChunkVertexOptions.fringe), undefined without the option. */

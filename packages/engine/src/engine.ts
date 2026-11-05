@@ -9,6 +9,7 @@ import { UnderwaterFade, cameraInLiquid } from './render/underwater.ts'
 import { raycast, type RayHit, type Vec3Like } from './interact/raycast.ts'
 import { bindCollision, type Collision } from './interact/collision.ts'
 import { GrassMask } from './render/decorations/grassMask.ts'
+import { WindMask, createDecorationWind } from './render/decorations/windMask.ts'
 import { DecorationRegistry, type DecorationDef } from './render/decorations/defs.ts'
 import { meshTablesFrom } from './mesh/tables.ts'
 import type { FromMesh, FromSim, GenConnect, SimInitOptions, TerrainRect, ToMesh, ToSim } from './protocol.ts'
@@ -225,6 +226,18 @@ export interface Engine {
     /** Full grass everywhere again. */
     clear(): void
   }
+  /**
+   * The wind the grass and flowers sway in (no remesh): `set` takes the (x, z) direction the wind blows towards
+   * (normalised; a zero vector keeps the last direction) and a strength 0 (still) … 1 (gale); bad numbers throw RangeError.
+   * `mask` is the exposure per cell of 4 × 4 columns (0 sheltered … 255 exposed, `ceil(size x / 4)` cells a side), written
+   * whole with `mask.set`. The sway's amplitude is `windAmplitude(strength, exposure)`. Blocks with `sway` (leaves)
+   * sway in the same wind, by `swayAmplitude(strength, exposure)` blocks (render/leafSway.ts). Defaults: a gentle breeze
+   * (dir (1, 0.3), strength 0.35) over an all-exposed mask.
+   */
+  readonly wind: {
+    set(o: { dirX: number; dirZ: number; strength: number }): void
+    readonly mask: WindMask
+  }
   readonly world: { get(x: number, y: number, z: number): number; getLight(x: number, y: number, z: number): number }
   /**
    * The water drawn at column (x, z), as the renderer last showed it: surface and depth (blocks), flow (0 still, 1 a gentle
@@ -351,6 +364,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const layout = new Layout(size)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const grassMask = new GrassMask(size[0], size[2])
+  const decoWind = createDecorationWind(new WindMask(Math.ceil(Math.max(size[0], size[2]) / 4), 4))
   const tileSize = checkTileSize(o.tileSize ?? TILE)
   const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
   const buffers = createWorldBuffers(size)
@@ -462,9 +476,11 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     ...(registry.hasTone && { tone: registry.toneLayers(tex.layerOf) }),
     ...(registry.hasFringe && { fringe: true }),
+    ...(registry.hasSway && { sway: registry.swayLayers(tex.layerOf) }),
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     grassMask,
+    wind: decoWind,
     faceLayers,
     water: surfaceMirror,
     batchChunks: o.batchChunks ?? true,
@@ -968,6 +984,10 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
       set: (x, z, value) => grassMask.set(x, z, value),
       setMany: (cells, value) => grassMask.setMany(cells, value),
       clear: () => grassMask.clear(),
+    },
+    wind: {
+      set: o => decoWind.set(o),
+      mask: decoWind.mask,
     },
     submit(cmd) {
       const s = ++seq

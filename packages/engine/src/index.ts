@@ -11,6 +11,8 @@ export { BlockRegistry, LAYER, defineBlock, type BlockDef, type BlockFringe, typ
 export { ladderState, postState, slabState, stairState, turnShapeState, type BlockShape, type Facing, type PostAxis } from './blocks/shapes.ts'
 export { roofKindOf, roofState, type RoofKind } from './blocks/roofs.ts'
 export { DecorationRegistry, defineDecoration, type DecorationDef, type FlowerDef, type GrassDef } from './render/decorations/defs.ts'
+export { WindMask, windAmplitude } from './render/decorations/windMask.ts'
+export { swayAmplitude } from './render/leafSway.ts'
 export { AIR, blockLight, packLight, packVoxel, skyLight, voxelId, voxelState, withState } from './world/voxel.ts'
 export { Pcg32 } from './sim/rng.ts'
 export type { Ack, Command, CustomCommand, FillRegionCommand, SetBlockCommand, Vec3 } from './sim/commands.ts'
