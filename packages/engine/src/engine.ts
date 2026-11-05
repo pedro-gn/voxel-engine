@@ -363,7 +363,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
   const layout = new Layout(size)
   const decorations = new DecorationRegistry(o.decorations ?? [], registry)
   const grassMask = new GrassMask(size[0], size[2])
-  const decoWind = createDecorationWind(new WindMask(Math.ceil(size[0] / 4), 4))
+  const decoWind = createDecorationWind(new WindMask(Math.ceil(Math.max(size[0], size[2]) / 4), 4))
   const tileSize = checkTileSize(o.tileSize ?? TILE)
   const textureScale = checkTextureScale(o.textureScale, registry.textureNames())
   const buffers = createWorldBuffers(size)

@@ -47,6 +47,7 @@ describe('decoration wind', () => {
     expect(() => wind.set({ dirX: Number.NaN, dirZ: 1, strength: 0.5 })).toThrow(RangeError)
     expect(() => wind.set({ dirX: 1, dirZ: 0, strength: -0.1 })).toThrow(RangeError)
     expect(() => wind.set({ dirX: 1, dirZ: 0, strength: Number.POSITIVE_INFINITY })).toThrow(RangeError)
+    expect(() => wind.set({ dirX: 1, dirZ: 0, strength: 1.5 })).toThrow(RangeError)
     expect(wind.strength.value).toBeCloseTo(0.2, 6)
   })
 

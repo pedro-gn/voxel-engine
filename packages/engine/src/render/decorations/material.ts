@@ -7,7 +7,7 @@ import type { LightUniforms } from '../voxelLighting.ts'
 import { VoxelNodeMaterial, voxelLit } from '../voxelLighting.ts'
 import { MAX_DECORATIONS, MAX_FLOWER_COLORS, grassStyle, type DecorationRegistry } from './defs.ts'
 import { GrassMask } from './grassMask.ts'
-import { WindMask, createDecorationWind, type DecorationWind } from './windMask.ts'
+import { SWAY_GAIN, WindMask, createDecorationWind, type DecorationWind } from './windMask.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any // TSL node typings are too narrow for swizzles and uniform-array elements
@@ -71,7 +71,7 @@ export function createDecorationMaterials(
     const gust: N = mx_noise_float(vec3(world.xz.mul(0.07).sub(windDir.mul(time.mul(0.5))), time.mul(0.15))).mul(0.18)
       .add(sin(time.mul(2.1).add(rnd.mul(6.283))).mul(0.04))
     const amp: N = float(0.25).add(windStrength.mul(1.1).mul(exposureAt(world)))
-    return windDir.mul(gust.mul(amp))
+    return windDir.mul(gust.mul(amp).mul(SWAY_GAIN))
   }
 
   // ---- grass ----

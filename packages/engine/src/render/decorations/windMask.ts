@@ -52,6 +52,12 @@ function clamp(v: number, max: number): number {
 }
 
 /** The sway's amplitude for a wind strength (0–1) and an exposure (0–1); the decoration shader computes the same. */
+/**
+ * Wind review I1: the shader's sway is `gust · windAmplitude · SWAY_GAIN`, so the default breeze (amplitude .635) sways as
+ * far as the pre-wind grass did (tip offset 1.166 · gust); a gale at full exposure reaches about twice that.
+ */
+export const SWAY_GAIN = 1.84
+
 export function windAmplitude(strength: number, exposure: number): number {
   return 0.25 + 1.1 * strength * exposure
 }
@@ -77,7 +83,7 @@ export function createDecorationWind(mask: WindMask): DecorationWind {
     dir, strength, mask,
     set(o) {
       if (!Number.isFinite(o.dirX) || !Number.isFinite(o.dirZ)) throw new RangeError(`wind direction must be finite, got (${o.dirX}, ${o.dirZ})`)
-      if (!Number.isFinite(o.strength) || o.strength < 0) throw new RangeError(`wind strength must be a finite number ≥ 0, got ${o.strength}`)
+      if (!Number.isFinite(o.strength) || o.strength < 0 || o.strength > 1) throw new RangeError(`wind strength must be a finite number ≥ 0, got ${o.strength}`)
       const len = Math.hypot(o.dirX, o.dirZ)
       if (len > 0) dir.value.set(o.dirX / len, o.dirZ / len)
       strength.value = o.strength
