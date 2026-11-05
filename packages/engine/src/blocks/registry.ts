@@ -51,6 +51,14 @@ export interface BlockDef {
    * their face, take the block's tone, cast no shadow and are neither picked nor collided. Same validity as `tone`.
    */
   fringe?: BlockFringe
+  /**
+   * Sways with the wind (off by default): the cutout material moves the block's vertices, fringe strips included, by a
+   * smooth function of world position and time (render/leafSway.ts), scaled by this amount (0–1, 1 = the full sway) and
+   * by the wind's strength and exposure (engine.wind). No remesh. Same validity as `tone`; blocks sharing a face or
+   * fringe texture must declare the same sway, and no other cutout block may draw a swaying texture (the amount is
+   * looked up per texture layer).
+   */
+  sway?: number
 }
 
 export interface BlockFringe {
@@ -125,6 +133,10 @@ export class BlockRegistry {
   readonly fringeSides: Uint8Array
   /** How far geometry pokes out of its cell, in blocks: the largest fringe strip reach, or ROOF_REACH with a roof block (0 without either). */
   readonly fringeReach: number
+  /** Per id: its sway amount (BlockDef.sway), 0 for a still block. */
+  readonly sway: Float32Array
+  /** True when any block sways: the cutout material then decodes the sway table. */
+  readonly hasSway: boolean
   private readonly ids = new Map<string, number>()
   private readonly faceTex: (string | null)[] = []
   /** Per id: its fringe texture, or null. */
@@ -154,6 +166,7 @@ export class BlockRegistry {
     this.fringeWidth = new Uint8Array(this.count)
     this.fringeHang = new Uint8Array(this.count)
     this.fringeSides = new Uint8Array(this.count)
+    this.sway = new Float32Array(this.count)
 
     all.forEach((d, id) => {
       if (id > 0 && d.name === 'air') throw new Error(`block name "air" is reserved`)
@@ -198,6 +211,13 @@ export class BlockRegistry {
         if (this.fringeWidth[id]! + this.fringeHang[id]! > 16) throw new RangeError(`block "${d.name}": fringe width + hang must be at most 1 block`)
       }
       this.fringeTex.push(d.fringe?.texture ?? null)
+      if (d.sway !== undefined) {
+        if (layer !== 'cutout' || d.shape !== undefined || liquid || d.render === false) {
+          throw new Error(`block "${d.name}": sway needs layer "cutout", a whole cube (no shape), no liquid and render !== false`)
+        }
+        if (typeof d.sway !== 'number' || !(d.sway >= 0 && d.sway <= 1)) throw new RangeError(`block "${d.name}": sway must be in [0, 1], got ${String(d.sway)}`)
+        this.sway[id] = d.sway
+      }
       if (d.shape !== undefined) {
         const word = liquid ? 'liquid' : d.decoration !== undefined ? 'decoration' : d.render === false ? 'render: false'
           : falls ? 'falls' : layer !== 'opaque' ? `layer "${layer}"` : null
@@ -237,6 +257,8 @@ export class BlockRegistry {
     // Roof geometry reaches past its cell too (eaves across, ridge and apex caps up): bounds grow by the same reach.
     this.fringeReach = Math.max(reach / 16, this.shape.includes(SHAPE.ROOF) ? ROOF_REACH : 0)
     if (this.hasTone) this.checkToneTextures()
+    this.hasSway = this.sway.some((v) => v > 0)
+    if (this.hasSway) this.checkSwayTextures()
     all.forEach((d, id) => {
       if (!this.liquid[id]) return
       if (d.source === undefined) { this.liquidGroup[id] = id; return }
@@ -343,6 +365,45 @@ export class BlockRegistry {
     }
     const layers = this.textureNames().length + 1 // layer 0 is the missing-texture checker
     if (layers > TONE_MAX_LAYERS) throw new RangeError(`tone blocks allow at most ${TONE_MAX_LAYERS} texture layers, the blocks use ${layers}`)
+  }
+
+  /** Per texture-array layer (sized like toneLayers): the sway amount of the blocks drawing it, 0 for every other layer. */
+  swayLayers(layerOf: ReadonlyMap<string, number>): Float32Array {
+    let n = 1
+    for (const l of layerOf.values()) n = Math.max(n, l + 1)
+    const out = new Float32Array(n)
+    for (let id = 1; id < this.count; id++) {
+      if (!(this.sway[id]! > 0)) continue
+      for (const tex of this.texturesOf(id)) {
+        const l = layerOf.get(tex)
+        if (l !== undefined) out[l] = this.sway[id]!
+      }
+    }
+    return out
+  }
+
+  /** As checkToneTextures: a layer means one sway, and no still cutout block draws a swaying texture. */
+  private checkSwayTextures(): void {
+    const owner = new Map<string, number>()
+    for (let id = 1; id < this.count; id++) {
+      if (!(this.sway[id]! > 0)) continue
+      for (const tex of this.texturesOf(id)) {
+        const other = owner.get(tex)
+        if (other === undefined) { owner.set(tex, id); continue }
+        if (this.sway[other] !== this.sway[id]) {
+          throw new Error(`blocks "${this.defs[other]!.name}" and "${this.defs[id]!.name}" share texture "${tex}" with different sways`)
+        }
+      }
+    }
+    for (let id = 1; id < this.count; id++) {
+      if (this.sway[id]! > 0 || this.layer[id] !== LAYER.CUTOUT) continue
+      for (const tex of this.texturesOf(id)) {
+        const other = owner.get(tex)
+        if (other !== undefined) {
+          throw new Error(`block "${this.defs[id]!.name}" draws texture "${tex}" of swaying block "${this.defs[other]!.name}" without its sway`)
+        }
+      }
+    }
   }
 
   faceLayers(layerOf: ReadonlyMap<string, number>): Uint16Array {

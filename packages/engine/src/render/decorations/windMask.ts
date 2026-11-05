@@ -47,6 +47,24 @@ export class WindMask {
   }
 }
 
+const textures = new WeakMap<WindMask, THREE.DataTexture>()
+
+/**
+ * The mask's R8 texture (nearest, re-uploaded on every change), one per mask: the grass and flower material and the
+ * leaf sway of the chunk materials read the same texture, which owns the mask's `onChange`.
+ */
+export function windMaskTexture(mask: WindMask): THREE.DataTexture {
+  let t = textures.get(mask)
+  if (t) return t
+  t = new THREE.DataTexture(mask.data, mask.side, mask.side, THREE.RedFormat, THREE.UnsignedByteType)
+  t.minFilter = t.magFilter = THREE.NearestFilter
+  t.needsUpdate = true
+  const tex = t
+  mask.onChange = () => { tex.needsUpdate = true }
+  textures.set(mask, t)
+  return t
+}
+
 function clamp(v: number, max: number): number {
   return v < 0 ? 0 : v > max ? max : v
 }

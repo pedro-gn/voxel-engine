@@ -2,7 +2,9 @@ import * as THREE from 'three/webgpu'
 import { cameraViewMatrix, float, mix, texture, uniformArray, vec4 } from 'three/tsl'
 import { CUT_SHADE } from '../mesh/vertexFormat.ts'
 import { FRINGE_LOD_BIAS, chunkVertex, fringeSampleUv, type ToneTables } from './chunkVertex.ts'
+import type { DecorationWind } from './decorations/windMask.ts'
 import { belowCut } from './layerCut.ts'
+import { leafSwayOffset } from './leafSway.ts'
 import { VoxelNodeMaterial, voxelLit, type LightUniforms } from './voxelLighting.ts'
 
 export interface ChunkMaterials {
@@ -17,6 +19,11 @@ export interface ChunkMaterialOptions {
   tone?: { dark: Float32Array; light: Float32Array; jitter: Float32Array }
   /** The registry has fringe blocks (BlockRegistry.hasFringe): the cutout material decodes strips, which cast no shadow. */
   fringe?: boolean
+  /**
+   * Swaying blocks (BlockRegistry.hasSway): the sway amount per texture layer (BlockRegistry.swayLayers) and the wind
+   * they sway in (engine.wind). The chunks' cutout material only (render/leafSway.ts); a body never sways.
+   */
+  sway?: { layers: Float32Array; wind: DecorationWind }
 }
 
 /** The per-layer tone tables as two vec4 uniform arrays: (dark rgb, jitter) and (light rgb, 0). */
@@ -58,12 +65,19 @@ export function createBodyMaterials(tex: THREE.DataArrayTexture, lights: LightUn
 function materialBuilder(tex: THREE.DataArrayTexture, lights: LightUniforms, layerScales: Float32Array | undefined, opts: ChunkMaterialOptions, body: boolean) {
   const scales = layerScales && layerScales.some((s) => s !== 1) ? uniformArray(Array.from(layerScales), 'float') : undefined
   const tone = opts.tone ? toneTables(opts.tone) : undefined
+  const sway = opts.sway && !body ? { table: uniformArray(Array.from(opts.sway.layers), 'float') as unknown as { element(i: unknown): unknown }, wind: opts.sway.wind } : undefined
   return function build(mode: 'opaque' | 'cutout' | 'translucent', liquid = false): VoxelNodeMaterial {
     const toned = mode === 'cutout' && tone !== undefined
     const fringed = mode === 'cutout' && opts.fringe === true
     const v = chunkVertex(scales as Parameters<typeof chunkVertex>[0], liquid, { ...(toned && { tone }), ...(fringed && { fringe: true }), ...(body && { body: true }) })
     const m = new VoxelNodeMaterial(v.sky)
     m.positionNode = v.position
+    if (mode === 'cutout' && sway) {
+      // Swaying layers move by a smooth world-space offset (the chunk's model matrix only translates), shadows included:
+      // the shadow pass draws the same positionNode. UVs stay on the undisplaced position, glued to the leaf.
+      m.positionNode = v.position.add(leafSwayOffset(v.world, sway.table.element(v.layerIndex), sway.wind))
+      m.userData.sway = true
+    }
     // Fringe strips sample their mask at mip 0 with v clamped inside its first and last rows (chunkVertex.ts fringeVRange).
     const sample = fringed && v.fringe
       ? texture(tex, fringeSampleUv(v.uv, v.fringe, tex.image.height)).bias(v.fringe.mul(FRINGE_LOD_BIAS))

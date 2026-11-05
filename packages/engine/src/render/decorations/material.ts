@@ -7,7 +7,7 @@ import type { LightUniforms } from '../voxelLighting.ts'
 import { VoxelNodeMaterial, voxelLit } from '../voxelLighting.ts'
 import { MAX_DECORATIONS, MAX_FLOWER_COLORS, grassStyle, type DecorationRegistry } from './defs.ts'
 import { GrassMask } from './grassMask.ts'
-import { SWAY_GAIN, WindMask, createDecorationWind, type DecorationWind } from './windMask.ts'
+import { SWAY_GAIN, WindMask, createDecorationWind, windMaskTexture, type DecorationWind } from './windMask.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any // TSL node typings are too narrow for swizzles and uniform-array elements
@@ -57,10 +57,7 @@ export function createDecorationMaterials(
   const fadeAt = (world: N) => float(1).sub(smoothstep(radius.mul(0.6), radius, world.xz.add(0.5).sub(cameraPosition.xz).length()))
   // The game's wind (engine.wind): exposure per cell of `cell` columns (R8, 1 = exposed), read per tuft like the grass mask.
   const windMask = wind.mask
-  const windTex = new THREE.DataTexture(windMask.data, windMask.side, windMask.side, THREE.RedFormat, THREE.UnsignedByteType)
-  windTex.minFilter = windTex.magFilter = THREE.NearestFilter
-  windTex.needsUpdate = true
-  windMask.onChange = () => { windTex.needsUpdate = true }
+  const windTex = windMaskTexture(windMask)
   const exposureAt = (world: N): N => (textureLoad(windTex, ivec2(
     (int(world.x.div(windMask.cell)) as N).clamp(0, windMask.side - 1), (int(world.z.div(windMask.cell)) as N).clamp(0, windMask.side - 1),
   )) as N).x

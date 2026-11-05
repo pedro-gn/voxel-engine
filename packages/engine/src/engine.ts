@@ -230,7 +230,8 @@ export interface Engine {
    * The wind the grass and flowers sway in (no remesh): `set` takes the (x, z) direction the wind blows towards
    * (normalised; a zero vector keeps the last direction) and a strength 0 (still) … 1 (gale); bad numbers throw RangeError.
    * `mask` is the exposure per cell of 4 × 4 columns (0 sheltered … 255 exposed, `ceil(size x / 4)` cells a side), written
-   * whole with `mask.set`. The sway's amplitude is `windAmplitude(strength, exposure)`. Defaults: a gentle breeze
+   * whole with `mask.set`. The sway's amplitude is `windAmplitude(strength, exposure)`. Blocks with `sway` (leaves)
+   * sway in the same wind, by `swayAmplitude(strength, exposure)` blocks (render/leafSway.ts). Defaults: a gentle breeze
    * (dir (1, 0.3), strength 0.35) over an all-exposed mask.
    */
   readonly wind: {
@@ -475,6 +476,7 @@ export async function createEngine(o: EngineOptions): Promise<Engine> {
     textureScales: layerScales(tex.layerOf, tex.texture.image.depth, textureScale),
     ...(registry.hasTone && { tone: registry.toneLayers(tex.layerOf) }),
     ...(registry.hasFringe && { fringe: true }),
+    ...(registry.hasSway && { sway: registry.swayLayers(tex.layerOf) }),
     viewDistance: () => cameraMode === 'orbit' ? controls.current.distance : FP_VIEW_DISTANCE,
     decorations,
     grassMask,
