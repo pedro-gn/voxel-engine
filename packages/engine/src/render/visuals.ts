@@ -8,6 +8,7 @@ import { AtmosphereController, resolveBlockLight, type Atmosphere } from './atmo
 import { DecorationMeshes } from './decorations/decorationMeshes.ts'
 import type { DecorationRegistry } from './decorations/defs.ts'
 import type { GrassMask } from './decorations/grassMask.ts'
+import type { DecorationWind } from './decorations/windMask.ts'
 import { createDecorationMaterials } from './decorations/material.ts'
 import { ChunkMeshes } from './chunkMeshes.ts'
 import { FallingCubes } from './falling.ts'
@@ -51,6 +52,8 @@ export interface VisualsOptions {
   decorations: DecorationRegistry
   /** The game's per-column grass factor (engine.grassMask). */
   grassMask: GrassMask
+  /** The game's wind for the grass and flowers (engine.wind); omitted, a default breeze over an all-exposed mask. */
+  wind?: DecorationWind
   /** Per block id × 6 faces (+X −X +Y −Y +Z −Z): texture-array layer (BlockRegistry.faceLayers). */
   faceLayers: Uint16Array
   /** The main thread's view of the heightfield water (engine.ts feeds it from the tick messages). */
@@ -95,7 +98,7 @@ export class Visuals {
     this.lights = createLightUniforms()
     this.chunks = new ChunkMeshes(o.layout, createChunkMaterials(o.texture, this.lights, o.textureScales, { ...(o.tone && { tone: o.tone }), ...(o.fringe && { fringe: true }) }), { batched: o.batchChunks ?? true, threeCull: o.threeCull ?? false, ...(o.regionChunks !== undefined && { region: o.regionChunks }), ...(o.registry.fringeReach > 0 && { fringeReach: o.registry.fringeReach }) })
     o.scene.add(this.chunks.group)
-    const dm = createDecorationMaterials(o.decorations, this.lights, o.grassMask)
+    const dm = createDecorationMaterials(o.decorations, this.lights, o.grassMask, o.wind)
     this.decoRadius = dm.radius
     this.deco = new DecorationMeshes(o.layout, dm)
     o.scene.add(this.deco.group)

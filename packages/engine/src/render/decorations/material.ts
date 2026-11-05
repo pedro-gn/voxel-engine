@@ -7,6 +7,7 @@ import type { LightUniforms } from '../voxelLighting.ts'
 import { VoxelNodeMaterial, voxelLit } from '../voxelLighting.ts'
 import { MAX_DECORATIONS, MAX_FLOWER_COLORS, grassStyle, type DecorationRegistry } from './defs.ts'
 import { GrassMask } from './grassMask.ts'
+import { WindMask, createDecorationWind, type DecorationWind } from './windMask.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any // TSL node typings are too narrow for swizzles and uniform-array elements
@@ -29,7 +30,10 @@ function instance() {
 
 const v4 = (c: readonly number[], w = 1) => new THREE.Vector4(c[0], c[1], c[2], w)
 
-export function createDecorationMaterials(reg: DecorationRegistry, lights: LightUniforms, mask: GrassMask = new GrassMask(1, 1)) {
+export function createDecorationMaterials(
+  reg: DecorationRegistry, lights: LightUniforms, mask: GrassMask = new GrassMask(1, 1),
+  wind: DecorationWind = createDecorationWind(new WindMask(1, 4)),
+) {
   const radius = uniform(96)
   // The game's per-column grass factor (engine.grassMask), read per tuft: 1 everywhere is the grass without a mask.
   const maskTex = new THREE.DataTexture(mask.data, mask.width, mask.depth, THREE.RedFormat, THREE.UnsignedByteType)
@@ -51,8 +55,24 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const petals = uniformArray(reg.defs.flatMap((d) => pad((d.flowers?.colors ?? []).map((c) => v4(c)), MAX_FLOWER_COLORS, new THREE.Vector4()))
     .concat(new Array(Math.max(0, (MAX_DECORATIONS - reg.defs.length) * MAX_FLOWER_COLORS)).fill(new THREE.Vector4())), 'vec4')
   const fadeAt = (world: N) => float(1).sub(smoothstep(radius.mul(0.6), radius, world.xz.add(0.5).sub(cameraPosition.xz).length()))
-  const wind = (world: N, rnd: N): N => mx_noise_float(vec3(world.xz.mul(0.07).add(time.mul(0.5)), time.mul(0.15))).mul(0.18)
-    .add(sin(time.mul(2.1).add(rnd.mul(6.283))).mul(0.04))
+  // The game's wind (engine.wind): exposure per cell of `cell` columns (R8, 1 = exposed), read per tuft like the grass mask.
+  const windMask = wind.mask
+  const windTex = new THREE.DataTexture(windMask.data, windMask.side, windMask.side, THREE.RedFormat, THREE.UnsignedByteType)
+  windTex.minFilter = windTex.magFilter = THREE.NearestFilter
+  windTex.needsUpdate = true
+  windMask.onChange = () => { windTex.needsUpdate = true }
+  const exposureAt = (world: N): N => (textureLoad(windTex, ivec2(
+    (int(world.x.div(windMask.cell)) as N).clamp(0, windMask.side - 1), (int(world.z.div(windMask.cell)) as N).clamp(0, windMask.side - 1),
+  )) as N).x
+  const windDir: N = wind.dir, windStrength: N = wind.strength
+  // The signed sway along the wind: today's gust noise (its waves now travel downwind) plus a per-tuft flutter, scaled by
+  // windAmplitude(strength, exposure) = 0.25 + 1.1 · strength · exposure. Returns the (x, z) offset at a blade's tip.
+  const windSway = (world: N, rnd: N): N => {
+    const gust: N = mx_noise_float(vec3(world.xz.mul(0.07).sub(windDir.mul(time.mul(0.5))), time.mul(0.15))).mul(0.18)
+      .add(sin(time.mul(2.1).add(rnd.mul(6.283))).mul(0.04))
+    const amp: N = float(0.25).add(windStrength.mul(1.1).mul(exposureAt(world)))
+    return windDir.mul(gust.mul(amp))
+  }
 
   // ---- grass ----
   const gi = instance()
@@ -87,14 +107,14 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const leanZ = bit(4).mul(smoothstep(0.55, 1, rz)).sub(bit(8).mul(smoothstep(0.55, 1, float(1).sub(rz))))
   const t2 = t.mul(t)
   const over = P.w.mul(fade)
-  const sway = wind(gi.world, gi.rnd)
+  const sway: N = windSway(gi.world, gi.rnd)
   // The blade's lateral offset turns with the tuft (mirroring keeps a mirrored blade's offset, as before).
   const lx: N = pos.x.sub(info.z), lz: N = pos.z.sub(info.w)
   const latX: N = lx.mul(ca).sub(lz.mul(sa)), latZ: N = lx.mul(sa).add(lz.mul(ca))
   const local = vec3(
-    rx.add(latX.mul(spread)).add(leanX.mul(over).mul(1.6).add(sway).mul(t2)),
+    rx.add(latX.mul(spread)).add(leanX.mul(over).mul(1.6).add(sway.x).mul(t2)),
     tShape.mul(height).sub(vec2(leanX, leanZ).length().mul(over).mul(0.5).mul(t2)),
-    rz.add(latZ.mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.mul(0.6)).mul(t2)),
+    rz.add(latZ.mul(spread)).add(leanZ.mul(over).mul(1.6).add(sway.y).mul(t2)),
   )
   const grass = new VoxelNodeMaterial(gi.sky)
   grass.positionNode = select(info.x.lessThan(P.x.mul(mix(float(1), mix(float(0.3), float(1), density), C.w)).mul(cover).mul(pressed)), gi.cell.add(local), gi.cell.add(vec3(0.5, 0, 0.5)))
@@ -110,15 +130,15 @@ export function createDecorationMaterials(reg: DecorationRegistry, lights: Light
   const ffade = fadeAt(fi.world)
   const scale = ffade.mul(fi.rnd.mul(0.4).add(0.8)).mul(float(maskAt(fi.world)))
   const ft = finfo.y
-  const fsway = wind(fi.world, fi.rnd).mul(ft.mul(ft))
+  const fsway: N = windSway(fi.world, fi.rnd).mul(ft.mul(ft))
   const ox = fi.rnd.mul(0.6).add(0.2), oz = fract(fi.rnd.mul(13.7)).mul(0.6).add(0.2)
   const flowers = new VoxelNodeMaterial(fi.sky)
-  flowers.positionNode = fi.cell.add(vec3(ox.add(fpos.x.mul(scale)).add(fsway), fpos.y.mul(scale), oz.add(fpos.z.mul(scale)).add(fsway.mul(0.6))))
+  flowers.positionNode = fi.cell.add(vec3(ox.add(fpos.x.mul(scale)).add(fsway.x), fpos.y.mul(scale), oz.add(fpos.z.mul(scale)).add(fsway.y)))
   const petal: N = varying((petals.element(fi.deco.mul(MAX_FLOWER_COLORS).add(fi.color)) as N).xyz)
   const fAlbedo = select(varying(finfo.x).lessThan(0.5), vec3(0.16, 0.36, 0.09), petal)
   flowers.colorNode = vec4(fAlbedo, 1)
   flowers.side = THREE.DoubleSide
   voxelLit(flowers, { normal: vec3(0, 1, 0), sky: fi.sky, blk: fi.blk, ao: float(1), albedo: fAlbedo }, lights)
 
-  return { grass, flowers, radius }
+  return { grass, flowers, radius, wind }
 }
